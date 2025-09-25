@@ -1,5 +1,7 @@
 # MCP Context Server
 
+[![PyPI](https://img.shields.io/pypi/v/mcp-context-server.svg)](https://pypi.org/project/mcp-context-server/) [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-blue?logo=anthropic)](https://github.com/modelcontextprotocol/registry) [![GitHub License](https://img.shields.io/github/license/alex-feel/mcp-context-server)](https://github.com/alex-feel/mcp-context-server/blob/main/LICENSE)
+
 A high-performance Model Context Protocol (MCP) server providing persistent multimodal context storage for LLM agents. Built with FastMCP, this server enables seamless context sharing across multiple agents working on the same task through thread-based scoping.
 
 
@@ -24,6 +26,10 @@ There are two ways to add the MCP Context Server to Claude Code:
 ### Method 1: Using CLI Command
 
 ```bash
+# From PyPI (recommended)
+claude mcp add context-server -- uvx mcp-context-server
+
+# Or from GitHub (latest development version)
 claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
 ```
 
@@ -39,15 +45,16 @@ Add the following to your `.mcp.json` file in your project directory:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/alex-feel/mcp-context-server",
-        "mcp-context-server"
-      ],
+      "args": ["mcp-context-server"],
       "env": {}
     }
   }
 }
+```
+
+For the latest development version from GitHub, use:
+```json
+"args": ["--from", "git+https://github.com/alex-feel/mcp-context-server", "mcp-context-server"]
 ```
 
 For configuration file locations and details, see: https://docs.claude.com/en/docs/claude-code/settings#settings-files
@@ -96,11 +103,7 @@ Example configuration with environment variables:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/alex-feel/mcp-context-server",
-        "mcp-context-server"
-      ],
+      "args": ["mcp-context-server"],
       "env": {
         "LOG_LEVEL": "${LOG_LEVEL:-INFO}",
         "MCP_CONTEXT_DB": "${MCP_CONTEXT_DB:-~/.mcp/context_storage.db}",

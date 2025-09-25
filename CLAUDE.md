@@ -15,8 +15,9 @@ uv run mcp-context-server      # Full name entry point
 uv run mcp-context             # Short alias
 uv run python -m app.server    # As Python module
 
-# Run from anywhere with uvx (after installation)
-uvx --from . mcp-context-server
+# Run from anywhere with uvx
+uvx mcp-context-server           # From PyPI (published version)
+uvx --from . mcp-context-server  # From local directory
 
 # Test server starts correctly
 uv run python -m app.server
@@ -62,6 +63,16 @@ uv run pyright app
 ```
 
 ## High-Level Architecture
+
+### MCP Protocol Integration
+
+This server implements the [Model Context Protocol](https://modelcontextprotocol.io) (MCP), enabling:
+
+- **JSON-RPC 2.0 Protocol**: Standardized communication for reliable tool invocation
+- **Automatic Tool Discovery**: MCP clients auto-detect available tools and their schemas
+- **Strong Typing**: Pydantic models ensure data integrity across client-server boundary
+- **Universal Compatibility**: Works with Claude Desktop, LangGraph, and any MCP-compliant client
+- **Stdio Transport**: Communication via standard input/output for simple integration
 
 ### MCP Server Architecture
 
@@ -112,6 +123,16 @@ The core concept is thread-based context scoping:
 - Agents can filter context by thread, source, tags, or content type
 - No hierarchical threads - flat structure for simplicity
 
+**Example Multi-Agent Workflow**:
+```
+Thread: "analyze-q4-sales"
+├── User Context: "Analyze our Q4 sales data"
+├── Agent 1 Context: "Fetched sales data from database"
+├── Agent 2 Context: "Generated charts showing 15% growth"
+└── Agent 3 Context: "Identified top performing products"
+```
+All agents share thread_id="analyze-q4-sales" and can retrieve each other's context.
+
 ### Database Schema
 
 Three main tables with strategic indexing:
@@ -127,6 +148,16 @@ Performance optimizations:
 ### Testing Strategy
 
 The codebase uses a comprehensive multi-layered testing approach:
+
+#### Test Database Protection:
+- **Automatic Isolation**: All tests use `prevent_default_db_pollution` fixture (session-scoped, autouse)
+  - Prevents accidental use of `~/.mcp/context_storage.db` during testing
+  - Sets `MCP_TEST_MODE=1` and temporary `DB_PATH` for all tests
+  - Raises `RuntimeError` if default database is accessed
+- **Fixture Selection**:
+  - Use `mock_server_dependencies` + `initialized_server` for integration tests with real database
+  - Use `test_db` for direct SQLite operations without server layer
+  - Use `async_db_initialized` for async database operations
 
 #### Test Files and Their Purpose:
 - **`test_models.py`**: Validates Pydantic data models, field validation, and type conversions
@@ -144,11 +175,18 @@ The codebase uses a comprehensive multi-layered testing approach:
 #### Test Fixtures (`conftest.py`):
 - **`test_settings`**: Creates test-specific AppSettings with temp database
 - **`temp_db_path`**: Provides temporary database file path
-- **`test_db`**: SQLite connection with schema initialization
+- **`test_db`**: SQLite connection with schema initialization (for direct DB tests)
+- **`initialized_server`**: Full server initialization with database (for integration tests)
+- **`async_db_initialized`**: Async database manager with proper lifecycle management
 - **`mock_context`**: Mock FastMCP Context for unit tests
 - **`sample_image_data`**: Base64 encoded test PNG image
 - **`multiple_context_entries`**: Pre-populated database entries for testing
 - **`mock_server_dependencies`**: Patches server settings for isolated testing
+
+**Fixture Selection Guide**:
+- Direct SQLite testing → use `test_db`
+- Server tool testing (mocked) → use `mock_server_dependencies`
+- Full integration testing → use `initialized_server` or `async_db_initialized`
 
 ### Key Implementation Details
 
@@ -190,6 +228,14 @@ The project uses `uv` as the package manager with `tool.uv.package = true` in py
 - **Entry Points**: Defined in `[project.scripts]` - both `mcp-context-server` and `mcp-context` aliases
 - **Dependencies**: Minimal core dependencies (fastmcp, pydantic, python-dotenv)
 - **Python Version**: Requires Python 3.12+ for modern type hints and StrEnum
+
+## Release Process
+
+The project uses [Release Please](https://github.com/googleapis/release-please) for automated releases:
+- Conventional commits are automatically parsed for CHANGELOG generation
+- Version bumping is automated based on commit types
+- PyPI publishing is handled by GitHub Actions
+- To trigger a release, merge commits following [Conventional Commits](https://www.conventionalcommits.org/)
 
 ## Environment Variables
 
