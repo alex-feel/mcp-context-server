@@ -7,7 +7,7 @@
     "url": "https://github.com/alex-feel/mcp-context-server",
     "source": "github"
   },
-  "version": "0.0.0",
+  "version": "0.1.0",
   "packages": [
     {
       "registryType": "pypi",
