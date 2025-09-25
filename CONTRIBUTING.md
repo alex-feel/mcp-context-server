@@ -62,6 +62,94 @@ uv run pytest -m "not integration"
 uv run pre-commit run --all-files
 ```
 
+## Commit Conventions
+
+We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification for all commit messages. This enables automated versioning and changelog generation.
+
+### Commit Types
+
+#### `feat`: New Features
+Introduces new functionality or capabilities to the MCP Context Server.
+
+Examples:
+- `feat: add batch context retrieval endpoint`
+- `feat: implement context search by date range`
+- `feat: support WebP image format in multimodal storage`
+
+#### `fix`: Bug Fixes
+Fixes issues or bugs in the existing codebase.
+
+Examples:
+- `fix: resolve database lock on concurrent writes`
+- `fix: handle invalid base64 image data gracefully`
+- `fix: prevent memory leak in connection pool`
+
+#### `chore`: Maintenance Tasks
+Updates dependencies, refactors code, or performs housekeeping tasks.
+
+Examples:
+- `chore: update FastMCP to version 2.13`
+- `chore: reorganize repository module structure`
+- `chore: clean up unused test fixtures`
+
+#### `docs`: Documentation
+Improves or updates documentation, including README, API docs, or code comments.
+
+Examples:
+- `docs: add examples for multimodal context storage`
+- `docs: update MCP client configuration guide`
+- `docs: clarify thread-based context scoping in architecture`
+
+#### `ci`: CI/CD Changes
+Modifies continuous integration, deployment pipelines, or automation workflows.
+
+Examples:
+- `ci: add automated PyPI release workflow`
+- `ci: configure pre-commit hooks for type checking`
+- `ci: enable coverage reporting in GitHub Actions`
+
+#### `test`: Testing
+Adds or modifies tests, including unit, integration, or end-to-end tests.
+
+Examples:
+- `test: add integration tests for thread isolation`
+- `test: implement concurrent write test scenarios`
+- `test: validate multimodal context deduplication`
+
+### Version Bump Rules
+
+The commit type determines how the version number is incremented:
+
+- **`feat:`** → Minor version bump (`0.x.0`)
+- **`fix:`** → Patch version bump (`0.0.x`)
+- **`feat!`**, **`fix!`**, or **`BREAKING CHANGE`** → Major version bump (`x.0.0`)
+
+### Commit Message Format
+
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+**Examples:**
+
+```
+feat: add support for compressed image storage
+
+Implements automatic image compression for attachments larger than 1MB, reducing database size by up to 70% while maintaining visual quality.
+
+Closes #42
+```
+
+```
+fix: resolve race condition in repository initialization
+
+The database connection manager now uses a lock to prevent concurrent initialization attempts during high load.
+```
+
 ## Architecture Overview
 
 ### MCP Protocol Integration
