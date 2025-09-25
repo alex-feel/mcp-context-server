@@ -1,0 +1,99 @@
+name: Lint and Validate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  pre-commit:
+    name: Run Pre-Commit Checks
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit hooks
+        run: |
+          pre-commit run --all-files --show-diff-on-failure
+
+  mcp:
+    name: MCP Checks
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+    runs-on: ubuntu-latest
+    env:
+      SERVER_NAME: io.github.alex-feel/mcp-context-server
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Verify MCP marker in README
+        run: |
+          set -euo pipefail
+          # Accept either plain line or HTML comment
+          if grep -Eq "(^|<!--[[:space:]]*)mcp-name:[[:space:]]*${SERVER_NAME}([[:space:]]*-->|$)" README.md; then
+            echo 'OK: README contains MCP marker'
+          else
+            echo "README.md must contain 'mcp-name: ${SERVER_NAME}' line or HTML comment" >&2
+            exit 1
+          fi
+
+      - name: Validate server.json presence and JSON syntax
+        run: |
+          python - <<'PY'
+          # Validate that server.json exists and is valid JSON
+          import json, sys
+          from pathlib import Path
+          p = Path('server.json')
+          if not p.exists():
+             print('server.json not found', file=sys.stderr)
+             sys.exit(1)
+          with p.open('r', encoding='utf-8') as f:
+             json.load(f)
+          print('OK: server.json exists and is valid JSON')
+          PY
+
+  security:
+    name: Security Scan
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run Trivy security scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'

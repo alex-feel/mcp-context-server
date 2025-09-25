@@ -1,0 +1,59 @@
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.13.1
+  hooks:
+    - id: ruff-check
+      name: Ruff (lint + autofix)
+      description: Fast Python linter (Flake8, isort, quotes, etc.) with --fix enabled
+      args: [--fix, .]
+      pass_filenames: false
+      always_run: true
+
+- repo: local
+  hooks:
+    - id: mypy
+      name: Mypy (uv)
+      language: system
+      entry: uv
+      args: ['run', '--frozen', '--group', 'dev', '--', 'mypy', '--config-file=pyproject.toml']
+      pass_filenames: false
+      always_run: true
+      types_or: [python, pyi]
+
+- repo: local
+  hooks:
+    - id: pyright
+      name: Pyright (uv)
+      language: system
+      entry: uv
+      args: ['run', '--frozen', '--group', 'dev', '--', 'pyright']
+      pass_filenames: false
+      always_run: true
+
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+    - id: end-of-file-fixer
+      name: End-of-file fixer (non-Python)
+      description: Ensures every *non-Python* file is empty or ends with a single newline
+      exclude: ^.*\.(json|pyi?|py)$
+
+    - id: trailing-whitespace
+      name: Trailing-whitespace (non-Python)
+      description: Trims trailing whitespace in non-Python text files
+      exclude: ^.*\.(pyi?|py)$
+
+    - id: check-shebang-scripts-are-executable
+      name: Check shebang scripts
+      description: Check that text files with a shebang are executable
+
+- repo: https://github.com/astral-sh/uv-pre-commit
+  rev: 0.8.19
+  hooks:
+    - id: uv-lock
+      name: Make sure uv.lock file is up to date
+
+- repo: https://github.com/commitizen-tools/commitizen
+  rev: v4.9.1
+  hooks:
+    - id: commitizen
