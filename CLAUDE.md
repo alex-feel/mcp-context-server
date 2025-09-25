@@ -15,8 +15,9 @@ uv run mcp-context-server      # Full name entry point
 uv run mcp-context             # Short alias
 uv run python -m app.server    # As Python module
 
-# Run from anywhere with uvx (after installation)
-uvx --from . mcp-context-server
+# Run from anywhere with uvx
+uvx mcp-context-server           # From PyPI (published version)
+uvx --from . mcp-context-server  # From local directory
 
 # Test server starts correctly
 uv run python -m app.server

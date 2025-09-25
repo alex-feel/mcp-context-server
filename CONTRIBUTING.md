@@ -25,6 +25,9 @@ uv run python run_integration_test.py # Integration tests
 # 3. Test server locally
 uv run python -m app.server           # Should start without errors
 # Press Ctrl+C to stop
+
+# 4. Test published version (optional)
+uvx mcp-context-server                # Run from PyPI without cloning
 ```
 
 ### Making Changes
