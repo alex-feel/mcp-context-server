@@ -7,7 +7,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 
 ## Key Features
 
-- **Multimodal Context Storage**: Store and retrieve both text and images (up to 10MB per image, 100MB total)
+- **Multimodal Context Storage**: Store and retrieve both text and images
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
 - **High Performance**: SQLite with WAL mode, strategic indexing, and async operations
@@ -69,26 +69,6 @@ claude
 /mcp
 ```
 
-## Troubleshooting
-
-### Common Issues
-
-#### Server Not Starting
-- **Verify `uv` installation**: Ensure `uv` is installed and in PATH
-- **Network connectivity**: Check access to GitHub for package installation
-- **Check configuration**: Verify the server configuration is correct
-
-#### Server Not Listed
-- Check MCP tools with `/mcp` command in Claude Code
-- Verify the configuration was saved correctly
-- Restart Claude Code after configuration changes
-
-### Common Errors
-
-- **"Server not responding"**: Check if `uvx` can access GitHub
-- **"Command not found"**: Ensure `uv` is installed and in PATH
-- **Configuration issues**: Check your `.mcp.json` file or re-run the CLI command
-
 ## Environment Configuration
 
 ### Environment Variables
@@ -133,7 +113,7 @@ Additional environment variables are available for advanced server tuning, inclu
 - Circuit breaker thresholds
 - Operation timeouts
 
-For a complete list of all configuration options, see `app/settings.py`.
+For a complete list of all configuration options, see [app/settings.py](app/settings.py).
 
 ## API Reference
 
