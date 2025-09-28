@@ -13,7 +13,8 @@ from pydantic import field_validator
 class MetadataOperator(StrEnum):
     """Comprehensive metadata comparison operators.
 
-    Supports 15 different operators for flexible metadata filtering.
+    Supports 14 different operators for flexible metadata filtering.
+    Note: REGEX operator removed due to SQLite limitations.
     """
 
     EQ = 'eq'                       # Equals (default)
@@ -29,7 +30,6 @@ class MetadataOperator(StrEnum):
     CONTAINS = 'contains'           # String contains
     STARTS_WITH = 'starts_with'     # String starts with
     ENDS_WITH = 'ends_with'         # String ends with
-    REGEX = 'regex'                 # Regular expression match
     IS_NULL = 'is_null'             # Value is null
     IS_NOT_NULL = 'is_not_null'     # Value is not null
 
@@ -94,7 +94,7 @@ class MetadataFilter(BaseModel):
         # String operators require string values
         if (
             operator in (MetadataOperator.CONTAINS, MetadataOperator.STARTS_WITH,
-                        MetadataOperator.ENDS_WITH, MetadataOperator.REGEX)
+                        MetadataOperator.ENDS_WITH)
             and v is not None
             and not isinstance(v, str)
         ):

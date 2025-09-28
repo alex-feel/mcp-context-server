@@ -86,9 +86,6 @@ class MetadataQueryBuilder:
         elif operator == MetadataOperator.ENDS_WITH:
             if isinstance(value, str) or value is None:
                 self._add_ends_with_condition(json_path, value, case_sensitive)
-        elif operator == MetadataOperator.REGEX:
-            if isinstance(value, str) or value is None:
-                self._add_regex_condition(json_path, value, case_sensitive)
         elif operator == MetadataOperator.IS_NULL:
             self._add_is_null_condition(json_path)
         elif operator == MetadataOperator.IS_NOT_NULL:
@@ -257,7 +254,8 @@ class MetadataQueryBuilder:
             return
 
         if case_sensitive:
-            self.conditions.append(f"json_extract(metadata, '{json_path}') LIKE '%' || ? || '%'")
+            # Use INSTR for case-sensitive contains (LIKE is case-insensitive by default in SQLite)
+            self.conditions.append(f"INSTR(json_extract(metadata, '{json_path}'), ?) > 0")
             self.parameters.append(value)
         else:
             self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER(?) || '%'")
@@ -269,8 +267,11 @@ class MetadataQueryBuilder:
             return
 
         if case_sensitive:
-            self.conditions.append(f"json_extract(metadata, '{json_path}') LIKE ? || '%'")
-            self.parameters.append(value)
+            # Use GLOB for case-sensitive pattern matching (LIKE is case-insensitive in SQLite)
+            # GLOB uses * for wildcards, need to escape special GLOB characters in the value
+            escaped_value = self._escape_glob_pattern(value)
+            self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB ? || '*'")
+            self.parameters.append(escaped_value)
         else:
             self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE LOWER(?) || '%'")
             self.parameters.append(value)
@@ -281,31 +282,35 @@ class MetadataQueryBuilder:
             return
 
         if case_sensitive:
-            self.conditions.append(f"json_extract(metadata, '{json_path}') LIKE '%' || ?")
-            self.parameters.append(value)
+            # Use GLOB for case-sensitive pattern matching (LIKE is case-insensitive in SQLite)
+            # GLOB uses * for wildcards, need to escape special GLOB characters in the value
+            escaped_value = self._escape_glob_pattern(value)
+            self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB '*' || ?")
+            self.parameters.append(escaped_value)
         else:
             self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER(?)")
             self.parameters.append(value)
 
     def _add_regex_condition(self, json_path: str, pattern: str | None, case_sensitive: bool) -> None:
-        """Add a regex match condition using SQLite's REGEXP operator.
+        """Add a regex match condition (not supported).
 
-        Note: Requires SQLite to be compiled with REGEXP support or a custom function.
+        Args:
+            json_path: JSON path to metadata field (unused)
+            pattern: Regex pattern (unused)
+            case_sensitive: Whether to match case-sensitively (unused)
+
+        Raises:
+            ValueError: Always raised as REGEX is not supported in SQLite
         """
-        if pattern is None:
-            return
+        # Use parameters to avoid linting warnings
+        _ = (json_path, pattern, case_sensitive)
 
-        # SQLite doesn't have built-in REGEXP by default, but we can use GLOB as fallback
-        # or assume a REGEXP extension is available
-        if case_sensitive:
-            # Try to use REGEXP if available
-            self.conditions.append(f"json_extract(metadata, '{json_path}') REGEXP ?")
-            self.parameters.append(pattern)
-        else:
-            # Case-insensitive regex is more complex in SQLite
-            # Fallback to LIKE for basic patterns or use REGEXP with (?i) flag
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) REGEXP LOWER(?)")
-            self.parameters.append(pattern)
+        # SQLite doesn't have built-in REGEXP function
+        # Raise a clear error instead of generating SQL that will fail
+        raise ValueError(
+            'REGEX operator is not supported in the current SQLite implementation. '
+            'Please use CONTAINS, STARTS_WITH, or ENDS_WITH operators instead.',
+        )
 
     def _add_is_null_condition(self, json_path: str) -> None:
         """Add a condition to check if value is JSON null."""
@@ -315,3 +320,23 @@ class MetadataQueryBuilder:
     def _add_is_not_null_condition(self, json_path: str) -> None:
         """Add a condition to check if value is not JSON null."""
         self.conditions.append(f"json_type(metadata, '{json_path}') != 'null'")
+
+    @staticmethod
+    def _escape_glob_pattern(value: str) -> str:
+        """Escape special characters in GLOB patterns.
+
+        GLOB special characters are: * ? [ ]
+        We need to escape them with backslash.
+
+        Args:
+            value: String value to escape
+
+        Returns:
+            Escaped string safe for GLOB patterns
+        """
+        # Escape special GLOB characters
+        escaped = value.replace('\\', '\\\\')
+        escaped = escaped.replace('*', '\\*')
+        escaped = escaped.replace('?', '\\?')
+        escaped = escaped.replace('[', '\\[')
+        return escaped.replace(']', '\\]')
