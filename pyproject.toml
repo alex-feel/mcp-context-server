@@ -213,6 +213,7 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow tests (deselect with '-m \"not slow\"')",
+    "performance: marks tests as performance tests",
 ]
 
 [tool.coverage.run]

@@ -168,6 +168,9 @@ class MCPServerIntegrationTest:
                         return {'success': True, 'results': content['result']}
                     if isinstance(content['result'], dict):
                         return content['result']
+                # Special handling for search_context - it returns entries and stats
+                if 'entries' in content and 'stats' in content:
+                    return {'success': True, 'results': content['entries'], 'stats': content['stats']}
                 # Special handling for list_threads - it returns threads directly
                 if 'threads' in content:
                     return {'success': True, 'threads': content['threads'], 'total_threads': content.get('total_threads', 0)}

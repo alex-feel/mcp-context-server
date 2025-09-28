@@ -58,6 +58,15 @@ class TestDatabaseInitialization:
                 'idx_tags_tag',
                 'idx_thread_id',
                 'idx_thread_source',
+                # Metadata filtering indexes
+                'idx_metadata_status',
+                'idx_metadata_priority',
+                'idx_metadata_agent_type',
+                'idx_metadata_task_type',
+                'idx_thread_metadata_status',
+                'idx_thread_metadata_priority',
+                'idx_metadata_complete',
+                'idx_metadata_error',
             }
             assert set(indexes) == expected_indexes
 

@@ -206,7 +206,7 @@ class TestSearchContextParameterHandling:
 
         with patch('app.server._ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
-            mock_repos.context.search_contexts = AsyncMock(return_value=[])
+            mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
             mock_repos.images.get_images_for_context = AsyncMock(return_value=[])
             mock_ensure_repos.return_value = mock_repos
@@ -217,7 +217,10 @@ class TestSearchContextParameterHandling:
                 tags='["tag1", "tag2"]',  # JSON string
             )
 
-            assert isinstance(result, list)
+            assert isinstance(result, dict)
+            assert 'entries' in result
+            assert 'stats' in result
+            assert result['entries'] == []
 
     @pytest.mark.asyncio
     async def test_search_context_with_native_tags(self):
@@ -226,7 +229,7 @@ class TestSearchContextParameterHandling:
 
         with patch('app.server._ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
-            mock_repos.context.search_contexts = AsyncMock(return_value=[])
+            mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
             mock_repos.images.get_images_for_context = AsyncMock(return_value=[])
             mock_ensure_repos.return_value = mock_repos
@@ -237,7 +240,10 @@ class TestSearchContextParameterHandling:
                 tags=['tag1', 'tag2'],  # Native list
             )
 
-            assert isinstance(result, list)
+            assert isinstance(result, dict)
+            assert 'entries' in result
+            assert 'stats' in result
+            assert result['entries'] == []
 
 
 class TestGetContextByIdsParameterHandling:
@@ -261,6 +267,7 @@ class TestGetContextByIdsParameterHandling:
             )
 
             assert isinstance(result, list)
+            assert result == []
 
     @pytest.mark.asyncio
     async def test_get_context_by_ids_with_native_list(self):
@@ -280,6 +287,7 @@ class TestGetContextByIdsParameterHandling:
             )
 
             assert isinstance(result, list)
+            assert result == []
 
 
 class TestDeleteContextParameterHandling:

@@ -105,23 +105,25 @@ Key points:
 
         # Verify the complete conversation
         conversation = await search_context(thread_id=thread_id)
-        assert len(conversation) == 4
+        assert isinstance(conversation, dict)
+        assert len(conversation['entries']) == 4
 
         # Check conversation order (newest first) - compare actual IDs not list indices
-        conversation_ids = [c['id'] for c in conversation]
+        conversation_ids = [c['id'] for c in conversation['entries']]
         assert agent_review['context_id'] in conversation_ids
         assert user_msg['context_id'] in conversation_ids
         # Verify newest is first (agent_review was stored last)
-        assert conversation[0]['id'] == agent_review['context_id']
+        assert conversation['entries'][0]['id'] == agent_review['context_id']
 
         # Verify mixed content types
-        content_types = [c['content_type'] for c in conversation]
+        content_types = [c['content_type'] for c in conversation['entries']]
         assert 'text' in content_types
         assert 'multimodal' in content_types
 
         # Search for code review entries
         reviews = await search_context(tags=['code-review'])
-        assert len(reviews) == 2
+        assert isinstance(reviews, dict)
+        assert len(reviews['entries']) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -188,10 +190,11 @@ Key points:
 
         # Analyze agent contributions
         agent_entries = await search_context(thread_id=thread_id, source='agent')
-        assert len(agent_entries) == 4
+        assert isinstance(agent_entries, dict)
+        assert len(agent_entries['entries']) == 4
 
         # Verify different agent types participated
-        agent_types = {e['metadata']['agent_type'] for e in agent_entries}
+        agent_types = {e['metadata']['agent_type'] for e in agent_entries['entries']}
         assert agent_types == {'planner', 'coder', 'tester', 'reviewer'}
 
     @pytest.mark.asyncio
@@ -240,7 +243,8 @@ Key points:
 
         # Search across documentation
         docs = await search_context(tags=['documentation'])
-        assert len(docs) >= 1
+        assert isinstance(docs, dict)
+        assert len(docs['entries']) >= 1
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -277,7 +281,8 @@ class TestConcurrentOperations:
 
         # Verify all entries exist
         all_entries = await search_context(thread_id=thread_id)
-        assert len(all_entries) == 20
+        assert isinstance(all_entries, dict)
+        assert len(all_entries['entries']) == 20
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -413,7 +418,8 @@ class TestDataIntegrity:
 
         # Verify complete deletion
         remaining = await search_context(thread_id=thread_id)
-        assert remaining == []
+        assert isinstance(remaining, dict)
+        assert remaining['entries'] == []
 
         # Verify stats reflect deletion
         await get_statistics()
@@ -452,14 +458,14 @@ class TestPerformanceAndScaling:
         page2 = await search_context(thread_id=thread_id, limit=20, offset=20)
         page3 = await search_context(thread_id=thread_id, limit=20, offset=40)
 
-        assert len(page1) == 20
-        assert len(page2) == 20
-        assert len(page3) == 20
+        assert len(page1['entries']) == 20
+        assert len(page2['entries']) == 20
+        assert len(page3['entries']) == 20
 
         # Verify no overlap
-        ids1 = {e['id'] for e in page1}
-        ids2 = {e['id'] for e in page2}
-        ids3 = {e['id'] for e in page3}
+        ids1 = {e['id'] for e in page1['entries']}
+        ids2 = {e['id'] for e in page2['entries']}
+        ids3 = {e['id'] for e in page3['entries']}
 
         assert ids1.isdisjoint(ids2)
         assert ids2.isdisjoint(ids3)
@@ -491,7 +497,7 @@ class TestPerformanceAndScaling:
 
         # Search across all threads
         all_entries = await search_context(tags=['multi-thread-test'], limit=500)
-        assert len(all_entries) >= 100
+        assert len(all_entries['entries']) >= 100
 
         # Get statistics
         stats = await get_statistics()
@@ -524,7 +530,7 @@ class TestErrorRecovery:
 
         # Verify only valid entries were stored
         all_entries = await search_context()
-        thread_ids = {e['thread_id'] for e in all_entries}
+        thread_ids = {e['thread_id'] for e in all_entries['entries']}
         assert 'valid1' in thread_ids
         assert 'valid2' not in thread_ids  # Should not exist
         assert 'valid3' in thread_ids
@@ -551,8 +557,8 @@ class TestErrorRecovery:
 
         # Verify data integrity
         entries = await search_context(thread_id='test')
-        assert len(entries) == 1
-        assert entries[0]['text_content'] == 'This should work'
+        assert len(entries['entries']) == 1
+        assert entries['entries'][0]['text_content'] == 'This should work'
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -596,7 +602,7 @@ class TestComplexQueries:
 
         # Complex query 2: All Python entries (ML or backend)
         python_results = await search_context(tags=['python'])
-        assert len(python_results) >= 12  # At least 2 python tag sets * 3 threads * 2 sources
+        assert len(python_results['entries']) >= 12  # At least 2 python tag sets * 3 threads * 2 sources
 
         # Complex query 3: User entries in project_b with pagination
         page1 = await search_context(
@@ -611,9 +617,9 @@ class TestComplexQueries:
             limit=2,
             offset=2,
         )
-        assert len(page1) == 2
-        assert len(page2) == 2
-        assert page1[0]['id'] != page2[0]['id']
+        assert len(page1['entries']) == 2
+        assert len(page2['entries']) == 2
+        assert page1['entries'][0]['id'] != page2['entries'][0]['id']
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -687,12 +693,12 @@ class TestMaintenanceOperations:
         python_results = await search_context(tags=['python'])
         testing_results = await search_context(tags=['testing'])
 
-        assert len(python_results) == 1
-        assert len(testing_results) == 1
+        assert len(python_results['entries']) == 1
+        assert len(testing_results['entries']) == 1
 
         # Check that tags are normalized in results
-        assert 'python' in python_results[0]['tags']
-        assert 'testing' in testing_results[0]['tags']
+        assert 'python' in python_results['entries'][0]['tags']
+        assert 'testing' in testing_results['entries'][0]['tags']
 
         # Get unique tags from stats
         stats = await get_statistics()
