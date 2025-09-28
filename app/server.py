@@ -296,7 +296,15 @@ async def store_context(
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
     text: Annotated[str, Field(description='Text content to store', min_length=1)],
     images: Annotated[list[dict[str, str]] | None, Field(description='List of base64 encoded images with mime_type')] = None,
-    metadata: Annotated[MetadataDict | None, Field(description='Additional structured data')] = None,
+    metadata: Annotated[
+        MetadataDict | None,
+        Field(
+            description='Additional structured data. For optimal performance, consider using indexed field names: '
+            'status (state info), priority (numeric, range queries), agent_type (agent category), '
+            'task_type (task category), complete (boolean flag), error (error state). '
+            'These are indexed for faster filtering but not required.',
+        ),
+    ] = None,
     tags: Annotated[list[str] | None, Field(description='List of tags (will be normalized and stored separately)')] = None,
     ctx: Context | None = None,
 ) -> StoreContextSuccessDict | StoreContextErrorDict:
