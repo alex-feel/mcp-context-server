@@ -353,6 +353,119 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_metadata_filtering(self) -> bool:
+        """Test advanced metadata filtering functionality.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filtering'
+        print('Testing metadata filtering...')
+
+        # Store test context entries with various metadata
+        test_entries = [
+            {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'source': 'agent',
+                'text': 'High priority task',
+                'metadata': {'status': 'active', 'priority': 10, 'agent_type': 'analyzer'},
+            },
+            {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'source': 'agent',
+                'text': 'Medium priority task',
+                'metadata': {'status': 'active', 'priority': 5, 'agent_type': 'coordinator'},
+            },
+            {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'source': 'agent',
+                'text': 'Low priority completed',
+                'metadata': {'status': 'completed', 'priority': 1, 'complete': True},
+            },
+            {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'source': 'agent',
+                'text': 'Failed task',
+                'metadata': {'status': 'failed', 'error': 'Connection timeout', 'priority': 8},
+            },
+        ]
+
+        try:
+            # Store all test entries
+            assert self.client is not None  # Type guard for Pyright
+            for entry in test_entries:
+                result = await self.client.call_tool('store_context', entry)
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    print(f'Failed to store test entry: {result_data}')
+                    self.test_results.append((test_name, False, 'Failed to store test entries'))
+                    return False
+
+            # Test 1: Simple metadata filtering
+            result = await self.client.call_tool('search_context', {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'metadata': {'status': 'active'},
+            })
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 2:
+                print(f'Simple filter failed: expected 2, got {len(result_data.get("results", []))}')
+                self.test_results.append((test_name, False, 'Simple metadata filter failed'))
+                return False
+
+            # Test 2: Advanced metadata filtering with gte operator
+            result = await self.client.call_tool('search_context', {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 5}],
+            })
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 3:
+                print(f'Advanced gte filter failed: expected 3, got {len(result_data.get("results", []))}')
+                self.test_results.append((test_name, False, 'Advanced gte filter failed'))
+                return False
+
+            # Test 3: Combined metadata filters
+            result = await self.client.call_tool('search_context', {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'metadata': {'status': 'active'},
+                'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 7}],
+            })
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 1:
+                print(f'Combined filter failed: expected 1, got {len(result_data.get("results", []))}')
+                self.test_results.append((test_name, False, 'Combined filter failed'))
+                return False
+
+            # Test 4: Exists operator
+            result = await self.client.call_tool('search_context', {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'metadata_filters': [{'key': 'error', 'operator': 'exists', 'value': None}],
+            })
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 1:
+                print(f'Exists filter failed: expected 1, got {len(result_data.get("results", []))}')
+                self.test_results.append((test_name, False, 'Exists operator filter failed'))
+                return False
+
+            # Test 5: In operator
+            result = await self.client.call_tool('search_context', {
+                'thread_id': f'{self.test_thread_id}_metadata',
+                'metadata_filters': [{'key': 'agent_type', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
+            })
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 2:
+                print(f'In operator filter failed: expected 2, got {len(result_data.get("results", []))}')
+                self.test_results.append((test_name, False, 'In operator filter failed'))
+                return False
+
+            print('[OK] All metadata filtering tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_get_context_by_ids(self) -> bool:
         """Test retrieving specific contexts by IDs.
 
@@ -746,6 +859,7 @@ class MCPServerIntegrationTest:
         tests = [
             ('Store Context', self.test_store_context),
             ('Search Context', self.test_search_context),
+            ('Metadata Filtering', self.test_metadata_filtering),
             ('Get Context by IDs', self.test_get_context_by_ids),
             ('Delete Context', self.test_delete_context),
             ('List Threads', self.test_list_threads),
