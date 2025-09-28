@@ -368,25 +368,25 @@ class MCPServerIntegrationTest:
                 'thread_id': f'{self.test_thread_id}_metadata',
                 'source': 'agent',
                 'text': 'High priority task',
-                'metadata': {'status': 'active', 'priority': 10, 'agent_type': 'analyzer'},
+                'metadata': {'status': 'active', 'priority': 10, 'agent_name': 'analyzer'},
             },
             {
                 'thread_id': f'{self.test_thread_id}_metadata',
                 'source': 'agent',
                 'text': 'Medium priority task',
-                'metadata': {'status': 'active', 'priority': 5, 'agent_type': 'coordinator'},
+                'metadata': {'status': 'active', 'priority': 5, 'agent_name': 'coordinator'},
             },
             {
                 'thread_id': f'{self.test_thread_id}_metadata',
                 'source': 'agent',
                 'text': 'Low priority completed',
-                'metadata': {'status': 'completed', 'priority': 1, 'complete': True},
+                'metadata': {'status': 'completed', 'priority': 1, 'completed': True},
             },
             {
                 'thread_id': f'{self.test_thread_id}_metadata',
                 'source': 'agent',
                 'text': 'Failed task',
-                'metadata': {'status': 'failed', 'error': 'Connection timeout', 'priority': 8},
+                'metadata': {'status': 'failed', 'priority': 8},
             },
         ]
 
@@ -438,7 +438,7 @@ class MCPServerIntegrationTest:
             # Test 4: Exists operator
             result = await self.client.call_tool('search_context', {
                 'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'error', 'operator': 'exists', 'value': None}],
+                'metadata_filters': [{'key': 'completed', 'operator': 'exists', 'value': None}],
             })
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 1:
@@ -449,7 +449,7 @@ class MCPServerIntegrationTest:
             # Test 5: In operator
             result = await self.client.call_tool('search_context', {
                 'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'agent_type', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
+                'metadata_filters': [{'key': 'agent_name', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
             })
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 2:

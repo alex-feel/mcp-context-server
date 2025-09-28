@@ -51,15 +51,15 @@ CREATE INDEX IF NOT EXISTS idx_metadata_priority
 ON context_entries(json_extract(metadata, '$.priority'))
 WHERE json_extract(metadata, '$.priority') IS NOT NULL;
 
--- Agent type filtering (categorical data)
-CREATE INDEX IF NOT EXISTS idx_metadata_agent_type
-ON context_entries(json_extract(metadata, '$.agent_type'))
-WHERE json_extract(metadata, '$.agent_type') IS NOT NULL;
+-- Agent name filtering (identify specific agents)
+CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
+ON context_entries(json_extract(metadata, '$.agent_name'))
+WHERE json_extract(metadata, '$.agent_name') IS NOT NULL;
 
--- Task type filtering
-CREATE INDEX IF NOT EXISTS idx_metadata_task_type
-ON context_entries(json_extract(metadata, '$.task_type'))
-WHERE json_extract(metadata, '$.task_type') IS NOT NULL;
+-- Task name filtering (search by task title/name)
+CREATE INDEX IF NOT EXISTS idx_metadata_task_name
+ON context_entries(json_extract(metadata, '$.task_name'))
+WHERE json_extract(metadata, '$.task_name') IS NOT NULL;
 
 -- Composite indexes for common filter combinations
 CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
@@ -68,11 +68,7 @@ ON context_entries(thread_id, json_extract(metadata, '$.status'));
 CREATE INDEX IF NOT EXISTS idx_thread_metadata_priority
 ON context_entries(thread_id, json_extract(metadata, '$.priority'));
 
--- Boolean flag indexes (for flags like 'complete', 'error', etc.)
-CREATE INDEX IF NOT EXISTS idx_metadata_complete
-ON context_entries(json_extract(metadata, '$.complete'))
-WHERE json_extract(metadata, '$.complete') IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_metadata_error
-ON context_entries(json_extract(metadata, '$.error'))
-WHERE json_extract(metadata, '$.error') IS NOT NULL;
+-- Boolean flag indexes
+CREATE INDEX IF NOT EXISTS idx_metadata_completed
+ON context_entries(json_extract(metadata, '$.completed'))
+WHERE json_extract(metadata, '$.completed') IS NOT NULL;

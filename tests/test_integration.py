@@ -150,7 +150,7 @@ Key points:
 3. Add JWT authentication
 4. Create middleware
 5. Write tests''',
-            metadata={'agent_type': 'planner', 'subtasks': 5},
+            metadata={'agent_name': 'planner', 'subtasks': 5},
             tags=['planning', 'architecture'],
         )
 
@@ -159,7 +159,7 @@ Key points:
             thread_id=thread_id,
             source='agent',
             text='Implemented user model and authentication endpoints',
-            metadata={'agent_type': 'coder', 'files_modified': 3},
+            metadata={'agent_name': 'coder', 'files_modified': 3},
             tags=['implementation', 'backend'],
         )
 
@@ -168,7 +168,7 @@ Key points:
             thread_id=thread_id,
             source='agent',
             text='Added unit tests for authentication flow',
-            metadata={'agent_type': 'tester', 'test_count': 15, 'coverage': 95},
+            metadata={'agent_name': 'tester', 'test_count': 15, 'coverage': 95},
             tags=['testing', 'quality'],
         )
 
@@ -177,7 +177,7 @@ Key points:
             thread_id=thread_id,
             source='agent',
             text='Code review complete. Found 2 minor issues.',
-            metadata={'agent_type': 'reviewer', 'issues': 2},
+            metadata={'agent_name': 'reviewer', 'issues': 2},
             tags=['review', 'feedback'],
         )
 
@@ -193,9 +193,9 @@ Key points:
         assert isinstance(agent_entries, dict)
         assert len(agent_entries['entries']) == 4
 
-        # Verify different agent types participated
-        agent_types = {e['metadata']['agent_type'] for e in agent_entries['entries']}
-        assert agent_types == {'planner', 'coder', 'tester', 'reviewer'}
+        # Verify different agent names participated
+        agent_names = {e['metadata']['agent_name'] for e in agent_entries['entries']}
+        assert agent_names == {'planner', 'coder', 'tester', 'reviewer'}
 
     @pytest.mark.asyncio
     @pytest.mark.integration

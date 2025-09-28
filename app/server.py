@@ -300,9 +300,10 @@ async def store_context(
         MetadataDict | None,
         Field(
             description='Additional structured data. For optimal performance, consider using indexed field names: '
-            'status (state info), priority (numeric, range queries), agent_type (agent category), '
-            'task_type (task category), complete (boolean flag), error (error state). '
-            'These are indexed for faster filtering but not required.',
+            'status (state information), priority (numeric value for range queries), '
+            'agent_name (specific agent identifier), task_name (task title for string searches), '
+            'completed (boolean flag for completion state). '
+            'These fields are indexed for faster filtering but not required.',
         ),
     ] = None,
     tags: Annotated[list[str] | None, Field(description='List of tags (will be normalized and stored separately)')] = None,

@@ -262,25 +262,25 @@ class TestMetadataFilteringIntegration:
                 'thread_id': self.test_thread_id,
                 'source': 'agent',
                 'text': 'Task 1',
-                'metadata': {'status': 'active', 'priority': 5, 'agent_type': 'planner'},
+                'metadata': {'status': 'active', 'priority': 5, 'agent_name': 'planner'},
             },
             {
                 'thread_id': self.test_thread_id,
                 'source': 'agent',
                 'text': 'Task 2',
-                'metadata': {'status': 'pending', 'priority': 3, 'agent_type': 'executor'},
+                'metadata': {'status': 'pending', 'priority': 3, 'agent_name': 'executor'},
             },
             {
                 'thread_id': self.test_thread_id,
                 'source': 'user',
                 'text': 'Task 3',
-                'metadata': {'status': 'active', 'priority': 8, 'agent_type': 'reviewer'},
+                'metadata': {'status': 'active', 'priority': 8, 'agent_name': 'reviewer'},
             },
             {
                 'thread_id': self.test_thread_id,
                 'source': 'agent',
                 'text': 'Task 4',
-                'metadata': {'status': 'complete', 'priority': 1},
+                'metadata': {'status': 'completed', 'priority': 1},
             },
             {
                 'thread_id': self.test_thread_id,
@@ -375,14 +375,14 @@ class TestMetadataFilteringIntegration:
 
         result = await search_context.fn(
             thread_id=self.test_thread_id,
-            metadata_filters=[{'key': 'agent_type', 'operator': 'exists'}],
+            metadata_filters=[{'key': 'agent_name', 'operator': 'exists'}],
             ctx=None,
         )
 
         assert 'entries' in result
         assert len(result['entries']) == 3
         for entry in result['entries']:
-            assert 'agent_type' in entry['metadata']
+            assert 'agent_name' in entry['metadata']
 
     @pytest.mark.asyncio
     async def test_advanced_contains_operator(self) -> None:
@@ -393,7 +393,7 @@ class TestMetadataFilteringIntegration:
             thread_id=self.test_thread_id,
             metadata_filters=[
                 {
-                    'key': 'agent_type',
+                    'key': 'agent_name',
                     'operator': 'contains',
                     'value': 'plan',
                 },
@@ -403,7 +403,7 @@ class TestMetadataFilteringIntegration:
 
         assert 'entries' in result
         assert len(result['entries']) == 1
-        assert result['entries'][0]['metadata']['agent_type'] == 'planner'
+        assert result['entries'][0]['metadata']['agent_name'] == 'planner'
 
     @pytest.mark.asyncio
     async def test_combined_filters(self) -> None:
@@ -502,7 +502,7 @@ class TestMetadataFilteringIntegration:
             metadata={'status': 'active'},
             metadata_filters=[
                 {'key': 'priority', 'operator': 'gt', 'value': 3},
-                {'key': 'agent_type', 'operator': 'exists'},
+                {'key': 'agent_name', 'operator': 'exists'},
             ],
             ctx=None,
         )
@@ -537,10 +537,10 @@ async def test_all_operators(
     """Parameterized test for all metadata operators."""
     # Create test data
     test_data = [
-        {'status': 'active', 'priority': 5, 'agent_type': 'planner'},
-        {'status': 'pending', 'priority': 3, 'agent_type': 'executor'},
-        {'status': 'active', 'priority': 8, 'agent_type': 'reviewer'},
-        {'status': 'complete', 'priority': 1},
+        {'status': 'active', 'priority': 5, 'agent_name': 'planner'},
+        {'status': 'pending', 'priority': 3, 'agent_name': 'executor'},
+        {'status': 'active', 'priority': 8, 'agent_name': 'reviewer'},
+        {'status': 'completed', 'priority': 1},
         {'status': 'error', 'priority': 10},
     ]
 
@@ -555,7 +555,7 @@ async def test_all_operators(
 
     # Determine which field to filter on
     if operator in (MetadataOperator.EXISTS, MetadataOperator.NOT_EXISTS):
-        key = 'agent_type'
+        key = 'agent_name'
     elif operator in (MetadataOperator.GT, MetadataOperator.GTE, MetadataOperator.LT, MetadataOperator.LTE):
         key = 'priority'
     else:
