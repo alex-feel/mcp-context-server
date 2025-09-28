@@ -44,6 +44,10 @@ uv run pytest -m integration
 # Skip slow/integration tests for quick feedback
 uv run pytest -m "not integration"
 
+# Run metadata filtering tests
+uv run pytest tests/test_metadata_filtering.py -v
+uv run pytest tests/test_metadata_error_handling.py -v
+
 # Run real server integration test
 uv run python run_integration_test.py
 ```
@@ -87,7 +91,7 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
 
 2. **Repository Pattern** (`app/repositories/`):
    - **RepositoryContainer**: Dependency injection container managing all repository instances
-   - **ContextRepository**: Manages context entries (CRUD operations, search, deduplication)
+   - **ContextRepository**: Manages context entries (CRUD operations, search, deduplication, metadata filtering)
    - **TagRepository**: Handles tag normalization and many-to-many relationships
    - **ImageRepository**: Manages multimodal image attachments
    - **StatisticsRepository**: Provides thread statistics and database metrics
@@ -107,7 +111,14 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Base64 image encoding/decoding with configurable size limits
    - `ContextEntry`, `ImageAttachment`, `StoreContextRequest` as main models
 
-5. **Database Layer** (SQLite - `app/schema.sql`):
+5. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
+   - **MetadataFilter**: Advanced filter specification with 15 operators (eq, ne, gt, lt, contains, etc.)
+   - **QueryBuilder**: Dynamically constructs SQL queries with proper parameter binding
+   - Supports nested JSON path queries (e.g., "user.preferences.theme")
+   - Case-sensitive/insensitive string operations
+   - Safe SQL generation with injection prevention
+
+6. **Database Layer** (SQLite - `app/schema.sql`):
    - Thread-scoped context isolation with strategic indexing
    - Three tables: `context_entries`, `tags`, `image_attachments`
    - Normalized tags table for efficient querying (many-to-many)
@@ -120,8 +131,9 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
 The core concept is thread-based context scoping:
 - All agents working on the same task share a `thread_id`
 - Context entries are tagged with `source`: 'user' or 'agent'
-- Agents can filter context by thread, source, tags, or content type
+- Agents can filter context by thread, source, tags, content type, or metadata
 - No hierarchical threads - flat structure for simplicity
+- Metadata filtering supports 15 operators for complex queries
 
 **Example Multi-Agent Workflow**:
 ```
@@ -136,7 +148,7 @@ All agents share thread_id="analyze-q4-sales" and can retrieve each other's cont
 ### Database Schema
 
 Three main tables with strategic indexing:
-- `context_entries`: Main storage with thread_id and source indexes
+- `context_entries`: Main storage with thread_id and source indexes, JSON metadata field
 - `tags`: Normalized many-to-many relationship, lowercase storage
 - `image_attachments`: Binary BLOB storage with foreign key cascade
 
@@ -144,6 +156,7 @@ Performance optimizations:
 - WAL mode for better concurrency
 - Memory-mapped I/O (256MB)
 - Compound index on (thread_id, source) for common queries
+- Indexed metadata fields for optimal filtering: `status`, `priority`, `agent_name`, `task_name`, `completed`
 
 ### Testing Strategy
 
@@ -200,6 +213,7 @@ The codebase uses a comprehensive multi-layered testing approach:
    - `Annotated[type, Field(...)]` for parameter documentation
    - Returns must be serializable dicts/lists
    - `ctx: Context | None = None` parameter for FastMCP context (hidden from MCP clients)
+   - Metadata filters use list of `MetadataFilter` objects for complex queries
 
 3. **Async Context Management**: Server uses async context managers for lifecycle:
    - `@asynccontextmanager` for server startup/shutdown

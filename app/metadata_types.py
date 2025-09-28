@@ -13,7 +13,7 @@ from pydantic import field_validator
 class MetadataOperator(StrEnum):
     """Comprehensive metadata comparison operators.
 
-    Supports 14 different operators for flexible metadata filtering.
+    Supports 15 different operators for flexible metadata filtering.
     Note: REGEX operator removed due to SQLite limitations.
     """
 

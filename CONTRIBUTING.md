@@ -48,6 +48,10 @@ uv run pytest --cov=app --cov-report=html
 # Run specific test file
 uv run pytest tests/test_server.py
 
+# Run metadata filtering tests
+uv run pytest tests/test_metadata_filtering.py -v
+uv run pytest tests/test_metadata_error_handling.py -v
+
 # Run integration tests only
 uv run pytest -m integration
 
@@ -75,6 +79,7 @@ Examples:
 - `feat: add batch context retrieval endpoint`
 - `feat: implement context search by date range`
 - `feat: support WebP image format in multimodal storage`
+- `feat: add metadata filtering with 15 operators`
 
 #### `fix`: Bug Fixes
 Fixes issues or bugs in the existing codebase.
@@ -115,6 +120,7 @@ Examples:
 - `test: add integration tests for thread isolation`
 - `test: implement concurrent write test scenarios`
 - `test: validate multimodal context deduplication`
+- `test: add comprehensive metadata filtering tests`
 
 ### Version Bump Rules
 
@@ -166,11 +172,13 @@ This server implements the Model Context Protocol (MCP), an open standard for se
 The server uses a clean repository pattern to separate concerns:
 
 - **RepositoryContainer**: Dependency injection container for all repositories
-- **ContextRepository**: Manages context entries with deduplication
+- **ContextRepository**: Manages context entries with deduplication and metadata filtering
 - **TagRepository**: Handles tag normalization and relationships
 - **ImageRepository**: Manages multimodal attachments
 - **StatisticsRepository**: Provides metrics and thread statistics
 - **DatabaseConnectionManager**: Thread-safe connection pooling with retry logic
+- **MetadataQueryBuilder**: Secure SQL generation for metadata filtering with 15 operators
+- **MetadataFilter**: Type-safe filter specifications with validation
 
 All SQL operations are encapsulated in repository classes, keeping the server layer clean.
 
@@ -194,7 +202,12 @@ context_entries (main table)
 ├── source (user/agent, indexed)
 ├── content_type (text/multimodal)
 ├── text_content
-├── metadata (JSON)
+├── metadata (JSON, with functional indexes)
+│   ├── $.status (indexed)
+│   ├── $.priority (indexed)
+│   ├── $.agent_name (indexed)
+│   ├── $.task_name (indexed)
+│   └── $.completed (indexed)
 └── timestamps
 
 tags (normalized, many-to-many)
@@ -220,11 +233,44 @@ image_attachments (binary storage)
    - Agents can filter to see only user context or all context
    - No agent-specific IDs in source field (use metadata if needed)
 
-3. **Standardized Operations**
+3. **Flexible Metadata System**
+   - Metadata field accepts any JSON-serializable structure
+   - No hardcoded fields except source - maximum flexibility
+   - 15 powerful operators for filtering (eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, starts_with, ends_with, is_null, is_not_null)
+   - Use cases: task tracking, agent coordination, knowledge base, debugging, analytics
+   - Case-sensitive and case-insensitive string operations
+
+4. **Standardized Operations**
    - All operations are stateless and idempotent
    - Clear error messages for agent understanding
    - Consistent JSON response formats
    - Async-first design for non-blocking execution
+
+### Extending Metadata Functionality
+
+#### Adding New Metadata Operators
+
+To add a new metadata operator:
+
+1. Add the operator to `MetadataOperator` enum in `app/metadata_types.py`
+2. Implement the operator logic in `MetadataQueryBuilder` (`app/query_builder.py`)
+3. Add validation logic in `MetadataFilter.validate_value_for_operator()`
+4. Write tests in `tests/test_metadata_filtering.py`
+5. Update the documentation in README.md
+
+#### Adding Metadata Indexes
+
+When adding frequently-queried metadata fields:
+
+1. Add functional index in `app/schema.sql`:
+   ```sql
+   CREATE INDEX IF NOT EXISTS idx_metadata_fieldname ON context_entries(
+       json_extract(metadata, '$.fieldname')
+   ) WHERE metadata IS NOT NULL;
+   ```
+2. Update migration scripts if needed
+3. Document the indexed field in `store_context` tool documentation
+4. Test query performance with `explain_query=True`
 
 ### Performance Optimization
 
@@ -234,7 +280,11 @@ image_attachments (binary storage)
 - **Strategic Indexing**:
   - Primary: `thread_id`, `thread_source`, `created_at`
   - Secondary: `tags`, `image_context`
-- **Query Optimization**: Indexed fields filtered first
+  - Metadata functional indexes: `$.status`, `$.priority`, `$.agent_name`, `$.task_name`, `$.completed`
+- **Query Optimization**:
+  - Indexed fields filtered first
+  - Metadata queries use json_extract() with functional indexes
+  - Query builder pattern prevents SQL injection
 
 #### Resource Limits
 - **Individual Image**: 10MB maximum
