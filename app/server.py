@@ -515,6 +515,17 @@ async def search_context(
         # Always expect tuple from repository
         rows, stats = result
 
+        # Check for validation errors in stats
+        if 'error' in stats:
+            # Return the error response with validation details
+            error_response: dict[str, Any] = {
+                'entries': [],
+                'error': stats.get('error', 'Unknown error'),
+            }
+            if 'validation_errors' in stats:
+                error_response['validation_errors'] = stats['validation_errors']
+            return error_response
+
         entries: list[ContextEntryDict] = []
 
         for row in rows:

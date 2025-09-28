@@ -10,6 +10,8 @@ import logging
 import sqlite3
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.db_manager import DatabaseConnectionManager
 from app.repositories.base import BaseRepository
 
@@ -169,14 +171,36 @@ class ContextRepository(BaseRepository):
 
             # Advanced metadata filters
             if metadata_filters:
+                validation_errors: list[str] = []
                 for filter_dict in metadata_filters:
                     try:
                         # Convert dict to MetadataFilter
                         filter_spec = MetadataFilter(**filter_dict)
                         metadata_builder.add_advanced_filter(filter_spec)
+                    except ValidationError as e:
+                        # Collect validation errors to return to user
+                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                        validation_errors.append(error_msg)
+                    except ValueError as e:
+                        # Handle value errors (e.g., from field validators)
+                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                        validation_errors.append(error_msg)
                     except Exception as e:
-                        logger.warning(f'Invalid metadata filter: {filter_dict}, error: {e}')
-                        continue
+                        # Unexpected errors - still collect them
+                        error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
+                        validation_errors.append(error_msg)
+                        logger.error(f'Unexpected error processing metadata filter: {e}')
+
+                # If there were validation errors, return them immediately
+                if validation_errors:
+                    error_response = {
+                        'error': 'Metadata filter validation failed',
+                        'validation_errors': validation_errors,
+                        'execution_time_ms': 0.0,
+                        'filters_applied': 0,
+                        'rows_returned': 0,
+                    }
+                    return [], error_response
 
             # Add metadata conditions to query
             metadata_clause, metadata_params = metadata_builder.build_where_clause()
@@ -219,7 +243,19 @@ class ContextRepository(BaseRepository):
             if explain_query:
                 cursor.execute(f'EXPLAIN QUERY PLAN {query}', tuple(params))
                 plan_rows = cursor.fetchall()
-                stats['query_plan'] = '\n'.join([str(row) for row in plan_rows])
+                # Convert sqlite3.Row objects to readable format
+                plan_data: list[str] = []
+                for row in plan_rows:
+                    # Convert sqlite3.Row to dict to avoid <Row object> repr
+                    row_dict = dict(row)
+                    # SQLite EXPLAIN QUERY PLAN columns: id, parent, notused, detail
+                    id_val = row_dict.get('id', '?')
+                    parent_val = row_dict.get('parent', '?')
+                    notused_val = row_dict.get('notused', '?')
+                    detail_val = row_dict.get('detail', '?')
+                    formatted = f'id:{id_val} parent:{parent_val} notused:{notused_val} detail:{detail_val}'
+                    plan_data.append(formatted)
+                stats['query_plan'] = '\n'.join(plan_data)
 
             # Always return tuple with rows and statistics
             rows_list: list[sqlite3.Row] = list(rows)

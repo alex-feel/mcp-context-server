@@ -62,7 +62,7 @@ class MetadataFilter(BaseModel):
         # Allow alphanumeric, dots, underscores, and hyphens for JSON paths
         import re
 
-        if not re.match(r'^[a-zA-Z0-9_\-.]+$', v):
+        if not re.match(r'^[a-zA-Z0-9_.-]+$', v):
             raise ValueError(
                 f'Invalid metadata key: {v}. '
                 'Only alphanumeric characters, dots, underscores, and hyphens are allowed.',
