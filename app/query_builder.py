@@ -132,7 +132,7 @@ class MetadataQueryBuilder:
             return False
 
         # Only allow alphanumeric, dots, underscores, and hyphens
-        return bool(re.match(r'^[a-zA-Z0-9_\-\.]+$', key))
+        return bool(re.match(r'^[a-zA-Z0-9_\-.]+$', key))
 
     @staticmethod
     def _build_json_path(key: str) -> str:

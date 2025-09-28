@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated
-from typing import TypedDict
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -64,7 +62,7 @@ class MetadataFilter(BaseModel):
         # Allow alphanumeric, dots, underscores, and hyphens for JSON paths
         import re
 
-        if not re.match(r'^[a-zA-Z0-9_\-\.]+$', v):
+        if not re.match(r'^[a-zA-Z0-9_\-.]+$', v):
             raise ValueError(
                 f'Invalid metadata key: {v}. '
                 'Only alphanumeric characters, dots, underscores, and hyphens are allowed.',
@@ -103,24 +101,3 @@ class MetadataFilter(BaseModel):
             raise ValueError(f'Operator {operator} requires a string value')
 
         return v
-
-
-class MetadataFilterSet(BaseModel):
-    """Collection of metadata filters with logical operations."""
-
-    filters: list[MetadataFilter] = Field(..., min_length=1, description='List of metadata filters')
-    logic: Annotated[str, Field(default='AND', pattern='^(AND|OR)$')] = Field(
-        default='AND',
-        description='Logical operator to combine filters (AND or OR)',
-    )
-
-
-class QueryStats(TypedDict, total=False):
-    """Query execution statistics for monitoring and optimization."""
-
-    execution_time_ms: float
-    filters_applied: int
-    index_used: str | None
-    rows_examined: int
-    rows_returned: int
-    query_plan: str | None
