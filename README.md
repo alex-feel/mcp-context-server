@@ -9,6 +9,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 
 - **Multimodal Context Storage**: Store and retrieve both text and images
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
+- **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 15 powerful operators
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
 - **High Performance**: SQLite with WAL mode, strategic indexing, and async operations
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client
@@ -121,32 +122,78 @@ For a complete list of all configuration options, see [app/settings.py](app/sett
 
 #### store_context
 
-Store a context entry with optional images.
+Store a context entry with optional images and flexible metadata.
 
 **Parameters:**
 - `thread_id` (str, required): Unique identifier for the conversation/task thread
 - `source` (str, required): Either 'user' or 'agent'
 - `text` (str, required): Text content to store
 - `images` (list, optional): Base64 encoded images with mime_type
-- `metadata` (dict, optional): Additional structured data
+- `metadata` (dict, optional): Additional structured data - completely flexible JSON object for your use case
 - `tags` (list, optional): Tags for organization (automatically normalized)
+
+**Metadata Flexibility:**
+The metadata field accepts any JSON-serializable structure, making the server adaptable to various use cases:
+- **Task Management**: Store `status`, `priority`, `assignee`, `due_date`, `completed`
+- **Agent Coordination**: Track `agent_name`, `task_name`, `execution_time`, `resource_usage`
+- **Knowledge Base**: Include `category`, `relevance_score`, `source_url`, `author`
+- **Debugging Context**: Save `error_type`, `stack_trace`, `environment`, `version`
+- **Analytics**: Record `user_id`, `session_id`, `event_type`, `timestamp`
+
+**Performance Note:** The following metadata fields are indexed for faster filtering:
+- `status`: State information (e.g., 'pending', 'active', 'completed')
+- `priority`: Numeric value for range queries
+- `agent_name`: Specific agent identifier
+- `task_name`: Task title for string searches
+- `completed`: Boolean flag for completion state
 
 **Returns:** Dictionary with success status and context_id
 
 #### search_context
 
-Search context entries with efficient filtering.
+Search context entries with powerful filtering including metadata queries.
 
 **Parameters:**
 - `thread_id` (str, optional): Filter by thread
 - `source` (str, optional): Filter by source ('user' or 'agent')
 - `tags` (list, optional): Filter by tags (OR logic)
 - `content_type` (str, optional): Filter by type ('text' or 'multimodal')
+- `metadata` (dict, optional): Simple metadata filters (key=value equality)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `limit` (int, optional): Maximum results (default: 50, max: 500)
 - `offset` (int, optional): Pagination offset
 - `include_images` (bool, optional): Include image data in response
+- `explain_query` (bool, optional): Include query execution statistics
 
-**Returns:** List of matching context entries
+**Metadata Filtering:**
+
+*Simple filtering* (exact match):
+```python
+metadata={'status': 'active', 'priority': 5}
+```
+
+*Advanced filtering* with operators:
+```python
+metadata_filters=[
+    {'key': 'priority', 'operator': 'gt', 'value': 3},
+    {'key': 'status', 'operator': 'in', 'value': ['active', 'pending']},
+    {'key': 'agent_name', 'operator': 'starts_with', 'value': 'gpt'},
+    {'key': 'completed', 'operator': 'eq', 'value': False}
+]
+```
+
+**Supported Operators:**
+- `eq`: Equals (case-insensitive for strings by default)
+- `ne`: Not equals
+- `gt`, `gte`, `lt`, `lte`: Numeric comparisons
+- `in`, `not_in`: List membership
+- `exists`, `not_exists`: Field presence
+- `contains`, `starts_with`, `ends_with`: String operations
+- `is_null`, `is_not_null`: Null checks
+
+All string operators support `case_sensitive: true/false` option.
+
+**Returns:** List of matching context entries with optional query statistics
 
 #### get_context_by_ids
 

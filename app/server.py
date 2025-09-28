@@ -296,7 +296,16 @@ async def store_context(
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
     text: Annotated[str, Field(description='Text content to store', min_length=1)],
     images: Annotated[list[dict[str, str]] | None, Field(description='List of base64 encoded images with mime_type')] = None,
-    metadata: Annotated[MetadataDict | None, Field(description='Additional structured data')] = None,
+    metadata: Annotated[
+        MetadataDict | None,
+        Field(
+            description='Additional structured data. For optimal performance, consider using indexed field names: '
+            'status (state information), priority (numeric value for range queries), '
+            'agent_name (specific agent identifier), task_name (task title for string searches), '
+            'completed (boolean flag for completion state). '
+            'These fields are indexed for faster filtering but not required.',
+        ),
+    ] = None,
     tags: Annotated[list[str] | None, Field(description='List of tags (will be normalized and stored separately)')] = None,
     ctx: Context | None = None,
 ) -> StoreContextSuccessDict | StoreContextErrorDict:
@@ -443,29 +452,42 @@ async def search_context(
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (uses index)')] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    metadata: Annotated[
+        dict[str, str | int | float | bool] | None,
+        Field(description='Simple metadata filters (key=value equality)'),
+    ] = None,
+    metadata_filters: Annotated[
+        list[dict[str, Any]] | None,
+        Field(description='Advanced metadata filters with operators [{"key": "priority", "operator": "gt", "value": 5}]'),
+    ] = None,
     limit: Annotated[int, Field(description='Maximum results (max 500)', ge=1, le=500)] = 50,
     offset: Annotated[int, Field(description='Pagination offset', ge=0)] = 0,
     include_images: Annotated[bool, Field(description='Whether to include image data')] = False,
+    explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
-) -> list[ContextEntryDict]:
+) -> dict[str, Any]:
     """
-    Search context entries with efficient filtering.
+    Search context entries with efficient filtering including metadata.
 
     Uses database indexes for optimal performance on thread_id and source filters.
     Tag filtering uses OR logic (matches any of the provided tags).
+    Supports both simple metadata filtering (key=value) and advanced filtering with operators.
 
     Args:
         thread_id: Filter by thread (uses index)
         source: Filter by source type (uses index)
         tags: Filter by any of these tags
         content_type: Filter by content type
+        metadata: Simple metadata filters (key=value equality)
+        metadata_filters: Advanced metadata filters with operators
         limit: Maximum results (max 500)
         offset: Pagination offset
         include_images: Whether to include image data
+        explain_query: Include query execution statistics
         ctx: FastMCP context object
 
     Returns:
-        list: List of matching context entries with their metadata.
+        dict: Contains 'entries' list and optional 'stats' if explain_query is True.
     """
     try:
         if ctx:
@@ -477,15 +499,33 @@ async def search_context(
         # Get repositories
         repos = await _ensure_repositories()
 
-        # Search for context entries using repository
-        rows = await repos.context.search_contexts(
+        # Use the improved search_contexts method that now supports metadata
+        result = await repos.context.search_contexts(
             thread_id=thread_id,
             source=source,
             content_type=content_type,
             tags=tags,
+            metadata=metadata,
+            metadata_filters=metadata_filters,
             limit=limit,
             offset=offset,
+            explain_query=explain_query,
         )
+
+        # Always expect tuple from repository
+        rows, stats = result
+
+        # Check for validation errors in stats
+        if 'error' in stats:
+            # Return the error response with validation details
+            error_response: dict[str, Any] = {
+                'entries': [],
+                'error': stats.get('error', 'Unknown error'),
+            }
+            if 'validation_errors' in stats:
+                error_response['validation_errors'] = stats['validation_errors']
+            return error_response
+
         entries: list[ContextEntryDict] = []
 
         for row in rows:
@@ -521,10 +561,13 @@ async def search_context(
 
             entries.append(entry)
 
-        return entries
+        # Always return dict with entries and stats
+        response: dict[str, Any] = {'entries': entries}
+        response['stats'] = stats
+        return response
     except Exception as e:
         logger.error(f'Error searching context: {e}')
-        return []
+        return {'entries': [], 'error': str(e)}
 
 
 @mcp.tool()

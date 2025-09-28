@@ -37,3 +37,38 @@ CREATE TABLE IF NOT EXISTS image_attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_id);
+
+-- Functional indexes for common metadata patterns (improves metadata filtering performance)
+-- These indexes extract specific JSON fields for faster querying
+
+-- Status-based filtering (most common use case)
+CREATE INDEX IF NOT EXISTS idx_metadata_status
+ON context_entries(json_extract(metadata, '$.status'))
+WHERE json_extract(metadata, '$.status') IS NOT NULL;
+
+-- Priority-based filtering (numeric comparisons)
+CREATE INDEX IF NOT EXISTS idx_metadata_priority
+ON context_entries(json_extract(metadata, '$.priority'))
+WHERE json_extract(metadata, '$.priority') IS NOT NULL;
+
+-- Agent name filtering (identify specific agents)
+CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
+ON context_entries(json_extract(metadata, '$.agent_name'))
+WHERE json_extract(metadata, '$.agent_name') IS NOT NULL;
+
+-- Task name filtering (search by task title/name)
+CREATE INDEX IF NOT EXISTS idx_metadata_task_name
+ON context_entries(json_extract(metadata, '$.task_name'))
+WHERE json_extract(metadata, '$.task_name') IS NOT NULL;
+
+-- Composite indexes for common filter combinations
+CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
+ON context_entries(thread_id, json_extract(metadata, '$.status'));
+
+CREATE INDEX IF NOT EXISTS idx_thread_metadata_priority
+ON context_entries(thread_id, json_extract(metadata, '$.priority'));
+
+-- Boolean flag indexes
+CREATE INDEX IF NOT EXISTS idx_metadata_completed
+ON context_entries(json_extract(metadata, '$.completed'))
+WHERE json_extract(metadata, '$.completed') IS NOT NULL;

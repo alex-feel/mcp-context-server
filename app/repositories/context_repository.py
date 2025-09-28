@@ -10,6 +10,8 @@ import logging
 import sqlite3
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.db_manager import DatabaseConnectionManager
 from app.repositories.base import BaseRepository
 
@@ -107,28 +109,40 @@ class ContextRepository(BaseRepository):
         source: str | None = None,
         content_type: str | None = None,
         tags: list[str] | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[sqlite3.Row]:
-        """Search for context entries with filtering.
+        explain_query: bool = False,
+    ) -> tuple[list[sqlite3.Row], dict[str, Any]]:
+        """Search for context entries with filtering including metadata.
 
         Args:
             thread_id: Filter by thread ID
             source: Filter by source ('user' or 'agent')
             content_type: Filter by content type
             tags: Filter by tags (OR logic)
+            metadata: Simple metadata filters (key=value)
+            metadata_filters: Advanced metadata filters with operators
             limit: Maximum number of results
             offset: Pagination offset
+            explain_query: If True, include query execution plan
 
         Returns:
-            List of matching context entry rows
+            Tuple of (matching rows, query statistics)
         """
-        def _search(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        import time as time_module
+
+        from app.metadata_types import MetadataFilter
+        from app.query_builder import MetadataQueryBuilder
+
+        def _search(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], dict[str, Any]]:
+            start_time = time_module.time()
             cursor = conn.cursor()
 
             # Build query with indexed fields first for optimization
             query = 'SELECT * FROM context_entries WHERE 1=1'
-            params: list[str | int] = []
+            params: list[Any] = []
 
             # Thread filter (indexed)
             if thread_id:
@@ -138,7 +152,7 @@ class ContextRepository(BaseRepository):
             # Source filter (indexed)
             if source:
                 if source not in ['user', 'agent']:
-                    return []
+                    return [], {'error': 'Invalid source type'}
                 query += ' AND source = ?'
                 params.append(source)
 
@@ -146,6 +160,53 @@ class ContextRepository(BaseRepository):
             if content_type:
                 query += ' AND content_type = ?'
                 params.append(content_type)
+
+            # Add metadata filtering
+            metadata_builder = MetadataQueryBuilder()
+
+            # Simple metadata filters
+            if metadata:
+                for key, value in metadata.items():
+                    metadata_builder.add_simple_filter(key, value)
+
+            # Advanced metadata filters
+            if metadata_filters:
+                validation_errors: list[str] = []
+                for filter_dict in metadata_filters:
+                    try:
+                        # Convert dict to MetadataFilter
+                        filter_spec = MetadataFilter(**filter_dict)
+                        metadata_builder.add_advanced_filter(filter_spec)
+                    except ValidationError as e:
+                        # Collect validation errors to return to user
+                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                        validation_errors.append(error_msg)
+                    except ValueError as e:
+                        # Handle value errors (e.g., from field validators)
+                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                        validation_errors.append(error_msg)
+                    except Exception as e:
+                        # Unexpected errors - still collect them
+                        error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
+                        validation_errors.append(error_msg)
+                        logger.error(f'Unexpected error processing metadata filter: {e}')
+
+                # If there were validation errors, return them immediately
+                if validation_errors:
+                    error_response = {
+                        'error': 'Metadata filter validation failed',
+                        'validation_errors': validation_errors,
+                        'execution_time_ms': 0.0,
+                        'filters_applied': 0,
+                        'rows_returned': 0,
+                    }
+                    return [], error_response
+
+            # Add metadata conditions to query
+            metadata_clause, metadata_params = metadata_builder.build_where_clause()
+            if metadata_clause:
+                query += f' AND {metadata_clause}'
+                params.extend(metadata_params)
 
             # Tag filter (uses subquery with indexed tag table)
             if tags:
@@ -167,7 +228,39 @@ class ContextRepository(BaseRepository):
 
             cursor.execute(query, tuple(params))
             rows = cursor.fetchall()
-            return list(rows)
+
+            # Calculate execution time
+            execution_time_ms = (time_module.time() - start_time) * 1000
+
+            # Build statistics
+            stats: dict[str, Any] = {
+                'execution_time_ms': round(execution_time_ms, 2),
+                'filters_applied': metadata_builder.get_filter_count(),
+                'rows_returned': len(rows),
+            }
+
+            # Get query plan if requested
+            if explain_query:
+                cursor.execute(f'EXPLAIN QUERY PLAN {query}', tuple(params))
+                plan_rows = cursor.fetchall()
+                # Convert sqlite3.Row objects to readable format
+                plan_data: list[str] = []
+                for row in plan_rows:
+                    # Convert sqlite3.Row to dict to avoid <Row object> repr
+                    row_dict = dict(row)
+                    # SQLite EXPLAIN QUERY PLAN columns: id, parent, notused, detail
+                    id_val = row_dict.get('id', '?')
+                    parent_val = row_dict.get('parent', '?')
+                    notused_val = row_dict.get('notused', '?')
+                    detail_val = row_dict.get('detail', '?')
+                    formatted = f'id:{id_val} parent:{parent_val} notused:{notused_val} detail:{detail_val}'
+                    plan_data.append(formatted)
+                stats['query_plan'] = '\n'.join(plan_data)
+
+            # Always return tuple with rows and statistics
+            rows_list: list[sqlite3.Row] = list(rows)
+            result: tuple[list[sqlite3.Row], dict[str, Any]] = (rows_list, stats)
+            return result
 
         return await self.db_manager.execute_read(_search)
 

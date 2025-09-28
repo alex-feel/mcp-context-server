@@ -192,8 +192,10 @@ class TestSearchContext:
         _ = multiple_context_entries  # Fixture ensures data exists
         results = await search_context()
 
-        assert isinstance(results, list)
-        assert len(results) == 5  # All test entries
+        assert isinstance(results, dict)
+        assert 'entries' in results
+        assert 'stats' in results
+        assert len(results['entries']) == 5  # All test entries
 
     @pytest.mark.asyncio
     async def test_search_by_thread(
@@ -204,8 +206,9 @@ class TestSearchContext:
         _ = multiple_context_entries  # Fixture ensures data exists
         results = await search_context(thread_id='thread_1')
 
-        assert len(results) == 2
-        for result in results:
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 2
+        for result in results['entries']:
             assert result['thread_id'] == 'thread_1'
 
     @pytest.mark.asyncio
@@ -217,8 +220,9 @@ class TestSearchContext:
         _ = multiple_context_entries  # Fixture ensures data exists
         results = await search_context(source='agent')
 
-        assert len(results) == 2
-        for result in results:
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 2
+        for result in results['entries']:
             assert result['source'] == 'agent'
 
     @pytest.mark.asyncio
@@ -230,8 +234,9 @@ class TestSearchContext:
         _ = multiple_context_entries  # Fixture ensures data exists
         results = await search_context(tags=['important', 'nonexistent'])
 
-        assert len(results) == 1
-        assert 'important' in results[0]['tags']
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
+        assert 'important' in results['entries'][0]['tags']
 
     @pytest.mark.asyncio
     async def test_search_by_content_type(
@@ -242,8 +247,9 @@ class TestSearchContext:
         _ = multiple_context_entries  # Fixture ensures data exists
         results = await search_context(content_type='multimodal')
 
-        assert len(results) == 1
-        assert results[0]['content_type'] == 'multimodal'
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
+        assert results['entries'][0]['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio
     async def test_search_with_pagination(
@@ -254,15 +260,17 @@ class TestSearchContext:
         _ = multiple_context_entries  # Fixture ensures data exists
         # Get first 2 results
         page1 = await search_context(limit=2, offset=0)
-        assert len(page1) == 2
+        assert isinstance(page1, dict)
+        assert len(page1['entries']) == 2
 
         # Get next 2 results
         page2 = await search_context(limit=2, offset=2)
-        assert len(page2) == 2
+        assert isinstance(page2, dict)
+        assert len(page2['entries']) == 2
 
         # Verify different results
-        page1_ids = [r['id'] for r in page1]
-        page2_ids = [r['id'] for r in page2]
+        page1_ids = [r['id'] for r in page1['entries']]
+        page2_ids = [r['id'] for r in page2['entries']]
         assert set(page1_ids).isdisjoint(set(page2_ids))
 
     @pytest.mark.asyncio
@@ -287,10 +295,11 @@ class TestSearchContext:
             include_images=True,
         )
 
-        assert len(results) == 1
-        assert 'images' in results[0]
-        assert len(results[0]['images']) == 1
-        assert results[0]['images'][0]['data'] == image_data
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
+        assert 'images' in results['entries'][0]
+        assert len(results['entries'][0]['images']) == 1
+        assert results['entries'][0]['images'][0]['data'] == image_data
 
     @pytest.mark.asyncio
     async def test_search_complex_filters(
@@ -305,10 +314,11 @@ class TestSearchContext:
             content_type='multimodal',
         )
 
-        assert len(results) == 1
-        assert results[0]['thread_id'] == 'thread_2'
-        assert results[0]['source'] == 'user'
-        assert results[0]['content_type'] == 'multimodal'
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
+        assert results['entries'][0]['thread_id'] == 'thread_2'
+        assert results['entries'][0]['source'] == 'user'
+        assert results['entries'][0]['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio
     async def test_search_invalid_source(
@@ -319,7 +329,8 @@ class TestSearchContext:
         _ = multiple_context_entries  # Fixture ensures data exists
         results = await search_context(source=cast(Literal['user', 'agent'], 'invalid'))
 
-        assert results == []
+        assert isinstance(results, dict)
+        assert results['entries'] == []
 
     @pytest.mark.asyncio
     async def test_search_limit_max(self) -> None:
@@ -333,7 +344,8 @@ class TestSearchContext:
             )
 
         results = await search_context(limit=1000)  # Request more than max
-        assert len(results) <= 500  # Should be capped at 500
+        assert isinstance(results, dict)
+        assert len(results['entries']) <= 500  # Should be capped at 500
 
     @pytest.mark.asyncio
     async def test_search_text_truncation_short(self) -> None:
@@ -348,9 +360,10 @@ class TestSearchContext:
         )
 
         results = await search_context(thread_id='truncation_test')
-        assert len(results) == 1
-        assert results[0]['text_content'] == short_text
-        assert results[0]['is_truncated'] is False
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
+        assert results['entries'][0]['text_content'] == short_text
+        assert results['entries'][0]['is_truncated'] is False
 
     @pytest.mark.asyncio
     async def test_search_text_truncation_long(self) -> None:
@@ -371,16 +384,17 @@ class TestSearchContext:
         )
 
         results = await search_context(thread_id='truncation_long_test')
-        assert len(results) == 1
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
 
         # Check truncation occurred
-        assert results[0]['is_truncated'] is True
-        assert results[0]['text_content'].endswith('...')
-        assert len(results[0]['text_content']) <= 153  # 150 + '...'
-        assert results[0]['text_content'] != long_text
+        assert results['entries'][0]['is_truncated'] is True
+        assert results['entries'][0]['text_content'].endswith('...')
+        assert len(results['entries'][0]['text_content']) <= 153  # 150 + '...'
+        assert results['entries'][0]['text_content'] != long_text
 
         # Verify truncation preserves beginning of text
-        assert long_text.startswith(results[0]['text_content'][:-3])  # Remove '...'
+        assert long_text.startswith(results['entries'][0]['text_content'][:-3])  # Remove '...'
 
     @pytest.mark.asyncio
     async def test_search_text_truncation_word_boundary(self) -> None:
@@ -399,9 +413,10 @@ class TestSearchContext:
         )
 
         results = await search_context(thread_id='boundary_test_good')
-        assert len(results) == 1
-        assert results[0]['is_truncated'] is True
-        assert results[0]['text_content'].endswith('...')
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
+        assert results['entries'][0]['is_truncated'] is True
+        assert results['entries'][0]['text_content'].endswith('...')
 
         # Test case 2: Text where truncation will happen mid-word due to no good boundary
         # Create a text with a very long word starting before position 105
@@ -415,9 +430,10 @@ class TestSearchContext:
         )
 
         results_bad = await search_context(thread_id='boundary_test_bad')
-        assert len(results_bad) == 1
-        assert results_bad[0]['is_truncated'] is True
-        assert results_bad[0]['text_content'].endswith('...')
+        assert isinstance(results_bad, dict)
+        assert len(results_bad['entries']) == 1
+        assert results_bad['entries'][0]['is_truncated'] is True
+        assert results_bad['entries'][0]['text_content'].endswith('...')
         # In this case, truncation happens at exactly 150 chars since no good word boundary exists
 
     @pytest.mark.asyncio
@@ -441,10 +457,11 @@ class TestSearchContext:
 
         # Search should return truncated text
         search_results = await search_context(thread_id='comparison_test')
-        assert len(search_results) == 1
-        assert search_results[0]['is_truncated'] is True
-        assert search_results[0]['text_content'] != long_text
-        assert search_results[0]['text_content'].endswith('...')
+        assert isinstance(search_results, dict)
+        assert len(search_results['entries']) == 1
+        assert search_results['entries'][0]['is_truncated'] is True
+        assert search_results['entries'][0]['text_content'] != long_text
+        assert search_results['entries'][0]['text_content'].endswith('...')
 
         # get_context_by_ids should return full text
         get_results = await get_context_by_ids(context_ids=[context_id])
@@ -476,9 +493,10 @@ class TestSearchContext:
             conn.commit()
 
         results = await search_context(thread_id='null_test')
-        assert len(results) == 1
-        assert results[0]['text_content'] == ''
-        assert results[0]['is_truncated'] is False
+        assert isinstance(results, dict)
+        assert len(results['entries']) == 1
+        assert results['entries'][0]['text_content'] == ''
+        assert results['entries'][0]['is_truncated'] is False
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -621,8 +639,9 @@ class TestDeleteContext:
 
         # Verify third still exists
         remaining = await search_context(thread_id='delete_test')
-        assert len(remaining) == 1
-        assert remaining[0]['id'] == result3['context_id']
+        assert isinstance(remaining, dict)
+        assert len(remaining['entries']) == 1
+        assert remaining['entries'][0]['id'] == result3['context_id']
 
     @pytest.mark.asyncio
     async def test_delete_by_thread(self) -> None:
@@ -645,7 +664,8 @@ class TestDeleteContext:
 
         # Verify all deleted
         remaining = await search_context(thread_id=thread_id)
-        assert remaining == []
+        assert isinstance(remaining, dict)
+        assert remaining['entries'] == []
 
     @pytest.mark.asyncio
     async def test_delete_no_parameters(self) -> None:
@@ -913,7 +933,8 @@ class TestEdgeCases:
 
         # Verify retrieval
         search_result = await search_context(thread_id='unicode_test')
-        assert search_result[0]['text_content'] == unicode_text
+        assert isinstance(search_result, dict)
+        assert search_result['entries'][0]['text_content'] == unicode_text
 
     @pytest.mark.asyncio
     async def test_large_metadata(self) -> None:
@@ -959,10 +980,11 @@ class TestEdgeCases:
 
         # Verify data integrity
         search_result = await search_context(thread_id=malicious_thread)
-        assert len(search_result) == 1
+        assert isinstance(search_result, dict)
+        assert len(search_result['entries']) == 1
         # Tag should be normalized to lowercase
         normalized_tag = malicious_tag.strip().lower()
-        assert normalized_tag in search_result[0]['tags']
+        assert normalized_tag in search_result['entries'][0]['tags']
 
         # Tables should still exist
         stats = await get_statistics()

@@ -3,12 +3,12 @@ name = "mcp-context-server"
 version = "0.1.0"
 description = "MCP Context Server — a FastMCP-based server providing persistent multimodal context storage for LLM agents."
 readme = "README.md"
-authors = [{ name = "Aleksandr Filippov", email = "alexfeel@spotware.com" }]
+authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
-    "fastmcp==2.12.3",
-    "pydantic-settings==2.10.1",
+    "fastmcp==2.12.4",
+    "pydantic-settings==2.11.0",
     "pydantic==2.11.9",
     "python-dotenv==1.1.1",
     "typing_extensions==4.15.0",
@@ -213,6 +213,7 @@ testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow tests (deselect with '-m \"not slow\"')",
+    "performance: marks tests as performance tests",
 ]
 
 [tool.coverage.run]
