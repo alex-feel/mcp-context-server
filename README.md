@@ -236,4 +236,32 @@ Get database statistics and usage metrics.
 - Unique tags count
 - Database size in MB
 
+#### update_context
+
+Update specific fields of an existing context entry.
+
+**Parameters:**
+- `context_id` (int, required): ID of the context entry to update
+- `text` (str, optional): New text content
+- `metadata` (dict, optional): New metadata (full replacement)
+- `tags` (list, optional): New tags (full replacement)
+- `images` (list, optional): New images (full replacement)
+
+**Field Update Rules:**
+- **Updatable fields**: text_content, metadata, tags, images
+- **Immutable fields**: id, thread_id, source, created_at (preserved for data integrity)
+- **Auto-managed fields**: content_type (recalculated based on image presence), updated_at (set to current timestamp)
+
+**Update Behavior:**
+- Only provided fields are updated (selective updates)
+- Tags and images use full replacement semantics for consistency
+- Content type automatically switches between 'text' and 'multimodal' based on image presence
+- At least one updatable field must be provided
+
+**Returns:** Dictionary with:
+- Success status
+- Context ID
+- List of updated fields
+- Success/error message
+
 <!-- mcp-name: io.github.alex-feel/mcp-context-server -->
