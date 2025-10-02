@@ -7,12 +7,15 @@ including storage and retrieval of base64-encoded images.
 
 import base64
 import json
+import logging
 import sqlite3
 from typing import Any
 
 from app.db_manager import DatabaseConnectionManager
 from app.repositories.base import BaseRepository
 from app.types import ImageDict
+
+logger = logging.getLogger(__name__)
 
 
 class ImageRepository(BaseRepository):
@@ -250,3 +253,57 @@ class ImageRepository(BaseRepository):
             return int(result['count']) if result else 0
 
         return await self.db_manager.execute_read(_count_images)
+
+    async def replace_images_for_context(
+        self,
+        context_id: int,
+        images: list[dict[str, Any]],
+    ) -> None:
+        """Replace all images for a context entry.
+
+        This method performs a complete replacement of images:
+        1. Deletes all existing images for the context
+        2. Inserts new images with proper base64 decoding
+
+        Args:
+            context_id: ID of the context entry
+            images: List of image dictionaries containing data, mime_type, and optional metadata
+        """
+        def _replace_images(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+
+            # Delete all existing images for this context entry
+            cursor.execute(
+                'DELETE FROM image_attachments WHERE context_entry_id = ?',
+                (context_id,),
+            )
+
+            # Insert new images
+            for idx, img in enumerate(images):
+                img_data_str = img.get('data', '')
+                if not img_data_str:
+                    continue
+
+                # Decode base64 image data
+                try:
+                    image_binary = base64.b64decode(img_data_str)
+                except Exception as e:
+                    logger.error(f'Failed to decode base64 image data: {e}')
+                    continue
+
+                cursor.execute(
+                    '''
+                    INSERT INTO image_attachments
+                    (context_entry_id, image_data, mime_type, image_metadata, position)
+                    VALUES (?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        context_id,
+                        image_binary,
+                        img.get('mime_type', 'image/png'),
+                        json.dumps(img.get('metadata')) if img.get('metadata') else None,
+                        idx,
+                    ),
+                )
+
+        await self.db_manager.execute_write(_replace_images)

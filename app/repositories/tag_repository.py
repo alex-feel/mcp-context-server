@@ -105,3 +105,34 @@ class TagRepository(BaseRepository):
             return result
 
         return await self.db_manager.execute_read(_get_tags_batch)
+
+    async def replace_tags_for_context(self, context_id: int, tags: list[str]) -> None:
+        """Replace all tags for a context entry.
+
+        This method performs a complete replacement of tags:
+        1. Deletes all existing tags for the context
+        2. Inserts new normalized tags
+
+        Args:
+            context_id: ID of the context entry
+            tags: New list of tags (will be normalized)
+        """
+        def _replace_tags(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+
+            # Delete all existing tags for this context entry
+            cursor.execute(
+                'DELETE FROM tags WHERE context_entry_id = ?',
+                (context_id,),
+            )
+
+            # Insert new tags (normalized)
+            for tag in tags:
+                tag = tag.strip().lower()
+                if tag:
+                    cursor.execute(
+                        'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                        (context_id, tag),
+                    )
+
+        await self.db_manager.execute_write(_replace_tags)

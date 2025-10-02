@@ -328,6 +328,119 @@ class ContextRepository(BaseRepository):
 
         return await self.db_manager.execute_write(_delete_by_thread)
 
+    async def update_context_entry(
+        self,
+        context_id: int,
+        text_content: str | None = None,
+        metadata: str | None = None,
+    ) -> tuple[bool, list[str]]:
+        """Update text content and/or metadata of a context entry.
+
+        Args:
+            context_id: ID of the context entry to update
+            text_content: New text content (if provided)
+            metadata: New metadata JSON string (if provided)
+
+        Returns:
+            Tuple of (success, list_of_updated_fields)
+        """
+        def _update_entry(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
+            cursor = conn.cursor()
+            updated_fields: list[str] = []
+
+            # First, check if the entry exists
+            cursor.execute('SELECT id FROM context_entries WHERE id = ?', (context_id,))
+            if not cursor.fetchone():
+                return False, []
+
+            # Build update query dynamically based on provided fields
+            update_parts: list[str] = []
+            params: list[Any] = []
+
+            if text_content is not None:
+                update_parts.append('text_content = ?')
+                params.append(text_content)
+                updated_fields.append('text_content')
+
+            if metadata is not None:
+                update_parts.append('metadata = ?')
+                params.append(metadata)
+                updated_fields.append('metadata')
+
+            # If no fields to update, return early
+            if not update_parts:
+                return False, []
+
+            # Always update the updated_at timestamp
+            update_parts.append('updated_at = CURRENT_TIMESTAMP')
+
+            # Execute update
+            query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = ?"
+            params.append(context_id)
+            cursor.execute(query, tuple(params))
+
+            # Check if any rows were affected
+            if cursor.rowcount > 0:
+                logger.debug(f'Updated context entry {context_id}, fields: {updated_fields}')
+                return True, updated_fields
+
+            return False, []
+
+        return await self.db_manager.execute_write(_update_entry)
+
+    async def check_entry_exists(self, context_id: int) -> bool:
+        """Check if a context entry exists.
+
+        Args:
+            context_id: ID of the context entry
+
+        Returns:
+            True if the entry exists, False otherwise
+        """
+        def _check_exists(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM context_entries WHERE id = ? LIMIT 1', (context_id,))
+            return cursor.fetchone() is not None
+
+        return await self.db_manager.execute_read(_check_exists)
+
+    async def get_content_type(self, context_id: int) -> str | None:
+        """Get the content type of a context entry.
+
+        Args:
+            context_id: ID of the context entry
+
+        Returns:
+            Content type ('text' or 'multimodal') or None if entry doesn't exist
+        """
+        def _get_content_type(conn: sqlite3.Connection) -> str | None:
+            cursor = conn.cursor()
+            cursor.execute('SELECT content_type FROM context_entries WHERE id = ?', (context_id,))
+            row = cursor.fetchone()
+            return row['content_type'] if row else None
+
+        return await self.db_manager.execute_read(_get_content_type)
+
+    async def update_content_type(self, context_id: int, content_type: str) -> bool:
+        """Update the content type of a context entry.
+
+        Args:
+            context_id: ID of the context entry
+            content_type: New content type ('text' or 'multimodal')
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        def _update_content_type(conn: sqlite3.Connection) -> bool:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE context_entries SET content_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                (content_type, context_id),
+            )
+            return cursor.rowcount > 0
+
+        return await self.db_manager.execute_write(_update_content_type)
+
     @staticmethod
     def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         """Convert a database row to a dictionary.

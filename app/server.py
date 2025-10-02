@@ -33,6 +33,8 @@ from app.types import MetadataDict
 from app.types import StoreContextErrorDict
 from app.types import StoreContextSuccessDict
 from app.types import ThreadListDict
+from app.types import UpdateContextErrorDict
+from app.types import UpdateContextSuccessDict
 
 # Get setting
 settings = get_settings()
@@ -165,6 +167,41 @@ CREATE TABLE IF NOT EXISTS image_attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_id);
+
+-- Functional indexes for common metadata patterns (improves metadata filtering performance)
+-- These indexes extract specific JSON fields for faster querying
+
+-- Status-based filtering (most common use case)
+CREATE INDEX IF NOT EXISTS idx_metadata_status
+ON context_entries(json_extract(metadata, '$.status'))
+WHERE json_extract(metadata, '$.status') IS NOT NULL;
+
+-- Priority-based filtering (numeric comparisons)
+CREATE INDEX IF NOT EXISTS idx_metadata_priority
+ON context_entries(json_extract(metadata, '$.priority'))
+WHERE json_extract(metadata, '$.priority') IS NOT NULL;
+
+-- Agent name filtering (identify specific agents)
+CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
+ON context_entries(json_extract(metadata, '$.agent_name'))
+WHERE json_extract(metadata, '$.agent_name') IS NOT NULL;
+
+-- Task name filtering (search by task title/name)
+CREATE INDEX IF NOT EXISTS idx_metadata_task_name
+ON context_entries(json_extract(metadata, '$.task_name'))
+WHERE json_extract(metadata, '$.task_name') IS NOT NULL;
+
+-- Composite indexes for common filter combinations
+CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
+ON context_entries(thread_id, json_extract(metadata, '$.status'));
+
+CREATE INDEX IF NOT EXISTS idx_thread_metadata_priority
+ON context_entries(thread_id, json_extract(metadata, '$.priority'));
+
+-- Boolean flag indexes
+CREATE INDEX IF NOT EXISTS idx_metadata_completed
+ON context_entries(json_extract(metadata, '$.completed'))
+WHERE json_extract(metadata, '$.completed') IS NOT NULL;
             '''
 
         # Apply schema using a short-lived manager
@@ -691,6 +728,188 @@ async def delete_context(
             'success': False,
             'error': f'Failed to delete context: {str(e)}',
         }
+
+
+@mcp.tool()
+async def update_context(
+    context_id: Annotated[int, Field(description='ID of the context entry to update')],
+    text: Annotated[str | None, Field(description='New text content (replaces existing)')] = None,
+    metadata: Annotated[MetadataDict | None, Field(description='New metadata object (replaces existing)')] = None,
+    tags: Annotated[list[str] | None, Field(description='New tags list (replaces all existing tags)')] = None,
+    images: Annotated[
+        list[dict[str, str]] | None,
+        Field(description='New images list with base64 data and mime_type (replaces all existing images)'),
+    ] = None,
+    ctx: Context | None = None,
+) -> UpdateContextSuccessDict | UpdateContextErrorDict:
+    """
+    Update an existing context entry with selective field updates.
+
+    Allows updating text content, metadata, tags, and images while preserving
+    immutable fields like ID, thread_id, source, and created_at. The content_type
+    field is automatically recalculated based on the presence of images.
+
+    Args:
+        context_id: ID of the context entry to update
+        text: New text content (replaces existing if provided)
+        metadata: New metadata object (replaces existing if provided)
+        tags: New tags list (replaces all existing tags if provided)
+        images: New images list (replaces all existing images if provided)
+        ctx: FastMCP context object
+
+    Returns:
+        UpdateContextSuccessDict on success, UpdateContextErrorDict on failure.
+    """
+    try:
+        # Validate that at least one field is provided for update
+        if text is None and metadata is None and tags is None and images is None:
+            return UpdateContextErrorDict(
+                success=False,
+                error='At least one field must be provided for update',
+                context_id=context_id,
+            )
+
+        if ctx:
+            await ctx.info(f'Updating context entry {context_id}')
+
+        # Get repositories
+        repos = await _ensure_repositories()
+
+        # Check if entry exists
+        exists = await repos.context.check_entry_exists(context_id)
+        if not exists:
+            return UpdateContextErrorDict(
+                success=False,
+                error=f'Context entry with ID {context_id} not found',
+                context_id=context_id,
+            )
+
+        updated_fields: list[str] = []
+
+        # Start transaction-like operations
+        try:
+            # Update text content and/or metadata if provided
+            if text is not None or metadata is not None:
+                # Prepare metadata JSON string if provided
+                metadata_str: str | None = None
+                if metadata is not None:
+                    metadata_str = json.dumps(metadata)
+
+                # Update context entry
+                success, fields = await repos.context.update_context_entry(
+                    context_id=context_id,
+                    text_content=text,
+                    metadata=metadata_str,
+                )
+
+                if not success:
+                    return UpdateContextErrorDict(
+                        success=False,
+                        error='Failed to update context entry',
+                        context_id=context_id,
+                    )
+
+                updated_fields.extend(fields)
+
+            # Replace tags if provided
+            if tags is not None:
+                await repos.tags.replace_tags_for_context(context_id, tags)
+                updated_fields.append('tags')
+                logger.debug(f'Replaced tags for context {context_id}')
+
+            # Replace images if provided
+            if images is not None:
+                # If images list is empty (removing all images), update content_type to text
+                if len(images) == 0:
+                    await repos.images.replace_images_for_context(context_id, [])
+                    await repos.context.update_content_type(context_id, 'text')
+                    updated_fields.extend(['images', 'content_type'])
+                    logger.debug(f'Removed all images from context {context_id}')
+                else:
+                    # Validate image data first
+                    total_size = 0.0
+                    for img in images:
+                        if 'data' not in img or 'mime_type' not in img:
+                            return UpdateContextErrorDict(
+                                success=False,
+                                error='Each image must have "data" and "mime_type" fields',
+                                context_id=context_id,
+                            )
+
+                        # Check individual image size
+                        try:
+                            img_data = base64.b64decode(img['data'])
+                            img_size_mb = len(img_data) / (1024 * 1024)
+                            total_size += img_size_mb
+
+                            if img_size_mb > MAX_IMAGE_SIZE_MB:
+                                return UpdateContextErrorDict(
+                                    success=False,
+                                    error=f'Image exceeds size limit of {MAX_IMAGE_SIZE_MB}MB',
+                                    context_id=context_id,
+                                )
+                        except Exception as e:
+                            return UpdateContextErrorDict(
+                                success=False,
+                                error=f'Invalid base64 image data: {str(e)}',
+                                context_id=context_id,
+                            )
+
+                    # Check total size
+                    if total_size > MAX_TOTAL_SIZE_MB:
+                        return UpdateContextErrorDict(
+                            success=False,
+                            error=f'Total image size {total_size:.2f}MB exceeds limit of {MAX_TOTAL_SIZE_MB}MB',
+                            context_id=context_id,
+                        )
+
+                    # Replace images
+                    await repos.images.replace_images_for_context(context_id, images)
+                    updated_fields.append('images')
+
+                    # Update content_type to multimodal if images were added
+                    await repos.context.update_content_type(context_id, 'multimodal')
+                    updated_fields.append('content_type')
+                    logger.debug(f'Replaced images for context {context_id}')
+
+            # Check if we need to update content_type based on current state
+            if images is None and (text is not None or metadata is not None):
+                # Check if there are existing images to determine content_type
+                image_count = await repos.images.count_images_for_context(context_id)
+                current_content_type = 'multimodal' if image_count > 0 else 'text'
+
+                # Get the stored content type
+                stored_content_type = await repos.context.get_content_type(context_id)
+
+                # Update if different
+                if stored_content_type != current_content_type:
+                    await repos.context.update_content_type(context_id, current_content_type)
+                    updated_fields.append('content_type')
+
+            logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
+
+            return UpdateContextSuccessDict(
+                success=True,
+                context_id=context_id,
+                updated_fields=updated_fields,
+                message=f'Successfully updated {len(updated_fields)} field(s)',
+            )
+
+        except Exception as update_error:
+            logger.error(f'Error during context update: {update_error}')
+            return UpdateContextErrorDict(
+                success=False,
+                error=f'Update operation failed: {str(update_error)}',
+                context_id=context_id,
+            )
+
+    except Exception as e:
+        logger.error(f'Error updating context: {e}')
+        return UpdateContextErrorDict(
+            success=False,
+            error=f'Unexpected error: {str(e)}',
+            context_id=context_id,
+        )
 
 
 # MCP Resources for read-only access
