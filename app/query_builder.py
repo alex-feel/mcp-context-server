@@ -125,7 +125,10 @@ class MetadataQueryBuilder:
         Returns:
             True if key is safe, False otherwise
         """
-        if not key or not key.strip():
+        # Validate required key parameter: must contain non-whitespace characters
+        # Since key is typed as str (not str | None), it cannot be None at this point
+        # We only need to check if it's empty or contains only whitespace
+        if not key.strip():
             return False
 
         # Only allow alphanumeric, dots, underscores, and hyphens

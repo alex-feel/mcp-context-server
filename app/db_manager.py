@@ -435,8 +435,10 @@ class DatabaseConnectionManager:
         if not readonly and not self.db_path.exists():
             # Create an initial connection to create the database file
             # Use with statement to ensure closure
-            with sqlite3.connect(str(self.db_path)):
-                pass
+            with sqlite3.connect(str(self.db_path)) as init_conn:
+                # Set UTF-8 encoding BEFORE any data operations
+                init_conn.execute('PRAGMA encoding = "UTF-8"')
+                init_conn.commit()
 
         # Use URI mode for better control
         uri = f"file:{self.db_path}?mode={'ro' if readonly else 'rw'}"
@@ -448,6 +450,19 @@ class DatabaseConnectionManager:
             isolation_level='DEFERRED',  # Better for concurrent access
             factory=ManagedConnection,  # Ensure finalizer-based safety on GC
         )
+
+        # Do NOT set text_factory to str as it causes encoding issues
+        # SQLite3 in Python 3 already handles Unicode properly by default
+        # Setting text_factory=str can cause double encoding problems
+        # conn.text_factory = str  # REMOVED - This was causing UTF-8 issues
+
+        # ENSURE proper UTF-8 handling by verifying encoding (read-only check)
+        if not readonly:
+            # For write connections, ensure the database is using UTF-8
+            cursor = conn.execute('PRAGMA encoding')
+            encoding = cursor.fetchone()[0]
+            if encoding != 'UTF-8':
+                logger.warning(f'Database encoding is {encoding}, expected UTF-8. This may cause issues with non-ASCII text.')
 
         try:
             conn.row_factory = sqlite3.Row

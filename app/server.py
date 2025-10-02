@@ -329,9 +329,9 @@ def truncate_text(text: str | None, max_length: int = 150) -> tuple[str | None, 
 
 @mcp.tool()
 async def store_context(
-    thread_id: Annotated[str, Field(description='Unique identifier for the conversation/task thread')],
+    thread_id: Annotated[str, Field(min_length=1, description='Unique identifier for the conversation/task thread')],
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
-    text: Annotated[str, Field(description='Text content to store', min_length=1)],
+    text: Annotated[str, Field(min_length=1, description='Text content to store')],
     images: Annotated[list[dict[str, str]] | None, Field(description='List of base64 encoded images with mime_type')] = None,
     metadata: Annotated[
         MetadataDict | None,
@@ -368,6 +368,27 @@ async def store_context(
         ValueError: If context insertion fails.
     """
     try:
+        # Validate required fields when called directly (not through MCP)
+        # Note: When called through MCP, Field validation handles this automatically
+
+        # Validate required thread_id field: must exist and contain non-whitespace characters
+        # When called directly (e.g., in tests), the function can receive None despite the type hint
+        # We check both None and empty/whitespace strings for defensive programming
+        if not thread_id or not thread_id.strip():
+            return StoreContextErrorDict(
+                success=False,
+                error='thread_id is required and cannot be empty',
+            )
+
+        # Validate required text field: must exist and contain non-whitespace characters
+        # When called directly (e.g., in tests), the function can receive None despite the type hint
+        # We check both None and empty/whitespace strings for defensive programming
+        if not text or not text.strip():
+            return StoreContextErrorDict(
+                success=False,
+                error='text is required and cannot be empty',
+            )
+
         # Log info if context is available
         if ctx:
             await ctx.info(f'Storing context for thread: {thread_id}')
@@ -379,22 +400,6 @@ async def store_context(
         tags = cast(list[str] | None, tags_raw)
         metadata_raw = deserialize_json_param(cast(JsonValue | None, metadata))
         metadata = cast(MetadataDict | None, metadata_raw)
-
-        # Validate input - text is required
-        if not text:
-            text_error_response: StoreContextErrorDict = {
-                'success': False,
-                'error': 'Text content is required',
-            }
-            return text_error_response
-
-        # Validate source
-        if source not in ['user', 'agent']:
-            source_error_response: StoreContextErrorDict = {
-                'success': False,
-                'error': "Source must be 'user' or 'agent'",
-            }
-            return source_error_response
 
         # Get repositories
         repos = await _ensure_repositories()
@@ -408,7 +413,7 @@ async def store_context(
             source=source,
             content_type=content_type,
             text_content=text,
-            metadata=json.dumps(metadata) if metadata else None,
+            metadata=json.dumps(metadata, ensure_ascii=False) if metadata else None,
         )
 
         # Ensure we got a valid ID (not None or 0)
@@ -497,8 +502,8 @@ async def search_context(
         list[dict[str, Any]] | None,
         Field(description='Advanced metadata filters with operators [{"key": "priority", "operator": "gt", "value": 5}]'),
     ] = None,
-    limit: Annotated[int, Field(description='Maximum results (max 500)', ge=1, le=500)] = 50,
-    offset: Annotated[int, Field(description='Pagination offset', ge=0)] = 0,
+    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (max 500)')] = 50,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset')] = 0,
     include_images: Annotated[bool, Field(description='Whether to include image data')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
@@ -527,11 +532,25 @@ async def search_context(
         dict: Contains 'entries' list and optional 'stats' if explain_query is True.
     """
     try:
+        # Validate parameters when called directly (not through MCP)
+        if limit < 1:
+            return {
+                'entries': [],
+                'error': 'limit must be at least 1',
+            }
+        if limit > 500:
+            return {
+                'entries': [],
+                'error': 'limit must be at most 500',
+            }
+        if offset < 0:
+            return {
+                'entries': [],
+                'error': 'offset cannot be negative',
+            }
+
         if ctx:
             await ctx.info(f'Searching context with filters: thread_id={thread_id}, source={source}')
-
-        # Validate limit
-        limit = min(limit, 500)
 
         # Get repositories
         repos = await _ensure_repositories()
@@ -609,7 +628,7 @@ async def search_context(
 
 @mcp.tool()
 async def get_context_by_ids(
-    context_ids: Annotated[list[int], Field(description='List of context entry IDs to retrieve', min_length=1)],
+    context_ids: Annotated[list[int], Field(min_length=1, description='List of context entry IDs to retrieve')],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
     ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
@@ -628,6 +647,7 @@ async def get_context_by_ids(
         list: List of context entries with full content.
     """
     try:
+        # Validate context_ids when called directly
         if not context_ids:
             return []
 
@@ -733,7 +753,7 @@ async def delete_context(
 @mcp.tool()
 async def update_context(
     context_id: Annotated[int, Field(description='ID of the context entry to update')],
-    text: Annotated[str | None, Field(description='New text content (replaces existing)')] = None,
+    text: Annotated[str | None, Field(None, min_length=1, description='New text content (replaces existing)')] = None,
     metadata: Annotated[MetadataDict | None, Field(description='New metadata object (replaces existing)')] = None,
     tags: Annotated[list[str] | None, Field(description='New tags list (replaces all existing tags)')] = None,
     images: Annotated[
@@ -769,6 +789,17 @@ async def update_context(
                 context_id=context_id,
             )
 
+        # Validate optional text field: if provided, must contain non-whitespace characters
+        # Since text is an optional parameter (type: str | None), we first check it's not None
+        # Only if text was explicitly provided do we validate that it contains non-whitespace
+        # This allows text=None (no update) but prevents text="" or text="   " (invalid updates)
+        if text is not None and not text.strip():
+            return UpdateContextErrorDict(
+                success=False,
+                error='Text content cannot be empty or whitespace only',
+                context_id=context_id,
+            )
+
         if ctx:
             await ctx.info(f'Updating context entry {context_id}')
 
@@ -793,7 +824,7 @@ async def update_context(
                 # Prepare metadata JSON string if provided
                 metadata_str: str | None = None
                 if metadata is not None:
-                    metadata_str = json.dumps(metadata)
+                    metadata_str = json.dumps(metadata, ensure_ascii=False)
 
                 # Update context entry
                 success, fields = await repos.context.update_context_entry(

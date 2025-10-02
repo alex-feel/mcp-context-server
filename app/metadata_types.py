@@ -55,7 +55,10 @@ class MetadataFilter(BaseModel):
     @classmethod
     def validate_key(cls, v: str) -> str:
         """Validate JSON path key for safety."""
-        if not v or not v.strip():
+        # Validate required key field: must contain non-whitespace characters
+        # Since v is typed as str (not str | None) by Pydantic, it cannot be None
+        # We only need to check if it's empty or contains only whitespace
+        if not v.strip():
             raise ValueError('Metadata key cannot be empty')
 
         # Basic validation to prevent obvious SQL injection attempts
