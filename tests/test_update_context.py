@@ -459,3 +459,56 @@ class TestUpdateContext:
 
             # Verify operations were attempted in order
             assert call_order == ['update_context_entry', 'replace_tags']
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('mock_context')
+    async def test_empty_text_validation_error(self, mock_repositories):
+        """Test that empty text is properly validated in the function body."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            # Empty string is now validated in the function body, not by Pydantic
+            result = await update_context(
+                context_id=123,
+                text='',  # Empty string should fail in function validation
+            )
+
+            # Verify it returns an error response
+            assert result['success'] is False
+            assert 'text' in result['error'].lower()
+            assert 'empty' in result['error'].lower() or 'whitespace' in result['error'].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('mock_context')
+    async def test_whitespace_only_text_validation_error(self, mock_repositories):
+        """Test that whitespace-only text is rejected by business logic validation.
+
+        Note: Since we removed Pydantic min_length constraint, validation is now done
+        in the function body which properly checks for non-whitespace content.
+        """
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            # Whitespace-only strings are now caught in function validation
+            result = await update_context(
+                context_id=456,
+                text='   \t\n  ',  # Whitespace only should fail
+            )
+
+            # Verify it returns an error response
+            assert result['success'] is False
+            assert 'text' in result['error'].lower()
+            assert 'empty' in result['error'].lower() or 'whitespace' in result['error'].lower()
+
+    @pytest.mark.asyncio
+    async def test_valid_single_character_text(self, mock_context, mock_repositories):
+        """Test that single character text is valid."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=789,
+                text='x',  # Single character should pass
+                metadata=None,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            assert result['context_id'] == 789
+            assert 'text_content' in result['updated_fields']
