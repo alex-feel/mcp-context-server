@@ -329,9 +329,9 @@ def truncate_text(text: str | None, max_length: int = 150) -> tuple[str | None, 
 
 @mcp.tool()
 async def store_context(
-    thread_id: Annotated[str, Field(min_length=1, description='Unique identifier for the conversation/task thread')],
+    thread_id: Annotated[str, Field(description='Unique identifier for the conversation/task thread')],
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
-    text: Annotated[str, Field(min_length=1, description='Text content to store')],
+    text: Annotated[str, Field(description='Text content to store')],
     images: Annotated[list[dict[str, str]] | None, Field(description='List of base64 encoded images with mime_type')] = None,
     metadata: Annotated[
         MetadataDict | None,
@@ -368,27 +368,6 @@ async def store_context(
         ValueError: If context insertion fails.
     """
     try:
-        # Validate required fields when called directly (not through MCP)
-        # Note: When called through MCP, Field validation handles this automatically
-
-        # Validate required thread_id field: must exist and contain non-whitespace characters
-        # When called directly (e.g., in tests), the function can receive None despite the type hint
-        # We check both None and empty/whitespace strings for defensive programming
-        if not thread_id or not thread_id.strip():
-            return StoreContextErrorDict(
-                success=False,
-                error='thread_id is required and cannot be empty',
-            )
-
-        # Validate required text field: must exist and contain non-whitespace characters
-        # When called directly (e.g., in tests), the function can receive None despite the type hint
-        # We check both None and empty/whitespace strings for defensive programming
-        if not text or not text.strip():
-            return StoreContextErrorDict(
-                success=False,
-                error='text is required and cannot be empty',
-            )
-
         # Log info if context is available
         if ctx:
             await ctx.info(f'Storing context for thread: {thread_id}')
@@ -628,7 +607,7 @@ async def search_context(
 
 @mcp.tool()
 async def get_context_by_ids(
-    context_ids: Annotated[list[int], Field(min_length=1, description='List of context entry IDs to retrieve')],
+    context_ids: Annotated[list[int], Field(description='List of context entry IDs to retrieve')],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
     ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
@@ -753,7 +732,7 @@ async def delete_context(
 @mcp.tool()
 async def update_context(
     context_id: Annotated[int, Field(description='ID of the context entry to update')],
-    text: Annotated[str | None, Field(None, min_length=1, description='New text content (replaces existing)')] = None,
+    text: Annotated[str | None, Field(None, description='New text content (replaces existing)')] = None,
     metadata: Annotated[MetadataDict | None, Field(description='New metadata object (replaces existing)')] = None,
     tags: Annotated[list[str] | None, Field(description='New tags list (replaces all existing tags)')] = None,
     images: Annotated[
@@ -786,17 +765,6 @@ async def update_context(
             return UpdateContextErrorDict(
                 success=False,
                 error='At least one field must be provided for update',
-                context_id=context_id,
-            )
-
-        # Validate optional text field: if provided, must contain non-whitespace characters
-        # Since text is an optional parameter (type: str | None), we first check it's not None
-        # Only if text was explicitly provided do we validate that it contains non-whitespace
-        # This allows text=None (no update) but prevents text="" or text="   " (invalid updates)
-        if text is not None and not text.strip():
-            return UpdateContextErrorDict(
-                success=False,
-                error='Text content cannot be empty or whitespace only',
                 context_id=context_id,
             )
 
