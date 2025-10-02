@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 import base64
 
+import pytest
+
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
-import pytest
 
 # Get the actual async functions from the FunctionTool wrappers
 # FastMCP wraps our functions in FunctionTool objects, but we need the original functions for testing

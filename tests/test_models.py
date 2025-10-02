@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
+
 from app.models import ContentType
 from app.models import ContextEntry
 from app.models import DeleteContextRequest
@@ -20,7 +22,6 @@ from app.models import ImageAttachment
 from app.models import SearchFilters
 from app.models import SourceType
 from app.models import StoreContextRequest
-from pydantic import ValidationError
 
 
 class TestSourceType:

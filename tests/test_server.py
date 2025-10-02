@@ -18,11 +18,12 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+from fastmcp import Context
+
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
-import pytest
-from fastmcp import Context
 
 # Get the actual async functions from the FunctionTool wrappers
 # FastMCP wraps our functions in FunctionTool objects, but we need the original functions for testing

@@ -22,12 +22,13 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-import app.server
 import pytest
 import pytest_asyncio
+from fastmcp import Context
+
+import app.server
 from app.db_manager import DatabaseConnectionManager
 from app.settings import AppSettings
-from fastmcp import Context
 
 
 # Global fixture to ensure NO test uses the default database

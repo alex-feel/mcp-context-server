@@ -11,8 +11,9 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-import app.server
 import pytest
+
+import app.server
 from app.repositories import RepositoryContainer
 
 # Get the actual async functions from the FunctionTool wrappers

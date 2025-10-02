@@ -10,9 +10,10 @@ from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
 
-import app.server
 import pytest
 from fastmcp import Context
+
+import app.server
 
 # Get the actual async function from the FunctionTool wrapper
 # FastMCP wraps our function in a FunctionTool object, but we need the original function for testing

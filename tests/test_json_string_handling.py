@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-import app.server
 import pytest
+
+import app.server
 from app.server import deserialize_json_param
 from app.types import JsonValue
 

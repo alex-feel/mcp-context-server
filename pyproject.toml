@@ -49,6 +49,8 @@ line-length = 127
 extend-include = ["tests/*"]
 
 [tool.ruff.lint]
+# Ignore specific rules
+ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Enable rule groups
 select = [
     "FAST",  # FastAPI
@@ -106,7 +108,7 @@ quote-annotations = true
 strict = false
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"]
+known-first-party = ["app"]
 force-single-line = true
 
 [tool.ruff.lint.pydoclint]

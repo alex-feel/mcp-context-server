@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from app.db_manager import DatabaseConnectionManager
 from app.db_manager import get_connection_manager
 from app.db_manager import reset_connection_manager

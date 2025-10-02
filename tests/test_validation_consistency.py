@@ -6,8 +6,9 @@ Ensures both tools have consistent validation behavior.
 
 from typing import cast
 
-import app.server
 import pytest
+
+import app.server
 
 # Get the actual async functions from the FunctionTool wrappers
 store_context = app.server.store_context.fn
