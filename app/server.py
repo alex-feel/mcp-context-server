@@ -368,6 +368,40 @@ async def store_context(
         ValueError: If context insertion fails.
     """
     try:
+        # Validate and clean input strings
+        if not thread_id or not thread_id.strip():
+            return StoreContextErrorDict(
+                success=False,
+                error='thread_id is required and cannot be empty',
+            )
+        thread_id = thread_id.strip()
+
+        if not text or not text.strip():
+            return StoreContextErrorDict(
+                success=False,
+                error='text is required and cannot be empty',
+            )
+        text = text.strip()
+
+        # Validate source value
+        if source not in ('user', 'agent'):
+            return StoreContextErrorDict(
+                success=False,
+                error="source must be either 'user' or 'agent'",
+            )
+
+        # Validate images if provided
+        if images:
+            for idx, img in enumerate(images):
+                if 'data' in img:
+                    try:
+                        base64.b64decode(img['data'])
+                    except Exception:
+                        return StoreContextErrorDict(
+                            success=False,
+                            error=f'Invalid base64 encoded data in image {idx}',
+                        )
+
         # Log info if context is available
         if ctx:
             await ctx.info(f'Storing context for thread: {thread_id}')
@@ -732,7 +766,7 @@ async def delete_context(
 @mcp.tool()
 async def update_context(
     context_id: Annotated[int, Field(description='ID of the context entry to update')],
-    text: Annotated[str | None, Field(None, description='New text content (replaces existing)')] = None,
+    text: Annotated[str | None, Field(description='New text content (replaces existing)')] = None,
     metadata: Annotated[MetadataDict | None, Field(description='New metadata object (replaces existing)')] = None,
     tags: Annotated[list[str] | None, Field(description='New tags list (replaces all existing tags)')] = None,
     images: Annotated[
@@ -760,6 +794,16 @@ async def update_context(
         UpdateContextSuccessDict on success, UpdateContextErrorDict on failure.
     """
     try:
+        # Validate text if provided (cannot be empty or whitespace-only)
+        if text is not None:
+            text = text.strip()
+            if not text:
+                return UpdateContextErrorDict(
+                    success=False,
+                    error='text cannot be empty or contain only whitespace',
+                    context_id=context_id,
+                )
+
         # Validate that at least one field is provided for update
         if text is None and metadata is None and tags is None and images is None:
             return UpdateContextErrorDict(

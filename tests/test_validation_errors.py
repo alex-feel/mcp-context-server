@@ -116,15 +116,16 @@ class TestStoreContextValidation:
         with patch('app.server._ensure_repositories', return_value=mock_repos):
             from typing import cast
             invalid_source = cast(Any, 'invalid')
-            # The function should accept any source when called directly
+            # The function should validate source even when called directly
             result = await store_context(
                 thread_id='test-thread',
                 source=invalid_source,
                 text='Test content',
             )
-            # Should succeed since we don't manually validate source
+            # Should fail with proper error message
             assert isinstance(result, dict)
-            assert result['success'] is True
+            assert result['success'] is False
+            assert 'source' in result['error'].lower() or 'agent' in result['error'].lower()
 
     @pytest.mark.asyncio
     async def test_oversized_image(self, mock_repos):

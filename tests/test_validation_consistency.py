@@ -67,7 +67,7 @@ class TestValidationConsistency:
         )
 
         assert result['success'] is False
-        assert 'Text content cannot be empty or whitespace only' in result['error']
+        assert 'text cannot be empty or contain only whitespace' in result['error']
 
         # Try to update with whitespace only
         result = await update_context(
@@ -76,7 +76,7 @@ class TestValidationConsistency:
         )
 
         assert result['success'] is False
-        assert 'Text content cannot be empty or whitespace only' in result['error']
+        assert 'text cannot be empty or contain only whitespace' in result['error']
 
     @pytest.mark.asyncio
     async def test_store_context_requires_text(

@@ -152,7 +152,8 @@ class TestUTF8Encoding:
 
         assert result['success'] is True
         call_args = self.mock_repos.context.store_with_deduplication.call_args
-        assert call_args[1]['text_content'] == mixed_text
+        # Text gets stripped of leading/trailing whitespace
+        assert call_args[1]['text_content'] == mixed_text.strip()
 
     @pytest.mark.asyncio
     async def test_special_unicode_characters(self) -> None:

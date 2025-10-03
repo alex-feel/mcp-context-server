@@ -111,8 +111,10 @@ class TestStoreContext:
         )
 
         assert result['success'] is False
-        # Database constraint error is expected when invalid source reaches DB
-        assert 'CHECK constraint failed' in result['error'] or 'source' in result['error'].lower()
+        # Updated to match new Pydantic validation error message
+        assert ('CHECK constraint failed' in result['error']
+                or 'source' in result['error'].lower()
+                or "Input should be 'user' or 'agent'" in result['error'])
 
     @pytest.mark.asyncio
     async def test_store_context_oversized_image(
@@ -142,7 +144,9 @@ class TestStoreContext:
         )
 
         assert result['success'] is False
-        assert 'Failed to process image' in result['error']
+        # Updated to match new Pydantic validation error message
+        assert ('Failed to process image' in result['error']
+                or 'Invalid base64 encoded data' in result['error'])
 
     @pytest.mark.asyncio
     async def test_store_multiple_images(
