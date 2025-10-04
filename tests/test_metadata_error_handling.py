@@ -1,8 +1,9 @@
 """Test metadata filtering error handling."""
 
 import pytest
-from app.server import search_context
 from fastmcp import Context as MockFastMCPContext
+
+from app.server import search_context
 
 
 @pytest.mark.asyncio

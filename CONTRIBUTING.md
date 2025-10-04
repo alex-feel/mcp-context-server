@@ -172,9 +172,9 @@ This server implements the Model Context Protocol (MCP), an open standard for se
 The server uses a clean repository pattern to separate concerns:
 
 - **RepositoryContainer**: Dependency injection container for all repositories
-- **ContextRepository**: Manages context entries with deduplication and metadata filtering
-- **TagRepository**: Handles tag normalization and relationships
-- **ImageRepository**: Manages multimodal attachments
+- **ContextRepository**: Manages context entries with deduplication, metadata filtering, and selective updates
+- **TagRepository**: Handles tag normalization, relationships, and tag replacement for updates
+- **ImageRepository**: Manages multimodal attachments and image replacement for updates
 - **StatisticsRepository**: Provides metrics and thread statistics
 - **DatabaseConnectionManager**: Thread-safe connection pooling with retry logic
 - **MetadataQueryBuilder**: Secure SQL generation for metadata filtering with 15 operators

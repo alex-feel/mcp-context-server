@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING
 
 import pytest
+
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.query_builder import MetadataQueryBuilder

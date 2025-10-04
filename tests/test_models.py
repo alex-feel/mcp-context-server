@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
+
 from app.models import ContentType
 from app.models import ContextEntry
 from app.models import DeleteContextRequest
@@ -20,7 +22,6 @@ from app.models import ImageAttachment
 from app.models import SearchFilters
 from app.models import SourceType
 from app.models import StoreContextRequest
-from pydantic import ValidationError
 
 
 class TestSourceType:
@@ -187,7 +188,7 @@ class TestContextEntry:
                 source=SourceType.USER,
                 text_content='',  # Empty string should fail min_length=1
             )
-        assert 'at least 1 character' in str(exc_info.value)
+        assert 'Text content cannot be empty or contain only whitespace' in str(exc_info.value)
 
     def test_too_many_images(self) -> None:
         """Test exceeding max images limit."""
@@ -313,7 +314,7 @@ class TestStoreContextRequest:
                 source=SourceType.USER,
                 text='',
             )
-        assert 'at least 1 character' in str(exc_info.value)
+        assert 'text is required and cannot be empty' in str(exc_info.value)
 
     def test_too_many_images_in_request(self) -> None:
         """Test exceeding max images in store request."""
@@ -361,4 +362,4 @@ class TestDeleteContextRequest:
         """Test empty context IDs list is invalid."""
         with pytest.raises(ValidationError) as exc_info:
             DeleteContextRequest(context_ids=[])
-        assert 'List should have at least 1 item' in str(exc_info.value)
+        assert 'context_ids cannot be an empty list' in str(exc_info.value)

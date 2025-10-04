@@ -48,6 +48,9 @@ uv run pytest -m "not integration"
 uv run pytest tests/test_metadata_filtering.py -v
 uv run pytest tests/test_metadata_error_handling.py -v
 
+# Run update_context tests
+uv run pytest tests/test_update_context.py -v
+
 # Run real server integration test
 uv run python run_integration_test.py
 ```
@@ -83,7 +86,7 @@ This server implements the [Model Context Protocol](https://modelcontextprotocol
 This is a FastMCP 2.0-based Model Context Protocol server that provides persistent context storage for LLM agents. The architecture consists of:
 
 1. **FastMCP Server Layer** (`app/server.py`):
-   - Exposes 6 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `list_threads`, `get_statistics`
+   - Exposes 7 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`
    - Handles stdio transport for Claude Desktop/LangGraph integration
    - Manages async request processing with proper lifecycle management
    - Uses `RepositoryContainer` for all database operations (no direct SQL)
@@ -91,7 +94,7 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
 
 2. **Repository Pattern** (`app/repositories/`):
    - **RepositoryContainer**: Dependency injection container managing all repository instances
-   - **ContextRepository**: Manages context entries (CRUD operations, search, deduplication, metadata filtering)
+   - **ContextRepository**: Manages context entries (CRUD operations, search, deduplication, metadata filtering, updates)
    - **TagRepository**: Handles tag normalization and many-to-many relationships
    - **ImageRepository**: Manages multimodal image attachments
    - **StatisticsRepository**: Provides thread statistics and database metrics
@@ -148,7 +151,7 @@ All agents share thread_id="analyze-q4-sales" and can retrieve each other's cont
 ### Database Schema
 
 Three main tables with strategic indexing:
-- `context_entries`: Main storage with thread_id and source indexes, JSON metadata field
+- `context_entries`: Main storage with thread_id and source indexes, JSON metadata field, updated_at timestamp
 - `tags`: Normalized many-to-many relationship, lowercase storage
 - `image_attachments`: Binary BLOB storage with foreign key cascade
 
@@ -184,6 +187,9 @@ The codebase uses a comprehensive multi-layered testing approach:
 - **`test_json_string_handling.py`**: Validates JSON string handling in tool responses
 - **`test_deduplication.py`**: Tests context deduplication logic
 - **`test_resource_warnings.py`**: Validates proper resource cleanup
+- **`test_metadata_filtering.py`**: Tests advanced metadata filtering with operators
+- **`test_metadata_error_handling.py`**: Tests metadata filtering error cases
+- **`test_update_context.py`**: Tests update_context tool functionality
 
 #### Test Fixtures (`conftest.py`):
 - **`test_settings`**: Creates test-specific AppSettings with temp database
@@ -329,6 +335,16 @@ Both mypy and pyright are configured:
 2. **Use `_ensure_repositories()` to get repository container** - ensures proper initialization
 3. **Repository methods return domain objects** - repositories handle all SQL and data mapping
 4. **Each repository focuses on a single concern** - context, tags, images, or statistics
+5. **Repository methods handle async/sync conversion** - repositories wrap sync DB calls with async
+
+### Update Context Tool Implementation
+
+The `update_context` tool has specific behavior:
+1. **Selective Updates**: Only provided fields are updated (partial updates supported)
+2. **Immutable Fields**: `id`, `thread_id`, `source`, `created_at` cannot be modified
+3. **Auto-managed Fields**: `content_type` recalculates based on images, `updated_at` auto-updates
+4. **Full Replacement**: Tags and images use replacement semantics (not merge)
+5. **Transaction Safety**: All updates wrapped in transactions for consistency
 
 ### Database Best Practices
 
@@ -345,3 +361,4 @@ Both mypy and pyright are configured:
 2. **Real database for integration tests** - use `initialized_server` fixture
 3. **Test Windows compatibility** - the project runs on Windows, avoid Unix-specific commands
 4. **Use temporary paths** from pytest's `tmp_path` fixture for test isolation
+5. **Test update_context thoroughly** - ensure partial updates, field validation, and transaction safety

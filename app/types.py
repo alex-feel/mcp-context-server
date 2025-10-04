@@ -54,13 +54,6 @@ class StoreContextSuccessDict(TypedDict):
     message: str
 
 
-class StoreContextErrorDict(TypedDict):
-    """Type definition for error store context response."""
-
-    success: bool
-    error: str
-
-
 class ThreadInfoDict(TypedDict):
     """Type definition for individual thread info."""
 
@@ -86,3 +79,12 @@ class ImageDict(TypedDict, total=False):
     data: str
     mime_type: str
     metadata: dict[str, str] | None
+
+
+class UpdateContextSuccessDict(TypedDict):
+    """Type definition for successful update context response."""
+
+    success: bool
+    context_id: int
+    updated_fields: list[str]
+    message: str

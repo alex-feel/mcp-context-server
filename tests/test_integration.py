@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import base64
 
+import pytest
+from fastmcp.exceptions import ToolError
+
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
-import pytest
 
 # Get the actual async functions from the FunctionTool wrappers
 # FastMCP wraps our functions in FunctionTool objects, but we need the original functions for testing
@@ -523,8 +525,7 @@ class TestErrorRecovery:
         # Check that valid operations succeeded
         assert not isinstance(results[0], BaseException)
         assert results[0]['success'] is True
-        assert not isinstance(results[1], BaseException)
-        assert results[1]['success'] is False
+        assert isinstance(results[1], ToolError)  # Should be a ToolError
         assert not isinstance(results[2], BaseException)
         assert results[2]['success'] is True
 
@@ -539,13 +540,13 @@ class TestErrorRecovery:
     @pytest.mark.integration
     async def test_recovery_after_error(self) -> None:
         """Test that system recovers after errors."""
-        # Cause an error
-        error_result = await store_context(
-            thread_id='test',
-            source='invalid_source',  # Invalid
-            text='This will fail',
-        )
-        assert error_result['success'] is False
+        # Cause an error - using cast() to bypass Pydantic, database CHECK constraint catches invalid source
+        with pytest.raises(ToolError, match=r'CHECK constraint failed.*source'):
+            await store_context(
+                thread_id='test',
+                source='invalid_source',  # Invalid
+                text='This will fail',
+            )
 
         # System should still work normally
         success_result = await store_context(

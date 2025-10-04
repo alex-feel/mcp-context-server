@@ -353,76 +353,100 @@ class DatabaseConnectionManager:
 
         logger.info('Connection manager initialized successfully')
 
+    async def wait_for_shutdown_complete(self, timeout_seconds: float | None = None) -> bool:
+        """Wait for shutdown to complete with optional timeout.
+
+        Args:
+            timeout_seconds: Maximum time to wait in seconds, None for no timeout
+
+        Returns:
+            bool: True if shutdown completed, False if timed out
+        """
+        try:
+            if timeout_seconds is None:
+                await self._shutdown_complete.wait()
+                return True
+            await asyncio.wait_for(self._shutdown_complete.wait(), timeout=timeout_seconds)
+            return True
+        except TimeoutError:
+            return False
+
     async def shutdown(self) -> None:
         """Gracefully shutdown the connection manager with enhanced task cleanup."""
         logger.info('Shutting down connection manager')
 
-        # Signal shutdown to all background tasks
-        self._shutdown = True
-        self._shutdown_event.set()
+        try:
+            # Signal shutdown to all background tasks
+            self._shutdown = True
+            self._shutdown_event.set()
 
-        # Drain write queue, cancel pending futures
-        while not self._write_queue.empty():
-            try:
-                request = self._write_queue.get_nowait()
-                if not request.future.done():
-                    request.future.cancel()
-            except asyncio.QueueEmpty:
-                break
-            except Exception:
-                pass
+            # Drain write queue, cancel pending futures
+            while not self._write_queue.empty():
+                try:
+                    request = self._write_queue.get_nowait()
+                    if not request.future.done():
+                        request.future.cancel()
+                except asyncio.QueueEmpty:
+                    break
+                except Exception:
+                    pass
 
-        # Cancel and await all background tasks
-        tasks_to_cancel = list(self._background_tasks)
+            # Cancel and await all background tasks
+            tasks_to_cancel = list(self._background_tasks)
 
-        # Also include specific task references if they exist
-        if self._write_processor_task and not self._write_processor_task.done():
-            tasks_to_cancel.append(self._write_processor_task)
-        if self._health_check_task and not self._health_check_task.done():
-            tasks_to_cancel.append(self._health_check_task)
+            # Also include specific task references if they exist
+            if self._write_processor_task and not self._write_processor_task.done():
+                tasks_to_cancel.append(self._write_processor_task)
+            if self._health_check_task and not self._health_check_task.done():
+                tasks_to_cancel.append(self._health_check_task)
 
-        if tasks_to_cancel:
-            logger.debug(f'Cancelling {len(tasks_to_cancel)} background tasks')
-            for task in tasks_to_cancel:
-                if not task.done():
-                    task.cancel()
-
-            # Wait for all tasks to complete with timeout
-            try:
-                # Determine timeout based on environment
-                shutdown_timeout = (
-                    settings.storage.shutdown_timeout_test_s
-                    if is_test_environment()
-                    else settings.storage.shutdown_timeout_s
-                )
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks_to_cancel, return_exceptions=True),
-                    timeout=shutdown_timeout,
-                )
-            except TimeoutError:
-                logger.warning('Some tasks did not complete within timeout')
-                # Force-cancel any remaining tasks
+            if tasks_to_cancel:
+                logger.debug(f'Cancelling {len(tasks_to_cancel)} background tasks')
                 for task in tasks_to_cancel:
                     if not task.done():
                         task.cancel()
-                        # Give tasks a brief moment to handle cancellation
-                        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
-                            await asyncio.wait_for(task, timeout=0.1)
 
-        # Clear task references before closing connections
-        self._background_tasks.clear()
-        self._write_processor_task = None
-        self._health_check_task = None
+                # Wait for all tasks to complete with timeout
+                try:
+                    # Determine timeout based on environment
+                    shutdown_timeout = (
+                        settings.storage.shutdown_timeout_test_s
+                        if is_test_environment()
+                        else settings.storage.shutdown_timeout_s
+                    )
+                    await asyncio.wait_for(
+                        asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                        timeout=shutdown_timeout,
+                    )
+                except TimeoutError:
+                    logger.warning('Some tasks did not complete within timeout')
+                    # Force-cancel any remaining tasks
+                    for task in tasks_to_cancel:
+                        if not task.done():
+                            task.cancel()
+                            # Give tasks a brief moment to handle cancellation
+                            with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                                await asyncio.wait_for(task, timeout=0.1)
 
-        # Small delay to ensure all async operations are settled
-        await asyncio.sleep(0.01)
+            # Clear task references before closing connections
+            self._background_tasks.clear()
+            self._write_processor_task = None
+            self._health_check_task = None
 
-        # Close all connections
-        await self._close_all_connections()
+            # Small delay to ensure all async operations are settled
+            await asyncio.sleep(0.01)
 
-        # Signal shutdown complete
-        self._shutdown_complete.set()
-        logger.info('Connection manager shutdown complete')
+            # Close all connections
+            await self._close_all_connections()
+
+            logger.info('Connection manager shutdown complete')
+        except Exception as e:
+            logger.error(f'Error during connection manager shutdown: {e}')
+            raise
+        finally:
+            # Always signal shutdown complete, even on error
+            # This prevents infinite hangs in cleanup code waiting for this event
+            self._shutdown_complete.set()
 
     def _create_connection(self, readonly: bool = False) -> sqlite3.Connection:
         """Create a new SQLite connection with optimal settings."""
@@ -435,8 +459,10 @@ class DatabaseConnectionManager:
         if not readonly and not self.db_path.exists():
             # Create an initial connection to create the database file
             # Use with statement to ensure closure
-            with sqlite3.connect(str(self.db_path)):
-                pass
+            with sqlite3.connect(str(self.db_path)) as init_conn:
+                # Set UTF-8 encoding BEFORE any data operations
+                init_conn.execute('PRAGMA encoding = "UTF-8"')
+                init_conn.commit()
 
         # Use URI mode for better control
         uri = f"file:{self.db_path}?mode={'ro' if readonly else 'rw'}"
@@ -448,6 +474,19 @@ class DatabaseConnectionManager:
             isolation_level='DEFERRED',  # Better for concurrent access
             factory=ManagedConnection,  # Ensure finalizer-based safety on GC
         )
+
+        # Do NOT set text_factory to str as it causes encoding issues
+        # SQLite3 in Python 3 already handles Unicode properly by default
+        # Setting text_factory=str can cause double encoding problems
+        # conn.text_factory = str  # REMOVED - This was causing UTF-8 issues
+
+        # ENSURE proper UTF-8 handling by verifying encoding (read-only check)
+        if not readonly:
+            # For write connections, ensure the database is using UTF-8
+            cursor = conn.execute('PRAGMA encoding')
+            encoding = cursor.fetchone()[0]
+            if encoding != 'UTF-8':
+                logger.warning(f'Database encoding is {encoding}, expected UTF-8. This may cause issues with non-ASCII text.')
 
         try:
             conn.row_factory = sqlite3.Row
@@ -509,46 +548,14 @@ class DatabaseConnectionManager:
         loop = asyncio.get_event_loop()
 
         def _get_reader() -> sqlite3.Connection:
-            with self._pool_lock:
-                # Rebuild pool of healthy readers, pick one after the scan
-                healthy_connections: list[sqlite3.Connection] = []
-                chosen: sqlite3.Connection | None = None
-
-                for conn in self._reader_pool[:]:
-                    try:
-                        # Quick health check
-                        conn.execute('SELECT 1')
-                        healthy_connections.append(conn)
-                        if chosen is None:
-                            chosen = conn
-                    except Exception:
-                        # Close unhealthy connection and remove from pool
-                        self._reader_pool.remove(conn)
-                        self._safe_close_connection(conn)
-
-                # Update pool with only healthy connections
-                self._reader_pool = healthy_connections
-
-                if chosen is not None:
-                    return chosen
-
-                # Create new reader if pool not full
-                if len(self._reader_pool) < self.pool_config.max_readers:
-                    conn = self._create_connection(readonly=True)
-                    self._reader_pool.append(conn)
-                    logger.debug(f'Created new reader connection (pool size: {len(self._reader_pool)})')
-                    return conn
-
-                # Pool full, return writer connection as fallback
-                if self._writer_conn:
-                    return self._writer_conn
-
-                # Create a temporary connection, track it for cleanup
-                temp_conn = self._create_connection(readonly=False)
-                with self._connection_lock:
-                    self._temporary_connections.add(temp_conn)
-                logger.debug('Created temporary reader connection (pool full)')
-                return temp_conn
+            # For concurrent operations, always create isolated connections
+            # SQLite doesn't handle connection sharing well across threads
+            # Always create a temporary connection to ensure thread safety
+            temp_conn = self._create_connection(readonly=True)
+            with self._connection_lock:
+                self._temporary_connections.add(temp_conn)
+            logger.debug('Created isolated reader connection for thread safety')
+            return temp_conn
 
         return await loop.run_in_executor(None, _get_reader)
 

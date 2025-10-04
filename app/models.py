@@ -69,12 +69,20 @@ class ContextEntry(BaseModel):
     thread_id: str = Field(..., description='Thread identifier for context scoping')
     source: SourceType = Field(..., description='Origin of the context')
     content_type: ContentType = Field(default=ContentType.TEXT)
-    text_content: str | None = Field(default=None, min_length=1)
+    text_content: str | None = Field(default=None)
     images: list[Any] = Field(default_factory=list, max_length=10)  # Pyright false positive - ImageAttachment is defined
     metadata: MetadataDict | None = Field(default=None)
     tags: list[str] = Field(default_factory=list)
     created_at: datetime | None = Field(default=None)
     updated_at: datetime | None = Field(default=None)
+
+    @field_validator('text_content')
+    @classmethod
+    def validate_text_content(cls, v: str | None) -> str | None:
+        """Validate text content is not empty if provided."""
+        if v is not None and not v.strip():
+            raise ValueError('Text content cannot be empty or contain only whitespace')
+        return v
 
     @field_validator('tags')
     @classmethod
@@ -138,17 +146,41 @@ class StoreContextRequest(BaseModel):
 
     thread_id: str = Field(..., description='Thread ID for context scoping')
     source: SourceType = Field(..., description="Must be 'user' or 'agent'")
-    text: str | None = Field(default=None, min_length=1)
+    text: str | None = Field(default=None)
     images: list[ImageAttachment] | None = Field(default=None, max_length=10)
     metadata: MetadataDict | None = Field(default=None)
     tags: list[str] | None = Field(default=None)
+
+    @field_validator('thread_id')
+    @classmethod
+    def validate_thread_id(cls, v: str) -> str:
+        """Validate thread_id is not empty or whitespace."""
+        if not v.strip():
+            raise ValueError('thread_id is required and cannot be empty')
+        return v
+
+    @field_validator('text')
+    @classmethod
+    def validate_text(cls, v: str | None) -> str | None:
+        """Validate text is not empty if provided."""
+        if v is not None and not v.strip():
+            raise ValueError('text is required and cannot be empty')
+        return v
 
 
 class DeleteContextRequest(BaseModel):
     """Request model for deleting context"""
 
-    context_ids: list[int] | None = Field(default=None, min_length=1)
+    context_ids: list[int] | None = Field(default=None)
     thread_id: str | None = Field(default=None)
+
+    @field_validator('context_ids')
+    @classmethod
+    def validate_context_ids(cls, v: list[int] | None) -> list[int] | None:
+        """Validate context_ids is not empty if provided."""
+        if v is not None and len(v) == 0:
+            raise ValueError('context_ids cannot be an empty list')
+        return v
 
     @model_validator(mode='after')
     def validate_has_fields(self) -> DeleteContextRequest:

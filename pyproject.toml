@@ -9,7 +9,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastmcp==2.12.4",
     "pydantic-settings==2.11.0",
-    "pydantic==2.11.9",
+    "pydantic==2.11.10",
     "python-dotenv==1.1.1",
     "typing_extensions==4.15.0",
 ]
@@ -36,7 +36,8 @@ dev = [
     "pytest>=8.3.5",
     "hatchling>=1.27.0",
     "mypy>=1.18.2",
-    "pyright>=1.1.405",
+    "pyright>=1.1.406",
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.ruff]
@@ -49,6 +50,8 @@ line-length = 127
 extend-include = ["tests/*"]
 
 [tool.ruff.lint]
+# Ignore specific rules
+ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Enable rule groups
 select = [
     "FAST",  # FastAPI
@@ -106,7 +109,7 @@ quote-annotations = true
 strict = false
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"]
+known-first-party = ["app"]
 force-single-line = true
 
 [tool.ruff.lint.pydoclint]

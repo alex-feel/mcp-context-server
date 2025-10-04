@@ -20,6 +20,7 @@ from typing import cast
 
 from fastmcp import Context
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.db_manager import DatabaseConnectionManager
@@ -30,9 +31,9 @@ from app.settings import get_settings
 from app.types import ContextEntryDict
 from app.types import JsonValue
 from app.types import MetadataDict
-from app.types import StoreContextErrorDict
 from app.types import StoreContextSuccessDict
 from app.types import ThreadListDict
+from app.types import UpdateContextSuccessDict
 
 # Get setting
 settings = get_settings()
@@ -103,7 +104,8 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
 
 # Initialize FastMCP server with lifespan management
-mcp = FastMCP(name='mcp-context-server', lifespan=lifespan)
+# mask_error_details=False exposes validation errors for LLM autocorrection
+mcp = FastMCP(name='mcp-context-server', lifespan=lifespan, mask_error_details=False)
 
 
 async def init_database() -> None:
@@ -165,6 +167,41 @@ CREATE TABLE IF NOT EXISTS image_attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_id);
+
+-- Functional indexes for common metadata patterns (improves metadata filtering performance)
+-- These indexes extract specific JSON fields for faster querying
+
+-- Status-based filtering (most common use case)
+CREATE INDEX IF NOT EXISTS idx_metadata_status
+ON context_entries(json_extract(metadata, '$.status'))
+WHERE json_extract(metadata, '$.status') IS NOT NULL;
+
+-- Priority-based filtering (numeric comparisons)
+CREATE INDEX IF NOT EXISTS idx_metadata_priority
+ON context_entries(json_extract(metadata, '$.priority'))
+WHERE json_extract(metadata, '$.priority') IS NOT NULL;
+
+-- Agent name filtering (identify specific agents)
+CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
+ON context_entries(json_extract(metadata, '$.agent_name'))
+WHERE json_extract(metadata, '$.agent_name') IS NOT NULL;
+
+-- Task name filtering (search by task title/name)
+CREATE INDEX IF NOT EXISTS idx_metadata_task_name
+ON context_entries(json_extract(metadata, '$.task_name'))
+WHERE json_extract(metadata, '$.task_name') IS NOT NULL;
+
+-- Composite indexes for common filter combinations
+CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
+ON context_entries(thread_id, json_extract(metadata, '$.status'));
+
+CREATE INDEX IF NOT EXISTS idx_thread_metadata_priority
+ON context_entries(thread_id, json_extract(metadata, '$.priority'));
+
+-- Boolean flag indexes
+CREATE INDEX IF NOT EXISTS idx_metadata_completed
+ON context_entries(json_extract(metadata, '$.completed'))
+WHERE json_extract(metadata, '$.completed') IS NOT NULL;
             '''
 
         # Apply schema using a short-lived manager
@@ -179,6 +216,11 @@ CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_
         finally:
             # Always shutdown to stop background tasks and close connections
             await temp_manager.shutdown()
+            # Wait for shutdown to complete with timeout to prevent race conditions
+            # This ensures background tasks are fully stopped before proceeding
+            await temp_manager.wait_for_shutdown_complete(
+                timeout_seconds=get_settings().storage.shutdown_timeout_test_s,
+            )
     except Exception as e:
         logger.error(f'Failed to initialize database: {e}')
         raise
@@ -292,9 +334,9 @@ def truncate_text(text: str | None, max_length: int = 150) -> tuple[str | None, 
 
 @mcp.tool()
 async def store_context(
-    thread_id: Annotated[str, Field(description='Unique identifier for the conversation/task thread')],
+    thread_id: Annotated[str, Field(min_length=1, description='Unique identifier for the conversation/task thread')],
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
-    text: Annotated[str, Field(description='Text content to store', min_length=1)],
+    text: Annotated[str, Field(min_length=1, description='Text content to store')],
     images: Annotated[list[dict[str, str]] | None, Field(description='List of base64 encoded images with mime_type')] = None,
     metadata: Annotated[
         MetadataDict | None,
@@ -308,7 +350,7 @@ async def store_context(
     ] = None,
     tags: Annotated[list[str] | None, Field(description='List of tags (will be normalized and stored separately)')] = None,
     ctx: Context | None = None,
-) -> StoreContextSuccessDict | StoreContextErrorDict:
+) -> StoreContextSuccessDict:
     """
     Store a context entry with optional images.
 
@@ -325,12 +367,37 @@ async def store_context(
         ctx: FastMCP context object
 
     Returns:
-        dict: Success status with context_id if successful, error message if failed.
+        dict: Success status with context_id if successful.
 
     Raises:
-        ValueError: If context insertion fails.
+        ToolError: If validation fails or context insertion fails.
     """
     try:
+        # Clean input strings - defensive try/except handles edge cases where Pydantic validation bypassed
+        try:
+            thread_id = thread_id.strip()
+        except AttributeError:
+            raise ToolError('thread_id is required') from None
+        try:
+            text = text.strip()
+        except AttributeError:
+            raise ToolError('text is required') from None
+
+        # Business logic: empty strings after stripping are not allowed
+        if not thread_id:
+            raise ToolError('thread_id cannot be empty or whitespace')
+        if not text:
+            raise ToolError('text cannot be empty or whitespace')
+
+        # Validate images if provided
+        if images:
+            for idx, img in enumerate(images):
+                if 'data' in img:
+                    try:
+                        base64.b64decode(img['data'])
+                    except Exception:
+                        raise ToolError(f'Invalid base64 encoded data in image {idx}') from None
+
         # Log info if context is available
         if ctx:
             await ctx.info(f'Storing context for thread: {thread_id}')
@@ -342,22 +409,6 @@ async def store_context(
         tags = cast(list[str] | None, tags_raw)
         metadata_raw = deserialize_json_param(cast(JsonValue | None, metadata))
         metadata = cast(MetadataDict | None, metadata_raw)
-
-        # Validate input - text is required
-        if not text:
-            text_error_response: StoreContextErrorDict = {
-                'success': False,
-                'error': 'Text content is required',
-            }
-            return text_error_response
-
-        # Validate source
-        if source not in ['user', 'agent']:
-            source_error_response: StoreContextErrorDict = {
-                'success': False,
-                'error': "Source must be 'user' or 'agent'",
-            }
-            return source_error_response
 
         # Get repositories
         repos = await _ensure_repositories()
@@ -371,12 +422,12 @@ async def store_context(
             source=source,
             content_type=content_type,
             text_content=text,
-            metadata=json.dumps(metadata) if metadata else None,
+            metadata=json.dumps(metadata, ensure_ascii=False) if metadata else None,
         )
 
         # Ensure we got a valid ID (not None or 0)
         if not context_id:
-            raise ValueError('Failed to store context')
+            raise ToolError('Failed to store context')
 
         # Store normalized tags
         if tags:
@@ -394,61 +445,43 @@ async def store_context(
 
                 try:
                     image_binary = base64.b64decode(img_data_str)
-                    image_size_mb = len(image_binary) / (1024 * 1024)
+                except Exception:
+                    raise ToolError(f'Invalid base64 encoded data in image {idx}') from None
 
-                    if image_size_mb > MAX_IMAGE_SIZE_MB:
-                        image_size_error_response: StoreContextErrorDict = {
-                            'success': False,
-                            'error': f'Image {idx} exceeds {MAX_IMAGE_SIZE_MB}MB limit',
-                        }
-                        return image_size_error_response
+                image_size_mb = len(image_binary) / (1024 * 1024)
 
-                    total_size += image_size_mb
-                    if total_size > MAX_TOTAL_SIZE_MB:
-                        total_size_error_response: StoreContextErrorDict = {
-                            'success': False,
-                            'error': f'Total size exceeds {MAX_TOTAL_SIZE_MB}MB limit',
-                        }
-                        return total_size_error_response
-                except Exception as e:
-                    image_processing_error_response: StoreContextErrorDict = {
-                        'success': False,
-                        'error': f'Failed to process image {idx}: {str(e)}',
-                    }
-                    return image_processing_error_response
+                if image_size_mb > MAX_IMAGE_SIZE_MB:
+                    raise ToolError(f'Image {idx} exceeds {MAX_IMAGE_SIZE_MB}MB limit')
+
+                total_size += image_size_mb
+                if total_size > MAX_TOTAL_SIZE_MB:
+                    raise ToolError(f'Total size exceeds {MAX_TOTAL_SIZE_MB}MB limit')
 
             # All validations passed, store the images
             try:
                 await repos.images.store_images(context_id, images)
             except Exception as e:
-                image_storage_error_response: StoreContextErrorDict = {
-                    'success': False,
-                    'error': f'Failed to store images: {str(e)}',
-                }
-                return image_storage_error_response
+                raise ToolError(f'Failed to store images: {str(e)}') from e
 
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
 
-        success_response: StoreContextSuccessDict = {
-            'success': True,
-            'context_id': context_id,
-            'thread_id': thread_id,
-            'message': f'Context {action} with {len(images) if images else 0} images',
-        }
-        return success_response
+        return StoreContextSuccessDict(
+            success=True,
+            context_id=context_id,
+            thread_id=thread_id,
+            message=f'Context {action} with {len(images) if images else 0} images',
+        )
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error storing context: {e}')
-        storage_error_response: StoreContextErrorDict = {
-            'success': False,
-            'error': f'Failed to store context: {str(e)}',
-        }
-        return storage_error_response
+        raise ToolError(f'Failed to store context: {str(e)}') from e
 
 
 @mcp.tool()
 async def search_context(
-    thread_id: Annotated[str | None, Field(description='Filter by thread (uses index)')] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (uses index)')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (uses index)')] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
@@ -460,8 +493,8 @@ async def search_context(
         list[dict[str, Any]] | None,
         Field(description='Advanced metadata filters with operators [{"key": "priority", "operator": "gt", "value": 5}]'),
     ] = None,
-    limit: Annotated[int, Field(description='Maximum results (max 500)', ge=1, le=500)] = 50,
-    offset: Annotated[int, Field(description='Pagination offset', ge=0)] = 0,
+    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (max 500)')] = 50,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset')] = 0,
     include_images: Annotated[bool, Field(description='Whether to include image data')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
@@ -488,13 +521,13 @@ async def search_context(
 
     Returns:
         dict: Contains 'entries' list and optional 'stats' if explain_query is True.
+
+    Raises:
+        ToolError: If validation fails or search operation fails.
     """
     try:
         if ctx:
             await ctx.info(f'Searching context with filters: thread_id={thread_id}, source={source}')
-
-        # Validate limit
-        limit = min(limit, 500)
 
         # Get repositories
         repos = await _ensure_repositories()
@@ -543,9 +576,13 @@ async def search_context(
                     entry['metadata'] = None
 
             # Get normalized tags
-            entry_id = int(entry.get('id', 0))
-            tags_result = await repos.tags.get_tags_for_context(entry_id)
-            entry['tags'] = tags_result
+            entry_id_raw = entry.get('id')
+            if entry_id_raw is not None:
+                entry_id = int(entry_id_raw)
+                tags_result = await repos.tags.get_tags_for_context(entry_id)
+                entry['tags'] = tags_result
+            else:
+                entry['tags'] = []
 
             # Apply text truncation for search_context
             text_content = entry.get('text_content', '')
@@ -562,17 +599,18 @@ async def search_context(
             entries.append(entry)
 
         # Always return dict with entries and stats
-        response: dict[str, Any] = {'entries': entries}
-        response['stats'] = stats
+        response: dict[str, Any] = {'entries': entries, 'stats': stats}
         return response
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error searching context: {e}')
-        return {'entries': [], 'error': str(e)}
+        raise ToolError(f'Failed to search context: {str(e)}') from e
 
 
 @mcp.tool()
 async def get_context_by_ids(
-    context_ids: Annotated[list[int], Field(description='List of context entry IDs to retrieve', min_length=1)],
+    context_ids: Annotated[list[int], Field(min_length=1, description='List of context entry IDs to retrieve')],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
     ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
@@ -589,11 +627,11 @@ async def get_context_by_ids(
 
     Returns:
         list: List of context entries with full content.
+
+    Raises:
+        ToolError: If fetching entries fails.
     """
     try:
-        if not context_ids:
-            return []
-
         if ctx:
             await ctx.info(f'Fetching context entries: {context_ids}')
 
@@ -619,28 +657,37 @@ async def get_context_by_ids(
                     entry['metadata'] = None
 
             # Get normalized tags
-            entry_id = int(entry.get('id', 0))
-            tags_result = await repos.tags.get_tags_for_context(entry_id)
-            entry['tags'] = tags_result
+            entry_id_raw = entry.get('id')
+            if entry_id_raw is not None:
+                entry_id = int(entry_id_raw)
+                tags_result = await repos.tags.get_tags_for_context(entry_id)
+                entry['tags'] = tags_result
+            else:
+                entry['tags'] = []
 
             # Fetch images
             if include_images and entry.get('content_type') == 'multimodal':
-                entry_id = int(entry.get('id', 0))
-                images_result = await repos.images.get_images_for_context(entry_id, include_data=True)
-                entry['images'] = cast(list[dict[str, str]], images_result)
+                entry_id_img = entry.get('id')
+                if entry_id_img is not None:
+                    images_result = await repos.images.get_images_for_context(int(entry_id_img), include_data=True)
+                    entry['images'] = cast(list[dict[str, str]], images_result)
+                else:
+                    entry['images'] = []
 
             entries.append(entry)
 
         return entries
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error fetching context by IDs: {e}')
-        return []
+        raise ToolError(f'Failed to fetch context entries: {str(e)}') from e
 
 
 @mcp.tool()
 async def delete_context(
-    context_ids: Annotated[list[int] | None, Field(description='Specific context entry IDs to delete')] = None,
-    thread_id: Annotated[str | None, Field(description='Delete all entries in a thread')] = None,
+    context_ids: Annotated[list[int] | None, Field(min_length=1, description='Specific context entry IDs to delete')] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Delete all entries in a thread')] = None,
     ctx: Context | None = None,
 ) -> dict[str, bool | int | str]:
     """
@@ -656,13 +703,14 @@ async def delete_context(
 
     Returns:
         dict: Success status with deletion count or error message.
+
+    Raises:
+        ToolError: If validation fails or deletion fails.
     """
     try:
+        # Ensure at least one parameter is provided (business logic validation)
         if not context_ids and not thread_id:
-            return {
-                'success': False,
-                'error': 'Must provide either context_ids or thread_id',
-            }
+            raise ToolError('Must provide either context_ids or thread_id')
 
         if ctx:
             await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
@@ -685,12 +733,172 @@ async def delete_context(
             'deleted_count': deleted,
             'message': f'Successfully deleted {deleted} context entries',
         }
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error deleting context: {e}')
-        return {
-            'success': False,
-            'error': f'Failed to delete context: {str(e)}',
-        }
+        raise ToolError(f'Failed to delete context: {str(e)}') from e
+
+
+@mcp.tool()
+async def update_context(
+    context_id: Annotated[int, Field(gt=0, description='ID of the context entry to update')],
+    text: Annotated[str | None, Field(min_length=1, description='New text content (replaces existing)')] = None,
+    metadata: Annotated[MetadataDict | None, Field(description='New metadata object (replaces existing)')] = None,
+    tags: Annotated[list[str] | None, Field(description='New tags list (replaces all existing tags)')] = None,
+    images: Annotated[
+        list[dict[str, str]] | None,
+        Field(description='New images list with base64 data and mime_type (replaces all existing images)'),
+    ] = None,
+    ctx: Context | None = None,
+) -> UpdateContextSuccessDict:
+    """
+    Update an existing context entry with selective field updates.
+
+    Allows updating text content, metadata, tags, and images while preserving
+    immutable fields like ID, thread_id, source, and created_at. The content_type
+    field is automatically recalculated based on the presence of images.
+
+    Args:
+        context_id: ID of the context entry to update
+        text: New text content (replaces existing if provided)
+        metadata: New metadata object (replaces existing if provided)
+        tags: New tags list (replaces all existing tags if provided)
+        images: New images list (replaces all existing images if provided)
+        ctx: FastMCP context object
+
+    Returns:
+        UpdateContextSuccessDict on success.
+
+    Raises:
+        ToolError: If validation fails or update operation fails.
+    """
+    try:
+        # Clean text input if provided
+        if text is not None:
+            text = text.strip()
+            # Business logic: if text provided, it cannot be empty after stripping
+            if not text:
+                raise ToolError('text cannot be empty or contain only whitespace')
+
+        # Validate that at least one field is provided for update
+        if text is None and metadata is None and tags is None and images is None:
+            raise ToolError('At least one field must be provided for update')
+
+        if ctx:
+            await ctx.info(f'Updating context entry {context_id}')
+
+        # Get repositories
+        repos = await _ensure_repositories()
+
+        # Check if entry exists
+        exists = await repos.context.check_entry_exists(context_id)
+        if not exists:
+            raise ToolError(f'Context entry with ID {context_id} not found')
+
+        updated_fields: list[str] = []
+
+        # Start transaction-like operations
+        try:
+            # Update text content and/or metadata if provided
+            if text is not None or metadata is not None:
+                # Prepare metadata JSON string if provided
+                metadata_str: str | None = None
+                if metadata is not None:
+                    metadata_str = json.dumps(metadata, ensure_ascii=False)
+
+                # Update context entry
+                success, fields = await repos.context.update_context_entry(
+                    context_id=context_id,
+                    text_content=text,
+                    metadata=metadata_str,
+                )
+
+                if not success:
+                    raise ToolError('Failed to update context entry')
+
+                updated_fields.extend(fields)
+
+            # Replace tags if provided
+            if tags is not None:
+                await repos.tags.replace_tags_for_context(context_id, tags)
+                updated_fields.append('tags')
+                logger.debug(f'Replaced tags for context {context_id}')
+
+            # Replace images if provided
+            if images is not None:
+                # If images list is empty (removing all images), update content_type to text
+                if len(images) == 0:
+                    await repos.images.replace_images_for_context(context_id, [])
+                    await repos.context.update_content_type(context_id, 'text')
+                    updated_fields.extend(['images', 'content_type'])
+                    logger.debug(f'Removed all images from context {context_id}')
+                else:
+                    # Validate image data first
+                    total_size = 0.0
+                    for img in images:
+                        if 'data' not in img or 'mime_type' not in img:
+                            raise ToolError('Each image must have "data" and "mime_type" fields')
+
+                        # Check individual image size
+                        try:
+                            img_data = base64.b64decode(img['data'])
+                        except Exception:
+                            raise ToolError('Invalid base64 image data') from None
+
+                        img_size_mb = len(img_data) / (1024 * 1024)
+                        total_size += img_size_mb
+
+                        if img_size_mb > MAX_IMAGE_SIZE_MB:
+                            raise ToolError(f'Image exceeds size limit of {MAX_IMAGE_SIZE_MB}MB')
+
+                    # Check total size
+                    if total_size > MAX_TOTAL_SIZE_MB:
+                        raise ToolError(f'Total image size {total_size:.2f}MB exceeds limit of {MAX_TOTAL_SIZE_MB}MB')
+
+                    # Replace images
+                    await repos.images.replace_images_for_context(context_id, images)
+                    updated_fields.append('images')
+
+                    # Update content_type to multimodal if images were added
+                    await repos.context.update_content_type(context_id, 'multimodal')
+                    updated_fields.append('content_type')
+                    logger.debug(f'Replaced images for context {context_id}')
+
+            # Check if we need to update content_type based on current state
+            if images is None and (text is not None or metadata is not None):
+                # Check if there are existing images to determine content_type
+                image_count = await repos.images.count_images_for_context(context_id)
+                current_content_type = 'multimodal' if image_count > 0 else 'text'
+
+                # Get the stored content type
+                stored_content_type = await repos.context.get_content_type(context_id)
+
+                # Update if different
+                if stored_content_type != current_content_type:
+                    await repos.context.update_content_type(context_id, current_content_type)
+                    updated_fields.append('content_type')
+
+            logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
+
+            return UpdateContextSuccessDict(
+                success=True,
+                context_id=context_id,
+                updated_fields=updated_fields,
+                message=f'Successfully updated {len(updated_fields)} field(s)',
+            )
+
+        except ToolError:
+            raise  # Re-raise ToolError as-is
+        except Exception as update_error:
+            logger.error(f'Error during context update: {update_error}')
+            raise ToolError(f'Update operation failed: {str(update_error)}') from update_error
+
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
+    except Exception as e:
+        logger.error(f'Error updating context: {e}')
+        raise ToolError(f'Unexpected error: {str(e)}') from e
 
 
 # MCP Resources for read-only access
@@ -704,6 +912,9 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
 
     Returns:
         dict: Dictionary containing list of threads and total count.
+
+    Raises:
+        ToolError: If listing threads fails.
     """
     try:
         if ctx:
@@ -719,9 +930,11 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
             'threads': threads,
             'total_threads': len(threads),
         }
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error listing threads: {e}')
-        return {'threads': [], 'total_threads': 0}
+        raise ToolError(f'Failed to list threads: {str(e)}') from e
 
 
 @mcp.tool()
@@ -732,6 +945,9 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 
     Returns:
         dict: Database statistics including counts and size metrics.
+
+    Raises:
+        ToolError: If getting statistics fails.
     """
     try:
         if ctx:
@@ -750,9 +966,11 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         stats['connection_metrics'] = manager.get_metrics()
 
         return stats
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error getting statistics: {e}')
-        return {}
+        raise ToolError(f'Failed to get statistics: {str(e)}') from e
 
 
 # Main entry point
