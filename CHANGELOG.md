@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/alex-feel/mcp-context-server/compare/v0.3.0...v0.3.1) (2025-10-04)
+
+
+### Bug Fixes
+
+* update server.json to comply with 2025-09-29 schema ([6cba6d5](https://github.com/alex-feel/mcp-context-server/commit/6cba6d548d16cbd957915dc251f25e91aa45d2ff))
+
 ## [0.3.0](https://github.com/alex-feel/mcp-context-server/compare/v0.2.0...v0.3.0) (2025-10-04)
 
 
