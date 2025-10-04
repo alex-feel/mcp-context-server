@@ -7,6 +7,7 @@ Ensures both tools have consistent validation behavior.
 from typing import cast
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 import app.server
 
@@ -26,24 +27,22 @@ class TestValidationConsistency:
         """Test store_context rejects empty text."""
 
         # Test empty string
-        result = await store_context(
-            thread_id='test-thread',
-            source='user',
-            text='',  # Empty string
-        )
-
-        assert result['success'] is False
-        assert 'text is required and cannot be empty' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='test-thread',
+                source='user',
+                text='',  # Empty string
+            )
+        assert 'text cannot be empty' in str(exc_info.value)
 
         # Test whitespace only
-        result = await store_context(
-            thread_id='test-thread',
-            source='user',
-            text='   ',  # Whitespace only
-        )
-
-        assert result['success'] is False
-        assert 'text is required and cannot be empty' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='test-thread',
+                source='user',
+                text='   ',  # Whitespace only
+            )
+        assert 'text cannot be empty' in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_update_context_empty_text_validation(
@@ -61,22 +60,20 @@ class TestValidationConsistency:
         context_id = result['context_id']
 
         # Try to update with empty string
-        result = await update_context(
-            context_id=context_id,
-            text='',  # Empty string
-        )
-
-        assert result['success'] is False
-        assert 'text cannot be empty or contain only whitespace' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await update_context(
+                context_id=context_id,
+                text='',  # Empty string
+            )
+        assert 'text cannot be empty' in str(exc_info.value)
 
         # Try to update with whitespace only
-        result = await update_context(
-            context_id=context_id,
-            text='   ',  # Whitespace only
-        )
-
-        assert result['success'] is False
-        assert 'text cannot be empty or contain only whitespace' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await update_context(
+                context_id=context_id,
+                text='   ',  # Whitespace only
+            )
+        assert 'text cannot be empty or contain only whitespace' in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_store_context_requires_text(
@@ -86,14 +83,13 @@ class TestValidationConsistency:
 
         # Test with None text (simulated by not providing it)
         # Since text is required, we need to test the validation
-        result = await store_context(
-            thread_id='test-thread',
-            source='user',
-            text=cast(str, None),  # Force None to bypass type checking
-        )
-
-        assert result['success'] is False
-        assert 'text is required and cannot be empty' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='test-thread',
+                source='user',
+                text=cast(str, None),  # Force None to bypass type checking
+            )
+        assert 'text is required' in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_update_context_text_is_optional(
@@ -126,24 +122,22 @@ class TestValidationConsistency:
         """Test thread_id validation is consistent."""
 
         # Test empty thread_id
-        result = await store_context(
-            thread_id='',
-            source='user',
-            text='Some text',
-        )
-
-        assert result['success'] is False
-        assert 'thread_id is required and cannot be empty' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='',
+                source='user',
+                text='Some text',
+            )
+        assert 'thread_id cannot be empty' in str(exc_info.value)
 
         # Test whitespace-only thread_id
-        result = await store_context(
-            thread_id='   ',
-            source='user',
-            text='Some text',
-        )
-
-        assert result['success'] is False
-        assert 'thread_id is required and cannot be empty' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='   ',
+                source='user',
+                text='Some text',
+            )
+        assert 'thread_id cannot be empty' in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_both_tools_accept_valid_text(
@@ -182,17 +176,15 @@ class TestValidationConsistency:
     ) -> None:
         """Test that validation error responses have consistent format."""
 
-        # Store context error format
-        store_result = await store_context(
-            thread_id='test',
-            source='user',
-            text='',
-        )
-
-        assert 'success' in store_result
-        assert 'error' in store_result
-        assert store_result['success'] is False
-        assert isinstance(store_result['error'], str)
+        # Store context error format - should raise ToolError
+        with pytest.raises(ToolError) as store_exc:
+            await store_context(
+                thread_id='test',
+                source='user',
+                text='',
+            )
+        assert isinstance(str(store_exc.value), str)
+        assert 'text' in str(store_exc.value).lower()
 
         # First create valid context for update test
         valid_result = await store_context(
@@ -202,17 +194,14 @@ class TestValidationConsistency:
         )
         context_id = valid_result['context_id']
 
-        # Update context error format
-        update_result = await update_context(
-            context_id=context_id,
-            text='',
-        )
-
-        assert 'success' in update_result
-        assert 'error' in update_result
-        assert update_result['success'] is False
-        assert isinstance(update_result['error'], str)
-        assert 'context_id' in update_result  # Update has additional context_id field
+        # Update context error format - should raise ToolError
+        with pytest.raises(ToolError) as update_exc:
+            await update_context(
+                context_id=context_id,
+                text='',
+            )
+        assert isinstance(str(update_exc.value), str)
+        assert 'text' in str(update_exc.value).lower()
 
     @pytest.mark.asyncio
     async def test_whitespace_handling_consistency(
@@ -232,12 +221,13 @@ class TestValidationConsistency:
 
         for ws in whitespace_variants:
             # Test store_context
-            result = await store_context(
-                thread_id='test-ws',
-                source='user',
-                text=ws,
-            )
-            assert result['success'] is False, f'store_context should reject: {ws!r}'
+            with pytest.raises(ToolError) as exc_info:
+                await store_context(
+                    thread_id='test-ws',
+                    source='user',
+                    text=ws,
+                )
+            assert 'text cannot be empty' in str(exc_info.value), f'store_context should reject: {ws!r}'
 
             # Create valid entry for update test
             valid = await store_context(
@@ -248,11 +238,12 @@ class TestValidationConsistency:
             context_id = valid['context_id']
 
             # Test update_context
-            result = await update_context(
-                context_id=context_id,
-                text=ws,
-            )
-            assert result['success'] is False, f'update_context should reject: {ws!r}'
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=context_id,
+                    text=ws,
+                )
+            assert 'text cannot be empty' in str(exc_info.value), f'update_context should reject: {ws!r}'
 
     @pytest.mark.asyncio
     async def test_none_vs_empty_string_handling(
@@ -277,12 +268,12 @@ class TestValidationConsistency:
         assert result['success'] is True
 
         # Update with empty string - should fail
-        result = await update_context(
-            context_id=context_id,
-            text='',  # Explicitly empty
-        )
-        assert result['success'] is False
-        assert 'cannot be empty' in result['error']
+        with pytest.raises(ToolError) as exc_info:
+            await update_context(
+                context_id=context_id,
+                text='',  # Explicitly empty
+            )
+        assert 'cannot be empty' in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_text_with_only_spaces_but_other_content(

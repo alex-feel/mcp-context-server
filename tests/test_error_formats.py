@@ -1,10 +1,10 @@
 """
 Comprehensive tests to verify all validation errors return consistent JSON format.
 
-This test file ensures that ALL validation errors across ALL MCP tools return
-the consistent JSON format: {"success": false, "error": "descriptive message"}
+This test file ensures that ALL validation errors across ALL MCP tools raise
+ToolError exceptions with descriptive messages, following the FastMCP pattern.
 
-No raw Pydantic ValidationError messages should reach the client.
+No raw Pydantic ValidationError messages or error dictionaries should reach the client.
 """
 
 from typing import Literal
@@ -30,202 +30,215 @@ class TestErrorFormatConsistency:
 
     @pytest.mark.asyncio
     async def test_store_context_empty_thread_id(self, mock_server_dependencies: None) -> None:
-        """Test store_context with empty thread_id returns JSON error."""
+        """Test store_context with empty thread_id raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Test with empty string
-        result = await store_context(
-            thread_id='',
-            source='user',
-            text='Some text',
-        )
+        # Import ToolError
+        from fastmcp.exceptions import ToolError
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert result.get('success') is False, 'Success should be False'
-        assert 'error' in result, 'Error key should be present'
-        assert isinstance(result['error'], str), 'Error should be a string'
-        assert 'thread_id' in result['error'].lower(), 'Error should mention thread_id'
-        assert 'empty' in result['error'].lower(), 'Error should mention empty'
+        # Test with empty string - should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='',
+                source='user',
+                text='Some text',
+            )
+
+        # Verify the error message
+        error_msg = str(exc_info.value).lower()
+        assert 'thread_id' in error_msg, 'Error should mention thread_id'
+        assert 'empty' in error_msg or 'whitespace' in error_msg, 'Error should mention empty or whitespace'
 
     @pytest.mark.asyncio
     async def test_store_context_whitespace_thread_id(self, mock_server_dependencies: None) -> None:
-        """Test store_context with whitespace thread_id returns JSON error."""
+        """Test store_context with whitespace thread_id raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Test with whitespace string
-        result = await store_context(
-            thread_id='   ',
-            source='user',
-            text='Some text',
-        )
+        # Import ToolError
+        from fastmcp.exceptions import ToolError
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert result.get('success') is False, 'Success should be False'
-        assert 'error' in result, 'Error key should be present'
-        assert isinstance(result['error'], str), 'Error should be a string'
-        assert 'thread_id' in result['error'].lower(), 'Error should mention thread_id'
+        # Test with whitespace string - should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='   ',
+                source='user',
+                text='Some text',
+            )
+
+        # Verify the error message
+        error_msg = str(exc_info.value).lower()
+        assert 'thread_id' in error_msg, 'Error should mention thread_id'
 
     @pytest.mark.asyncio
     async def test_store_context_empty_text(self, mock_server_dependencies: None) -> None:
-        """Test store_context with empty text returns JSON error."""
+        """Test store_context with empty text raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Test with empty text
-        result = await store_context(
-            thread_id='test_thread',
-            source='user',
-            text='',
-        )
+        # Import ToolError
+        from fastmcp.exceptions import ToolError
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert result.get('success') is False, 'Success should be False'
-        assert 'error' in result, 'Error key should be present'
-        assert isinstance(result['error'], str), 'Error should be a string'
-        assert 'text' in result['error'].lower(), 'Error should mention text'
-        assert 'empty' in result['error'].lower(), 'Error should mention empty'
+        # Test with empty text - should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='test_thread',
+                source='user',
+                text='',
+            )
+
+        # Verify the error message
+        error_msg = str(exc_info.value).lower()
+        assert 'text' in error_msg, 'Error should mention text'
+        assert 'empty' in error_msg or 'whitespace' in error_msg, 'Error should mention empty or whitespace'
 
     @pytest.mark.asyncio
     async def test_store_context_whitespace_text(self, mock_server_dependencies: None) -> None:
-        """Test store_context with whitespace text returns JSON error."""
+        """Test store_context with whitespace text raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Test with whitespace text
-        result = await store_context(
-            thread_id='test_thread',
-            source='user',
-            text='   \t\n   ',
-        )
+        # Import ToolError
+        from fastmcp.exceptions import ToolError
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert result.get('success') is False, 'Success should be False'
-        assert 'error' in result, 'Error key should be present'
-        assert isinstance(result['error'], str), 'Error should be a string'
-        assert 'text' in result['error'].lower() or 'whitespace' in result['error'].lower(), (
+        # Test with whitespace text - should raise ToolError
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='test_thread',
+                source='user',
+                text='   \t\n   ',
+            )
+
+        # Verify the error message
+        error_msg = str(exc_info.value).lower()
+        assert 'text' in error_msg or 'whitespace' in error_msg, (
             'Error should mention text or whitespace'
         )
 
     @pytest.mark.asyncio
     async def test_store_context_invalid_source(self, mock_server_dependencies: None) -> None:
-        """Test store_context with invalid source returns JSON error."""
+        """Test store_context with invalid source raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+        from fastmcp.exceptions import ToolError
+
         # Test with invalid source type - cast to bypass type checker but test runtime validation
         invalid_source = cast(Literal['user', 'agent'], 'invalid')
-        result = await store_context(
-            thread_id='test_thread',
-            source=invalid_source,
-            text='Some text',
-        )
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
+                thread_id='test_thread',
+                source=invalid_source,
+                text='Some text',
+            )
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert result.get('success') is False, 'Success should be False'
-        assert 'error' in result, 'Error key should be present'
-        assert isinstance(result['error'], str), 'Error should be a string'
+        # Verify the error message
+        error_msg = str(exc_info.value).lower()
+        assert 'source' in error_msg, 'Error should mention source'
 
     @pytest.mark.asyncio
     async def test_update_context_empty_text(self, mock_server_dependencies: None) -> None:
-        """Test update_context with empty text returns JSON error."""
+        """Test update_context with empty text raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+        from fastmcp.exceptions import ToolError
+
         # Mock repository to say entry exists
         with patch('app.server._ensure_repositories') as mock_repos:
             container = MagicMock()
             container.context.check_entry_exists = AsyncMock(return_value=True)
             mock_repos.return_value = container
 
-            result = await update_context(
-                context_id=1,
-                text='',  # Empty text should fail
-            )
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=1,
+                    text='',  # Empty text should fail
+                )
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert result.get('success') is False, 'Success should be False'
-        assert 'error' in result, 'Error key should be present'
-        assert isinstance(result['error'], str), 'Error should be a string'
-        assert 'empty' in result['error'].lower() or 'whitespace' in result['error'].lower(), (
+        # Verify the error message
+        error_msg = str(exc_info.value).lower()
+        assert 'empty' in error_msg or 'whitespace' in error_msg, (
             'Error should mention empty or whitespace'
         )
 
     @pytest.mark.asyncio
     async def test_update_context_whitespace_text(self, mock_server_dependencies: None) -> None:
-        """Test update_context with whitespace text returns JSON error."""
+        """Test update_context with whitespace text raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+        from fastmcp.exceptions import ToolError
+
         # Mock repository to say entry exists
         with patch('app.server._ensure_repositories') as mock_repos:
             container = MagicMock()
             container.context.check_entry_exists = AsyncMock(return_value=True)
             mock_repos.return_value = container
 
-            result = await update_context(
-                context_id=1,
-                text='    ',  # Whitespace text should fail
-            )
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=1,
+                    text='    ',  # Whitespace text should fail
+                )
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert result.get('success') is False, 'Success should be False'
-        assert 'error' in result, 'Error key should be present'
-        assert isinstance(result['error'], str), 'Error should be a string'
-        assert 'empty' in result['error'].lower() or 'whitespace' in result['error'].lower(), (
+        # Verify the error message
+        error_msg = str(exc_info.value).lower()
+        assert 'empty' in error_msg or 'whitespace' in error_msg, (
             'Error should mention empty or whitespace'
         )
 
     @pytest.mark.asyncio
     async def test_get_context_by_ids_empty_list(self, mock_server_dependencies: None) -> None:
-        """Test get_context_by_ids with empty list returns JSON error or empty list."""
+        """Test get_context_by_ids with empty list - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+
+        # When called directly (bypassing FastMCP), no runtime validation occurs.
+        # This is correct - Pydantic Field(min_length=1) validates at the MCP protocol layer.
+        # We trust Pydantic completely and don't add redundant runtime checks.
+
+        # The function will fail at the repository layer when trying to query with empty list
         result = await get_context_by_ids(
             context_ids=[],
         )
 
-        # Empty context_ids should return empty list (not an error)
-        assert isinstance(result, list), 'Result should be a list'
-        assert len(result) == 0, 'Result should be empty list'
+        # Repository returns empty list for empty input
+        assert result == [], 'Should return empty list for empty input when bypassing protocol validation'
 
     @pytest.mark.asyncio
     async def test_search_context_invalid_limit(self, mock_server_dependencies: None) -> None:
-        """Test search_context with invalid limit returns JSON error."""
+        """Test search_context with invalid limit - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Test with negative limit
+
+        # When called directly (bypassing FastMCP), no runtime validation occurs.
+        # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
+        # We trust Pydantic completely and don't add redundant runtime checks.
+
         result = await search_context(
             limit=-1,
         )
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert 'entries' in result, 'Entries key should be present'
-        assert isinstance(result['entries'], list), 'Entries should be a list'
-        assert len(result['entries']) == 0, 'Entries should be empty on error'
-        if 'error' in result:
-            assert isinstance(result['error'], str), 'Error should be a string'
-            assert 'limit' in result['error'].lower(), 'Error should mention limit'
+        # Function proceeds with invalid value when protocol validation is bypassed
+        assert 'entries' in result, 'Should return result structure even with invalid limit'
 
     @pytest.mark.asyncio
     async def test_search_context_excessive_limit(self, mock_server_dependencies: None) -> None:
-        """Test search_context with excessive limit returns JSON error."""
+        """Test search_context with excessive limit - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Test with limit exceeding maximum
+
+        # When called directly (bypassing FastMCP), no runtime validation occurs.
+        # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
+        # We trust Pydantic completely and don't add redundant runtime checks.
+
         result = await search_context(
             limit=1000,  # Max is 500
         )
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert 'entries' in result, 'Entries key should be present'
-        assert isinstance(result['entries'], list), 'Entries should be a list'
-        assert len(result['entries']) == 0, 'Entries should be empty on error'
-        if 'error' in result:
-            assert isinstance(result['error'], str), 'Error should be a string'
-            assert 'limit' in result['error'].lower() or '500' in result['error'], (
-                'Error should mention limit or max value'
-            )
+        # Function proceeds with invalid value when protocol validation is bypassed
+        assert 'entries' in result, 'Should return result structure even with excessive limit'
 
     @pytest.mark.asyncio
     async def test_search_context_negative_offset(self, mock_server_dependencies: None) -> None:
-        """Test search_context with negative offset returns JSON error."""
+        """Test search_context with negative offset - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+
+        # When called directly (bypassing FastMCP), no runtime validation occurs.
+        # This is correct - Pydantic Field(ge=0) validates at the MCP protocol layer.
+        # We trust Pydantic completely and don't add redundant runtime checks.
+
         result = await search_context(
             offset=-1,
         )
 
-        assert isinstance(result, dict), 'Result should be a dictionary'
-        assert 'entries' in result, 'Entries key should be present'
-        assert isinstance(result['entries'], list), 'Entries should be a list'
-        assert len(result['entries']) == 0, 'Entries should be empty on error'
-        if 'error' in result:
-            assert isinstance(result['error'], str), 'Error should be a string'
-            assert 'offset' in result['error'].lower(), 'Error should mention offset'
+        # Function proceeds with invalid value when protocol validation is bypassed
+        assert 'entries' in result, 'Should return result structure even with negative offset'
 
     def test_no_raw_validation_errors_in_responses(self) -> None:
         """
@@ -285,20 +298,24 @@ class TestValidationIntegration:
 
     @pytest.mark.asyncio
     async def test_all_tools_handle_none_parameters(self, mock_server_dependencies: None) -> None:
-        """Test that all tools handle None parameters gracefully."""
+        """Test that tools rely on Pydantic for None validation."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Store context with None text (when called directly)
-        with patch('app.models.StoreContextRequest') as mock_request:
-            mock_request.side_effect = ValueError('text is required and cannot be empty')
+        from fastmcp.exceptions import ToolError
 
-            # When Pydantic validation fails, we should get a JSON error
-            # Using cast to simulate None being passed at runtime
-            none_text = cast(str, None)
-            result = await store_context(
+        # When called directly with None (bypassing FastMCP validation),
+        # the function has defensive None checks to prevent AttributeError crashes.
+        # This is defensive programming - Pydantic Field(min_length=1) ensures
+        # None never reaches the function in production, but defensive checks
+        # prevent crashes in edge cases like tests using cast().
+
+        none_text = cast(str, None)
+        with pytest.raises(ToolError) as exc_info:
+            await store_context(
                 thread_id='test',
                 source='user',
                 text=none_text,
             )
 
-            # Even with None, we should get a proper error response
-            assert isinstance(result, (dict, type(None))), 'Result should be a dict or None'
+        # The ToolError contains defensive None check message
+        error_msg = str(exc_info.value).lower()
+        assert 'required' in error_msg

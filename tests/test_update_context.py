@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 from fastmcp import Context
+from fastmcp.exceptions import ToolError
 
 import app.server
 
@@ -211,19 +212,16 @@ class TestUpdateContext:
     async def test_no_fields_provided_error(self, mock_context, mock_repositories):
         """Test error when no fields are provided for update."""
         with patch('app.server._ensure_repositories', return_value=mock_repositories):
-            result = await update_context(
-                context_id=444,
-                text=None,
-                metadata=None,
-                tags=None,
-                images=None,
-                ctx=mock_context,
-            )
-
-            # Check that result is an error response
-            assert result['success'] is False
-            assert result['context_id'] == 444
-            assert 'at least one field' in result['error'].lower()
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=444,
+                    text=None,
+                    metadata=None,
+                    tags=None,
+                    images=None,
+                    ctx=mock_context,
+                )
+            assert 'at least one field' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_context_not_found_error(self, mock_context, mock_repositories):
@@ -231,19 +229,16 @@ class TestUpdateContext:
         mock_repositories.context.check_entry_exists.return_value = False
 
         with patch('app.server._ensure_repositories', return_value=mock_repositories):
-            result = await update_context(
-                context_id=999,
-                text='Some text',
-                metadata=None,
-                tags=None,
-                images=None,
-                ctx=mock_context,
-            )
-
-            # Check that result is an error response
-            assert result['success'] is False
-            assert result['context_id'] == 999
-            assert 'not found' in result['error'].lower()
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=999,
+                    text='Some text',
+                    metadata=None,
+                    tags=None,
+                    images=None,
+                    ctx=mock_context,
+                )
+            assert '999' in str(exc_info.value) or 'not found' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_invalid_image_data(self, mock_context, mock_repositories):
@@ -256,18 +251,16 @@ class TestUpdateContext:
         ]
 
         with patch('app.server._ensure_repositories', return_value=mock_repositories):
-            result = await update_context(
-                context_id=555,
-                text=None,
-                metadata=None,
-                tags=None,
-                images=images,
-                ctx=mock_context,
-            )
-
-            # Check that result is an error response
-            assert result['success'] is False
-            assert 'invalid base64' in result['error'].lower()
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=555,
+                    text=None,
+                    metadata=None,
+                    tags=None,
+                    images=images,
+                    ctx=mock_context,
+                )
+            assert 'invalid base64' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_missing_image_fields(self, mock_context, mock_repositories):
@@ -280,24 +273,24 @@ class TestUpdateContext:
         ]
 
         with patch('app.server._ensure_repositories', return_value=mock_repositories):
-            result = await update_context(
-                context_id=666,
-                text=None,
-                metadata=None,
-                tags=None,
-                images=images,
-                ctx=mock_context,
-            )
-
-            # Check that result is an error response
-            assert result['success'] is False
-            assert 'must have "data" and "mime_type"' in result['error']
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=666,
+                    text=None,
+                    metadata=None,
+                    tags=None,
+                    images=images,
+                    ctx=mock_context,
+                )
+            assert 'must have "data" and "mime_type"' in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_image_size_limit_exceeded(self, mock_context, mock_repositories):
         """Test error when individual image exceeds size limit."""
-        # Create a large base64 string (simulating a large image)
-        large_data = 'A' * (15 * 1024 * 1024)  # 15MB of 'A's
+        # Create actual large binary data and encode it to base64
+        import base64
+        large_binary = b'\x00' * (15 * 1024 * 1024)  # 15MB of binary data
+        large_data = base64.b64encode(large_binary).decode('ascii')
         images = [
             {
                 'data': large_data,
@@ -307,18 +300,16 @@ class TestUpdateContext:
 
         with patch('app.server._ensure_repositories', return_value=mock_repositories), \
              patch('app.server.MAX_IMAGE_SIZE_MB', 10):  # 10MB limit
-            result = await update_context(
-                context_id=777,
-                text=None,
-                metadata=None,
-                tags=None,
-                images=images,
-                ctx=mock_context,
-            )
-
-            # Check that result is an error response
-            assert result['success'] is False
-            assert 'exceeds size limit' in result['error']
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=777,
+                    text=None,
+                    metadata=None,
+                    tags=None,
+                    images=images,
+                    ctx=mock_context,
+                )
+            assert 'exceeds size limit' in str(exc_info.value) or 'exceeds' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_total_image_size_limit_exceeded(self, mock_context, mock_repositories):
@@ -335,10 +326,13 @@ class TestUpdateContext:
             {'data': image_data, 'mime_type': 'image/png'},
         ]
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories), \
-             patch('app.server.MAX_IMAGE_SIZE_MB', 50), \
-             patch('app.server.MAX_TOTAL_SIZE_MB', 100):  # Each image OK, Total exceeds
-            result = await update_context(
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.server.MAX_IMAGE_SIZE_MB', 50),
+            patch('app.server.MAX_TOTAL_SIZE_MB', 100),  # Each image OK, Total exceeds
+            pytest.raises(ToolError, match='[Tt]otal.*size.*exceeds'),
+        ):
+            await update_context(
                 context_id=888,
                 text=None,
                 metadata=None,
@@ -347,17 +341,16 @@ class TestUpdateContext:
                 ctx=mock_context,
             )
 
-            # Check that result is an error response
-            assert result['success'] is False
-            assert 'total image size' in result['error'].lower()
-
     @pytest.mark.asyncio
     async def test_repository_update_failure(self, mock_context, mock_repositories):
         """Test handling of repository update failure."""
         mock_repositories.context.update_context_entry.return_value = (False, [])
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
-            result = await update_context(
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            pytest.raises(ToolError, match='Failed to update context entry'),
+        ):
+            await update_context(
                 context_id=999,
                 text='Some text',
                 metadata=None,
@@ -365,10 +358,6 @@ class TestUpdateContext:
                 images=None,
                 ctx=mock_context,
             )
-
-            # Check that result is an error response
-            assert result['success'] is False
-            assert 'failed to update' in result['error'].lower()
 
     @pytest.mark.asyncio
     async def test_auto_content_type_management_with_existing_images(self, mock_context, mock_repositories):
@@ -399,8 +388,11 @@ class TestUpdateContext:
         """Test handling of unexpected exceptions during update."""
         mock_repositories.tags.replace_tags_for_context.side_effect = Exception('Database error')
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
-            result = await update_context(
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            pytest.raises(ToolError, match='Update operation failed'),
+        ):
+            await update_context(
                 context_id=2222,
                 text=None,
                 metadata=None,
@@ -408,10 +400,6 @@ class TestUpdateContext:
                 images=None,
                 ctx=mock_context,
             )
-
-            # Check that result is an error response
-            assert result['success'] is False
-            assert 'update operation failed' in result['error'].lower()
 
     @pytest.mark.asyncio
     async def test_context_logging(self, mock_context, mock_repositories):
@@ -445,8 +433,11 @@ class TestUpdateContext:
         mock_repositories.context.update_context_entry.side_effect = track_update
         mock_repositories.tags.replace_tags_for_context.side_effect = track_tags
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
-            result = await update_context(
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            pytest.raises(ToolError, match='Update operation failed'),
+        ):
+            await update_context(
                 context_id=4444,
                 text='Text',
                 metadata=None,
@@ -455,27 +446,22 @@ class TestUpdateContext:
                 ctx=mock_context,
             )
 
-            # Check that result is an error response
-            assert result['success'] is False
-
-            # Verify operations were attempted in order
-            assert call_order == ['update_context_entry', 'replace_tags']
+        # Verify operations were attempted in order
+        assert call_order == ['update_context_entry', 'replace_tags']
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('mock_context')
     async def test_empty_text_validation_error(self, mock_repositories):
         """Test that empty text is properly validated in the function body."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
             # Empty string is now validated in the function body, not by Pydantic
-            result = await update_context(
+            pytest.raises(ToolError, match='text cannot be empty'),
+        ):
+            await update_context(
                 context_id=123,
                 text='',  # Empty string should fail in function validation
             )
-
-            # Verify it returns an error response
-            assert result['success'] is False
-            assert 'text' in result['error'].lower()
-            assert 'empty' in result['error'].lower() or 'whitespace' in result['error'].lower()
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('mock_context')
@@ -485,17 +471,15 @@ class TestUpdateContext:
         Note: Since we removed Pydantic min_length constraint, validation is now done
         in the function body which properly checks for non-whitespace content.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
             # Whitespace-only strings are now caught in function validation
-            result = await update_context(
+            pytest.raises(ToolError, match='text cannot be empty or contain only whitespace'),
+        ):
+            await update_context(
                 context_id=456,
                 text='   \t\n  ',  # Whitespace only should fail
             )
-
-            # Verify it returns an error response
-            assert result['success'] is False
-            assert 'text' in result['error'].lower()
-            assert 'empty' in result['error'].lower() or 'whitespace' in result['error'].lower()
 
     @pytest.mark.asyncio
     async def test_valid_single_character_text(self, mock_context, mock_repositories):
