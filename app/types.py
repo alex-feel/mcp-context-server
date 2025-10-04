@@ -54,13 +54,6 @@ class StoreContextSuccessDict(TypedDict):
     message: str
 
 
-class StoreContextErrorDict(TypedDict):
-    """Type definition for error store context response."""
-
-    success: bool
-    error: str
-
-
 class ThreadInfoDict(TypedDict):
     """Type definition for individual thread info."""
 
@@ -95,11 +88,3 @@ class UpdateContextSuccessDict(TypedDict):
     context_id: int
     updated_fields: list[str]
     message: str
-
-
-class UpdateContextErrorDict(TypedDict):
-    """Type definition for error update context response."""
-
-    success: bool
-    error: str
-    context_id: int | None

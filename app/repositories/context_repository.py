@@ -151,8 +151,6 @@ class ContextRepository(BaseRepository):
 
             # Source filter (indexed)
             if source:
-                if source not in ['user', 'agent']:
-                    return [], {'error': 'Invalid source type'}
                 query += ' AND source = ?'
                 params.append(source)
 

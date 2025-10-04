@@ -54,15 +54,15 @@ class TagRepository(BaseRepository):
         Returns:
             List of tags associated with the context entry
         """
-        def _get_tags(conn: sqlite3.Connection) -> list[str]:
+        def _get_tags(conn: sqlite3.Connection, ctx_id: int) -> list[str]:
             cursor = conn.cursor()
             cursor.execute(
                 'SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag',
-                (context_id,),
+                (ctx_id,),
             )
             return [row['tag'] for row in cursor.fetchall()]
 
-        return await self.db_manager.execute_read(_get_tags)
+        return await self.db_manager.execute_read(_get_tags, context_id)
 
     async def get_tags_for_contexts(self, context_ids: list[int]) -> dict[int, list[str]]:
         """Get tags for multiple context entries in a single query.

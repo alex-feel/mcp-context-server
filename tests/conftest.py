@@ -320,6 +320,22 @@ def multiple_context_entries(test_db: sqlite3.Connection) -> list[int]:
 @pytest.fixture
 def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> Generator[None, None, None]:
     """Mock server dependencies for unit testing."""
+    # Initialize the database schema synchronously before patching
+    if not temp_db_path.exists():
+        temp_db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create database with schema
+        schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
+        if schema_path.exists():
+            schema_sql = schema_path.read_text(encoding='utf-8')
+            conn = sqlite3.connect(str(temp_db_path))
+            try:
+                conn.executescript(schema_sql)
+                conn.execute('PRAGMA foreign_keys = ON')
+                conn.execute('PRAGMA journal_mode = WAL')
+                conn.commit()
+            finally:
+                conn.close()
+
     with (
         patch('app.server.get_settings', return_value=test_settings),
         patch('app.server.DB_PATH', temp_db_path),
@@ -346,6 +362,7 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[DatabaseCon
     from app.db_manager import get_connection_manager
     from app.db_manager import reset_connection_manager
     from app.repositories import RepositoryContainer
+    from app.settings import get_settings
 
     # Reset and create new manager
     reset_connection_manager()
@@ -365,11 +382,25 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[DatabaseCon
     try:
         yield manager
     finally:
-        # Proper cleanup
+        # Proper cleanup with timeout to prevent infinite hangs
         if app.server._db_manager is not None:
-            await app.server._db_manager.shutdown()
-            await app.server._db_manager._shutdown_complete.wait()
-            app.server._db_manager = None
+            try:
+                # Shutdown the database manager
+                await app.server._db_manager.shutdown()
+
+                # Wait for shutdown to complete with timeout
+                settings = get_settings()
+                await app.server._db_manager.wait_for_shutdown_complete(
+                    timeout_seconds=settings.storage.shutdown_timeout_test_s,
+                )
+            except Exception as e:
+                # Log error but continue cleanup to prevent test suite hang
+                import logging
+                logging.getLogger(__name__).error(f'Error during database manager shutdown: {e}')
+            finally:
+                # Always clear the reference, even if shutdown failed
+                app.server._db_manager = None
+
         # Reset repositories
         if hasattr(app.server, '_repositories'):
             app.server._repositories = None
@@ -386,7 +417,33 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     Yields:
         None: Yields control after initialization, performs cleanup on teardown
     """
+    from app.db_manager import reset_connection_manager
     from app.server import init_database
+    from app.settings import get_settings
+
+    # CRITICAL: Aggressive pre-cleanup to prevent interference from previous tests
+    # Shut down any existing manager from previous tests
+    if hasattr(app.server, '_db_manager') and app.server._db_manager:
+        try:
+            await app.server._db_manager.shutdown()
+            settings = get_settings()
+            await app.server._db_manager.wait_for_shutdown_complete(
+                timeout_seconds=settings.storage.shutdown_timeout_test_s,
+            )
+        except Exception:
+            pass
+        finally:
+            app.server._db_manager = None
+
+    # Reset repositories
+    if hasattr(app.server, '_repositories'):
+        app.server._repositories = None
+
+    # Reset singleton
+    reset_connection_manager()
+
+    # Small delay to let background tasks fully terminate
+    await asyncio.sleep(0.05)
 
     # Remove existing database if it exists (DB_PATH is patched by mock_server_dependencies)
     if temp_db_path.exists():
@@ -401,12 +458,24 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     try:
         yield
     finally:
-        # Proper async cleanup with shutdown complete wait
+        # Proper async cleanup with timeout to prevent infinite hangs
         if hasattr(app.server, '_db_manager') and app.server._db_manager:
-            await app.server._db_manager.shutdown()
-            # Wait for shutdown to complete
-            await app.server._db_manager._shutdown_complete.wait()
-            app.server._db_manager = None
+            try:
+                # Shutdown the database manager
+                await app.server._db_manager.shutdown()
+
+                # Wait for shutdown to complete with timeout
+                settings = get_settings()
+                await app.server._db_manager.wait_for_shutdown_complete(
+                    timeout_seconds=settings.storage.shutdown_timeout_test_s,
+                )
+            except Exception as e:
+                # Log error but continue cleanup to prevent test suite hang
+                import logging
+                logging.getLogger(__name__).error(f'Error during database manager shutdown: {e}')
+            finally:
+                # Always clear the reference, even if shutdown failed
+                app.server._db_manager = None
 
         # Reset the repositories to ensure clean state
         if hasattr(app.server, '_repositories'):
