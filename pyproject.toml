@@ -28,6 +28,13 @@ packages = ["app"]
 [tool.uv]
 package = true
 
+[project.optional-dependencies]
+semantic-search = [
+    "ollama>=0.4.0",
+    "numpy>=1.24.0",
+    "sqlite-vec>=0.1.6",
+]
+
 [dependency-groups]
 dev = [
     "pre-commit",

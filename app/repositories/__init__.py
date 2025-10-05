@@ -8,6 +8,7 @@ into focused repository classes
 # Type imports
 from app.db_manager import DatabaseConnectionManager
 from app.repositories.context_repository import ContextRepository
+from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.image_repository import ImageRepository
 from app.repositories.statistics_repository import StatisticsRepository
 from app.repositories.tag_repository import TagRepository
@@ -30,10 +31,12 @@ class RepositoryContainer:
         self.tags = TagRepository(db_manager)
         self.images = ImageRepository(db_manager)
         self.statistics = StatisticsRepository(db_manager)
+        self.embeddings = EmbeddingRepository(db_manager)
 
 
 __all__ = [
     'ContextRepository',
+    'EmbeddingRepository',
     'ImageRepository',
     'StatisticsRepository',
     'TagRepository',

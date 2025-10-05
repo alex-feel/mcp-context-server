@@ -51,6 +51,135 @@ SCHEMA_PATH = Path(__file__).parent / 'schema.sql'
 _db_manager: DatabaseConnectionManager | None = None
 _repositories: RepositoryContainer | None = None
 
+# Global embedding service (only if semantic search enabled and available)
+_embedding_service: Any | None = None
+
+
+# Dependency check functions for semantic search
+async def check_semantic_search_dependencies() -> bool:
+    """Check all semantic search dependencies.
+
+    Performs comprehensive checks for:
+    - Python packages (ollama, numpy, sqlite_vec)
+    - Ollama service availability
+    - EmbeddingGemma model availability
+    - sqlite-vec extension loading
+
+    Returns:
+        True if all dependencies are available, False otherwise
+    """
+    logger.info('Checking semantic search dependencies...')
+
+    # Check ollama package
+    try:
+        import ollama
+
+        logger.debug('✓ ollama package available')
+    except ImportError as e:
+        logger.warning(f'✗ ollama package not available: {e}')
+        return False
+
+    # Check numpy package
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec('numpy') is None:
+            logger.warning('✗ numpy package not available')
+            return False
+        logger.debug('✓ numpy package available')
+    except ImportError as e:
+        logger.warning(f'✗ numpy package not available: {e}')
+        return False
+
+    # Check sqlite_vec package
+    try:
+        import sqlite_vec  # type: ignore[import-untyped]
+
+        logger.debug('✓ sqlite_vec package available')
+    except ImportError as e:
+        logger.warning(f'✗ sqlite_vec package not available: {e}')
+        return False
+
+    # Check Ollama service
+    try:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(settings.ollama_host, timeout=1.0)
+            if response.status_code == 200:
+                logger.debug('✓ Ollama service running')
+            else:
+                logger.warning(f'✗ Ollama service returned status {response.status_code}')
+                return False
+    except Exception as e:
+        logger.warning(f'✗ Ollama service not accessible: {e}')
+        return False
+
+    # Check EmbeddingGemma model
+    try:
+        ollama_client = ollama.Client(host=settings.ollama_host)
+        ollama_client.show(settings.embedding_model)
+        logger.debug(f'✓ EmbeddingGemma model "{settings.embedding_model}" available')
+    except Exception as e:
+        logger.warning(f'✗ EmbeddingGemma model not available: {e}')
+        logger.warning(f'  Run: ollama pull {settings.embedding_model}')
+        return False
+
+    # Check sqlite-vec extension loading
+    try:
+        import sqlite3
+
+        test_conn = sqlite3.connect(':memory:')
+        test_conn.enable_load_extension(True)
+        sqlite_vec.load(test_conn)
+        test_conn.enable_load_extension(False)
+        test_conn.close()
+        logger.debug('✓ sqlite-vec extension loads successfully')
+    except Exception as e:
+        logger.warning(f'✗ sqlite-vec extension failed to load: {e}')
+        return False
+
+    logger.info('✓ All semantic search dependencies available')
+    return True
+
+
+async def apply_semantic_search_migration() -> None:
+    """Apply semantic search migration if enabled.
+
+    Raises:
+        RuntimeError: If migration fails
+    """
+    if not settings.enable_semantic_search:
+        return
+
+    migration_path = Path(__file__).parent / 'migrations' / 'add_semantic_search.sql'
+
+    if not migration_path.exists():
+        logger.warning(f'Semantic search migration file not found: {migration_path}')
+        return
+
+    try:
+        migration_sql = migration_path.read_text(encoding='utf-8')
+
+        # Apply migration using a short-lived manager
+        temp_manager = get_connection_manager(DB_PATH, force_new=True)
+        await temp_manager.initialize()
+        try:
+
+            def _apply_migration(conn: sqlite3.Connection) -> None:
+                conn.executescript(migration_sql)
+
+            await temp_manager.execute_write(_apply_migration)
+            logger.info('Semantic search migration applied successfully')
+        finally:
+            await temp_manager.shutdown()
+            await temp_manager.wait_for_shutdown_complete(
+                timeout_seconds=get_settings().storage.shutdown_timeout_test_s,
+            )
+    except Exception as e:
+        logger.error(f'Failed to apply semantic search migration: {e}')
+        raise RuntimeError(f'Semantic search migration failed: {e}') from e
+
 
 # Lifespan context manager for FastMCP
 @asynccontextmanager
@@ -66,19 +195,52 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
     Yields:
         None: Control is yielded back to FastMCP during server operation
     """
-    global _db_manager, _repositories
+    global _db_manager, _repositories, _embedding_service
 
     # Startup
     try:
         await _ensure_db_manager()
         # 1) Ensure schema exists using a short-lived manager
         await init_database()
-        # 2) Start long-lived manager for server runtime
-        global _db_manager, _repositories
+        # 2) Apply semantic search migration if enabled
+        await apply_semantic_search_migration()
+        # 3) Start long-lived manager for server runtime
         _db_manager = get_connection_manager(DB_PATH)
         await _db_manager.initialize()
-        # 3) Initialize repositories
+        # 4) Initialize repositories
         _repositories = RepositoryContainer(_db_manager)
+
+        # 5) Initialize semantic search if enabled
+        if settings.enable_semantic_search:
+            semantic_available = await check_semantic_search_dependencies()
+
+            if semantic_available:
+                try:
+                    from app.services.embedding_service import EmbeddingService
+
+                    _embedding_service = EmbeddingService()
+                    logger.info('✓ Semantic search enabled and available')
+
+                    # Conditionally register semantic_search_tool
+                    # Apply @mcp.tool() decorator programmatically to convert function to Tool object
+                    mcp.add_tool(mcp.tool()(semantic_search_tool))
+                    logger.info('✓ semantic_search_tool registered and exposed')
+                except Exception as e:
+                    logger.error(f'Failed to initialize embedding service: {e}')
+                    _embedding_service = None
+                    logger.warning('⚠ Semantic search enabled but initialization failed - feature disabled')
+                    logger.info('⚠ semantic_search_tool not registered (initialization failed)')
+            else:
+                _embedding_service = None
+                logger.warning('⚠ Semantic search enabled but dependencies not met - feature disabled')
+                logger.warning('  Install dependencies: uv sync --extra semantic-search')
+                logger.warning(f'  Download model: ollama pull {settings.embedding_model}')
+                logger.info('⚠ semantic_search_tool not registered (dependencies not met)')
+        else:
+            _embedding_service = None
+            logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
+            logger.info('⚠ semantic_search_tool not registered (feature disabled)')
+
         logger.info(f'MCP Context Server initialized with database: {DB_PATH}')
     except Exception as e:
         logger.error(f'Failed to initialize server: {e}')
@@ -100,6 +262,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
     finally:
         _db_manager = None
         _repositories = None
+        _embedding_service = None
     logger.info('MCP Context Server shutdown complete')
 
 
@@ -463,6 +626,22 @@ async def store_context(
             except Exception as e:
                 raise ToolError(f'Failed to store images: {str(e)}') from e
 
+        # Generate embedding if semantic search is available (non-blocking)
+        embedding_generated = False
+        if _embedding_service is not None:
+            try:
+                embedding = await _embedding_service.generate_embedding(text)
+                await repos.embeddings.store(
+                    context_id=context_id,
+                    embedding=embedding,
+                    model=settings.embedding_model,
+                )
+                embedding_generated = True
+                logger.debug(f'Generated embedding for context {context_id}')
+            except Exception as e:
+                logger.warning(f'Failed to generate/store embedding for context {context_id}: {e}')
+                # Non-blocking: continue even if embedding fails
+
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
 
@@ -470,7 +649,8 @@ async def store_context(
             success=True,
             context_id=context_id,
             thread_id=thread_id,
-            message=f'Context {action} with {len(images) if images else 0} images',
+            message=f'Context {action} with {len(images) if images else 0} images'
+            + (' (embedding generated)' if embedding_generated else ''),
         )
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
@@ -721,10 +901,43 @@ async def delete_context(
         deleted = 0
 
         if context_ids:
+            # Delete embeddings first (explicit cleanup)
+            if settings.enable_semantic_search:
+                for context_id in context_ids:
+                    try:
+                        await repos.embeddings.delete(context_id)
+                    except Exception as e:
+                        logger.warning(f'Failed to delete embedding for context {context_id}: {e}')
+                        # Non-blocking: continue even if embedding deletion fails
+
             deleted = await repos.context.delete_by_ids(context_ids)
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
+            # Get all context IDs in thread for embedding cleanup
+            if settings.enable_semantic_search:
+                try:
+                    # Get all context IDs in this thread
+                    results = await repos.context.search_contexts(
+                        thread_id=thread_id,
+                        limit=10000,  # Large limit to get all
+                        offset=0,
+                        explain_query=False,
+                    )
+                    rows, _ = results
+
+                    # Delete embeddings for all contexts in thread
+                    for row in rows:
+                        context_id = row['id']  # sqlite3.Row supports __getitem__
+                        if context_id:
+                            try:
+                                await repos.embeddings.delete(int(context_id))
+                            except Exception as e:
+                                logger.warning(f'Failed to delete embedding for context {context_id}: {e}')
+                except Exception as e:
+                    logger.warning(f'Failed to cleanup embeddings for thread {thread_id}: {e}')
+                    # Non-blocking: continue with context deletion
+
             deleted = await repos.context.delete_by_thread(thread_id)
             logger.info(f'Deleted {deleted} entries from thread {thread_id}')
 
@@ -879,6 +1092,33 @@ async def update_context(
                     await repos.context.update_content_type(context_id, current_content_type)
                     updated_fields.append('content_type')
 
+            # Regenerate embedding if text was changed and semantic search is available (non-blocking)
+            if text is not None and _embedding_service is not None:
+                try:
+                    new_embedding = await _embedding_service.generate_embedding(text)
+
+                    # Check if embedding exists
+                    embedding_exists = await repos.embeddings.exists(context_id)
+
+                    if embedding_exists:
+                        await repos.embeddings.update(
+                            context_id=context_id,
+                            embedding=new_embedding,
+                        )
+                        logger.debug(f'Updated embedding for context {context_id}')
+                    else:
+                        await repos.embeddings.store(
+                            context_id=context_id,
+                            embedding=new_embedding,
+                            model=settings.embedding_model,
+                        )
+                        logger.debug(f'Created embedding for context {context_id}')
+
+                    updated_fields.append('embedding')
+                except Exception as e:
+                    logger.warning(f'Failed to update embedding for context {context_id}: {e}')
+                    # Non-blocking: continue even if embedding update fails
+
             logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
 
             return UpdateContextSuccessDict(
@@ -965,12 +1205,125 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         # Add connection manager metrics for monitoring
         stats['connection_metrics'] = manager.get_metrics()
 
+        # Add semantic search metrics if available
+        if settings.enable_semantic_search:
+            if _embedding_service is not None:
+                embedding_stats = await repos.embeddings.get_statistics()
+                stats['semantic_search'] = {
+                    'enabled': True,
+                    'available': True,
+                    'model': settings.embedding_model,
+                    'dimensions': settings.embedding_dim,
+                    'embedding_count': embedding_stats['total_embeddings'],
+                    'coverage_percentage': embedding_stats['coverage_percentage'],
+                }
+            else:
+                stats['semantic_search'] = {
+                    'enabled': True,
+                    'available': False,
+                    'message': 'Dependencies not met or initialization failed',
+                }
+        else:
+            stats['semantic_search'] = {
+                'enabled': False,
+                'available': False,
+            }
+
         return stats
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error getting statistics: {e}')
         raise ToolError(f'Failed to get statistics: {str(e)}') from e
+
+
+async def semantic_search_tool(
+    query: Annotated[str, Field(min_length=1, description='Natural language search query')],
+    top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return')] = 20,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type')] = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """
+    Semantic similarity search using vector embeddings.
+
+    This tool performs semantic search on stored context using vector similarity.
+    It finds contexts that are semantically similar to the query, even if they
+    don't share exact keywords.
+
+    Note: This tool is only available when semantic search is enabled and all
+    dependencies are met (ollama, numpy, sqlite-vec, EmbeddingGemma model).
+
+    Args:
+        query: Natural language search query
+        top_k: Number of results to return (1-100)
+        thread_id: Optional filter by thread
+        source: Optional filter by source type
+        ctx: FastMCP context object
+
+    Returns:
+        dict: Search results with context entries and similarity scores
+
+    Raises:
+        ToolError: If semantic search is not available or search fails
+    """
+    # Check if semantic search is available
+    if _embedding_service is None:
+        raise ToolError(
+            'Semantic search is not available. '
+            'Ensure ENABLE_SEMANTIC_SEARCH=true and all dependencies are installed. '
+            f'Run: uv sync --extra semantic-search && ollama pull {settings.embedding_model}',
+        )
+
+    try:
+        if ctx:
+            await ctx.info(f'Performing semantic search: "{query[:50]}..."')
+
+        # Get repositories
+        repos = await _ensure_repositories()
+
+        # Generate embedding for query
+        try:
+            query_embedding = await _embedding_service.generate_embedding(query)
+        except Exception as e:
+            logger.error(f'Failed to generate query embedding: {e}')
+            raise ToolError(f'Failed to generate embedding for query: {str(e)}') from e
+
+        # Perform similarity search
+        try:
+            results = await repos.embeddings.search(
+                query_embedding=query_embedding,
+                limit=top_k,
+                thread_id=thread_id,
+                source=source,
+            )
+        except Exception as e:
+            logger.error(f'Semantic search failed: {e}')
+            raise ToolError(f'Semantic search failed: {str(e)}') from e
+
+        # Enrich results with tags
+        for result in results:
+            context_id = result.get('id')
+            if context_id:
+                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                result['tags'] = tags_result
+            else:
+                result['tags'] = []
+
+        logger.info(f'Semantic search found {len(results)} results for query: "{query[:50]}..."')
+
+        return {
+            'query': query,
+            'results': results,
+            'count': len(results),
+            'model': settings.embedding_model,
+        }
+
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
+    except Exception as e:
+        logger.error(f'Error in semantic search: {e}')
+        raise ToolError(f'Semantic search failed: {str(e)}') from e
 
 
 # Main entry point

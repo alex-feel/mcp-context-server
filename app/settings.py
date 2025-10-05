@@ -98,6 +98,12 @@ class AppSettings(CommonSettings):
 
     storage: StorageSettings = Field(default_factory=lambda: StorageSettings())
 
+    # Semantic search settings
+    enable_semantic_search: bool = Field(default=False, alias='ENABLE_SEMANTIC_SEARCH')
+    ollama_host: str = Field(default='http://localhost:11434', alias='OLLAMA_HOST')
+    embedding_model: str = Field(default='embeddinggemma:latest', alias='EMBEDDING_MODEL')
+    embedding_dim: int = Field(default=768, alias='EMBEDDING_DIM')
+
 
 @lru_cache
 def get_settings() -> AppSettings:
