@@ -87,7 +87,18 @@ class EmbeddingRepository:
         thread_id: str | None = None,
         source: Literal['user', 'agent'] | None = None,
     ) -> list[dict[str, Any]]:
-        """KNN search with optional metadata filtering.
+        """KNN search with CTE-based pre-filtering.
+
+        Uses CTE to filter context_entries FIRST, then calculates distances
+        using scalar vec_distance_l2() function. This ensures correct number
+        of results even with selective filters.
+
+        This approach fixes the bug where sqlite-vec's k parameter in MATCH clause
+        limits results at the virtual table level BEFORE JOIN and WHERE filters,
+        causing fewer results than requested when filters are applied.
+
+        Performance: O(n * d) where n = filtered entries, d = dimensions.
+        Acceptable for n < 100K with d = 768.
 
         Args:
             query_embedding: Query vector for similarity search
@@ -111,9 +122,32 @@ class EmbeddingRepository:
             # Serialize query embedding
             query_blob = sqlite_vec.serialize_float32(query_embedding)
 
-            # Build query with optional filters
-            # Note: sqlite-vec requires k parameter in WHERE clause for KNN queries
-            query = '''
+            # Build filter conditions for CTE
+            filter_conditions = []
+            filter_params: list[Any] = []
+
+            if thread_id:
+                filter_conditions.append('thread_id = ?')
+                filter_params.append(thread_id)
+
+            if source:
+                filter_conditions.append('source = ?')
+                filter_params.append(source)
+
+            # Construct WHERE clause (or empty if no filters)
+            where_clause = (
+                f"WHERE {' AND '.join(filter_conditions)}"
+                if filter_conditions
+                else ''
+            )
+
+            # Query: Filter first (CTE), then calculate distances
+            query = f'''
+                WITH filtered_contexts AS (
+                    SELECT id
+                    FROM context_entries
+                    {where_clause}
+                )
                 SELECT
                     ce.id,
                     ce.thread_id,
@@ -123,25 +157,16 @@ class EmbeddingRepository:
                     ce.metadata,
                     ce.created_at,
                     ce.updated_at,
-                    ve.distance
-                FROM vec_context_embeddings ve
-                JOIN context_entries ce ON ve.rowid = ce.id
-                WHERE ve.embedding MATCH ?
-                  AND k = ?
+                    vec_distance_l2(?, ve.embedding) as distance
+                FROM filtered_contexts fc
+                JOIN context_entries ce ON ce.id = fc.id
+                JOIN vec_context_embeddings ve ON ve.rowid = fc.id
+                ORDER BY distance
+                LIMIT ?
             '''
 
-            params: list[Any] = [query_blob, limit]
-
-            # Add filters
-            if thread_id:
-                query += ' AND ce.thread_id = ?'
-                params.append(thread_id)
-
-            if source:
-                query += ' AND ce.source = ?'
-                params.append(source)
-
-            query += ' ORDER BY ve.distance'
+            # Parameters: [filter_params..., query_blob, limit]
+            params = filter_params + [query_blob, limit]
 
             # Execute search
             cursor = conn.execute(query, params)
