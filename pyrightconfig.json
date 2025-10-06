@@ -1,0 +1,42 @@
+{
+  "include": ["app", "tests"],
+  "exclude": [".venv", "**/__pycache__"],
+  "executionEnvironments": [
+    {
+      "root": "app/services",
+      "include": ["embedding_service.py"],
+      "reportMissingImports": "none",
+      "reportMissingTypeStubs": "none",
+      "reportUnknownVariableType": "none",
+      "reportUnknownMemberType": "none",
+      "reportUnknownArgumentType": "none"
+    },
+    {
+      "root": "app/repositories",
+      "include": ["embedding_repository.py"],
+      "reportMissingTypeStubs": "none",
+      "reportMissingImports": "none"
+    },
+    {
+      "root": "app",
+      "include": ["server.py"],
+      "reportMissingTypeStubs": "none",
+      "reportUnknownVariableType": "none",
+      "reportUnknownMemberType": "none",
+      "reportMissingImports": "none"
+    },
+    {
+      "root": "app",
+      "include": ["db_manager.py"],
+      "reportMissingImports": "none"
+    },
+    {
+      "root": "app",
+      "typeCheckingMode": "strict"
+    },
+    {
+      "root": "tests",
+      "typeCheckingMode": "basic"
+    }
+  ]
+}

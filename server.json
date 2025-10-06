@@ -233,6 +233,34 @@
           "format": "number",
           "isSecret": false,
           "name": "CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS"
+        },
+        {
+          "description": "Enable semantic search functionality",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_SEMANTIC_SEARCH"
+        },
+        {
+          "description": "Ollama API host URL for embedding generation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "OLLAMA_HOST"
+        },
+        {
+          "description": "Embedding model name for semantic search",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_MODEL"
+        },
+        {
+          "description": "Embedding vector dimensions",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_DIM"
         }
       ]
     }

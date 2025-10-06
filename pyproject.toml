@@ -28,6 +28,13 @@ packages = ["app"]
 [tool.uv]
 package = true
 
+[project.optional-dependencies]
+semantic-search = [
+    "ollama>=0.4.0",
+    "numpy>=1.24.0",
+    "sqlite-vec>=0.1.6",
+]
+
 [dependency-groups]
 dev = [
     "pre-commit",
@@ -185,6 +192,12 @@ disallow_any_explicit = false
 [[tool.mypy.overrides]]
 module = ['migrations.*']
 ignore_errors = true
+
+# Handle optional dependencies for semantic search
+[[tool.mypy.overrides]]
+module = ['sqlite_vec', 'ollama']
+ignore_missing_imports = true
+disallow_any_unimported = false
 
 [tool.pyright]
 include = ["app", "tests"]

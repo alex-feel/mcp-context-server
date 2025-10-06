@@ -448,6 +448,37 @@ class DatabaseConnectionManager:
             # This prevents infinite hangs in cleanup code waiting for this event
             self._shutdown_complete.set()
 
+    def _load_sqlite_vec_extension(self, conn: sqlite3.Connection) -> None:
+        """Load sqlite-vec extension on connection if semantic search enabled.
+
+        Args:
+            conn: SQLite connection
+
+        Note:
+            This method is safe to call even if sqlite_vec is not installed.
+            It will gracefully skip loading if the package is not available.
+        """
+        # Only attempt to load if semantic search is enabled
+        if not settings.enable_semantic_search:
+            return
+
+        # Check if already loaded to avoid duplicate loading
+        if hasattr(conn, '_vec_loaded') and getattr(conn, '_vec_loaded', False):
+            return
+
+        try:
+            import sqlite_vec
+
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            conn._vec_loaded = True  # type: ignore[attr-defined]
+            logger.debug('sqlite-vec extension loaded successfully')
+        except ImportError:
+            logger.debug('sqlite-vec package not installed, skipping extension loading')
+        except Exception as e:
+            logger.warning(f'Failed to load sqlite-vec extension: {e}')
+
     def _create_connection(self, readonly: bool = False) -> sqlite3.Connection:
         """Create a new SQLite connection with optimal settings."""
         # Do not create new connections during shutdown
@@ -510,6 +541,9 @@ class DatabaseConnectionManager:
 
             for pragma, value in pragmas:
                 conn.execute(f'PRAGMA {pragma} = {value}')
+
+            # Load sqlite-vec extension if semantic search enabled
+            self._load_sqlite_vec_extension(conn)
 
             self.metrics.total_connections += 1
             self.metrics.active_connections += 1
