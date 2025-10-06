@@ -93,7 +93,7 @@ async def check_semantic_search_dependencies() -> bool:
 
     # Check sqlite_vec package
     try:
-        import sqlite_vec  # type: ignore[import-untyped]
+        import sqlite_vec
 
         logger.debug('✓ sqlite_vec package available')
     except ImportError as e:

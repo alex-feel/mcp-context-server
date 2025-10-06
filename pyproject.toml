@@ -193,6 +193,12 @@ disallow_any_explicit = false
 module = ['migrations.*']
 ignore_errors = true
 
+# Handle optional dependencies for semantic search
+[[tool.mypy.overrides]]
+module = ['sqlite_vec', 'ollama']
+ignore_missing_imports = true
+disallow_any_unimported = false
+
 [tool.pyright]
 include = ["app", "tests"]
 exclude = [".venv", "**/__pycache__"]

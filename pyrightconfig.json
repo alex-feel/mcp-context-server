@@ -14,14 +14,21 @@
     {
       "root": "app/repositories",
       "include": ["embedding_repository.py"],
-      "reportMissingTypeStubs": "none"
+      "reportMissingTypeStubs": "none",
+      "reportMissingImports": "none"
     },
     {
       "root": "app",
       "include": ["server.py"],
       "reportMissingTypeStubs": "none",
       "reportUnknownVariableType": "none",
-      "reportUnknownMemberType": "none"
+      "reportUnknownMemberType": "none",
+      "reportMissingImports": "none"
+    },
+    {
+      "root": "app",
+      "include": ["db_manager.py"],
+      "reportMissingImports": "none"
     },
     {
       "root": "app",

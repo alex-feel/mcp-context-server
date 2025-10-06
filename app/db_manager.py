@@ -467,7 +467,7 @@ class DatabaseConnectionManager:
             return
 
         try:
-            import sqlite_vec  # type: ignore[import-untyped]
+            import sqlite_vec
 
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)

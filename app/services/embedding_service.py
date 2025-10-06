@@ -4,6 +4,7 @@ Embedding service for semantic search using Ollama and EmbeddingGemma.
 This module provides embedding generation capabilities for semantic search,
 wrapping the Ollama API and providing async-compatible interfaces.
 """
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -34,9 +35,9 @@ class EmbeddingService:
         self.model = settings.embedding_model
         self.dim = settings.embedding_dim
         self.ollama_host = settings.ollama_host
-        self._client: ollama.Client | None = None
+        self._client: ollama.Client | None = None  # type: ignore[no-any-unimported]
 
-    def _get_client(self) -> 'ollama.Client':
+    def _get_client(self) -> ollama.Client:  # type: ignore[no-any-unimported]
         """Get or create Ollama client.
 
         Returns:

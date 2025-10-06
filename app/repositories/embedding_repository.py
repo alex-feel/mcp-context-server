@@ -52,7 +52,7 @@ class EmbeddingRepository:
 
         def _store(conn: sqlite3.Connection) -> None:
             try:
-                import sqlite_vec  # type: ignore[import-untyped]
+                import sqlite_vec
             except ImportError as e:
                 raise RuntimeError(
                     'sqlite_vec package is required for semantic search. '
