@@ -298,3 +298,20 @@ class EmbeddingRepository:
             }
 
         return await self.db_manager.execute_read(_get_stats)
+
+    async def get_table_dimension(self) -> int | None:
+        """Get the dimension of the existing vector table.
+
+        This is useful for diagnostics and validation to check if the configured
+        EMBEDDING_DIM matches the actual table dimension.
+
+        Returns:
+            Dimension of existing embeddings, or None if no embeddings exist
+        """
+
+        def _get_dimension(conn: sqlite3.Connection) -> int | None:
+            cursor = conn.execute('SELECT dimensions FROM embedding_metadata LIMIT 1')
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+        return await self.db_manager.execute_read(_get_dimension)

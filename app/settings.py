@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -7,8 +8,11 @@ from typing import Literal
 
 from dotenv import find_dotenv
 from pydantic import Field
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 # Constants
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -102,7 +106,23 @@ class AppSettings(CommonSettings):
     enable_semantic_search: bool = Field(default=False, alias='ENABLE_SEMANTIC_SEARCH')
     ollama_host: str = Field(default='http://localhost:11434', alias='OLLAMA_HOST')
     embedding_model: str = Field(default='embeddinggemma:latest', alias='EMBEDDING_MODEL')
-    embedding_dim: int = Field(default=768, alias='EMBEDDING_DIM')
+    embedding_dim: int = Field(default=768, alias='EMBEDDING_DIM', gt=0, le=4096)
+
+    @field_validator('embedding_dim')
+    @classmethod
+    def validate_embedding_dim(cls, v: int) -> int:
+        """Validate embedding dimension is reasonable and warn about non-standard values."""
+        if v > 4096:
+            raise ValueError(
+                'EMBEDDING_DIM exceeds reasonable limit (4096). '
+                'Most Ollama embedding models use dimensions between 128-1024.',
+            )
+        if v % 64 != 0:
+            logger.warning(
+                f'EMBEDDING_DIM={v} is not a multiple of 64. '
+                f'Most Ollama embedding models use dimensions divisible by 64 (e.g., 128, 256, 384, 512, 768, 1024).',
+            )
+        return v
 
 
 @lru_cache

@@ -108,7 +108,7 @@ For more details on environment variable expansion, see: https://docs.claude.com
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
 - **OLLAMA_HOST**: Ollama API host URL for embedding generation - defaults to http://localhost:11434
 - **EMBEDDING_MODEL**: Embedding model name for semantic search - defaults to embeddinggemma:latest
-- **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 768
+- **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 768. **Note**: Changing this after initial setup requires database migration (see [Semantic Search Guide](docs/semantic-search.md#changing-embedding-dimensions))
 
 ### Advanced Configuration
 

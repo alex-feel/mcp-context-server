@@ -146,8 +146,14 @@ async def check_semantic_search_dependencies() -> bool:
 async def apply_semantic_search_migration() -> None:
     """Apply semantic search migration if enabled.
 
+    This function:
+    1. Checks if vector table already exists with embeddings
+    2. Validates dimension compatibility (existing vs configured)
+    3. Templates the migration SQL with configured embedding dimension
+    4. Applies the migration if safe to proceed
+
     Raises:
-        RuntimeError: If migration fails
+        RuntimeError: If migration fails or dimension mismatch detected
     """
     if not settings.enable_semantic_search:
         return
@@ -159,18 +165,67 @@ async def apply_semantic_search_migration() -> None:
         return
 
     try:
-        migration_sql = migration_path.read_text(encoding='utf-8')
+        # Read migration SQL template
+        migration_sql_template = migration_path.read_text(encoding='utf-8')
 
         # Apply migration using a short-lived manager
         temp_manager = get_connection_manager(DB_PATH, force_new=True)
         await temp_manager.initialize()
         try:
 
+            # Check for existing table and dimension compatibility
+            def _check_existing_dimension(conn: sqlite3.Connection) -> tuple[bool, int | None]:
+                # Check if vector table exists
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_context_embeddings'",
+                )
+                table_exists = cursor.fetchone() is not None
+
+                if not table_exists:
+                    return False, None
+
+                # Get existing dimension from any embedding metadata
+                cursor = conn.execute('SELECT dimensions FROM embedding_metadata LIMIT 1')
+                row = cursor.fetchone()
+                existing_dim = row[0] if row else None
+
+                return True, existing_dim
+
+            table_exists, existing_dim = await temp_manager.execute_read(_check_existing_dimension)
+
+            # Validate dimension compatibility
+            if table_exists and existing_dim is not None and existing_dim != settings.embedding_dim:
+                db_path = str(DB_PATH).replace('\\', '/')
+                raise RuntimeError(
+                    f'Embedding dimension mismatch detected!\n'
+                    f'  Existing database dimension: {existing_dim}\n'
+                    f'  Configured EMBEDDING_DIM: {settings.embedding_dim}\n\n'
+                    f'To change embedding dimensions, you must:\n'
+                    f'  1. Back up your database: {db_path}\n'
+                    f'  2. Delete or rename the database file\n'
+                    f'  3. Restart the server to create new tables with dimension {settings.embedding_dim}\n'
+                    f'  4. Re-import your context data (embeddings will be regenerated)\n\n'
+                    f'Note: Changing dimensions will lose all existing embeddings.',
+                )
+
+            # Template the migration SQL with configured dimension
+            migration_sql = migration_sql_template.replace(
+                '{EMBEDDING_DIM}', str(settings.embedding_dim),
+            )
+
+            # Apply migration
             def _apply_migration(conn: sqlite3.Connection) -> None:
                 conn.executescript(migration_sql)
 
             await temp_manager.execute_write(_apply_migration)
-            logger.info('Semantic search migration applied successfully')
+
+            if existing_dim is None:
+                logger.info(
+                    f'Semantic search migration applied successfully with dimension: {settings.embedding_dim}',
+                )
+            else:
+                logger.info('Semantic search migration: tables already exist, skipping')
+
         finally:
             await temp_manager.shutdown()
             await temp_manager.wait_for_shutdown_complete(

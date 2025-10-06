@@ -107,9 +107,14 @@ class EmbeddingService:
 
                 # Validate dimensions
                 if len(embedding) != self.dim:
-                    logger.warning(
-                        f'Embedding dimension mismatch: expected {self.dim}, got {len(embedding)}',
+                    error_msg = (
+                        f'Embedding dimension mismatch: expected {self.dim}, got {len(embedding)}. '
+                        f'This likely indicates a model mismatch. '
+                        f'Ensure EMBEDDING_MODEL ({self.model}) produces {self.dim}-dimensional vectors, '
+                        f'or update EMBEDDING_DIM to match your model output.'
                     )
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
 
                 return embedding
 
@@ -144,9 +149,14 @@ class EmbeddingService:
                 # Validate dimensions
                 for idx, embedding in enumerate(embeddings):
                     if len(embedding) != self.dim:
-                        logger.warning(
-                            f'Embedding {idx} dimension mismatch: expected {self.dim}, got {len(embedding)}',
+                        error_msg = (
+                            f'Embedding {idx} dimension mismatch: expected {self.dim}, got {len(embedding)}. '
+                            f'This likely indicates a model mismatch. '
+                            f'Ensure EMBEDDING_MODEL ({self.model}) produces {self.dim}-dimensional vectors, '
+                            f'or update EMBEDDING_DIM to match your model output.'
                         )
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
 
                 return embeddings
 

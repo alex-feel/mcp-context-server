@@ -179,6 +179,106 @@ While EmbeddingGemma is the default, Ollama supports other embedding models:
 
 Change via `EMBEDDING_MODEL` environment variable and adjust `EMBEDDING_DIM` accordingly.
 
+## Changing Embedding Dimensions
+
+**IMPORTANT**: Changing embedding dimensions requires database migration and will result in loss of existing embeddings.
+
+### Understanding Dimension Compatibility
+
+The embedding dimension (`EMBEDDING_DIM`) is fixed when the database is first created. The sqlite-vec extension creates vector tables with a specific dimension that cannot be changed after creation. If you need to use a different dimension:
+
+1. **Existing embeddings will be incompatible** with the new dimension
+2. **The database must be recreated** with the new dimension
+3. **All embeddings will need to be regenerated** from context entries
+
+### Common Embedding Dimensions by Model
+
+| Model | Dimension | Notes |
+|-------|-----------|-------|
+| embeddinggemma:latest | 768 | Default, good general-purpose |
+| nomic-embed-text | 768 | Strong performance, English-focused |
+| mxbai-embed-large | 1024 | Higher quality, slower |
+| all-minilm | 384 | Very fast, good for large-scale |
+
+### Migration Procedure
+
+When you change `EMBEDDING_DIM` and restart the server, you'll see this error:
+
+```
+RuntimeError: Embedding dimension mismatch detected!
+  Existing database dimension: 768
+  Configured EMBEDDING_DIM: 1024
+
+To change embedding dimensions, you must:
+  1. Back up your database: /path/to/context_storage.db
+  2. Delete or rename the database file
+  3. Restart the server to create new tables with dimension 1024
+  4. Re-import your context data (embeddings will be regenerated)
+
+Note: Changing dimensions will lose all existing embeddings.
+```
+
+**Step-by-step migration**:
+
+1. **Back up your database** (Windows example):
+   ```powershell
+   copy %USERPROFILE%\.mcp\context_storage.db %USERPROFILE%\.mcp\context_storage.backup.db
+   ```
+
+2. **Stop the MCP server** (close Claude Desktop or stop the process)
+
+3. **Update environment variable**:
+   ```bash
+   # In your .env file or environment
+   EMBEDDING_DIM=1024  # New dimension
+   EMBEDDING_MODEL=mxbai-embed-large  # Model that produces 1024-dim vectors
+   ```
+
+4. **Delete or rename the database**:
+   ```powershell
+   # Windows
+   del %USERPROFILE%\.mcp\context_storage.db
+
+   # Or rename to keep as backup
+   move %USERPROFILE%\.mcp\context_storage.db %USERPROFILE%\.mcp\context_storage.old.db
+   ```
+
+5. **Restart the server** - it will create new tables with the configured dimension
+
+6. **Re-import context data** - embeddings will be generated automatically when contexts are accessed via semantic search
+
+### Validation and Error Messages
+
+The server performs several validations:
+
+1. **Dimension Range Check** (at startup):
+   - `EMBEDDING_DIM` must be between 1 and 4096
+   - Warning if not divisible by 64 (most models use 64-aligned dimensions)
+
+2. **Compatibility Check** (at startup):
+   - Compares configured dimension with existing database dimension
+   - Raises error with migration instructions if mismatch detected
+
+3. **Model Output Check** (at runtime):
+   - Validates that model produces vectors of expected dimension
+   - Raises clear error if model output doesn't match configuration
+
+**Example validation error**:
+```
+ValueError: Embedding dimension mismatch: expected 1024, got 768.
+This likely indicates a model mismatch.
+Ensure EMBEDDING_MODEL (mxbai-embed-large) produces 1024-dimensional vectors,
+or update EMBEDDING_DIM to match your model output.
+```
+
+### Best Practices
+
+1. **Choose dimension based on your model**: Always set `EMBEDDING_DIM` to match your model's output
+2. **Test before migrating production**: Use a separate test database to verify model compatibility
+3. **Document your configuration**: Keep track of which model and dimension you're using
+4. **Plan for data loss**: Understand that dimension changes require full re-embedding
+5. **Consider performance**: Higher dimensions (1024) are more accurate but slower than lower dimensions (384, 512)
+
 ## Usage
 
 ### New Tool: semantic_search_tool
