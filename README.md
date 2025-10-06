@@ -11,6 +11,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 15 powerful operators
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
+- **Semantic Search**: Optional vector similarity search using EmbeddingGemma for meaning-based retrieval
 - **High Performance**: SQLite with WAL mode, strategic indexing, and async operations
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client
 - **Production Ready**: Comprehensive test coverage, type safety, and robust error handling
@@ -104,6 +105,10 @@ For more details on environment variable expansion, see: https://docs.claude.com
 - **MCP_CONTEXT_DB**: Database file location - defaults to ~/.mcp/context_storage.db
 - **MAX_IMAGE_SIZE_MB**: Maximum size per image in MB - defaults to 10
 - **MAX_TOTAL_SIZE_MB**: Maximum total request size in MB - defaults to 100
+- **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
+- **OLLAMA_HOST**: Ollama API host URL for embedding generation - defaults to http://localhost:11434
+- **EMBEDDING_MODEL**: Embedding model name for semantic search - defaults to embeddinggemma:latest
+- **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 768
 
 ### Advanced Configuration
 
@@ -115,6 +120,10 @@ Additional environment variables are available for advanced server tuning, inclu
 - Operation timeouts
 
 For a complete list of all configuration options, see [app/settings.py](app/settings.py).
+
+### Semantic Search
+
+For detailed instructions on enabling optional semantic search with Ollama and EmbeddingGemma, see the [Semantic Search Guide](docs/semantic-search.md).
 
 ## API Reference
 
@@ -263,5 +272,30 @@ Update specific fields of an existing context entry.
 - Context ID
 - List of updated fields
 - Success/error message
+
+#### semantic_search_tool
+
+Perform semantic similarity search using vector embeddings.
+
+Note: This tool is only available when semantic search is enabled via `ENABLE_SEMANTIC_SEARCH=true` and all dependencies are installed (ollama, numpy, sqlite-vec packages, and EmbeddingGemma model).
+
+**Parameters:**
+- `query` (str, required): Natural language search query
+- `top_k` (int, optional): Number of results to return (1-100) - defaults to 20
+- `thread_id` (str, optional): Filter results to specific thread
+- `source` (str, optional): Filter by source type ('user' or 'agent')
+
+**Returns:** Dictionary with:
+- Query string
+- List of semantically similar context entries with similarity scores
+- Result count
+- Model name used for embeddings
+
+**Use Cases:**
+- Find related work across different threads based on semantic similarity
+- Discover contexts with similar meaning but different wording
+- Concept-based retrieval without exact keyword matching
+
+For setup instructions, see the [Semantic Search Guide](docs/semantic-search.md).
 
 <!-- mcp-name: io.github.alex-feel/mcp-context-server -->
