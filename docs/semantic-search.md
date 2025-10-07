@@ -79,6 +79,13 @@ curl http://localhost:11434
 uv sync --extra semantic-search
 ```
 
+You can also install the dependencies globally:
+
+```bash
+# Using uv (recommended)
+uv pip install -U --system ollama numpy sqlite-vec
+```
+
 This installs:
 - `ollama>=0.4.0` - Python client for Ollama API
 - `numpy>=1.24.0` - Vector operations support
@@ -87,11 +94,11 @@ This installs:
 ### Step 3: Pull the EmbeddingGemma Model
 
 ```bash
-# Download the model (~200MB)
+# Download the model (~622MB)
 ollama pull embeddinggemma:latest
 
 # Verify the model is available
-ollama list | grep embeddinggemma
+ollama list
 ```
 
 **Model Specifications**:
@@ -157,7 +164,11 @@ Add to your `.mcp.json` file:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["mcp-context-server"],
+      "args": [
+        "--with",
+        "mcp-context-server[semantic-search]",
+        "mcp-context-server"
+      ],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "OLLAMA_HOST": "http://localhost:11434",
@@ -364,29 +375,23 @@ Run through this checklist to verify your semantic search installation:
 
 3. **Verify model availability**:
    ```bash
-   ollama list | grep embeddinggemma
+   ollama list
    # Should show: embeddinggemma:latest
    ```
 
-4. **Test model**:
-   ```bash
-   ollama run embeddinggemma:latest "test"
-   # Should generate embedding output
-   ```
-
-5. **Verify Python packages**:
+4. **Verify Python packages**:
    ```bash
    python -c "import ollama, numpy, sqlite_vec; print('All imports successful')"
    ```
 
-6. **Verify SQLite extension support** (macOS only):
+5. **Verify SQLite extension support** (macOS only):
    ```python
    import sqlite3
    conn = sqlite3.connect(':memory:')
    print(hasattr(conn, 'enable_load_extension'))  # Should be True
    ```
 
-7. **Start server with semantic search enabled**:
+6. **Start server with semantic search enabled**:
    ```bash
    # Set environment variable
    export ENABLE_SEMANTIC_SEARCH=true  # Linux/macOS
@@ -396,16 +401,16 @@ Run through this checklist to verify your semantic search installation:
    uv run mcp-context-server
    ```
 
-8. **Check server logs** for:
+7. **Check server logs** for:
    ```
    ✓ All semantic search dependencies available
    ✓ Semantic search enabled and available
    ✓ semantic_search_tool registered and exposed
    ```
 
-9. **Verify MCP client** - List available tools and confirm `semantic_search_tool` is present
+8. **Verify MCP client** - List available tools and confirm `semantic_search_tool` is present
 
-10. **Test functionality**:
+9. **Test functionality**:
     ```
     semantic_search_tool(query="test", top_k=5)
     ```
@@ -480,10 +485,7 @@ print(hasattr(conn, 'enable_load_extension'))  # Must be True
 ollama pull embeddinggemma:latest
 
 # Verify installation
-ollama list | grep embeddinggemma
-
-# Test model works
-ollama run embeddinggemma:latest "test query"
+ollama list
 ```
 
 ### Issue 4: semantic_search_tool Not Available
@@ -526,44 +528,33 @@ ollama run embeddinggemma:latest "test query"
    # Shows currently loaded models
    ```
 
-2. **Warmup the model**:
-   ```bash
-   ollama run embeddinggemma:latest "warmup"
-   # Pre-loads model into memory
-   ```
-
-3. **Verify RAM availability**:
+2. **Verify RAM availability**:
    - EmbeddingGemma needs ~200MB
    - Check system memory usage
 
-4. **Increase model keep-alive**:
+3. **Increase model keep-alive**:
    ```bash
    export OLLAMA_KEEP_ALIVE=3600  # Keep model loaded for 1 hour
    ```
 
 ### Performance Optimization
 
-1. **Pre-load model at startup**:
-   ```bash
-   ollama run embeddinggemma:latest "warmup" &
-   ```
-
-2. **Increase parallel requests**:
+1. **Increase parallel requests**:
    ```bash
    export OLLAMA_NUM_PARALLEL=8
    ```
 
-3. **Keep model in memory longer**:
+2. **Keep model in memory longer**:
    ```bash
    export OLLAMA_KEEP_ALIVE=3600  # Seconds
    ```
 
-4. **Use smaller dimensions** (trade-off: speed vs accuracy):
+3. **Use smaller dimensions** (trade-off: speed vs accuracy):
    ```json
    "EMBEDDING_DIM": "512"
    ```
 
-5. **GPU acceleration**: Ollama automatically uses available GPU if detected
+4. **GPU acceleration**: Ollama automatically uses available GPU if detected
 
 ### Common Error Messages
 
