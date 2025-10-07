@@ -197,6 +197,10 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = ['sqlite_vec', 'ollama']
 ignore_missing_imports = true
+
+# Allow Any from optional dependencies in embedding_service
+[[tool.mypy.overrides]]
+module = 'app.services.embedding_service'
 disallow_any_unimported = false
 
 [tool.pyright]

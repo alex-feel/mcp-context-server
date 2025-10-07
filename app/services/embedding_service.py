@@ -35,9 +35,9 @@ class EmbeddingService:
         self.model = settings.embedding_model
         self.dim = settings.embedding_dim
         self.ollama_host = settings.ollama_host
-        self._client: ollama.Client | None = None  # type: ignore[no-any-unimported]
+        self._client: ollama.Client | None = None
 
-    def _get_client(self) -> ollama.Client:  # type: ignore[no-any-unimported]
+    def _get_client(self) -> ollama.Client:
         """Get or create Ollama client.
 
         Returns:
