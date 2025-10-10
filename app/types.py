@@ -12,8 +12,8 @@ type JsonValue = str | int | float | bool | None | list['JsonValue'] | dict[str,
 # Metadata value types - simpler non-recursive type for metadata fields
 type MetadataValue = str | int | float | bool | None
 
-# Metadata dictionary type for use in models
-type MetadataDict = dict[str, MetadataValue]
+# Metadata dictionary type for use in models - supports nested JSON structures
+type MetadataDict = dict[str, JsonValue]
 
 
 # API Response TypedDicts for proper return type annotations
