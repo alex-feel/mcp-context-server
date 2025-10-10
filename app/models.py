@@ -10,8 +10,7 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
-# Define MetadataDict directly to avoid import issues
-type MetadataDict = dict[str, str | int | float | bool | None]
+from app.types import MetadataDict
 
 
 class SourceType(StrEnum):
