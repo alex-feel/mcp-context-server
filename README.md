@@ -202,6 +202,8 @@ metadata_filters=[
 
 All string operators support `case_sensitive: true/false` option.
 
+For comprehensive documentation on metadata filtering including real-world use cases, operator examples, nested JSON paths, and performance optimization, see the [Metadata Filtering Guide](docs/metadata-filtering.md).
+
 **Returns:** List of matching context entries with optional query statistics
 
 #### get_context_by_ids
