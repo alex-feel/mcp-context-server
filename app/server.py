@@ -215,6 +215,28 @@ async def apply_semantic_search_migration() -> None:
 
             # Apply migration
             def _apply_migration(conn: sqlite3.Connection) -> None:
+                # Load sqlite-vec extension before executing migration
+                try:
+                    import sqlite_vec
+
+                    conn.enable_load_extension(True)
+                    sqlite_vec.load(conn)
+                    conn.enable_load_extension(False)
+                    logger.debug('sqlite-vec extension loaded for migration')
+                except ImportError:
+                    raise RuntimeError(
+                        'sqlite-vec package required for semantic search migration. '
+                        'Install with: uv sync --extra semantic-search',
+                    ) from None
+                except AttributeError:
+                    raise RuntimeError(
+                        'SQLite does not support extension loading. '
+                        'Semantic search requires SQLite with extension support.',
+                    ) from None
+                except Exception as e:
+                    raise RuntimeError(f'Failed to load sqlite-vec extension: {e}') from e
+
+                # Now safe to execute migration with vec0 module
                 conn.executescript(migration_sql)
 
             await temp_manager.execute_write(_apply_migration)
