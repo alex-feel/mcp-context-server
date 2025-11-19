@@ -54,7 +54,7 @@ preview = true
 src = ["app"]
 target-version = "py312"
 line-length = 127
-extend-include = ["tests/*"]
+extend-include = ["tests/**/*.py"]
 
 [tool.ruff.lint]
 # Ignore specific rules
@@ -125,7 +125,7 @@ ignore-one-line-docstrings = true
 [tool.mypy]
 # Core safety, balanced for production
 python_version = '3.12'
-files = ['app', 'tests']
+files = ['app']
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_calls = true
@@ -204,7 +204,7 @@ module = 'app.services.embedding_service'
 disallow_any_unimported = false
 
 [tool.pyright]
-include = ["app", "tests"]
+include = ["app"]
 exclude = [".venv", "**/__pycache__"]
 # Set a sane global baseline; strictness is then scoped below.
 typeCheckingMode = "standard"
@@ -239,6 +239,7 @@ markers = [
 [tool.coverage.run]
 relative_files = true
 source = ["app"]
+omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
 exclude_also = [
