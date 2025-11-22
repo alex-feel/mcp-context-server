@@ -281,7 +281,7 @@ Update specific fields of an existing context entry.
 - List of updated fields
 - Success/error message
 
-#### semantic_search_tool
+#### semantic_search_context
 
 Perform semantic similarity search using vector embeddings.
 
