@@ -316,26 +316,22 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
                     _embedding_service = EmbeddingService()
                     logger.info('✓ Semantic search enabled and available')
-
-                    # Conditionally register semantic_search_tool
-                    # Apply @mcp.tool() decorator programmatically to convert function to Tool object
-                    mcp.add_tool(mcp.tool()(semantic_search_tool))
-                    logger.info('✓ semantic_search_tool registered and exposed')
+                    logger.info('✓ semantic_search_context registered and exposed')
                 except Exception as e:
                     logger.error(f'Failed to initialize embedding service: {e}')
                     _embedding_service = None
                     logger.warning('⚠ Semantic search enabled but initialization failed - feature disabled')
-                    logger.info('⚠ semantic_search_tool not registered (initialization failed)')
+                    logger.info('⚠ semantic_search_context not registered (initialization failed)')
             else:
                 _embedding_service = None
                 logger.warning('⚠ Semantic search enabled but dependencies not met - feature disabled')
                 logger.warning('  Install dependencies: uv sync --extra semantic-search')
                 logger.warning(f'  Download model: ollama pull {settings.embedding_model}')
-                logger.info('⚠ semantic_search_tool not registered (dependencies not met)')
+                logger.info('⚠ semantic_search_context not registered (dependencies not met)')
         else:
             _embedding_service = None
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
-            logger.info('⚠ semantic_search_tool not registered (feature disabled)')
+            logger.info('⚠ semantic_search_context not registered (feature disabled)')
 
         logger.info(f'MCP Context Server initialized with database: {DB_PATH}')
     except Exception as e:
@@ -1341,7 +1337,8 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         raise ToolError(f'Failed to get statistics: {str(e)}') from e
 
 
-async def semantic_search_tool(
+@mcp.tool()
+async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return')] = 20,
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
