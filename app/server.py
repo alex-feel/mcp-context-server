@@ -143,8 +143,15 @@ async def check_semantic_search_dependencies() -> bool:
     return True
 
 
-async def apply_semantic_search_migration() -> None:
+async def apply_semantic_search_migration(backend: StorageBackend | None = None) -> None:
     """Apply semantic search migration if enabled.
+
+    Args:
+        backend: Optional backend to use. If None, creates temporary backend for backward compatibility.
+
+    This function can work in two modes:
+    1. With backend parameter (normal server startup): Uses provided backend, no temp backend created
+    2. Without backend parameter (tests/direct calls): Creates temporary backend for isolation
 
     This function:
     1. Checks if vector table already exists with embeddings
@@ -168,91 +175,107 @@ async def apply_semantic_search_migration() -> None:
         # Read migration SQL template
         migration_sql_template = migration_path.read_text(encoding='utf-8')
 
-        # Apply migration using a short-lived manager
-        temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
-        await temp_manager.initialize()
-        try:
-
-            # Check for existing table and dimension compatibility
-            def _check_existing_dimension(conn: sqlite3.Connection) -> tuple[bool, int | None]:
-                # Check if vector table exists
-                cursor = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_context_embeddings'",
-                )
-                table_exists = cursor.fetchone() is not None
-
-                if not table_exists:
-                    return False, None
-
-                # Get existing dimension from any embedding metadata
-                cursor = conn.execute('SELECT dimensions FROM embedding_metadata LIMIT 1')
-                row = cursor.fetchone()
-                existing_dim = row[0] if row else None
-
-                return True, existing_dim
-
-            table_exists, existing_dim = await temp_manager.execute_read(_check_existing_dimension)
-
-            # Validate dimension compatibility
-            if table_exists and existing_dim is not None and existing_dim != settings.embedding_dim:
-                db_path = str(DB_PATH).replace('\\', '/')
-                raise RuntimeError(
-                    f'Embedding dimension mismatch detected!\n'
-                    f'  Existing database dimension: {existing_dim}\n'
-                    f'  Configured EMBEDDING_DIM: {settings.embedding_dim}\n\n'
-                    f'To change embedding dimensions, you must:\n'
-                    f'  1. Back up your database: {db_path}\n'
-                    f'  2. Delete or rename the database file\n'
-                    f'  3. Restart the server to create new tables with dimension {settings.embedding_dim}\n'
-                    f'  4. Re-import your context data (embeddings will be regenerated)\n\n'
-                    f'Note: Changing dimensions will lose all existing embeddings.',
-                )
-
-            # Template the migration SQL with configured dimension
-            migration_sql = migration_sql_template.replace(
-                '{EMBEDDING_DIM}', str(settings.embedding_dim),
-            )
-
-            # Apply migration
-            def _apply_migration(conn: sqlite3.Connection) -> None:
-                # Load sqlite-vec extension before executing migration
-                try:
-                    import sqlite_vec
-
-                    conn.enable_load_extension(True)
-                    sqlite_vec.load(conn)
-                    conn.enable_load_extension(False)
-                    logger.debug('sqlite-vec extension loaded for migration')
-                except ImportError:
-                    raise RuntimeError(
-                        'sqlite-vec package required for semantic search migration. '
-                        'Install with: uv sync --extra semantic-search',
-                    ) from None
-                except AttributeError:
-                    raise RuntimeError(
-                        'SQLite does not support extension loading. '
-                        'Semantic search requires SQLite with extension support.',
-                    ) from None
-                except Exception as e:
-                    raise RuntimeError(f'Failed to load sqlite-vec extension: {e}') from e
-
-                # Now safe to execute migration with vec0 module
-                conn.executescript(migration_sql)
-
-            await temp_manager.execute_write(_apply_migration)
-
-            if existing_dim is None:
-                logger.info(
-                    f'Semantic search migration applied successfully with dimension: {settings.embedding_dim}',
-                )
-            else:
-                logger.info('Semantic search migration: tables already exist, skipping')
-
-        finally:
-            await temp_manager.shutdown()
+        # Apply migration - use provided backend or create temporary one
+        if backend is not None:
+            # Use provided backend (normal server startup)
+            await _apply_migration_with_backend(backend, migration_sql_template)
+        else:
+            # Backward compatibility: create temporary backend for tests
+            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
+            await temp_manager.initialize()
+            try:
+                await _apply_migration_with_backend(temp_manager, migration_sql_template)
+            finally:
+                await temp_manager.shutdown()
     except Exception as e:
         logger.error(f'Failed to apply semantic search migration: {e}')
         raise RuntimeError(f'Semantic search migration failed: {e}') from e
+
+
+async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_template: str) -> None:
+    """Helper function to apply migration with a given backend.
+
+    Args:
+        manager: The backend to use for migration
+        migration_sql_template: The migration SQL template with {EMBEDDING_DIM} placeholder
+
+    Raises:
+        RuntimeError: If migration fails or dimension mismatch detected
+    """
+    # Check for existing table and dimension compatibility
+    def _check_existing_dimension(conn: sqlite3.Connection) -> tuple[bool, int | None]:
+        # Check if vector table exists
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_context_embeddings'",
+        )
+        table_exists = cursor.fetchone() is not None
+
+        if not table_exists:
+            return False, None
+
+        # Get existing dimension from any embedding metadata
+        cursor = conn.execute('SELECT dimensions FROM embedding_metadata LIMIT 1')
+        row = cursor.fetchone()
+        existing_dim = row[0] if row else None
+
+        return True, existing_dim
+
+    table_exists, existing_dim = await manager.execute_read(_check_existing_dimension)
+
+    # Validate dimension compatibility
+    if table_exists and existing_dim is not None and existing_dim != settings.embedding_dim:
+        db_path = str(DB_PATH).replace('\\', '/')
+        raise RuntimeError(
+            f'Embedding dimension mismatch detected!\n'
+            f'  Existing database dimension: {existing_dim}\n'
+            f'  Configured EMBEDDING_DIM: {settings.embedding_dim}\n\n'
+            f'To change embedding dimensions, you must:\n'
+            f'  1. Back up your database: {db_path}\n'
+            f'  2. Delete or rename the database file\n'
+            f'  3. Restart the server to create new tables with dimension {settings.embedding_dim}\n'
+            f'  4. Re-import your context data (embeddings will be regenerated)\n\n'
+            f'Note: Changing dimensions will lose all existing embeddings.',
+        )
+
+    # Template the migration SQL with configured dimension
+    migration_sql = migration_sql_template.replace(
+        '{EMBEDDING_DIM}', str(settings.embedding_dim),
+    )
+
+    # Apply migration
+    def _apply_migration(conn: sqlite3.Connection) -> None:
+        # Load sqlite-vec extension before executing migration
+        try:
+            import sqlite_vec
+
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            logger.debug('sqlite-vec extension loaded for migration')
+        except ImportError:
+            raise RuntimeError(
+                'sqlite-vec package required for semantic search migration. '
+                'Install with: uv sync --extra semantic-search',
+            ) from None
+        except AttributeError:
+            raise RuntimeError(
+                'SQLite does not support extension loading. '
+                'Semantic search requires SQLite with extension support.',
+            ) from None
+        except Exception as e:
+            raise RuntimeError(f'Failed to load sqlite-vec extension: {e}') from e
+
+        # Now safe to execute migration with vec0 module
+        conn.executescript(migration_sql)
+
+    await manager.execute_write(_apply_migration)
+
+    if existing_dim is None:
+        logger.info(
+            f'Semantic search migration applied successfully with dimension: {settings.embedding_dim}',
+        )
+    else:
+        logger.info('Semantic search migration: tables already exist, skipping')
 
 
 # Lifespan context manager for FastMCP
@@ -273,15 +296,14 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
     # Startup
     try:
-        await _ensure_backend()
-        # 1) Ensure schema exists using a short-lived manager
-        await init_database()
-        # 2) Apply semantic search migration if enabled
-        await apply_semantic_search_migration()
-        # 3) Start long-lived manager for server runtime
+        # Create backend ONCE at the start - used throughout initialization and runtime
         _backend = create_backend(backend_type=None, db_path=DB_PATH)
         await _backend.initialize()
-        # 4) Initialize repositories
+        # 1) Ensure schema exists using the shared backend
+        await init_database(backend=_backend)
+        # 2) Apply semantic search migration if enabled using the shared backend
+        await apply_semantic_search_migration(backend=_backend)
+        # 3) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
         # 5) Initialize semantic search if enabled
@@ -345,13 +367,17 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 mcp = FastMCP(name='mcp-context-server', lifespan=lifespan, mask_error_details=False)
 
 
-async def init_database() -> None:
-    """Initialize database schema only using a short-lived manager.
+async def init_database(backend: StorageBackend | None = None) -> None:
+    """Initialize database schema.
 
-    This avoids leaving background tasks running when tests call this function directly.
+    Args:
+        backend: Optional backend to use. If None, creates temporary backend for backward compatibility.
+
+    This function can work in two modes:
+    1. With backend parameter (normal server startup): Uses provided backend, no temp backend created
+    2. Without backend parameter (tests/direct calls): Creates temporary backend for isolation
     """
     try:
-        await _ensure_backend()
         # Ensure database path exists
         if DB_PATH:
             DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -441,20 +467,27 @@ ON context_entries(json_extract(metadata, '$.completed'))
 WHERE json_extract(metadata, '$.completed') IS NOT NULL;
             '''
 
-        # Apply schema using a short-lived manager
-        temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
-        await temp_manager.initialize()
-        try:
+        # Apply schema - use provided backend or create temporary one
+        if backend is not None:
+            # Use provided backend (normal server startup)
             def _init_schema(conn: sqlite3.Connection) -> None:
                 # Single executescript to create all objects atomically
                 conn.executescript(schema_sql)
-            await temp_manager.execute_write(_init_schema)
+            await backend.execute_write(_init_schema)
             logger.info('Database schema initialized successfully')
-        finally:
-            # Always shutdown to stop background tasks and close connections
-            await temp_manager.shutdown()
-            # Wait for shutdown to complete with timeout to prevent race conditions
-            # This ensures background tasks are fully stopped before proceeding
+        else:
+            # Backward compatibility: create temporary backend for tests
+            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
+            await temp_manager.initialize()
+            try:
+                def _init_schema(conn: sqlite3.Connection) -> None:
+                    # Single executescript to create all objects atomically
+                    conn.executescript(schema_sql)
+                await temp_manager.execute_write(_init_schema)
+                logger.info('Database schema initialized successfully')
+            finally:
+                # Always shutdown to stop background tasks and close connections
+                await temp_manager.shutdown()
     except Exception as e:
         logger.error(f'Failed to initialize database: {e}')
         raise
