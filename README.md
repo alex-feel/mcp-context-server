@@ -33,6 +33,12 @@ claude mcp add context-server -- uvx mcp-context-server
 
 # Or from GitHub (latest development version)
 claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
+
+# Or with semantic search (for setup instructions, see the docs/semantic-search.md)
+claude mcp add context-server -- uvx --with mcp-context-server[semantic-search] mcp-context-server
+
+# Or from GitHub (latest development version) with semantic search (for setup instructions, see docs/semantic-search.md)
+claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[semantic-search] mcp-context-server
 ```
 
 For more details, see: https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server
