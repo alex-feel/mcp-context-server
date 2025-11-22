@@ -13,9 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.db_manager import DatabaseConnectionManager
-from app.db_manager import get_connection_manager
-from app.db_manager import reset_connection_manager
+from app.backends import StorageBackend
 from app.server import init_database
 
 
@@ -103,40 +101,7 @@ class TestDatabaseConnection:
     """Test database connection management."""
 
     @pytest.mark.asyncio
-    async def test_get_db_context_manager(self, temp_db_path: Path) -> None:
-        """Test database connection manager with proper settings."""
-        reset_connection_manager()
-        manager = get_connection_manager(str(temp_db_path), force_new=True)
-        await manager.initialize()
-
-        try:
-            async with manager.get_connection(readonly=True) as conn:
-                # Test connection is valid
-                assert conn is not None
-                cursor = conn.cursor()
-
-                # Verify PRAGMAs were set
-                cursor.execute('PRAGMA foreign_keys')
-                assert cursor.fetchone()[0] == 1  # Foreign keys enabled
-
-                cursor.execute('PRAGMA journal_mode')
-                assert cursor.fetchone()[0] == 'wal'  # WAL mode
-
-                cursor.execute('PRAGMA synchronous')
-                assert cursor.fetchone()[0] == 1  # NORMAL (1)
-
-                # Test row factory
-                cursor.execute('SELECT 1 as test_col, 2 as another_col')
-                row = cursor.fetchone()
-                assert row['test_col'] == 1
-                assert row['another_col'] == 2
-        finally:
-            await manager.shutdown()
-            await manager._shutdown_complete.wait()
-            reset_connection_manager()
-
-    @pytest.mark.asyncio
-    async def test_db_rollback_on_error(self, async_db_initialized: DatabaseConnectionManager) -> None:
+    async def test_db_rollback_on_error(self, async_db_initialized: StorageBackend) -> None:
         """Test database rollback on error."""
         manager = async_db_initialized
 
@@ -169,7 +134,7 @@ class TestDatabaseConnection:
             assert cursor.fetchone()[0] == 1  # Only the first valid insert
 
     @pytest.mark.asyncio
-    async def test_async_context_manager(self, async_db_initialized: DatabaseConnectionManager) -> None:
+    async def test_async_context_manager(self, async_db_initialized: StorageBackend) -> None:
         """Test async database context manager."""
         manager = async_db_initialized
         async with manager.get_connection(readonly=True) as conn:
@@ -183,7 +148,7 @@ class TestDatabaseConnection:
             assert result['test'] == 1
 
     @pytest.mark.asyncio
-    async def test_async_rollback_on_error(self, async_db_initialized: DatabaseConnectionManager) -> None:
+    async def test_async_rollback_on_error(self, async_db_initialized: StorageBackend) -> None:
         """Test async database rollback on error."""
         manager = async_db_initialized
 

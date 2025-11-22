@@ -92,21 +92,22 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Uses `RepositoryContainer` for all database operations (no direct SQL)
    - Database initialization in `init_database()`, repository management via `_ensure_repositories()`
 
-2. **Repository Pattern** (`app/repositories/`):
+2. **Storage Backend Layer** (`app/backends/`):
+   - **StorageBackend Protocol** (`base.py`): Defines database-agnostic interface with 7 required methods
+   - **SQLiteBackend** (`sqlite_backend.py`): Production-grade SQLite implementation with connection pooling, write queue, circuit breaker
+   - **Backend Factory** (`factory.py`): Creates appropriate backend based on `STORAGE_BACKEND` environment variable
+   - Runtime backend selection enables support for multiple databases (SQLite, PostgreSQL, Supabase)
+   - All backends implement the same protocol for seamless switching
+
+3. **Repository Pattern** (`app/repositories/`):
    - **RepositoryContainer**: Dependency injection container managing all repository instances
    - **ContextRepository**: Manages context entries (CRUD operations, search, deduplication, metadata filtering, updates)
    - **TagRepository**: Handles tag normalization and many-to-many relationships
    - **ImageRepository**: Manages multimodal image attachments
    - **StatisticsRepository**: Provides thread statistics and database metrics
-   - Each repository uses `DatabaseConnectionManager` for connection pooling
-
-3. **Database Manager** (`app/db_manager.py`):
-   - Production-grade connection pooling with thread-safe operations
-   - Retry logic with exponential backoff for transient failures
-   - Circuit breaker pattern for degraded database states
-   - Connection health monitoring and automatic recovery
-   - Configurable pool size (min: 2, max: 10 connections)
-   - Connection context managers for all repository operations
+   - **EmbeddingRepository**: Manages vector embeddings for semantic search
+   - Each repository uses `StorageBackend` protocol for database operations
+   - Repositories are database-agnostic - work with any backend implementation
 
 4. **Data Models** (`app/models.py`):
    - Pydantic V2 models with `StrEnum` for Python 3.12+ compatibility
@@ -178,7 +179,6 @@ The codebase uses a comprehensive multi-layered testing approach:
 #### Test Files and Their Purpose:
 - **`test_models.py`**: Validates Pydantic data models, field validation, and type conversions
 - **`test_database.py`**: Tests SQLite operations, constraints, indexes, and cascade deletes
-- **`test_db_manager.py`**: Tests connection pooling, retry logic, circuit breaker, and concurrency
 - **`test_server.py`**: Tests MCP tool handlers with mocked database connections
 - **`test_integration.py`**: End-to-end workflows with real database operations
 - **`test_real_server.py`**: Tests actual running server via FastMCP client connection
@@ -196,7 +196,7 @@ The codebase uses a comprehensive multi-layered testing approach:
 - **`temp_db_path`**: Provides temporary database file path
 - **`test_db`**: SQLite connection with schema initialization (for direct DB tests)
 - **`initialized_server`**: Full server initialization with database (for integration tests)
-- **`async_db_initialized`**: Async database manager with proper lifecycle management
+- **`async_db_initialized`**: Async storage backend with proper lifecycle management
 - **`mock_context`**: Mock FastMCP Context for unit tests
 - **`sample_image_data`**: Base64 encoded test PNG image
 - **`multiple_context_entries`**: Pre-populated database entries for testing
@@ -227,11 +227,12 @@ The codebase uses a comprehensive multi-layered testing approach:
    - Async wrappers use `loop.run_in_executor()` for database calls
 
 4. **Design Patterns**:
+   - **Protocol Pattern**: `StorageBackend` protocol defines database-agnostic interface
    - **Repository Pattern**: All SQL operations isolated in repository classes (`app/repositories/`)
    - **Dependency Injection**: `RepositoryContainer` provides repositories to server layer
+   - **Factory Pattern**: `create_backend()` for backend selection, `get_settings()` for configuration
    - **DTO Pattern**: TypedDicts for data transfer between layers
-   - **Factory Pattern**: Settings management via `get_settings()`
-   - **Context Manager Pattern**: Database connections via `DatabaseConnectionManager`
+   - **Context Manager Pattern**: Connection handling via `get_connection()` protocol method
 
 5. **Error Handling**: Comprehensive error handling with specific exceptions:
    - Input validation via Pydantic (strict type checking, field validators)
@@ -260,6 +261,7 @@ The project uses [Release Please](https://github.com/googleapis/release-please) 
 ## Environment Variables
 
 Configuration via `.env` file or environment:
+- `STORAGE_BACKEND`: Backend type - `sqlite`, `postgresql`, or `supabase` (default: sqlite)
 - `LOG_LEVEL`: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
 - `DB_PATH` or `MCP_CONTEXT_DB`: Custom database location (default: ~/.mcp/context_storage.db)
 - `MAX_IMAGE_SIZE_MB`: Individual image size limit (default: 10)
@@ -269,6 +271,43 @@ Additional tuning parameters (see `app/settings.py` for full list):
 - Database connection pool settings
 - Retry behavior configuration
 - Circuit breaker thresholds
+
+
+## Storage Backend Configuration
+
+The server uses a protocol-based architecture that supports multiple database backends. The active backend is selected via the `STORAGE_BACKEND` environment variable.
+
+### Supported Backends
+
+#### SQLite (Default)
+
+
+**Features:**
+- Zero-configuration local storage
+- Production-grade connection pooling
+- Write queue for serialized operations
+- Circuit breaker for fault tolerance
+- Suitable for single-user deployments
+
+#### PostgreSQL (Not Yet Implemented)
+
+
+#### Supabase (Not Yet Implemented)
+
+
+### StorageBackend Protocol
+
+All backends implement the `StorageBackend` protocol with these required methods:
+
+
+
+### Backend Benefits
+
+1. **Database-Agnostic Repositories**: Repository code works with any backend without modification
+2. **Runtime Selection**: Choose backend via environment variable - no code changes needed
+3. **Easy Testing**: Switch to in-memory database for tests via backend factory
+4. **Future-Proof**: Add new backends by implementing the protocol
+5. **Type-Safe**: Protocol ensures all backends provide required functionality
 
 ## Debugging and Troubleshooting
 
@@ -291,7 +330,6 @@ set LOG_LEVEL=DEBUG && uv run mcp-context-server
 uv run pytest tests/test_server.py::TestStoreContext -v
 
 # Check database metrics
-uv run python -c "from app.db_manager import DatabaseManager; db = DatabaseManager(); print(db.get_metrics())"
 ```
 
 ### Common Issues and Solutions
@@ -349,11 +387,11 @@ The `update_context` tool has specific behavior:
 ### Database Best Practices
 
 1. **Use repository pattern for all database operations** - never write SQL in server.py
-2. **Repository methods handle connection management** - repositories use `DatabaseConnectionManager` internally
-3. **Connection pooling is automatic** - managed by `DatabaseConnectionManager`
+2. **Repository methods handle connection management** - repositories use `StorageBackend` protocol internally
+3. **Connection pooling is automatic** - managed by backend implementation (e.g., `SQLiteBackend`)
 4. **Parameterized queries are enforced** - all repositories use parameterized SQL
-5. **Handle transient failures** - DatabaseManager includes retry logic with exponential backoff
-6. **Monitor connection health** - check `DatabaseManager.get_metrics()` for diagnostics
+5. **Handle transient failures** - Backend implementations include retry logic with exponential backoff
+6. **Monitor connection health** - check `backend.get_metrics()` for diagnostics
 
 ### Testing Conventions
 

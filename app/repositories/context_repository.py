@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.db_manager import DatabaseConnectionManager
+from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 
 logger = logging.getLogger(__name__)
@@ -25,13 +25,13 @@ class ContextRepository(BaseRepository):
     with proper deduplication and transaction management.
     """
 
-    def __init__(self, db_manager: DatabaseConnectionManager) -> None:
+    def __init__(self, backend: StorageBackend) -> None:
         """Initialize context repository.
 
         Args:
-            db_manager: Database connection manager for executing operations
+            backend: Storage backend for executing database operations
         """
-        super().__init__(db_manager)
+        super().__init__(backend)
 
     async def store_with_deduplication(
         self,
@@ -101,7 +101,7 @@ class ContextRepository(BaseRepository):
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
             return new_id, False  # (context_id, was_updated)
 
-        return await self.db_manager.execute_write(_store_with_deduplication)
+        return await self.backend.execute_write(_store_with_deduplication)
 
     async def search_contexts(
         self,
@@ -260,7 +260,7 @@ class ContextRepository(BaseRepository):
             result: tuple[list[sqlite3.Row], dict[str, Any]] = (rows_list, stats)
             return result
 
-        return await self.db_manager.execute_read(_search)
+        return await self.backend.execute_read(_search)
 
     async def get_by_ids(self, context_ids: list[int]) -> list[sqlite3.Row]:
         """Get context entries by their IDs.
@@ -283,7 +283,7 @@ class ContextRepository(BaseRepository):
             rows = cursor.fetchall()
             return list(rows)
 
-        return await self.db_manager.execute_read(_fetch)
+        return await self.backend.execute_read(_fetch)
 
     async def delete_by_ids(self, context_ids: list[int]) -> int:
         """Delete context entries by their IDs.
@@ -304,7 +304,7 @@ class ContextRepository(BaseRepository):
             count: int = cursor.rowcount
             return count
 
-        return await self.db_manager.execute_write(_delete_by_ids)
+        return await self.backend.execute_write(_delete_by_ids)
 
     async def delete_by_thread(self, thread_id: str) -> int:
         """Delete all context entries in a thread.
@@ -324,7 +324,7 @@ class ContextRepository(BaseRepository):
             count: int = cursor.rowcount
             return count
 
-        return await self.db_manager.execute_write(_delete_by_thread)
+        return await self.backend.execute_write(_delete_by_thread)
 
     async def update_context_entry(
         self,
@@ -384,7 +384,7 @@ class ContextRepository(BaseRepository):
 
             return False, []
 
-        return await self.db_manager.execute_write(_update_entry)
+        return await self.backend.execute_write(_update_entry)
 
     async def check_entry_exists(self, context_id: int) -> bool:
         """Check if a context entry exists.
@@ -400,7 +400,7 @@ class ContextRepository(BaseRepository):
             cursor.execute('SELECT 1 FROM context_entries WHERE id = ? LIMIT 1', (context_id,))
             return cursor.fetchone() is not None
 
-        return await self.db_manager.execute_read(_check_exists)
+        return await self.backend.execute_read(_check_exists)
 
     async def get_content_type(self, context_id: int) -> str | None:
         """Get the content type of a context entry.
@@ -417,7 +417,7 @@ class ContextRepository(BaseRepository):
             row = cursor.fetchone()
             return row['content_type'] if row else None
 
-        return await self.db_manager.execute_read(_get_content_type)
+        return await self.backend.execute_read(_get_content_type)
 
     async def update_content_type(self, context_id: int, content_type: str) -> bool:
         """Update the content type of a context entry.
@@ -437,7 +437,7 @@ class ContextRepository(BaseRepository):
             )
             return cursor.rowcount > 0
 
-        return await self.db_manager.execute_write(_update_content_type)
+        return await self.backend.execute_write(_update_content_type)
 
     @staticmethod
     def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

@@ -6,7 +6,7 @@ into focused repository classes
 """
 
 # Type imports
-from app.db_manager import DatabaseConnectionManager
+from app.backends.base import StorageBackend
 from app.repositories.context_repository import ContextRepository
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.image_repository import ImageRepository
@@ -21,17 +21,17 @@ class RepositoryContainer:
     ensuring proper separation of concerns and testability.
     """
 
-    def __init__(self, db_manager: DatabaseConnectionManager) -> None:
-        """Initialize repository container with database manager.
+    def __init__(self, backend: StorageBackend) -> None:
+        """Initialize repository container with storage backend.
 
         Args:
-            db_manager: Database connection manager for all repositories to use
+            backend: Storage backend for all repositories to use
         """
-        self.context = ContextRepository(db_manager)
-        self.tags = TagRepository(db_manager)
-        self.images = ImageRepository(db_manager)
-        self.statistics = StatisticsRepository(db_manager)
-        self.embeddings = EmbeddingRepository(db_manager)
+        self.context = ContextRepository(backend)
+        self.tags = TagRepository(backend)
+        self.images = ImageRepository(backend)
+        self.statistics = StatisticsRepository(backend)
+        self.embeddings = EmbeddingRepository(backend)
 
 
 __all__ = [

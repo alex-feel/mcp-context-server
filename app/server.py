@@ -23,8 +23,8 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from app.db_manager import DatabaseConnectionManager
-from app.db_manager import get_connection_manager
+from app.backends import StorageBackend
+from app.backends import create_backend
 from app.logger_config import config_logger
 from app.repositories import RepositoryContainer
 from app.settings import get_settings
@@ -48,7 +48,7 @@ MAX_TOTAL_SIZE_MB = settings.storage.max_total_size_mb
 SCHEMA_PATH = Path(__file__).parent / 'schema.sql'
 
 # Global connection manager and repositories
-_db_manager: DatabaseConnectionManager | None = None
+_backend: StorageBackend | None = None
 _repositories: RepositoryContainer | None = None
 
 # Global embedding service (only if semantic search enabled and available)
@@ -169,7 +169,7 @@ async def apply_semantic_search_migration() -> None:
         migration_sql_template = migration_path.read_text(encoding='utf-8')
 
         # Apply migration using a short-lived manager
-        temp_manager = get_connection_manager(DB_PATH, force_new=True)
+        temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
         await temp_manager.initialize()
         try:
 
@@ -250,9 +250,6 @@ async def apply_semantic_search_migration() -> None:
 
         finally:
             await temp_manager.shutdown()
-            await temp_manager.wait_for_shutdown_complete(
-                timeout_seconds=get_settings().storage.shutdown_timeout_test_s,
-            )
     except Exception as e:
         logger.error(f'Failed to apply semantic search migration: {e}')
         raise RuntimeError(f'Semantic search migration failed: {e}') from e
@@ -272,20 +269,20 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
     Yields:
         None: Control is yielded back to FastMCP during server operation
     """
-    global _db_manager, _repositories, _embedding_service
+    global _backend, _repositories, _embedding_service
 
     # Startup
     try:
-        await _ensure_db_manager()
+        await _ensure_backend()
         # 1) Ensure schema exists using a short-lived manager
         await init_database()
         # 2) Apply semantic search migration if enabled
         await apply_semantic_search_migration()
         # 3) Start long-lived manager for server runtime
-        _db_manager = get_connection_manager(DB_PATH)
-        await _db_manager.initialize()
+        _backend = create_backend(backend_type=None, db_path=DB_PATH)
+        await _backend.initialize()
         # 4) Initialize repositories
-        _repositories = RepositoryContainer(_db_manager)
+        _repositories = RepositoryContainer(_backend)
 
         # 5) Initialize semantic search if enabled
         if settings.enable_semantic_search:
@@ -321,8 +318,8 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         logger.info(f'MCP Context Server initialized with database: {DB_PATH}')
     except Exception as e:
         logger.error(f'Failed to initialize server: {e}')
-        if _db_manager:
-            await _db_manager.shutdown()
+        if _backend:
+            await _backend.shutdown()
         raise
 
     # Yield control to FastMCP
@@ -330,14 +327,14 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info('Shutting down MCP Context Server')
-    # At this point, startup succeeded and _db_manager must be set
-    assert _db_manager is not None
+    # At this point, startup succeeded and _backend must be set
+    assert _backend is not None
     try:
-        await _db_manager.shutdown()
+        await _backend.shutdown()
     except Exception as e:
         logger.error(f'Error during shutdown: {e}')
     finally:
-        _db_manager = None
+        _backend = None
         _repositories = None
         _embedding_service = None
     logger.info('MCP Context Server shutdown complete')
@@ -354,7 +351,7 @@ async def init_database() -> None:
     This avoids leaving background tasks running when tests call this function directly.
     """
     try:
-        await _ensure_db_manager()
+        await _ensure_backend()
         # Ensure database path exists
         if DB_PATH:
             DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -445,7 +442,7 @@ WHERE json_extract(metadata, '$.completed') IS NOT NULL;
             '''
 
         # Apply schema using a short-lived manager
-        temp_manager = get_connection_manager(DB_PATH, force_new=True)
+        temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
         await temp_manager.initialize()
         try:
             def _init_schema(conn: sqlite3.Connection) -> None:
@@ -458,9 +455,6 @@ WHERE json_extract(metadata, '$.completed') IS NOT NULL;
             await temp_manager.shutdown()
             # Wait for shutdown to complete with timeout to prevent race conditions
             # This ensures background tasks are fully stopped before proceeding
-            await temp_manager.wait_for_shutdown_complete(
-                timeout_seconds=get_settings().storage.shutdown_timeout_test_s,
-            )
     except Exception as e:
         logger.error(f'Failed to initialize database: {e}')
         raise
@@ -469,21 +463,21 @@ WHERE json_extract(metadata, '$.completed') IS NOT NULL;
 # Utility functions
 
 
-async def _ensure_db_manager() -> DatabaseConnectionManager:
+async def _ensure_backend() -> StorageBackend:
     """Ensure a connection manager exists and is initialized.
 
     In tests, FastMCP lifespan isn't running, so tools need a lazy
     initializer to operate directly.
 
     Returns:
-        Initialized `DatabaseConnectionManager` singleton to use for DB ops.
+        Initialized `StorageBackend` singleton to use for DB ops.
     """
-    global _db_manager
-    if _db_manager is None:
-        manager = get_connection_manager(DB_PATH)
+    global _backend
+    if _backend is None:
+        manager = create_backend(backend_type=None, db_path=DB_PATH)
         await manager.initialize()
-        _db_manager = manager
-    return _db_manager
+        _backend = manager
+    return _backend
 
 
 async def _ensure_repositories() -> RepositoryContainer:
@@ -494,7 +488,7 @@ async def _ensure_repositories() -> RepositoryContainer:
     """
     global _repositories
     if _repositories is None:
-        manager = await _ensure_db_manager()
+        manager = await _ensure_backend()
         _repositories = RepositoryContainer(manager)
     return _repositories
 
@@ -1276,8 +1270,8 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         # Use statistics repository to get database stats
         stats = await repos.statistics.get_database_statistics(DB_PATH)
 
-        # Ensure db_manager for metrics
-        manager = await _ensure_db_manager()
+        # Ensure backend for metrics
+        manager = await _ensure_backend()
 
         # Add connection manager metrics for monitoring
         stats['connection_metrics'] = manager.get_metrics()

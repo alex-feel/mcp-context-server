@@ -5,7 +5,7 @@ This module provides the base class that all repositories inherit from,
 ensuring consistent patterns and proper connection management.
 """
 
-from app.db_manager import DatabaseConnectionManager
+from app.backends.base import StorageBackend
 
 
 class BaseRepository:
@@ -15,10 +15,10 @@ class BaseRepository:
     the same patterns for database access.
     """
 
-    def __init__(self, db_manager: DatabaseConnectionManager) -> None:
-        """Initialize repository with database connection manager.
+    def __init__(self, backend: StorageBackend) -> None:
+        """Initialize repository with storage backend.
 
         Args:
-            db_manager: Database connection manager for executing operations
+            backend: Storage backend for executing database operations
         """
-        self.db_manager = db_manager
+        self.backend = backend

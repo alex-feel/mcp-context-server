@@ -318,8 +318,8 @@ class TestDeleteContextParameterHandling:
         """Test delete_context accepts IDs as native list."""
         from app.server import delete_context
 
-        with patch('app.server._db_manager') as mock_manager:
-            mock_manager.execute_write = AsyncMock(return_value=2)
+        with patch('app.server._backend') as mock_backend:
+            mock_backend.execute_write = AsyncMock(return_value=2)
 
             # Send context_ids as native list
             result = await delete_context.fn(

@@ -17,9 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.db_manager import DatabaseConnectionManager
-from app.db_manager import get_connection_manager
-from app.db_manager import reset_connection_manager
+from app.backends import StorageBackend
+from app.backends.sqlite_backend import SQLiteBackend
 
 
 class TestResourceWarningDetection:
@@ -40,7 +39,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_connection_manager_no_leaks_on_normal_shutdown(self, temp_db: Path) -> None:
         """Test that normal shutdown doesn't leak connections."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
         await manager.initialize()
 
         # Perform some operations
@@ -66,7 +65,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_connection_manager_no_leaks_on_error(self, temp_db: Path) -> None:
         """Test that error conditions don't leak connections."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
         await manager.initialize()
 
         # Simulate error during read
@@ -93,7 +92,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_connection_pool_health_check_closes_unhealthy(self, temp_db: Path) -> None:
         """Test that health checks properly close unhealthy connections."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
         await manager.initialize()
 
         # Create multiple reader connections
@@ -118,7 +117,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_write_queue_cancellation_no_leaks(self, temp_db: Path) -> None:
         """Test that cancelled write operations don't leak connections."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
         await manager.initialize()
 
         # Start multiple write operations
@@ -152,7 +151,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_circuit_breaker_open_no_leaks(self, temp_db: Path) -> None:
         """Test that circuit breaker failures don't leak connections."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
 
         # Set circuit breaker to fail quickly
         manager.circuit_breaker.failure_threshold = 2
@@ -186,7 +185,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_concurrent_operations_no_leaks(self, temp_db: Path) -> None:
         """Test that high concurrency doesn't leak connections."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
         await manager.initialize()
 
         # Create schema
@@ -195,11 +194,11 @@ class TestResourceWarningDetection:
         )
 
         # Create operation functions with explicit manager parameter
-        async def read_op(mgr: DatabaseConnectionManager, idx: int) -> None:
+        async def read_op(mgr: StorageBackend, idx: int) -> None:
             async with mgr.get_connection(readonly=True) as conn:
                 conn.execute('SELECT * FROM test WHERE id = ?', (idx,))
 
-        async def write_op(mgr: DatabaseConnectionManager, idx: int) -> None:
+        async def write_op(mgr: StorageBackend, idx: int) -> None:
             await mgr.execute_write(
                 lambda conn: conn.execute('INSERT OR REPLACE INTO test (id, value) VALUES (?, ?)', (idx, f'value_{idx}')),
             )
@@ -226,30 +225,9 @@ class TestResourceWarningDetection:
         gc.collect()
 
     @pytest.mark.asyncio
-    async def test_singleton_manager_cleanup(self, temp_db: Path) -> None:
+    async def test_singleton_manager_cleanup(self) -> None:
         """Test that singleton manager properly cleans up."""
-        # Reset any existing instance
-        reset_connection_manager()
-
-        # Create and use singleton
-        manager = get_connection_manager(temp_db, force_new=True)
-        await manager.initialize()
-
-        # Use the manager
-        async with manager.get_connection(readonly=True) as conn:
-            conn.execute('SELECT 1')
-
-        # Proper cleanup
-        await manager.shutdown()
-        reset_connection_manager()
-
-        # Allow time for async cleanup to complete
-        await asyncio.sleep(0.1)
-
-        # Clear manager reference to allow proper garbage collection
-        del manager
-
-        gc.collect()
+        pytest.skip('Test skipped: obsolete functionality that has been removed')
 
     def test_temp_db_fixture_no_leaks(self, tmp_path: Path) -> None:
         """Test that the temp_db fixture doesn't leak connections."""
@@ -275,7 +253,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_connection_tracking(self, temp_db: Path) -> None:
         """Test that all created connections are properly tracked and closed."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
 
         # Add tracking to verify all connections are closed
         created_connections: list[sqlite3.Connection] = []
@@ -326,7 +304,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_background_task_cleanup(self, temp_db: Path) -> None:
         """Test that background tasks are properly cleaned up."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
         await manager.initialize()
 
         # Verify background tasks are running
@@ -356,7 +334,7 @@ class TestResourceWarningDetection:
     @pytest.mark.asyncio
     async def test_write_queue_drainage_on_shutdown(self, temp_db: Path) -> None:
         """Test that pending writes in queue are handled on shutdown."""
-        manager = DatabaseConnectionManager(temp_db)
+        manager = SQLiteBackend(temp_db)
         await manager.initialize()
 
         # Create schema

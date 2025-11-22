@@ -10,7 +10,7 @@ import sqlite3
 from typing import Any
 from typing import Literal
 
-from app.db_manager import DatabaseConnectionManager
+from app.backends.base import StorageBackend
 from app.logger_config import config_logger
 from app.settings import get_settings
 
@@ -28,13 +28,13 @@ class EmbeddingRepository:
     using the sqlite-vec extension for efficient vector storage and similarity search.
     """
 
-    def __init__(self, db_manager: DatabaseConnectionManager) -> None:
+    def __init__(self, backend: StorageBackend) -> None:
         """Initialize the embedding repository.
 
         Args:
-            db_manager: Database connection manager for all operations
+            backend: Storage backend for all database operations
         """
-        self.db_manager = db_manager
+        self.backend = backend
 
     async def store(
         self,
@@ -77,7 +77,7 @@ class EmbeddingRepository:
                 (context_id, model, len(embedding)),
             )
 
-        await self.db_manager.execute_write(_store)
+        await self.backend.execute_write(_store)
         logger.debug(f'Stored embedding for context {context_id}')
 
     async def search(
@@ -175,7 +175,7 @@ class EmbeddingRepository:
             # Convert to list of dicts using list comprehension
             return [dict(row) for row in rows]
 
-        return await self.db_manager.execute_read(_search)
+        return await self.backend.execute_read(_search)
 
     async def update(self, context_id: int, embedding: list[float]) -> None:
         """Update embedding for a context entry.
@@ -209,7 +209,7 @@ class EmbeddingRepository:
                 (context_id,),
             )
 
-        await self.db_manager.execute_write(_update)
+        await self.backend.execute_write(_update)
         logger.debug(f'Updated embedding for context {context_id}')
 
     async def delete(self, context_id: int) -> None:
@@ -226,7 +226,7 @@ class EmbeddingRepository:
             # Delete metadata (CASCADE should handle this, but explicit is better)
             conn.execute('DELETE FROM embedding_metadata WHERE context_id = ?', (context_id,))
 
-        await self.db_manager.execute_write(_delete)
+        await self.backend.execute_write(_delete)
         logger.debug(f'Deleted embedding for context {context_id}')
 
     async def exists(self, context_id: int) -> bool:
@@ -246,7 +246,7 @@ class EmbeddingRepository:
             )
             return cursor.fetchone() is not None
 
-        return await self.db_manager.execute_read(_exists)
+        return await self.backend.execute_read(_exists)
 
     async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:
         """Get embedding statistics.
@@ -297,7 +297,7 @@ class EmbeddingRepository:
                 'coverage_percentage': round(coverage_percentage, 2),
             }
 
-        return await self.db_manager.execute_read(_get_stats)
+        return await self.backend.execute_read(_get_stats)
 
     async def get_table_dimension(self) -> int | None:
         """Get the dimension of the existing vector table.
@@ -314,4 +314,4 @@ class EmbeddingRepository:
             row = cursor.fetchone()
             return row[0] if row else None
 
-        return await self.db_manager.execute_read(_get_dimension)
+        return await self.backend.execute_read(_get_dimension)

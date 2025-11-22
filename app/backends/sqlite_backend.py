@@ -1,8 +1,9 @@
 """
-Database connection manager with pooling and concurrency control.
+SQLite storage backend implementation.
 
-This module provides a robust connection management system for SQLite that solves
-concurrency issues while maintaining ACID properties and high performance.
+This module provides a production-grade SQLite backend implementing the StorageBackend
+protocol with connection pooling, write queue management, circuit breaker pattern,
+and health monitoring.
 """
 
 import asyncio
@@ -225,9 +226,9 @@ class WriteRequest:
         self.created_at = time.time()
 
 
-class DatabaseConnectionManager:
+class SQLiteBackend:
     """
-    Production-grade connection manager with pooling and concurrency control.
+    Production-grade SQLite storage backend implementing the StorageBackend protocol.
 
     Features:
     - Connection pooling with separate reader and writer pools
@@ -237,6 +238,8 @@ class DatabaseConnectionManager:
     - Health checks and metrics
     - Automatic reconnection
     - Enhanced task lifecycle management for clean shutdown
+
+    Implements the StorageBackend protocol to enable database-agnostic repositories.
     """
 
     def __init__(
@@ -304,6 +307,15 @@ class DatabaseConnectionManager:
         self._shutdown = False
         self._shutdown_event = asyncio.Event()
         self._shutdown_complete = asyncio.Event()
+
+    @property
+    def backend_type(self) -> str:
+        """Return the backend type identifier for SQLite.
+
+        Returns:
+            str: 'sqlite' identifying this as a SQLite backend
+        """
+        return 'sqlite'
 
     # Internal helpers
 
@@ -1025,66 +1037,3 @@ class DatabaseConnectionManager:
         with contextlib.suppress(Exception):
             if not getattr(self, '_shutdown_complete', None) or not self._shutdown_complete.is_set():
                 self._close_all_connections_sync()
-
-
-# Global instance for singleton pattern
-_manager_instance: DatabaseConnectionManager | None = None
-_manager_lock = Lock()
-
-
-def get_connection_manager(
-    db_path: Path | str | None = None,
-    pool_config: PoolConfig | None = None,
-    retry_config: RetryConfig | None = None,
-    force_new: bool = False,
-) -> DatabaseConnectionManager:
-    """
-    Get or create the global connection manager instance.
-
-    Args:
-        db_path: Database file path, required on first call
-        pool_config: Connection pool configuration
-        retry_config: Retry logic configuration
-        force_new: If True, return a brand-new instance, not stored globally
-
-    Returns:
-        Connection manager instance
-
-    Raises:
-        ValueError: If a required `db_path` is not provided on first call
-            or when creating a new instance.
-    """
-    global _manager_instance
-    with _manager_lock:
-        # In test environments, always return a fresh instance for isolation
-        if force_new or is_test_environment():
-            if db_path is None:
-                raise ValueError('db_path required when creating new instance')
-            return DatabaseConnectionManager(
-                db_path=db_path,
-                pool_config=pool_config,
-                retry_config=retry_config,
-            )
-
-        if _manager_instance is None:
-            if db_path is None:
-                raise ValueError('db_path required for first initialization')
-            _manager_instance = DatabaseConnectionManager(
-                db_path=db_path,
-                pool_config=pool_config,
-                retry_config=retry_config,
-            )
-        return _manager_instance
-
-
-def reset_connection_manager() -> None:
-    """
-    Reset the global connection manager instance.
-
-    This is primarily used for testing to ensure clean state between tests.
-    Should not be used in production code.
-    """
-    global _manager_instance
-    with _manager_lock:
-        _manager_instance = None
-        logger.debug('Connection manager instance reset')

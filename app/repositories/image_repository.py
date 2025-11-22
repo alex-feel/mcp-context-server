@@ -11,7 +11,7 @@ import logging
 import sqlite3
 from typing import Any
 
-from app.db_manager import DatabaseConnectionManager
+from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 from app.types import ImageDict
 
@@ -25,13 +25,13 @@ class ImageRepository(BaseRepository):
     including metadata and position tracking.
     """
 
-    def __init__(self, db_manager: DatabaseConnectionManager) -> None:
+    def __init__(self, backend: StorageBackend) -> None:
         """Initialize image repository.
 
         Args:
-            db_manager: Database connection manager for executing operations
+            backend: Storage backend for executing database operations
         """
-        super().__init__(db_manager)
+        super().__init__(backend)
 
     async def store_image(
         self,
@@ -67,7 +67,7 @@ class ImageRepository(BaseRepository):
                 ),
             )
 
-        await self.db_manager.execute_write(_store_image)
+        await self.backend.execute_write(_store_image)
 
     async def store_images(
         self,
@@ -103,7 +103,7 @@ class ImageRepository(BaseRepository):
                     ),
                 )
 
-        await self.db_manager.execute_write(_store_images)
+        await self.backend.execute_write(_store_images)
 
     async def get_images_for_context(
         self,
@@ -160,7 +160,7 @@ class ImageRepository(BaseRepository):
                 images.append(img_data)
             return images
 
-        return await self.db_manager.execute_read(_get_images)
+        return await self.backend.execute_read(_get_images)
 
     async def get_images_for_contexts(
         self,
@@ -232,7 +232,7 @@ class ImageRepository(BaseRepository):
 
             return result
 
-        return await self.db_manager.execute_read(_get_images_batch)
+        return await self.backend.execute_read(_get_images_batch)
 
     async def count_images_for_context(self, context_id: int) -> int:
         """Count the number of images for a context entry.
@@ -252,7 +252,7 @@ class ImageRepository(BaseRepository):
             result = cursor.fetchone()
             return int(result['count']) if result else 0
 
-        return await self.db_manager.execute_read(_count_images)
+        return await self.backend.execute_read(_count_images)
 
     async def replace_images_for_context(
         self,
@@ -306,4 +306,4 @@ class ImageRepository(BaseRepository):
                     ),
                 )
 
-        await self.db_manager.execute_write(_replace_images)
+        await self.backend.execute_write(_replace_images)

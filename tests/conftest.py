@@ -27,7 +27,8 @@ import pytest_asyncio
 from fastmcp import Context
 
 import app.server
-from app.db_manager import DatabaseConnectionManager
+from app.backends import StorageBackend
+from app.backends import create_backend
 from app.settings import AppSettings
 
 
@@ -357,54 +358,43 @@ def large_image_data() -> dict[str, str]:
 
 
 @pytest_asyncio.fixture
-async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[DatabaseConnectionManager, None]:
+async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[StorageBackend, None]:
     """Initialize async database for all tests."""
-    from app.db_manager import get_connection_manager
-    from app.db_manager import reset_connection_manager
     from app.repositories import RepositoryContainer
-    from app.settings import get_settings
 
-    # Reset and create new manager
-    reset_connection_manager()
-    manager = get_connection_manager(str(temp_db_path), force_new=True)
-    await manager.initialize()
+    # Create storage backend
+    backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
+    await backend.initialize()
 
     # Set in server module
-    app.server._db_manager = manager
+    app.server._backend = backend
     app.server.DB_PATH = temp_db_path
 
     # Initialize repositories
-    app.server._repositories = RepositoryContainer(manager)
+    app.server._repositories = RepositoryContainer(backend)
 
     # Initialize schema
     await app.server.init_database()
 
     try:
-        yield manager
+        yield backend
     finally:
-        # Proper cleanup with timeout to prevent infinite hangs
-        if app.server._db_manager is not None:
+        # Proper cleanup
+        if app.server._backend is not None:
             try:
-                # Shutdown the database manager
-                await app.server._db_manager.shutdown()
-
-                # Wait for shutdown to complete with timeout
-                settings = get_settings()
-                await app.server._db_manager.wait_for_shutdown_complete(
-                    timeout_seconds=settings.storage.shutdown_timeout_test_s,
-                )
+                # Shutdown the storage backend
+                await app.server._backend.shutdown()
             except Exception as e:
                 # Log error but continue cleanup to prevent test suite hang
                 import logging
-                logging.getLogger(__name__).error(f'Error during database manager shutdown: {e}')
+                logging.getLogger(__name__).error(f'Error during backend shutdown: {e}')
             finally:
                 # Always clear the reference, even if shutdown failed
-                app.server._db_manager = None
+                app.server._backend = None
 
         # Reset repositories
         if hasattr(app.server, '_repositories'):
             app.server._repositories = None
-        reset_connection_manager()
 
 
 @pytest_asyncio.fixture
@@ -417,30 +407,21 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     Yields:
         None: Yields control after initialization, performs cleanup on teardown
     """
-    from app.db_manager import reset_connection_manager
     from app.server import init_database
-    from app.settings import get_settings
 
     # CRITICAL: Aggressive pre-cleanup to prevent interference from previous tests
-    # Shut down any existing manager from previous tests
-    if hasattr(app.server, '_db_manager') and app.server._db_manager:
+    # Shut down any existing backend from previous tests
+    if hasattr(app.server, '_backend') and app.server._backend:
         try:
-            await app.server._db_manager.shutdown()
-            settings = get_settings()
-            await app.server._db_manager.wait_for_shutdown_complete(
-                timeout_seconds=settings.storage.shutdown_timeout_test_s,
-            )
+            await app.server._backend.shutdown()
         except Exception:
             pass
         finally:
-            app.server._db_manager = None
+            app.server._backend = None
 
     # Reset repositories
     if hasattr(app.server, '_repositories'):
         app.server._repositories = None
-
-    # Reset singleton
-    reset_connection_manager()
 
     # Small delay to let background tasks fully terminate
     await asyncio.sleep(0.05)
@@ -458,32 +439,22 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     try:
         yield
     finally:
-        # Proper async cleanup with timeout to prevent infinite hangs
-        if hasattr(app.server, '_db_manager') and app.server._db_manager:
+        # Proper async cleanup
+        if hasattr(app.server, '_backend') and app.server._backend:
             try:
-                # Shutdown the database manager
-                await app.server._db_manager.shutdown()
-
-                # Wait for shutdown to complete with timeout
-                settings = get_settings()
-                await app.server._db_manager.wait_for_shutdown_complete(
-                    timeout_seconds=settings.storage.shutdown_timeout_test_s,
-                )
+                # Shutdown the storage backend
+                await app.server._backend.shutdown()
             except Exception as e:
                 # Log error but continue cleanup to prevent test suite hang
                 import logging
-                logging.getLogger(__name__).error(f'Error during database manager shutdown: {e}')
+                logging.getLogger(__name__).error(f'Error during backend shutdown: {e}')
             finally:
                 # Always clear the reference, even if shutdown failed
-                app.server._db_manager = None
+                app.server._backend = None
 
         # Reset the repositories to ensure clean state
         if hasattr(app.server, '_repositories'):
             app.server._repositories = None
-
-        # Reset the singleton for next test
-        from app.db_manager import reset_connection_manager
-        reset_connection_manager()
 
 
 @contextmanager

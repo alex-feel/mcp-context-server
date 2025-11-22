@@ -41,19 +41,24 @@ class StorageSettings(BaseSettings):
         extra='ignore',
         populate_by_name=True,
     )
+    # Backend selection
+    backend_type: Literal['sqlite', 'postgresql', 'supabase'] = Field(
+        default='sqlite',
+        alias='STORAGE_BACKEND',
+    )
     # General storage
     max_image_size_mb: int = Field(default=10, alias='MAX_IMAGE_SIZE_MB')
     max_total_size_mb: int = Field(default=100, alias='MAX_TOTAL_SIZE_MB')
     db_path: Path | None = Field(default_factory=lambda: Path.home() / '.mcp' / 'context_storage.db', alias='DB_PATH')
 
-    # Connection pool (DatabaseConnectionManager.PoolConfig)
+    # Connection pool settings for StorageBackend
     pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS')
     pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS')
     pool_connection_timeout_s: float = Field(default=10.0, alias='POOL_CONNECTION_TIMEOUT_S')
     pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S')
     pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S')
 
-    # Retry (DatabaseConnectionManager.RetryConfig)
+    # Retry logic settings for StorageBackend
     retry_max_retries: int = Field(default=5, alias='RETRY_MAX_RETRIES')
     retry_base_delay_s: float = Field(default=0.5, alias='RETRY_BASE_DELAY_S')
     retry_max_delay_s: float = Field(default=10.0, alias='RETRY_MAX_DELAY_S')
@@ -73,7 +78,7 @@ class StorageSettings(BaseSettings):
     sqlite_busy_timeout_ms: int | None = Field(default=None, alias='SQLITE_BUSY_TIMEOUT_MS')
     sqlite_wal_checkpoint: str = Field(default='PASSIVE', alias='SQLITE_WAL_CHECKPOINT')
 
-    # Circuit breaker (DatabaseConnectionManager.CircuitBreaker)
+    # Circuit breaker settings for StorageBackend
     circuit_breaker_failure_threshold: int = Field(default=10, alias='CIRCUIT_BREAKER_FAILURE_THRESHOLD')
     circuit_breaker_recovery_timeout_s: float = Field(default=30.0, alias='CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S')
     circuit_breaker_half_open_max_calls: int = Field(default=5, alias='CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS')

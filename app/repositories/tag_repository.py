@@ -7,7 +7,7 @@ including storage and retrieval of normalized tags.
 
 import sqlite3
 
-from app.db_manager import DatabaseConnectionManager
+from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 
 
@@ -18,13 +18,13 @@ class TagRepository(BaseRepository):
     with context entries.
     """
 
-    def __init__(self, db_manager: DatabaseConnectionManager) -> None:
+    def __init__(self, backend: StorageBackend) -> None:
         """Initialize tag repository.
 
         Args:
-            db_manager: Database connection manager for executing operations
+            backend: Storage backend for executing database operations
         """
-        super().__init__(db_manager)
+        super().__init__(backend)
 
     async def store_tags(self, context_id: int, tags: list[str]) -> None:
         """Store normalized tags for a context entry.
@@ -43,7 +43,7 @@ class TagRepository(BaseRepository):
                         (context_id, tag),
                     )
 
-        await self.db_manager.execute_write(_store_tags)
+        await self.backend.execute_write(_store_tags)
 
     async def get_tags_for_context(self, context_id: int) -> list[str]:
         """Get all tags for a specific context entry.
@@ -62,7 +62,7 @@ class TagRepository(BaseRepository):
             )
             return [row['tag'] for row in cursor.fetchall()]
 
-        return await self.db_manager.execute_read(_get_tags, context_id)
+        return await self.backend.execute_read(_get_tags, context_id)
 
     async def get_tags_for_contexts(self, context_ids: list[int]) -> dict[int, list[str]]:
         """Get tags for multiple context entries in a single query.
@@ -104,7 +104,7 @@ class TagRepository(BaseRepository):
 
             return result
 
-        return await self.db_manager.execute_read(_get_tags_batch)
+        return await self.backend.execute_read(_get_tags_batch)
 
     async def replace_tags_for_context(self, context_id: int, tags: list[str]) -> None:
         """Replace all tags for a context entry.
@@ -135,4 +135,4 @@ class TagRepository(BaseRepository):
                         (context_id, tag),
                     )
 
-        await self.db_manager.execute_write(_replace_tags)
+        await self.backend.execute_write(_replace_tags)

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from typing import cast
 
-from app.db_manager import DatabaseConnectionManager
+from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 from app.types import ThreadInfoDict
 
@@ -22,13 +22,13 @@ class StatisticsRepository(BaseRepository):
     and usage metrics.
     """
 
-    def __init__(self, db_manager: DatabaseConnectionManager) -> None:
+    def __init__(self, backend: StorageBackend) -> None:
         """Initialize statistics repository.
 
         Args:
-            db_manager: Database connection manager for executing operations
+            backend: Storage backend for executing database operations
         """
-        super().__init__(db_manager)
+        super().__init__(backend)
 
     async def get_thread_list(self) -> list[ThreadInfoDict]:
         """Get list of all threads with statistics.
@@ -59,7 +59,7 @@ class StatisticsRepository(BaseRepository):
 
             return threads
 
-        return await self.db_manager.execute_read(_list_threads)
+        return await self.backend.execute_read(_list_threads)
 
     async def get_database_statistics(self, db_path: Path | None = None) -> dict[str, Any]:
         """Get comprehensive database statistics.
@@ -154,7 +154,7 @@ class StatisticsRepository(BaseRepository):
 
             return stats
 
-        stats = await self.db_manager.execute_read(_get_stats)
+        stats = await self.backend.execute_read(_get_stats)
 
         # Add database file size if path provided
         if db_path and db_path.exists():
@@ -231,7 +231,7 @@ class StatisticsRepository(BaseRepository):
 
             return stats
 
-        return await self.db_manager.execute_read(_get_thread_stats)
+        return await self.backend.execute_read(_get_thread_stats)
 
     async def get_tag_statistics(self) -> dict[str, Any]:
         """Get comprehensive tag usage statistics.
@@ -281,4 +281,4 @@ class StatisticsRepository(BaseRepository):
 
             return stats
 
-        return await self.db_manager.execute_read(_get_tag_stats)
+        return await self.backend.execute_read(_get_tag_stats)

@@ -176,7 +176,7 @@ The server uses a clean repository pattern to separate concerns:
 - **TagRepository**: Handles tag normalization, relationships, and tag replacement for updates
 - **ImageRepository**: Manages multimodal attachments and image replacement for updates
 - **StatisticsRepository**: Provides metrics and thread statistics
-- **DatabaseConnectionManager**: Thread-safe connection pooling with retry logic
+- **StorageBackend**: Thread-safe connection pooling with retry logic
 - **MetadataQueryBuilder**: Secure SQL generation for metadata filtering with 15 operators
 - **MetadataFilter**: Type-safe filter specifications with validation
 

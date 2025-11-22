@@ -27,11 +27,6 @@
     },
     {
       "root": "app",
-      "include": ["db_manager.py"],
-      "reportMissingImports": "none"
-    },
-    {
-      "root": "app",
       "typeCheckingMode": "strict"
     },
     {

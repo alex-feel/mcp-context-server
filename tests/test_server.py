@@ -165,10 +165,10 @@ class TestStoreContext:
         temp_db_path: Path,
     ) -> None:
         """Test handling of database errors."""
-        # Mock the database manager to raise an error
+        # Mock the storage backend to raise an error
         _ = temp_db_path  # Acknowledge unused parameter
-        with patch('app.server._db_manager') as mock_manager:
-            mock_manager.execute_write.side_effect = sqlite3.OperationalError('Database error')
+        with patch('app.server._backend') as mock_backend:
+            mock_backend.execute_write.side_effect = sqlite3.OperationalError('Database error')
             with pytest.raises(ToolError, match='Failed to store context'):
                 await store_context(
                     thread_id='test',
@@ -876,9 +876,9 @@ class TestGetStatistics:
     @pytest.mark.asyncio
     async def test_statistics_error_handling(self) -> None:
         """Test statistics handles errors gracefully."""
-        # Mock the database manager to raise an error during read
-        with patch('app.server._db_manager') as mock_manager:
-            mock_manager.execute_read.side_effect = sqlite3.OperationalError('Database error')
+        # Mock the storage backend to raise an error during read
+        with patch('app.server._backend') as mock_backend:
+            mock_backend.execute_read.side_effect = sqlite3.OperationalError('Database error')
             with pytest.raises(ToolError, match='Failed to get statistics'):
                 await get_statistics()
 

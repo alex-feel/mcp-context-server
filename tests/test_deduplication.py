@@ -1,7 +1,7 @@
 """
 Comprehensive tests for the context deduplication functionality.
 
-Tests the deduplication logic implemented in DatabaseConnectionManager.store_context_entry().
+Tests the deduplication logic implemented in StorageBackend context storage.
 Ensures that duplicate entries (same thread_id, source, text_content) update the timestamp
 instead of creating new rows.
 """
@@ -16,13 +16,14 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from app.db_manager import DatabaseConnectionManager
+from app.backends import StorageBackend
+from app.backends import create_backend
 from app.repositories import RepositoryContainer
 
 
 @pytest_asyncio.fixture
-async def db_manager(tmp_path: Path) -> AsyncGenerator[DatabaseConnectionManager, None]:
-    """Create a DatabaseConnectionManager with a test database."""
+async def backend(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
+    """Create a StorageBackend with a test database."""
     db_path = tmp_path / 'test.db'
 
     # Initialize database with schema
@@ -33,18 +34,18 @@ async def db_manager(tmp_path: Path) -> AsyncGenerator[DatabaseConnectionManager
     conn.close()
 
     # Create manager with db_path
-    manager = DatabaseConnectionManager(db_path)
-    await manager.initialize()
+    backend = create_backend(backend_type='sqlite', db_path=str(db_path))
+    await backend.initialize()
 
-    yield manager
+    yield backend
 
-    await manager.shutdown()
+    await backend.shutdown()
 
 
 @pytest_asyncio.fixture
-async def repos(db_manager: DatabaseConnectionManager) -> RepositoryContainer:
+async def repos(backend: StorageBackend) -> RepositoryContainer:
     """Create a RepositoryContainer with the test database manager."""
-    return RepositoryContainer(db_manager)
+    return RepositoryContainer(backend)
 
 
 @pytest.mark.asyncio
@@ -54,7 +55,7 @@ class TestDeduplication:
     async def test_identical_consecutive_entries_update(
         self,
         repos: RepositoryContainer,
-        db_manager: DatabaseConnectionManager,
+        backend: StorageBackend,
     ) -> None:
         """Test that identical consecutive entries update the timestamp instead of inserting."""
         # Store first entry
@@ -91,7 +92,7 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 1
 
         # Verify updated_at was actually updated
@@ -101,13 +102,13 @@ class TestDeduplication:
             row = cursor.fetchone()
             return {'created_at': row[0], 'updated_at': row[1]} if row else {}
 
-        timestamps = await db_manager.execute_read(_get_timestamps)
+        timestamps = await backend.execute_read(_get_timestamps)
         assert timestamps['created_at'] != timestamps['updated_at']
 
     async def test_non_identical_entries_insert_normally(
         self,
         repos: RepositoryContainer,
-        db_manager: DatabaseConnectionManager,
+        backend: StorageBackend,
     ) -> None:
         """Test that non-identical entries still insert as new rows."""
         # Store first entry
@@ -168,10 +169,10 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 4
 
-    async def test_only_latest_entry_checked(self, repos: RepositoryContainer, db_manager: DatabaseConnectionManager) -> None:
+    async def test_only_latest_entry_checked(self, repos: RepositoryContainer, backend: StorageBackend) -> None:
         """Test that only the LATEST entry is checked for deduplication, not all entries."""
         # Store first entry
         context_id1, _ = await repos.context.store_with_deduplication(
@@ -232,7 +233,7 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 4
 
     async def test_return_values_correct(
@@ -285,7 +286,7 @@ class TestDeduplication:
     async def test_metadata_changes_do_not_affect_dedup(
         self,
         repos: RepositoryContainer,
-        db_manager: DatabaseConnectionManager,
+        backend: StorageBackend,
     ) -> None:
         """Test that metadata changes don't affect deduplication logic."""
         # Store with metadata
@@ -330,13 +331,13 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 1
 
     async def test_content_type_does_not_affect_dedup(
         self,
         repos: RepositoryContainer,
-        db_manager: DatabaseConnectionManager,
+        backend: StorageBackend,
     ) -> None:
         """Test that content_type field doesn't affect deduplication (only thread_id, source, text_content)."""
         # Store as text type
@@ -369,13 +370,13 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 1
 
     async def test_rapid_successive_duplicates(
         self,
         repos: RepositoryContainer,
-        db_manager: DatabaseConnectionManager,
+        backend: StorageBackend,
     ) -> None:
         """Test handling of rapid successive duplicate entries."""
         # Store multiple duplicates in quick succession
@@ -403,10 +404,10 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 1
 
-    async def test_empty_text_content_dedup(self, repos: RepositoryContainer, db_manager: DatabaseConnectionManager) -> None:
+    async def test_empty_text_content_dedup(self, repos: RepositoryContainer, backend: StorageBackend) -> None:
         """Test deduplication with empty text content."""
         # Store empty content
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
@@ -450,10 +451,10 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 2
 
-    async def test_long_text_content_dedup(self, repos: RepositoryContainer, db_manager: DatabaseConnectionManager) -> None:
+    async def test_long_text_content_dedup(self, repos: RepositoryContainer, backend: StorageBackend) -> None:
         """Test deduplication with very long text content."""
         # Create long text
         long_text = 'A' * 10000 + ' middle content ' + 'B' * 10000
@@ -501,5 +502,5 @@ class TestDeduplication:
             result = cursor.fetchone()
             return result[0] if result else 0
 
-        count = await db_manager.execute_read(_count_entries)
+        count = await backend.execute_read(_count_entries)
         assert count == 2
