@@ -380,7 +380,7 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[StorageBack
         yield backend
     finally:
         # Proper cleanup
-        if app.server._backend is not None:
+        if hasattr(app.server, '_backend') and app.server._backend is not None:
             try:
                 # Shutdown the storage backend
                 await app.server._backend.shutdown()
@@ -407,11 +407,12 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     Yields:
         None: Yields control after initialization, performs cleanup on teardown
     """
+    from app.repositories import RepositoryContainer
     from app.server import init_database
 
     # CRITICAL: Aggressive pre-cleanup to prevent interference from previous tests
     # Shut down any existing backend from previous tests
-    if hasattr(app.server, '_backend') and app.server._backend:
+    if hasattr(app.server, '_backend') and app.server._backend is not None:
         try:
             await app.server._backend.shutdown()
         except Exception:
@@ -433,17 +434,32 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     # Initialize fresh database - now properly await the async function
     await init_database()
 
+    # Create persistent backend before yielding (prevents lazy initialization in tests)
+    backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
+    await backend.initialize()
+    app.server._backend = backend
+
+    # Initialize repositories with the backend
+    app.server._repositories = RepositoryContainer(backend)
+
     # Ensure the fixture dependency is satisfied
     assert mock_server_dependencies is None
 
     try:
         yield
     finally:
-        # Proper async cleanup
-        if hasattr(app.server, '_backend') and app.server._backend:
+        # Proper async cleanup with timeout protection
+        if hasattr(app.server, '_backend') and app.server._backend is not None:
             try:
-                # Shutdown the storage backend
-                await app.server._backend.shutdown()
+                # Shutdown the storage backend with timeout to prevent hangs
+                await asyncio.wait_for(
+                    app.server._backend.shutdown(),
+                    timeout=5.0,
+                )
+            except TimeoutError:
+                # Log timeout but continue cleanup to prevent test suite hang
+                import logging
+                logging.getLogger(__name__).warning('Backend shutdown timed out after 5 seconds')
             except Exception as e:
                 # Log error but continue cleanup to prevent test suite hang
                 import logging
