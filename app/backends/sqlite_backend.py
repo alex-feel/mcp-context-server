@@ -272,14 +272,14 @@ class SQLiteBackend:
         # Connection pools
         self._writer_conn: sqlite3.Connection | None = None
         self._reader_pool: list[sqlite3.Connection] = []
-        self._reader_semaphore = asyncio.Semaphore(self.pool_config.max_readers)
+        self._reader_semaphore: asyncio.Semaphore | None = None
 
         # Write queue for serialization
-        self._write_queue: asyncio.Queue[WriteRequest] = asyncio.Queue()
+        self._write_queue: asyncio.Queue[WriteRequest] | None = None
         self._write_processor_task: asyncio.Task[None] | None = None
 
         # Synchronization primitives
-        self._writer_lock = asyncio.Lock()
+        self._writer_lock: asyncio.Lock | None = None
         self._pool_lock = Lock()
 
         # Comprehensive connection tracking for cleanup
@@ -305,8 +305,8 @@ class SQLiteBackend:
 
         # Shutdown management with complete signal
         self._shutdown = False
-        self._shutdown_event = asyncio.Event()
-        self._shutdown_complete = asyncio.Event()
+        self._shutdown_event: asyncio.Event | None = None
+        self._shutdown_complete: asyncio.Event | None = None
 
     @property
     def backend_type(self) -> str:
@@ -344,6 +344,19 @@ class SQLiteBackend:
         """Initialize the connection manager and start background tasks."""
         logger.info(f'Initializing connection manager for {self.db_path}')
 
+        # Create asyncio primitives in proper async context
+        # This MUST happen here, not in __init__, to ensure they bind to the correct event loop
+        if self._reader_semaphore is None:
+            self._reader_semaphore = asyncio.Semaphore(self.pool_config.max_readers)
+        if self._write_queue is None:
+            self._write_queue = asyncio.Queue()
+        if self._writer_lock is None:
+            self._writer_lock = asyncio.Lock()
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        if self._shutdown_complete is None:
+            self._shutdown_complete = asyncio.Event()
+
         # Create database directory if needed
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -374,6 +387,7 @@ class SQLiteBackend:
         Returns:
             bool: True if shutdown completed, False if timed out
         """
+        assert self._shutdown_complete is not None, 'Backend not initialized, call initialize() first'
         try:
             if timeout_seconds is None:
                 await self._shutdown_complete.wait()
@@ -386,6 +400,10 @@ class SQLiteBackend:
     async def shutdown(self) -> None:
         """Gracefully shutdown the connection manager with enhanced task cleanup."""
         logger.info('Shutting down connection manager')
+
+        assert self._shutdown_event is not None, 'Backend not initialized, call initialize() first'
+        assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
+        assert self._shutdown_complete is not None, 'Backend not initialized, call initialize() first'
 
         try:
             # Signal shutdown to all background tasks
@@ -658,6 +676,9 @@ class SQLiteBackend:
         """Background task to process write requests from the queue."""
         logger.info('Write queue processor started')
 
+        assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
+        assert self._shutdown_event is not None, 'Backend not initialized, call initialize() first'
+
         # Use shorter timeout in test environment
         queue_timeout = settings.storage.queue_timeout_test_s if is_test_environment() else settings.storage.queue_timeout_s
         wait_task = None
@@ -788,6 +809,9 @@ class SQLiteBackend:
     async def _health_check_loop(self) -> None:
         """Periodic health check for connections."""
         logger.info('Health check loop started')
+
+        assert self._shutdown_event is not None, 'Backend not initialized, call initialize() first'
+
         shutdown_task = None
 
         try:
@@ -878,6 +902,9 @@ class SQLiteBackend:
         Raises:
             RuntimeError: If connection manager is shutting down or circuit breaker is open
         """
+        assert self._reader_semaphore is not None, 'Backend not initialized, call initialize() first'
+        assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
+
         if self._shutdown:
             raise RuntimeError('Connection manager is shutting down')
 
@@ -951,6 +978,8 @@ class SQLiteBackend:
         Raises:
             RuntimeError: If connection manager is shutting down
         """
+        assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
+
         if self._shutdown:
             raise RuntimeError('Connection manager is shutting down')
 
@@ -1035,5 +1064,6 @@ class SQLiteBackend:
     def __del__(self) -> None:
         # Last safety net, if user code forgot to call shutdown
         with contextlib.suppress(Exception):
-            if not getattr(self, '_shutdown_complete', None) or not self._shutdown_complete.is_set():
+            shutdown_complete = getattr(self, '_shutdown_complete', None)
+            if not shutdown_complete or not shutdown_complete.is_set():
                 self._close_all_connections_sync()

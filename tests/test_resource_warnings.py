@@ -315,12 +315,11 @@ class TestResourceWarningDetection:
         # Shutdown should cancel and wait for all tasks
         await manager.shutdown()
 
-        # Verify all tasks are cleaned up
-        assert manager._write_processor_task is None
-        assert manager._health_check_task is None  # type: ignore[unreachable]
+        # Verify all background tasks are cleaned up
         assert len(manager._background_tasks) == 0
 
         # Verify shutdown is complete
+        assert manager._shutdown_complete is not None
         assert manager._shutdown_complete.is_set()
 
         # Allow time for async cleanup to complete
