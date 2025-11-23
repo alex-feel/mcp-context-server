@@ -198,7 +198,7 @@ ignore_errors = true
 
 # Handle optional dependencies for semantic search
 [[tool.mypy.overrides]]
-module = ['sqlite_vec', 'ollama', 'numpy']
+module = ['sqlite_vec', 'pgvector.asyncpg', 'ollama', 'numpy']
 ignore_missing_imports = true
 
 # Allow Any from optional dependencies in embedding_service
