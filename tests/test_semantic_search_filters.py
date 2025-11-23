@@ -1,7 +1,7 @@
 """
 Regression tests for semantic search filter bug.
 
-Tests the fix for the bug where semantic_search_tool returns fewer results
+Tests the fix for the bug where semantic_search_context returns fewer results
 than requested when thread_id or source filters are applied.
 
 Root cause: sqlite-vec's k parameter in MATCH clause limits results at

@@ -4,6 +4,7 @@ Embedding service for semantic search using Ollama and EmbeddingGemma.
 This module provides embedding generation capabilities for semantic search,
 wrapping the Ollama API and providing async-compatible interfaces.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -51,8 +52,7 @@ class EmbeddingService:
                 import ollama
             except ImportError as e:
                 raise ImportError(
-                    'ollama package is required for semantic search. '
-                    'Install with: uv sync --extra semantic-search',
+                    'ollama package is required for semantic search. Install with: uv sync --extra semantic-search',
                 ) from e
 
             self._client = ollama.Client(host=self.ollama_host)

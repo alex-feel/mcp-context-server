@@ -41,19 +41,24 @@ class StorageSettings(BaseSettings):
         extra='ignore',
         populate_by_name=True,
     )
+    # Backend selection
+    backend_type: Literal['sqlite', 'postgresql', 'supabase'] = Field(
+        default='sqlite',
+        alias='STORAGE_BACKEND',
+    )
     # General storage
     max_image_size_mb: int = Field(default=10, alias='MAX_IMAGE_SIZE_MB')
     max_total_size_mb: int = Field(default=100, alias='MAX_TOTAL_SIZE_MB')
     db_path: Path | None = Field(default_factory=lambda: Path.home() / '.mcp' / 'context_storage.db', alias='DB_PATH')
 
-    # Connection pool (DatabaseConnectionManager.PoolConfig)
+    # Connection pool settings for StorageBackend
     pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS')
     pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS')
     pool_connection_timeout_s: float = Field(default=10.0, alias='POOL_CONNECTION_TIMEOUT_S')
     pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S')
     pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S')
 
-    # Retry (DatabaseConnectionManager.RetryConfig)
+    # Retry logic settings for StorageBackend
     retry_max_retries: int = Field(default=5, alias='RETRY_MAX_RETRIES')
     retry_base_delay_s: float = Field(default=0.5, alias='RETRY_BASE_DELAY_S')
     retry_max_delay_s: float = Field(default=10.0, alias='RETRY_MAX_DELAY_S')
@@ -73,7 +78,7 @@ class StorageSettings(BaseSettings):
     sqlite_busy_timeout_ms: int | None = Field(default=None, alias='SQLITE_BUSY_TIMEOUT_MS')
     sqlite_wal_checkpoint: str = Field(default='PASSIVE', alias='SQLITE_WAL_CHECKPOINT')
 
-    # Circuit breaker (DatabaseConnectionManager.CircuitBreaker)
+    # Circuit breaker settings for StorageBackend
     circuit_breaker_failure_threshold: int = Field(default=10, alias='CIRCUIT_BREAKER_FAILURE_THRESHOLD')
     circuit_breaker_recovery_timeout_s: float = Field(default=30.0, alias='CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S')
     circuit_breaker_half_open_max_calls: int = Field(default=5, alias='CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS')
@@ -83,6 +88,32 @@ class StorageSettings(BaseSettings):
     shutdown_timeout_test_s: float = Field(default=5.0, alias='SHUTDOWN_TIMEOUT_TEST_S')
     queue_timeout_s: float = Field(default=1.0, alias='QUEUE_TIMEOUT_S')
     queue_timeout_test_s: float = Field(default=0.1, alias='QUEUE_TIMEOUT_TEST_S')
+
+    # PostgreSQL connection settings
+    postgresql_connection_string: str | None = Field(default=None, alias='POSTGRESQL_CONNECTION_STRING')
+    postgresql_host: str = Field(default='localhost', alias='POSTGRESQL_HOST')
+    postgresql_port: int = Field(default=5432, alias='POSTGRESQL_PORT')
+    postgresql_user: str = Field(default='postgres', alias='POSTGRESQL_USER')
+    postgresql_password: str = Field(default='postgres', alias='POSTGRESQL_PASSWORD')
+    postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
+
+    # PostgreSQL connection pool settings
+    postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN')
+    postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX')
+    postgresql_pool_timeout_s: float = Field(default=10.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
+    postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
+
+    # PostgreSQL SSL settings
+    postgresql_ssl_mode: Literal['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'] = Field(
+        default='prefer',
+        alias='POSTGRESQL_SSL_MODE',
+    )
+
+    # Supabase-specific settings
+    is_supabase: bool = Field(default=False, alias='IS_SUPABASE')
+    supabase_url: str | None = Field(default=None, alias='SUPABASE_URL')
+    supabase_service_role_key: str | None = Field(default=None, alias='SUPABASE_SERVICE_ROLE_KEY')
+    supabase_transaction_mode: bool = Field(default=True, alias='SUPABASE_TRANSACTION_MODE')
 
     @property
     def resolved_busy_timeout_ms(self) -> int:
@@ -114,8 +145,7 @@ class AppSettings(CommonSettings):
         """Validate embedding dimension is reasonable and warn about non-standard values."""
         if v > 4096:
             raise ValueError(
-                'EMBEDDING_DIM exceeds reasonable limit (4096). '
-                'Most Ollama embedding models use dimensions between 128-1024.',
+                'EMBEDDING_DIM exceeds reasonable limit (4096). Most Ollama embedding models use dimensions between 128-1024.',
             )
         if v % 64 != 0:
             logger.warning(

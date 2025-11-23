@@ -104,9 +104,7 @@ class TestErrorFormatConsistency:
 
         # Verify the error message
         error_msg = str(exc_info.value).lower()
-        assert 'text' in error_msg or 'whitespace' in error_msg, (
-            'Error should mention text or whitespace'
-        )
+        assert 'text' in error_msg or 'whitespace' in error_msg, 'Error should mention text or whitespace'
 
     @pytest.mark.asyncio
     async def test_store_context_invalid_source(self, mock_server_dependencies: None) -> None:
@@ -147,9 +145,7 @@ class TestErrorFormatConsistency:
 
         # Verify the error message
         error_msg = str(exc_info.value).lower()
-        assert 'empty' in error_msg or 'whitespace' in error_msg, (
-            'Error should mention empty or whitespace'
-        )
+        assert 'empty' in error_msg or 'whitespace' in error_msg, 'Error should mention empty or whitespace'
 
     @pytest.mark.asyncio
     async def test_update_context_whitespace_text(self, mock_server_dependencies: None) -> None:
@@ -171,9 +167,7 @@ class TestErrorFormatConsistency:
 
         # Verify the error message
         error_msg = str(exc_info.value).lower()
-        assert 'empty' in error_msg or 'whitespace' in error_msg, (
-            'Error should mention empty or whitespace'
-        )
+        assert 'empty' in error_msg or 'whitespace' in error_msg, 'Error should mention empty or whitespace'
 
     @pytest.mark.asyncio
     async def test_get_context_by_ids_empty_list(self, mock_server_dependencies: None) -> None:
@@ -196,22 +190,55 @@ class TestErrorFormatConsistency:
     async def test_search_context_invalid_limit(self, mock_server_dependencies: None) -> None:
         """Test search_context with invalid limit - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+        # Ensure clean backend state before test
+        from contextlib import suppress
+
+        from fastmcp.exceptions import ToolError
+
+        import app.server
+
+        if hasattr(app.server, '_backend') and app.server._backend is not None:
+            with suppress(Exception):
+                await app.server._backend.shutdown()
+            app.server._backend = None
+        if hasattr(app.server, '_repositories'):
+            app.server._repositories = None
 
         # When called directly (bypassing FastMCP), no runtime validation occurs.
         # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
         # We trust Pydantic completely and don't add redundant runtime checks.
+        #
+        # However, database-level validation may still occur:
+        # - SQLite: Allows negative LIMIT (treated as no limit), returns results
+        # - PostgreSQL: Rejects negative LIMIT with error "LIMIT must not be negative"
 
-        result = await search_context(
-            limit=-1,
-        )
-
-        # Function proceeds with invalid value when protocol validation is bypassed
-        assert 'entries' in result, 'Should return result structure even with invalid limit'
+        try:
+            result = await search_context(
+                limit=-1,
+            )
+            # SQLite backend: proceeds with invalid value
+            assert 'entries' in result, 'Should return result structure'
+        except ToolError:
+            # PostgreSQL backend: database-level validation rejects negative LIMIT
+            # Test passes - exception is expected for PostgreSQL
+            pass
 
     @pytest.mark.asyncio
     async def test_search_context_excessive_limit(self, mock_server_dependencies: None) -> None:
         """Test search_context with excessive limit - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+
+        # Ensure clean backend state before test
+        from contextlib import suppress
+
+        import app.server
+
+        if hasattr(app.server, '_backend') and app.server._backend is not None:
+            with suppress(Exception):
+                await app.server._backend.shutdown()
+            app.server._backend = None
+        if hasattr(app.server, '_repositories'):
+            app.server._repositories = None
 
         # When called directly (bypassing FastMCP), no runtime validation occurs.
         # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
@@ -228,17 +255,37 @@ class TestErrorFormatConsistency:
     async def test_search_context_negative_offset(self, mock_server_dependencies: None) -> None:
         """Test search_context with negative offset - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
+        from contextlib import suppress
+
+        from fastmcp.exceptions import ToolError
+
+        import app.server
+
+        if hasattr(app.server, '_backend') and app.server._backend is not None:
+            with suppress(Exception):
+                await app.server._backend.shutdown()
+            app.server._backend = None
+        if hasattr(app.server, '_repositories'):
+            app.server._repositories = None
 
         # When called directly (bypassing FastMCP), no runtime validation occurs.
         # This is correct - Pydantic Field(ge=0) validates at the MCP protocol layer.
         # We trust Pydantic completely and don't add redundant runtime checks.
+        #
+        # However, database-level validation may still occur:
+        # - SQLite: Allows negative OFFSET (treated as 0), returns results
+        # - PostgreSQL: Rejects negative OFFSET with error "OFFSET must not be negative"
 
-        result = await search_context(
-            offset=-1,
-        )
-
-        # Function proceeds with invalid value when protocol validation is bypassed
-        assert 'entries' in result, 'Should return result structure even with negative offset'
+        try:
+            result = await search_context(
+                offset=-1,
+            )
+            # SQLite backend: proceeds with invalid value
+            assert 'entries' in result, 'Should return result structure'
+        except ToolError:
+            # PostgreSQL backend: database-level validation rejects negative OFFSET
+            # Test passes - exception is expected for PostgreSQL
+            pass
 
     def test_no_raw_validation_errors_in_responses(self) -> None:
         """

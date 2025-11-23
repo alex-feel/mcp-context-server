@@ -89,11 +89,11 @@ class TestStoreContextWithJSONStrings:
             mock_ensure_repos.return_value = mock_repos
             # Simulate Claude Code sending tags as JSON string
             result = await store_context(
-                    thread_id='test-thread',
-                    source='user',
-                    text='Test message',
-                    tags='["python", "testing", "claude"]',  # JSON string
-                )
+                thread_id='test-thread',
+                source='user',
+                text='Test message',
+                tags='["python", "testing", "claude"]',  # JSON string
+            )
 
             assert result['success'] is True
             assert result['context_id'] == 1
@@ -154,12 +154,12 @@ class TestStoreContextWithJSONStrings:
             mock_ensure_repos.return_value = mock_repos
             # Native Python types (from other clients)
             result = await store_context(
-                    thread_id='test-thread',
-                    source='user',
-                    text='Test message',
-                    tags=['python', 'testing'],  # Native list
-                    metadata={'key': 'value'},  # Native dict
-                )
+                thread_id='test-thread',
+                source='user',
+                text='Test message',
+                tags=['python', 'testing'],  # Native list
+                metadata={'key': 'value'},  # Native dict
+            )
 
             assert result['success'] is True
 
@@ -307,13 +307,13 @@ class TestMixedScenarios:
 
             # All complex parameters as JSON strings (Claude Code style)
             result = await store_context(
-                    thread_id='test-thread',
-                    source='agent',
-                    text='Test with all JSON strings',
-                    tags='["tag1", "tag2", "tag3"]',  # JSON string
-                    metadata='{"key": "value", "nested": {"inner": 42}}',  # JSON string
-                    images='[{"data": "aGVsbG8=", "mime_type": "image/png"}]',  # JSON string
-                )
+                thread_id='test-thread',
+                source='agent',
+                text='Test with all JSON strings',
+                tags='["tag1", "tag2", "tag3"]',  # JSON string
+                metadata='{"key": "value", "nested": {"inner": 42}}',  # JSON string
+                images='[{"data": "aGVsbG8=", "mime_type": "image/png"}]',  # JSON string
+            )
 
             assert result['success'] is True
 
@@ -329,12 +329,12 @@ class TestMixedScenarios:
 
             # Mixed: tags as JSON string, metadata as native dict
             result = await store_context(
-                    thread_id='test-thread',
-                    source='user',
-                    text='Mixed parameters test',
-                    tags='["json", "string"]',  # JSON string
-                    metadata={'native': 'dict'},  # Native dict
-                )
+                thread_id='test-thread',
+                source='user',
+                text='Mixed parameters test',
+                tags='["json", "string"]',  # JSON string
+                metadata={'native': 'dict'},  # Native dict
+            )
 
             assert result['success'] is True
 

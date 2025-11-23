@@ -1,8 +1,9 @@
 """
-Database connection manager with pooling and concurrency control.
+SQLite storage backend implementation.
 
-This module provides a robust connection management system for SQLite that solves
-concurrency issues while maintaining ACID properties and high performance.
+This module provides a production-grade SQLite backend implementing the StorageBackend
+protocol with connection pooling, write queue management, circuit breaker pattern,
+and health monitoring.
 """
 
 import asyncio
@@ -14,6 +15,7 @@ import sqlite3
 import sys
 import time
 from collections.abc import AsyncGenerator
+from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from contextlib import suppress
@@ -25,6 +27,7 @@ from threading import RLock
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import TypeVar
+from typing import cast
 from typing import override
 
 from app.logger_config import config_logger
@@ -225,9 +228,9 @@ class WriteRequest:
         self.created_at = time.time()
 
 
-class DatabaseConnectionManager:
+class SQLiteBackend:
     """
-    Production-grade connection manager with pooling and concurrency control.
+    Production-grade SQLite storage backend implementing the StorageBackend protocol.
 
     Features:
     - Connection pooling with separate reader and writer pools
@@ -237,6 +240,8 @@ class DatabaseConnectionManager:
     - Health checks and metrics
     - Automatic reconnection
     - Enhanced task lifecycle management for clean shutdown
+
+    Implements the StorageBackend protocol to enable database-agnostic repositories.
     """
 
     def __init__(
@@ -269,14 +274,14 @@ class DatabaseConnectionManager:
         # Connection pools
         self._writer_conn: sqlite3.Connection | None = None
         self._reader_pool: list[sqlite3.Connection] = []
-        self._reader_semaphore = asyncio.Semaphore(self.pool_config.max_readers)
+        self._reader_semaphore: asyncio.Semaphore | None = None
 
         # Write queue for serialization
-        self._write_queue: asyncio.Queue[WriteRequest] = asyncio.Queue()
+        self._write_queue: asyncio.Queue[WriteRequest] | None = None
         self._write_processor_task: asyncio.Task[None] | None = None
 
         # Synchronization primitives
-        self._writer_lock = asyncio.Lock()
+        self._writer_lock: asyncio.Lock | None = None
         self._pool_lock = Lock()
 
         # Comprehensive connection tracking for cleanup
@@ -302,8 +307,17 @@ class DatabaseConnectionManager:
 
         # Shutdown management with complete signal
         self._shutdown = False
-        self._shutdown_event = asyncio.Event()
-        self._shutdown_complete = asyncio.Event()
+        self._shutdown_event: asyncio.Event | None = None
+        self._shutdown_complete: asyncio.Event | None = None
+
+    @property
+    def backend_type(self) -> str:
+        """Return the backend type identifier for SQLite.
+
+        Returns:
+            str: 'sqlite' identifying this as a SQLite backend
+        """
+        return 'sqlite'
 
     # Internal helpers
 
@@ -331,6 +345,19 @@ class DatabaseConnectionManager:
     async def initialize(self) -> None:
         """Initialize the connection manager and start background tasks."""
         logger.info(f'Initializing connection manager for {self.db_path}')
+
+        # Create asyncio primitives in proper async context
+        # This MUST happen here, not in __init__, to ensure they bind to the correct event loop
+        if self._reader_semaphore is None:
+            self._reader_semaphore = asyncio.Semaphore(self.pool_config.max_readers)
+        if self._write_queue is None:
+            self._write_queue = asyncio.Queue()
+        if self._writer_lock is None:
+            self._writer_lock = asyncio.Lock()
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        if self._shutdown_complete is None:
+            self._shutdown_complete = asyncio.Event()
 
         # Create database directory if needed
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -362,6 +389,7 @@ class DatabaseConnectionManager:
         Returns:
             bool: True if shutdown completed, False if timed out
         """
+        assert self._shutdown_complete is not None, 'Backend not initialized, call initialize() first'
         try:
             if timeout_seconds is None:
                 await self._shutdown_complete.wait()
@@ -374,6 +402,10 @@ class DatabaseConnectionManager:
     async def shutdown(self) -> None:
         """Gracefully shutdown the connection manager with enhanced task cleanup."""
         logger.info('Shutting down connection manager')
+
+        assert self._shutdown_event is not None, 'Backend not initialized, call initialize() first'
+        assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
+        assert self._shutdown_complete is not None, 'Backend not initialized, call initialize() first'
 
         try:
             # Signal shutdown to all background tasks
@@ -646,6 +678,9 @@ class DatabaseConnectionManager:
         """Background task to process write requests from the queue."""
         logger.info('Write queue processor started')
 
+        assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
+        assert self._shutdown_event is not None, 'Backend not initialized, call initialize() first'
+
         # Use shorter timeout in test environment
         queue_timeout = settings.storage.queue_timeout_test_s if is_test_environment() else settings.storage.queue_timeout_s
         wait_task = None
@@ -739,7 +774,9 @@ class DatabaseConnectionManager:
 
                 # Execute operation
                 def _execute(conn: sqlite3.Connection) -> object:
-                    result = request.operation(conn, *request.args, **request.kwargs)
+                    # Cast to sync callable since SQLiteBackend only uses sync operations
+                    sync_operation = cast(Callable[..., object], request.operation)
+                    result = sync_operation(conn, *request.args, **request.kwargs)
                     conn.commit()
                     self.metrics.total_queries += 1
                     return result
@@ -776,6 +813,9 @@ class DatabaseConnectionManager:
     async def _health_check_loop(self) -> None:
         """Periodic health check for connections."""
         logger.info('Health check loop started')
+
+        assert self._shutdown_event is not None, 'Backend not initialized, call initialize() first'
+
         shutdown_task = None
 
         try:
@@ -866,6 +906,9 @@ class DatabaseConnectionManager:
         Raises:
             RuntimeError: If connection manager is shutting down or circuit breaker is open
         """
+        assert self._reader_semaphore is not None, 'Backend not initialized, call initialize() first'
+        assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
+
         if self._shutdown:
             raise RuntimeError('Connection manager is shutting down')
 
@@ -921,7 +964,7 @@ class DatabaseConnectionManager:
 
     async def execute_write(
         self,
-        operation: Callable[..., T],
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
         **kwargs: Any,
     ) -> T:
@@ -929,7 +972,9 @@ class DatabaseConnectionManager:
         Execute a write operation through the write queue.
 
         Args:
-            operation: Function to execute with connection as first argument
+            operation: Sync callable to execute with connection as first argument.
+                      Signature: operation(conn: sqlite3.Connection, *args, **kwargs) -> T
+                      Note: Although protocol accepts sync or async, SQLiteBackend only uses sync.
             *args: Additional arguments for the operation
             **kwargs: Additional keyword arguments for the operation
 
@@ -938,7 +983,13 @@ class DatabaseConnectionManager:
 
         Raises:
             RuntimeError: If connection manager is shutting down
+
+        Note:
+            SQLiteBackend expects SYNC callables (not async). The operation is executed
+            synchronously in a thread executor to avoid blocking the event loop.
         """
+        assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
+
         if self._shutdown:
             raise RuntimeError('Connection manager is shutting down')
 
@@ -957,7 +1008,7 @@ class DatabaseConnectionManager:
 
     async def execute_read(
         self,
-        operation: Callable[..., T],
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
         **kwargs: Any,
     ) -> T:
@@ -965,18 +1016,26 @@ class DatabaseConnectionManager:
         Execute a read operation with a reader connection.
 
         Args:
-            operation: Function to execute with connection as first argument
+            operation: Sync callable to execute with connection as first argument.
+                      Signature: operation(conn: sqlite3.Connection, *args, **kwargs) -> T
+                      Note: Although protocol accepts sync or async, SQLiteBackend only uses sync.
             *args: Additional arguments for the operation
             **kwargs: Additional keyword arguments for the operation
 
         Returns:
             Result of the operation
+
+        Note:
+            SQLiteBackend expects SYNC callables (not async). The operation is executed
+            synchronously in a thread executor to avoid blocking the event loop.
         """
         async with self.get_connection(readonly=True) as conn:
             loop = asyncio.get_event_loop()
 
             def _execute() -> T:
-                result = operation(conn, *args, **kwargs)
+                # Cast to sync callable since SQLiteBackend only uses sync operations
+                sync_operation = cast(Callable[..., T], operation)
+                result = sync_operation(conn, *args, **kwargs)
                 self.metrics.total_queries += 1
                 return result
 
@@ -1023,68 +1082,6 @@ class DatabaseConnectionManager:
     def __del__(self) -> None:
         # Last safety net, if user code forgot to call shutdown
         with contextlib.suppress(Exception):
-            if not getattr(self, '_shutdown_complete', None) or not self._shutdown_complete.is_set():
+            shutdown_complete = getattr(self, '_shutdown_complete', None)
+            if not shutdown_complete or not shutdown_complete.is_set():
                 self._close_all_connections_sync()
-
-
-# Global instance for singleton pattern
-_manager_instance: DatabaseConnectionManager | None = None
-_manager_lock = Lock()
-
-
-def get_connection_manager(
-    db_path: Path | str | None = None,
-    pool_config: PoolConfig | None = None,
-    retry_config: RetryConfig | None = None,
-    force_new: bool = False,
-) -> DatabaseConnectionManager:
-    """
-    Get or create the global connection manager instance.
-
-    Args:
-        db_path: Database file path, required on first call
-        pool_config: Connection pool configuration
-        retry_config: Retry logic configuration
-        force_new: If True, return a brand-new instance, not stored globally
-
-    Returns:
-        Connection manager instance
-
-    Raises:
-        ValueError: If a required `db_path` is not provided on first call
-            or when creating a new instance.
-    """
-    global _manager_instance
-    with _manager_lock:
-        # In test environments, always return a fresh instance for isolation
-        if force_new or is_test_environment():
-            if db_path is None:
-                raise ValueError('db_path required when creating new instance')
-            return DatabaseConnectionManager(
-                db_path=db_path,
-                pool_config=pool_config,
-                retry_config=retry_config,
-            )
-
-        if _manager_instance is None:
-            if db_path is None:
-                raise ValueError('db_path required for first initialization')
-            _manager_instance = DatabaseConnectionManager(
-                db_path=db_path,
-                pool_config=pool_config,
-                retry_config=retry_config,
-            )
-        return _manager_instance
-
-
-def reset_connection_manager() -> None:
-    """
-    Reset the global connection manager instance.
-
-    This is primarily used for testing to ensure clean state between tests.
-    Should not be used in production code.
-    """
-    global _manager_instance
-    with _manager_lock:
-        _manager_instance = None
-        logger.debug('Connection manager instance reset')

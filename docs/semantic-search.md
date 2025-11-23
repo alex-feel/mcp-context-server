@@ -292,7 +292,7 @@ or update EMBEDDING_DIM to match your model output.
 
 ## Usage
 
-### New Tool: semantic_search_tool
+### New Tool: semantic_search_context
 
 When semantic search is enabled and all dependencies are met, a new MCP tool becomes available.
 
@@ -336,17 +336,17 @@ If embedding generation fails, the context is still stored successfully (gracefu
 
 1. **Cross-thread discovery**: Find related work from other sessions
    ```
-   semantic_search_tool(query="authentication implementation", top_k=10)
+   semantic_search_context(query="authentication implementation", top_k=10)
    ```
 
 2. **Agent collaboration**: Find what other agents learned
    ```
-   semantic_search_tool(query="API rate limiting solutions", source="agent")
+   semantic_search_context(query="API rate limiting solutions", source="agent")
    ```
 
 3. **Filtered search**: Combine semantic and structured filters
    ```
-   semantic_search_tool(query="error handling", thread_id="current-task", top_k=5)
+   semantic_search_context(query="error handling", thread_id="current-task", top_k=5)
    ```
 
 ### Performance Characteristics
@@ -405,14 +405,14 @@ Run through this checklist to verify your semantic search installation:
    ```
    ✓ All semantic search dependencies available
    ✓ Semantic search enabled and available
-   ✓ semantic_search_tool registered and exposed
+   ✓ semantic_search_context registered and exposed
    ```
 
-8. **Verify MCP client** - List available tools and confirm `semantic_search_tool` is present
+8. **Verify MCP client** - List available tools and confirm `semantic_search_context` is present
 
 9. **Test functionality**:
     ```
-    semantic_search_tool(query="test", top_k=5)
+    semantic_search_context(query="test", top_k=5)
     ```
 
 ## Troubleshooting
@@ -488,9 +488,9 @@ ollama pull embeddinggemma:latest
 ollama list
 ```
 
-### Issue 4: semantic_search_tool Not Available
+### Issue 4: semantic_search_context Not Available
 
-**Error**: `semantic_search_tool not available` or tool not listed
+**Error**: `semantic_search_context not available` or tool not listed
 
 **Diagnostic Steps**:
 

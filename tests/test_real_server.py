@@ -1,7 +1,7 @@
 """Integration tests for the real running MCP Context Storage Server.
 
 Tests the actual server running via subprocess with uvx command,
-verifying all 6 tools work correctly via FastMCP client.
+verifying all 8 tools work correctly via FastMCP client.
 """
 
 import asyncio
@@ -69,8 +69,8 @@ class MCPServerIntegrationTest:
                 os.environ['MCP_TEST_MODE'] = '1'  # THIS IS CRITICAL!
 
                 print('[INFO] Environment set BEFORE Client creation:')
-                print(f'[INFO] DB_PATH={os.environ.get("DB_PATH")}')
-                print(f'[INFO] MCP_TEST_MODE={os.environ.get("MCP_TEST_MODE")}')
+                print(f"[INFO] DB_PATH={os.environ.get('DB_PATH')}")
+                print(f"[INFO] MCP_TEST_MODE={os.environ.get('MCP_TEST_MODE')}")
                 print(f'[INFO] Using temporary database: {self.temp_db_path}')
 
                 # Verify it's not the default database
@@ -402,58 +402,73 @@ class MCPServerIntegrationTest:
                     return False
 
             # Test 1: Simple metadata filtering
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata': {'status': 'active'},
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata': {'status': 'active'},
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 2:
-                print(f'Simple filter failed: expected 2, got {len(result_data.get("results", []))}')
+                print(f"Simple filter failed: expected 2, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Simple metadata filter failed'))
                 return False
 
             # Test 2: Advanced metadata filtering with gte operator
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 5}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 5}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 3:
-                print(f'Advanced gte filter failed: expected 3, got {len(result_data.get("results", []))}')
+                print(f"Advanced gte filter failed: expected 3, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Advanced gte filter failed'))
                 return False
 
             # Test 3: Combined metadata filters
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata': {'status': 'active'},
-                'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 7}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata': {'status': 'active'},
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 7}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 1:
-                print(f'Combined filter failed: expected 1, got {len(result_data.get("results", []))}')
+                print(f"Combined filter failed: expected 1, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Combined filter failed'))
                 return False
 
             # Test 4: Exists operator
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'completed', 'operator': 'exists', 'value': None}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata_filters': [{'key': 'completed', 'operator': 'exists', 'value': None}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 1:
-                print(f'Exists filter failed: expected 1, got {len(result_data.get("results", []))}')
+                print(f"Exists filter failed: expected 1, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Exists operator filter failed'))
                 return False
 
             # Test 5: In operator
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'agent_name', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata_filters': [{'key': 'agent_name', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 2:
-                print(f'In operator filter failed: expected 2, got {len(result_data.get("results", []))}')
+                print(f"In operator filter failed: expected 2, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'In operator filter failed'))
                 return False
 
@@ -714,10 +729,7 @@ class MCPServerIntegrationTest:
                 # Check that threads have correct statistics
                 for thread_info in listed_threads:
                     if thread_info['thread_id'] in threads and thread_info.get('entry_count', 0) != 3:
-                        error_msg = (
-                            f"Thread {thread_info['thread_id']} has wrong count: "
-                            f"{thread_info.get('entry_count', 0)}"
-                        )
+                        error_msg = f"Thread {thread_info['thread_id']} has wrong count: {thread_info.get('entry_count', 0)}"
                         self.test_results.append((test_name, False, error_msg))
                         return False
 
@@ -799,6 +811,300 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_update_context(self) -> bool:
+        """Test updating existing context entries.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'update_context'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Create a separate thread for update tests
+            update_thread = f'{self.test_thread_id}_update'
+
+            # Store initial context
+            initial_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': update_thread,
+                    'source': 'agent',
+                    'text': 'Initial text content',
+                    'metadata': {'status': 'draft', 'priority': 1},
+                    'tags': ['initial', 'test'],
+                },
+            )
+
+            initial_data = self._extract_content(initial_result)
+
+            if not initial_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to store initial context: {initial_data}'))
+                return False
+
+            context_id = initial_data.get('context_id')
+
+            # Test 1: Update text only
+            update_text_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'text': 'Updated text content',
+                },
+            )
+
+            update_text_data = self._extract_content(update_text_result)
+
+            if not update_text_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to update text: {update_text_data}'))
+                return False
+
+            # Verify text was updated
+            verify_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+
+            verify_data = self._extract_content(verify_result)
+
+            if not verify_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify text update'))
+                return False
+
+            updated_entry = verify_data['results'][0]
+
+            if updated_entry.get('text_content') != 'Updated text content':
+                self.test_results.append((test_name, False, 'Text not updated correctly'))
+                return False
+
+            # Test 2: Update metadata only
+            update_metadata_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'metadata': {'status': 'completed', 'priority': 10, 'reviewed': True},
+                },
+            )
+
+            update_metadata_data = self._extract_content(update_metadata_result)
+
+            if not update_metadata_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to update metadata: {update_metadata_data}'))
+                return False
+
+            # Test 3: Update tags (replacement)
+            update_tags_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'tags': ['updated', 'final'],
+                },
+            )
+
+            update_tags_data = self._extract_content(update_tags_result)
+
+            if not update_tags_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to update tags: {update_tags_data}'))
+                return False
+
+            # Test 4: Add images (verify content_type changes to multimodal)
+            update_images_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'images': [
+                        {
+                            'data': self._create_test_image(),
+                            'mime_type': 'image/png',
+                        },
+                    ],
+                },
+            )
+
+            update_images_data = self._extract_content(update_images_result)
+
+            if not update_images_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to add images: {update_images_data}'))
+                return False
+
+            # Verify content_type changed to multimodal
+            verify_multimodal = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id], 'include_images': True},
+            )
+
+            verify_multimodal_data = self._extract_content(verify_multimodal)
+
+            if not verify_multimodal_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify multimodal update'))
+                return False
+
+            multimodal_entry = verify_multimodal_data['results'][0]
+
+            if multimodal_entry.get('content_type') != 'multimodal':
+                self.test_results.append((test_name, False, 'Content type not changed to multimodal'))
+                return False
+
+            # Test 5: Remove images (verify content_type changes back to text)
+            remove_images_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'images': [],
+                },
+            )
+
+            remove_images_data = self._extract_content(remove_images_result)
+
+            if not remove_images_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to remove images: {remove_images_data}'))
+                return False
+
+            # Verify content_type changed back to text
+            verify_text_type = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+
+            verify_text_type_data = self._extract_content(verify_text_type)
+
+            if not verify_text_type_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify text-only update'))
+                return False
+
+            text_only_entry = verify_text_type_data['results'][0]
+
+            if text_only_entry.get('content_type') != 'text':
+                self.test_results.append((test_name, False, 'Content type not changed back to text'))
+                return False
+
+            # Verify immutable fields remain unchanged
+            if text_only_entry.get('thread_id') != update_thread or text_only_entry.get('source') != 'agent':
+                self.test_results.append((test_name, False, 'Immutable fields were modified'))
+                return False
+
+            self.test_results.append((test_name, True, 'All update operations passed'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_semantic_search_context(self) -> bool:
+        """Test semantic search functionality (conditional on availability).
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'semantic_search_context'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if semantic search is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            is_enabled = semantic_info.get('enabled', False)
+            is_available = semantic_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for semantic search tests
+            semantic_thread = f'{self.test_thread_id}_semantic'
+
+            # Store semantically diverse test contexts
+            test_contexts = [
+                'Machine learning models require large datasets for training and validation',
+                'Python is a popular programming language for data science and AI applications',
+                'The weather today is sunny with a high of 25 degrees celsius',
+            ]
+
+            for text in test_contexts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': semantic_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation (non-blocking operation)
+            await asyncio.sleep(0.5)
+
+            # Test 1: Semantic search for ML-related content
+            ml_search_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'artificial intelligence and deep learning',
+                    'top_k': 5,
+                },
+            )
+
+            ml_search_data = self._extract_content(ml_search_result)
+
+            # semantic_search_context returns results directly without 'success' field
+            # Check for 'results' key instead
+            if 'results' not in ml_search_data:
+                self.test_results.append((test_name, False, f'ML semantic search failed: {ml_search_data}'))
+                return False
+
+            # Verify results contain distance/similarity scores
+            ml_results = ml_search_data.get('results', [])
+            if not ml_results or 'distance' not in ml_results[0]:
+                self.test_results.append((test_name, False, 'Missing distance scores in results'))
+                return False
+
+            # Test 2: Search with thread_id filter
+            thread_search_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'programming languages',
+                    'thread_id': semantic_thread,
+                    'top_k': 3,
+                },
+            )
+
+            thread_search_data = self._extract_content(thread_search_result)
+
+            if 'results' not in thread_search_data:
+                self.test_results.append((test_name, False, f'Thread-filtered search failed: {thread_search_data}'))
+                return False
+
+            # Test 3: Search with source filter
+            source_search_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'data science',
+                    'source': 'agent',
+                    'top_k': 5,
+                },
+            )
+
+            source_search_data = self._extract_content(source_search_result)
+
+            if 'results' not in source_search_data:
+                self.test_results.append((test_name, False, f'Source-filtered search failed: {source_search_data}'))
+                return False
+
+            # Get model name for success message
+            model_name = semantic_info.get('model', 'unknown')
+
+            self.test_results.append((test_name, True, f'Semantic search working (model: {model_name})'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -862,8 +1168,10 @@ class MCPServerIntegrationTest:
             ('Metadata Filtering', self.test_metadata_filtering),
             ('Get Context by IDs', self.test_get_context_by_ids),
             ('Delete Context', self.test_delete_context),
+            ('Update Context', self.test_update_context),
             ('List Threads', self.test_list_threads),
             ('Get Statistics', self.test_get_statistics),
+            ('Semantic Search', self.test_semantic_search_context),
         ]
 
         print('\nRunning tests...\n')
@@ -933,13 +1241,11 @@ async def test_real_server(tmp_path: Path) -> None:
     default_db = Path.home() / '.mcp' / 'context_storage.db'
     if temp_db.resolve() == default_db.resolve():
         raise RuntimeError(
-            f'Test attempting to use default database!\n'
-            f'Default: {default_db}\n'
-            f'Test DB: {temp_db}',
+            f'Test attempting to use default database!\nDefault: {default_db}\nTest DB: {temp_db}',
         )
 
     print(f'[TEST] Running with temp database: {temp_db}')
-    print(f'[TEST] MCP_TEST_MODE: {os.environ.get("MCP_TEST_MODE")}')
+    print(f"[TEST] MCP_TEST_MODE: {os.environ.get('MCP_TEST_MODE')}")
 
     test = MCPServerIntegrationTest(temp_db_path=temp_db)
     success = await test.run_all_tests()
@@ -962,7 +1268,7 @@ if __name__ == '__main__':
             print('[INFO] Running directly with test mode enabled')
             print(f'[INFO] Using temporary directory: {tmpdir}')
             print(f'[INFO] DB_PATH set to: {temp_db_path}')
-            print(f'[INFO] MCP_TEST_MODE: {os.environ.get("MCP_TEST_MODE")}')
+            print(f"[INFO] MCP_TEST_MODE: {os.environ.get('MCP_TEST_MODE')}")
 
             test = MCPServerIntegrationTest(temp_db_path=temp_db_path)
             success = await test.run_all_tests()

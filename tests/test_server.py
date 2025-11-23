@@ -165,10 +165,10 @@ class TestStoreContext:
         temp_db_path: Path,
     ) -> None:
         """Test handling of database errors."""
-        # Mock the database manager to raise an error
+        # Mock the repository method to raise an error
         _ = temp_db_path  # Acknowledge unused parameter
-        with patch('app.server._db_manager') as mock_manager:
-            mock_manager.execute_write.side_effect = sqlite3.OperationalError('Database error')
+        with patch('app.repositories.context_repository.ContextRepository.store_with_deduplication') as mock_store:
+            mock_store.side_effect = sqlite3.OperationalError('Database error')
             with pytest.raises(ToolError, match='Failed to store context'):
                 await store_context(
                     thread_id='test',
@@ -485,16 +485,30 @@ class TestSearchContext:
         )
 
         # Directly update database to set text_content to empty (edge case)
-        import sqlite3
+        # Use backend-agnostic approach for both SQLite and PostgreSQL
+        backend = app.server._backend
+        assert backend is not None
 
-        with sqlite3.connect(str(temp_db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE context_entries SET text_content = ? WHERE thread_id = ?',
-                ('', 'null_test'),
-            )
-            conn.commit()
+        # Get backend type to determine SQL syntax
+        backend_type = getattr(backend, 'backend_type', 'sqlite')
+
+        if backend_type == 'sqlite':
+            # SQLite uses execute_write to avoid connection pool issues
+            def update_text_content(conn: sqlite3.Connection) -> None:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE context_entries SET text_content = ? WHERE thread_id = ?',
+                    ('', 'null_test'),
+                )
+
+            await backend.execute_write(update_text_content)
+        else:
+            # PostgreSQL uses async connection
+            async with backend.get_connection() as conn:
+                await conn.execute(
+                    'UPDATE context_entries SET text_content = $1 WHERE thread_id = $2',
+                    '', 'null_test',
+                )
 
         results = await search_context(thread_id='null_test')
         assert isinstance(results, dict)
@@ -876,9 +890,9 @@ class TestGetStatistics:
     @pytest.mark.asyncio
     async def test_statistics_error_handling(self) -> None:
         """Test statistics handles errors gracefully."""
-        # Mock the database manager to raise an error during read
-        with patch('app.server._db_manager') as mock_manager:
-            mock_manager.execute_read.side_effect = sqlite3.OperationalError('Database error')
+        # Mock the repository method to raise an error during read
+        with patch('app.repositories.statistics_repository.StatisticsRepository.get_database_statistics') as mock_stats:
+            mock_stats.side_effect = sqlite3.OperationalError('Database error')
             with pytest.raises(ToolError, match='Failed to get statistics'):
                 await get_statistics()
 

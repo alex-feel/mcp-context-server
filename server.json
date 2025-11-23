@@ -1,5 +1,5 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.alex-feel/mcp-context-server",
   "description": "An MCP server that provides persistent multimodal context storage for LLM agents.",
   "repository": {
@@ -23,6 +23,13 @@
           "format": "string",
           "isSecret": false,
           "name": "LOG_LEVEL"
+        },
+        {
+          "description": "Storage backend type: sqlite (default) or postgresql",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "STORAGE_BACKEND"
         },
         {
           "description": "Maximum individual image size in megabytes",
@@ -233,6 +240,83 @@
           "format": "number",
           "isSecret": false,
           "name": "CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS"
+        },
+        {
+          "description": "Complete PostgreSQL connection string (overrides individual settings if provided)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "POSTGRESQL_CONNECTION_STRING"
+        },
+        {
+          "description": "PostgreSQL server host address",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_HOST"
+        },
+        {
+          "description": "PostgreSQL server port number",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_PORT"
+        },
+        {
+          "description": "PostgreSQL database username",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_USER"
+        },
+        {
+          "description": "PostgreSQL database password",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "POSTGRESQL_PASSWORD"
+        },
+        {
+          "description": "PostgreSQL database name",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_DATABASE"
+        },
+        {
+          "description": "PostgreSQL connection pool minimum size",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_POOL_MIN"
+        },
+        {
+          "description": "PostgreSQL connection pool maximum size",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_POOL_MAX"
+        },
+        {
+          "description": "PostgreSQL connection pool timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_POOL_TIMEOUT_S"
+        },
+        {
+          "description": "PostgreSQL command execution timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_COMMAND_TIMEOUT_S"
+        },
+        {
+          "description": "PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_SSL_MODE"
         },
         {
           "description": "Enable semantic search functionality",

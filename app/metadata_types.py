@@ -17,21 +17,21 @@ class MetadataOperator(StrEnum):
     Note: REGEX operator removed due to SQLite limitations.
     """
 
-    EQ = 'eq'                       # Equals (default)
-    NE = 'ne'                       # Not equals
-    GT = 'gt'                       # Greater than
-    GTE = 'gte'                     # Greater than or equal
-    LT = 'lt'                       # Less than
-    LTE = 'lte'                     # Less than or equal
-    IN = 'in'                       # Value in list
-    NOT_IN = 'not_in'               # Value not in list
-    EXISTS = 'exists'               # Key exists
-    NOT_EXISTS = 'not_exists'       # Key doesn't exist
-    CONTAINS = 'contains'           # String contains
-    STARTS_WITH = 'starts_with'     # String starts with
-    ENDS_WITH = 'ends_with'         # String ends with
-    IS_NULL = 'is_null'             # Value is null
-    IS_NOT_NULL = 'is_not_null'     # Value is not null
+    EQ = 'eq'  # Equals (default)
+    NE = 'ne'  # Not equals
+    GT = 'gt'  # Greater than
+    GTE = 'gte'  # Greater than or equal
+    LT = 'lt'  # Less than
+    LTE = 'lte'  # Less than or equal
+    IN = 'in'  # Value in list
+    NOT_IN = 'not_in'  # Value not in list
+    EXISTS = 'exists'  # Key exists
+    NOT_EXISTS = 'not_exists'  # Key doesn't exist
+    CONTAINS = 'contains'  # String contains
+    STARTS_WITH = 'starts_with'  # String starts with
+    ENDS_WITH = 'ends_with'  # String ends with
+    IS_NULL = 'is_null'  # Value is null
+    IS_NOT_NULL = 'is_not_null'  # Value is not null
 
 
 class MetadataFilter(BaseModel):
@@ -67,8 +67,7 @@ class MetadataFilter(BaseModel):
 
         if not re.match(r'^[a-zA-Z0-9_.-]+$', v):
             raise ValueError(
-                f'Invalid metadata key: {v}. '
-                'Only alphanumeric characters, dots, underscores, and hyphens are allowed.',
+                f'Invalid metadata key: {v}. Only alphanumeric characters, dots, underscores, and hyphens are allowed.',
             )
 
         return v.strip()
@@ -84,8 +83,12 @@ class MetadataFilter(BaseModel):
         operator = info.data.get('operator', MetadataOperator.EQ)
 
         # Operators that don't require a value
-        if operator in (MetadataOperator.EXISTS, MetadataOperator.NOT_EXISTS,
-                        MetadataOperator.IS_NULL, MetadataOperator.IS_NOT_NULL):
+        if operator in (
+            MetadataOperator.EXISTS,
+            MetadataOperator.NOT_EXISTS,
+            MetadataOperator.IS_NULL,
+            MetadataOperator.IS_NOT_NULL,
+        ):
             return None  # Value is ignored for these operators
 
         # IN and NOT_IN require list values
@@ -96,8 +99,7 @@ class MetadataFilter(BaseModel):
 
         # String operators require string values
         if (
-            operator in (MetadataOperator.CONTAINS, MetadataOperator.STARTS_WITH,
-                        MetadataOperator.ENDS_WITH)
+            operator in (MetadataOperator.CONTAINS, MetadataOperator.STARTS_WITH, MetadataOperator.ENDS_WITH)
             and v is not None
             and not isinstance(v, str)
         ):

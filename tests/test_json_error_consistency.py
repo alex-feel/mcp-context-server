@@ -59,31 +59,19 @@ class TestJSONErrorConsistency:
         # Test cases that should raise ToolError for BUSINESS LOGIC
         test_cases = [
             # Business logic: empty strings after strip() are not allowed
-            ('store_context empty thread_id',
-             lambda: store_context(thread_id='', source='user', text='test'),
-             'thread_id'),
-            ('store_context empty text',
-             lambda: store_context(thread_id='test', source='user', text=''),
-             'text'),
-            ('store_context whitespace thread_id',
-             lambda: store_context(thread_id='   ', source='user', text='test'),
-             'thread_id'),
-            ('store_context whitespace text',
-             lambda: store_context(thread_id='test', source='user', text='   '),
-             'text'),
-
+            ('store_context empty thread_id', lambda: store_context(thread_id='', source='user', text='test'), 'thread_id'),
+            ('store_context empty text', lambda: store_context(thread_id='test', source='user', text=''), 'text'),
+            (
+                'store_context whitespace thread_id',
+                lambda: store_context(thread_id='   ', source='user', text='test'),
+                'thread_id',
+            ),
+            ('store_context whitespace text', lambda: store_context(thread_id='test', source='user', text='   '), 'text'),
             # update_context business logic validation
-            ('update_context empty text',
-             lambda: update_context(context_id=1, text=''),
-             'text'),
-            ('update_context no fields',
-             lambda: update_context(context_id=1),
-             'field'),
-
+            ('update_context empty text', lambda: update_context(context_id=1, text=''), 'text'),
+            ('update_context no fields', lambda: update_context(context_id=1), 'field'),
             # delete_context business logic validation
-            ('delete_context no parameters',
-             lambda: delete_context(),
-             'provide'),
+            ('delete_context no parameters', lambda: delete_context(), 'provide'),
         ]
 
         for test_name, test_func, expected_keyword in test_cases:
@@ -151,6 +139,7 @@ class TestJSONErrorConsistency:
 
         # Test oversized image
         import base64
+
         large_data = 'A' * (15 * 1024 * 1024)  # 15MB
         encoded = base64.b64encode(large_data.encode()).decode()
 
@@ -235,9 +224,7 @@ class TestJSONErrorConsistency:
         # Check that no forbidden patterns appear in any error message
         for msg in error_messages:
             for pattern in forbidden_patterns:
-                assert pattern not in msg, (
-                    f'Raw Pydantic pattern "{pattern}" found in error: {msg}'
-                )
+                assert pattern not in msg, f'Raw Pydantic pattern "{pattern}" found in error: {msg}'
 
     @pytest.mark.asyncio
     async def test_consistent_error_format_across_tools(self, mock_server_dependencies):
