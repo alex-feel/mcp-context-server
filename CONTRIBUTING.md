@@ -52,6 +52,9 @@ uv run pytest tests/test_server.py
 uv run pytest tests/test_metadata_filtering.py -v
 uv run pytest tests/test_metadata_error_handling.py -v
 
+# Run semantic search tests
+uv run pytest tests/test_semantic_search_filters.py -v
+
 # Run integration tests only
 uv run pytest -m integration
 

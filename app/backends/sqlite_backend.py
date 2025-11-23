@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import time
 from collections.abc import AsyncGenerator
+from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from contextlib import suppress
@@ -26,6 +27,7 @@ from threading import RLock
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import TypeVar
+from typing import cast
 from typing import override
 
 from app.logger_config import config_logger
@@ -772,7 +774,9 @@ class SQLiteBackend:
 
                 # Execute operation
                 def _execute(conn: sqlite3.Connection) -> object:
-                    result = request.operation(conn, *request.args, **request.kwargs)
+                    # Cast to sync callable since SQLiteBackend only uses sync operations
+                    sync_operation = cast(Callable[..., object], request.operation)
+                    result = sync_operation(conn, *request.args, **request.kwargs)
                     conn.commit()
                     self.metrics.total_queries += 1
                     return result
@@ -960,7 +964,7 @@ class SQLiteBackend:
 
     async def execute_write(
         self,
-        operation: Callable[..., T],
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
         **kwargs: Any,
     ) -> T:
@@ -968,7 +972,9 @@ class SQLiteBackend:
         Execute a write operation through the write queue.
 
         Args:
-            operation: Function to execute with connection as first argument
+            operation: Sync callable to execute with connection as first argument.
+                      Signature: operation(conn: sqlite3.Connection, *args, **kwargs) -> T
+                      Note: Although protocol accepts sync or async, SQLiteBackend only uses sync.
             *args: Additional arguments for the operation
             **kwargs: Additional keyword arguments for the operation
 
@@ -977,6 +983,10 @@ class SQLiteBackend:
 
         Raises:
             RuntimeError: If connection manager is shutting down
+
+        Note:
+            SQLiteBackend expects SYNC callables (not async). The operation is executed
+            synchronously in a thread executor to avoid blocking the event loop.
         """
         assert self._write_queue is not None, 'Backend not initialized, call initialize() first'
 
@@ -998,7 +1008,7 @@ class SQLiteBackend:
 
     async def execute_read(
         self,
-        operation: Callable[..., T],
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
         **kwargs: Any,
     ) -> T:
@@ -1006,18 +1016,26 @@ class SQLiteBackend:
         Execute a read operation with a reader connection.
 
         Args:
-            operation: Function to execute with connection as first argument
+            operation: Sync callable to execute with connection as first argument.
+                      Signature: operation(conn: sqlite3.Connection, *args, **kwargs) -> T
+                      Note: Although protocol accepts sync or async, SQLiteBackend only uses sync.
             *args: Additional arguments for the operation
             **kwargs: Additional keyword arguments for the operation
 
         Returns:
             Result of the operation
+
+        Note:
+            SQLiteBackend expects SYNC callables (not async). The operation is executed
+            synchronously in a thread executor to avoid blocking the event loop.
         """
         async with self.get_connection(readonly=True) as conn:
             loop = asyncio.get_event_loop()
 
             def _execute() -> T:
-                result = operation(conn, *args, **kwargs)
+                # Cast to sync callable since SQLiteBackend only uses sync operations
+                sync_operation = cast(Callable[..., T], operation)
+                result = sync_operation(conn, *args, **kwargs)
                 self.metrics.total_queries += 1
                 return result
 

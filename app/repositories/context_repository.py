@@ -5,15 +5,22 @@ This module handles all database operations related to context entries,
 including CRUD operations and deduplication logic.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import sqlite3
+from typing import TYPE_CHECKING
 from typing import Any
+from typing import cast
 
 from pydantic import ValidationError
 
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -57,51 +64,101 @@ class ContextRepository(BaseRepository):
             Tuple of (context_id, was_updated) where was_updated=True means
             an existing entry was updated, False means new entry was inserted.
         """
-        def _store_with_deduplication(conn: sqlite3.Connection) -> tuple[int, bool]:
-            cursor = conn.cursor()
+        if self.backend.backend_type == 'sqlite':
 
-            # Check if the LATEST entry (by id) for this thread_id and source has the same text_content
-            # This ensures we only deduplicate consecutive duplicates, not all duplicates
-            cursor.execute(
-                '''
-                SELECT id, text_content FROM context_entries
-                WHERE thread_id = ? AND source = ?
-                ORDER BY id DESC
-                LIMIT 1
-                ''',
-                (thread_id, source),
+            def _store_sqlite(conn: sqlite3.Connection) -> tuple[int, bool]:
+                cursor = conn.cursor()
+
+                # Check if the LATEST entry (by id) for this thread_id and source has the same text_content
+                cursor.execute(
+                    f'''
+                    SELECT id, text_content FROM context_entries
+                    WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                    (thread_id, source),
+                )
+
+                latest_row = cursor.fetchone()
+
+                if latest_row and latest_row['text_content'] == text_content:
+                    # The latest entry has identical text - update its timestamp
+                    existing_id = latest_row['id']
+                    cursor.execute(
+                        f'''
+                        UPDATE context_entries
+                        SET updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {self._placeholder(1)}
+                        ''',
+                        (existing_id,),
+                    )
+                    logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
+                    return existing_id, True
+
+                # No duplicate - insert new entry
+                cursor.execute(
+                    f'''
+                    INSERT INTO context_entries
+                    (thread_id, source, content_type, text_content, metadata)
+                    VALUES ({self._placeholders(5)})
+                    ''',
+                    (thread_id, source, content_type, text_content, metadata),
+                )
+                new_id: int = cursor.lastrowid if cursor.lastrowid is not None else 0
+                logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
+                return new_id, False
+
+            return await self.backend.execute_write(_store_sqlite)
+
+        # PostgreSQL/Supabase
+        # Note: TYPE_CHECKING ensures asyncpg.Connection type is only used during type checking
+        async def _store_postgresql(conn: asyncpg.Connection) -> tuple[int, bool]:
+            # Check latest entry
+            latest_row = await conn.fetchrow(
+                f'''
+                    SELECT id, text_content FROM context_entries
+                    WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                thread_id,
+                source,
             )
-
-            latest_row = cursor.fetchone()
 
             if latest_row and latest_row['text_content'] == text_content:
-                # The latest entry has identical text - update its timestamp
+                # Update timestamp
                 existing_id = latest_row['id']
-                cursor.execute(
-                    '''
-                    UPDATE context_entries
-                    SET updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''',
-                    (existing_id,),
+                await conn.execute(
+                    f'''
+                        UPDATE context_entries
+                        SET updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {self._placeholder(1)}
+                        ''',
+                    existing_id,
                 )
                 logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                return existing_id, True  # (context_id, was_updated)
-            # No duplicate - insert new entry as before
-            cursor.execute(
-                '''
-                INSERT INTO context_entries
-                (thread_id, source, content_type, text_content, metadata)
-                VALUES (?, ?, ?, ?, ?)
-                ''',
-                (thread_id, source, content_type, text_content, metadata),
-            )
-            id_result: int | None = cursor.lastrowid
-            new_id = id_result if id_result is not None else 0
-            logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
-            return new_id, False  # (context_id, was_updated)
+                return existing_id, True
 
-        return await self.backend.execute_write(_store_with_deduplication)
+            # Insert new entry with RETURNING clause
+            new_id_result = await conn.fetchval(
+                f'''
+                    INSERT INTO context_entries
+                    (thread_id, source, content_type, text_content, metadata)
+                    VALUES ({self._placeholders(5)})
+                    RETURNING id
+                    ''',
+                thread_id,
+                source,
+                content_type,
+                text_content,
+                metadata,
+            )
+            new_id = cast(int, new_id_result)
+            logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
+            return new_id, False
+
+        return await self.backend.execute_write(_store_postgresql)
 
     async def search_contexts(
         self,
@@ -114,7 +171,7 @@ class ContextRepository(BaseRepository):
         limit: int = 50,
         offset: int = 0,
         explain_query: bool = False,
-    ) -> tuple[list[sqlite3.Row], dict[str, Any]]:
+    ) -> tuple[list[Any], dict[str, Any]]:
         """Search for context entries with filtering including metadata.
 
         Args:
@@ -130,15 +187,146 @@ class ContextRepository(BaseRepository):
 
         Returns:
             Tuple of (matching rows, query statistics)
+            Note: Rows can be sqlite3.Row or asyncpg.Record depending on backend
         """
         import time as time_module
 
         from app.metadata_types import MetadataFilter
         from app.query_builder import MetadataQueryBuilder
 
-        def _search(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], dict[str, Any]]:
+        if self.backend.backend_type == 'sqlite':
+
+            def _search_sqlite(conn: sqlite3.Connection) -> tuple[list[Any], dict[str, Any]]:
+                start_time = time_module.time()
+                cursor = conn.cursor()
+
+                # Build query with indexed fields first for optimization
+                query = 'SELECT * FROM context_entries WHERE 1=1'
+                params: list[Any] = []
+
+                # Thread filter (indexed)
+                if thread_id:
+                    query += f' AND thread_id = {self._placeholder(len(params) + 1)}'
+                    params.append(thread_id)
+
+                # Source filter (indexed)
+                if source:
+                    query += f' AND source = {self._placeholder(len(params) + 1)}'
+                    params.append(source)
+
+                # Content type filter
+                if content_type:
+                    query += f' AND content_type = {self._placeholder(len(params) + 1)}'
+                    params.append(content_type)
+
+                # Add metadata filtering
+                metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+
+                # Simple metadata filters
+                if metadata:
+                    for key, value in metadata.items():
+                        metadata_builder.add_simple_filter(key, value)
+
+                # Advanced metadata filters
+                if metadata_filters:
+                    validation_errors: list[str] = []
+                    for filter_dict in metadata_filters:
+                        try:
+                            # Convert dict to MetadataFilter
+                            filter_spec = MetadataFilter(**filter_dict)
+                            metadata_builder.add_advanced_filter(filter_spec)
+                        except ValidationError as e:
+                            # Collect validation errors to return to user
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except ValueError as e:
+                            # Handle value errors (e.g., from field validators)
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except Exception as e:
+                            # Unexpected errors - still collect them
+                            error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                            logger.error(f'Unexpected error processing metadata filter: {e}')
+
+                    # If there were validation errors, return them immediately
+                    if validation_errors:
+                        error_response = {
+                            'error': 'Metadata filter validation failed',
+                            'validation_errors': validation_errors,
+                            'execution_time_ms': 0.0,
+                            'filters_applied': 0,
+                            'rows_returned': 0,
+                        }
+                        return [], error_response
+
+                # Add metadata conditions to query
+                metadata_clause, metadata_params = metadata_builder.build_where_clause()
+                if metadata_clause:
+                    query += f' AND {metadata_clause}'
+                    params.extend(metadata_params)
+
+                # Tag filter (uses subquery with indexed tag table)
+                if tags:
+                    normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                    if normalized_tags:
+                        tag_placeholders = ','.join([
+                            self._placeholder(len(params) + i + 1) for i in range(len(normalized_tags))
+                        ])
+                        query += f'''
+                            AND id IN (
+                                SELECT DISTINCT context_entry_id
+                                FROM tags
+                                WHERE tag IN ({tag_placeholders})
+                            )
+                        '''
+                        params.extend(normalized_tags)
+
+                # Order and pagination - use id as secondary sort for consistency
+                limit_placeholder = self._placeholder(len(params) + 1)
+                offset_placeholder = self._placeholder(len(params) + 2)
+                query += f' ORDER BY created_at DESC, id DESC LIMIT {limit_placeholder} OFFSET {offset_placeholder}'
+                params.extend((limit, offset))
+
+                cursor.execute(query, tuple(params))
+                rows = cursor.fetchall()
+
+                # Calculate execution time
+                execution_time_ms = (time_module.time() - start_time) * 1000
+
+                # Build statistics
+                stats: dict[str, Any] = {
+                    'execution_time_ms': round(execution_time_ms, 2),
+                    'filters_applied': metadata_builder.get_filter_count(),
+                    'rows_returned': len(rows),
+                }
+
+                # Get query plan if requested
+                if explain_query:
+                    cursor.execute(f'EXPLAIN QUERY PLAN {query}', tuple(params))
+                    plan_rows = cursor.fetchall()
+                    # Convert sqlite3.Row objects to readable format
+                    plan_data: list[str] = []
+                    for row in plan_rows:
+                        # Convert sqlite3.Row to dict to avoid <Row object> repr
+                        row_dict = dict(row)
+                        # SQLite EXPLAIN QUERY PLAN columns: id, parent, notused, detail
+                        id_val = row_dict.get('id', '?')
+                        parent_val = row_dict.get('parent', '?')
+                        notused_val = row_dict.get('notused', '?')
+                        detail_val = row_dict.get('detail', '?')
+                        formatted = f'id:{id_val} parent:{parent_val} notused:{notused_val} detail:{detail_val}'
+                        plan_data.append(formatted)
+                    stats['query_plan'] = '\n'.join(plan_data)
+
+                # Return list of rows and statistics
+                return list(rows), stats
+
+            return await self.backend.execute_read(_search_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _search_postgresql(conn: asyncpg.Connection) -> tuple[list[Any], dict[str, Any]]:
             start_time = time_module.time()
-            cursor = conn.cursor()
 
             # Build query with indexed fields first for optimization
             query = 'SELECT * FROM context_entries WHERE 1=1'
@@ -146,21 +334,22 @@ class ContextRepository(BaseRepository):
 
             # Thread filter (indexed)
             if thread_id:
-                query += ' AND thread_id = ?'
+                query += f' AND thread_id = {self._placeholder(len(params) + 1)}'
                 params.append(thread_id)
 
             # Source filter (indexed)
             if source:
-                query += ' AND source = ?'
+                query += f' AND source = {self._placeholder(len(params) + 1)}'
                 params.append(source)
 
             # Content type filter
             if content_type:
-                query += ' AND content_type = ?'
+                query += f' AND content_type = {self._placeholder(len(params) + 1)}'
                 params.append(content_type)
 
             # Add metadata filtering
-            metadata_builder = MetadataQueryBuilder()
+            # Pass param_offset so metadata builder knows current parameter position
+            metadata_builder = MetadataQueryBuilder(backend_type='postgresql', param_offset=len(params))
 
             # Simple metadata filters
             if metadata:
@@ -210,22 +399,23 @@ class ContextRepository(BaseRepository):
             if tags:
                 normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
                 if normalized_tags:
-                    placeholders = ','.join(['?' for _ in normalized_tags])
+                    tag_placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(normalized_tags))])
                     query += f'''
                         AND id IN (
                             SELECT DISTINCT context_entry_id
                             FROM tags
-                            WHERE tag IN ({placeholders})
+                            WHERE tag IN ({tag_placeholders})
                         )
                     '''
                     params.extend(normalized_tags)
 
             # Order and pagination - use id as secondary sort for consistency
-            query += ' ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+            limit_placeholder = self._placeholder(len(params) + 1)
+            offset_placeholder = self._placeholder(len(params) + 2)
+            query += f' ORDER BY created_at DESC, id DESC LIMIT {limit_placeholder} OFFSET {offset_placeholder}'
             params.extend((limit, offset))
 
-            cursor.execute(query, tuple(params))
-            rows = cursor.fetchall()
+            rows = await conn.fetch(query, *params)
 
             # Calculate execution time
             execution_time_ms = (time_module.time() - start_time) * 1000
@@ -237,53 +427,58 @@ class ContextRepository(BaseRepository):
                 'rows_returned': len(rows),
             }
 
-            # Get query plan if requested
+            # Get query plan if requested (PostgreSQL EXPLAIN format)
             if explain_query:
-                cursor.execute(f'EXPLAIN QUERY PLAN {query}', tuple(params))
-                plan_rows = cursor.fetchall()
-                # Convert sqlite3.Row objects to readable format
-                plan_data: list[str] = []
-                for row in plan_rows:
-                    # Convert sqlite3.Row to dict to avoid <Row object> repr
-                    row_dict = dict(row)
-                    # SQLite EXPLAIN QUERY PLAN columns: id, parent, notused, detail
-                    id_val = row_dict.get('id', '?')
-                    parent_val = row_dict.get('parent', '?')
-                    notused_val = row_dict.get('notused', '?')
-                    detail_val = row_dict.get('detail', '?')
-                    formatted = f'id:{id_val} parent:{parent_val} notused:{notused_val} detail:{detail_val}'
-                    plan_data.append(formatted)
+                explain_result = await conn.fetch(f'EXPLAIN {query}', *params)
+                plan_data: list[str] = [record['QUERY PLAN'] for record in explain_result]
                 stats['query_plan'] = '\n'.join(plan_data)
 
-            # Always return tuple with rows and statistics
-            rows_list: list[sqlite3.Row] = list(rows)
-            result: tuple[list[sqlite3.Row], dict[str, Any]] = (rows_list, stats)
-            return result
+            # Return list of rows and statistics
+            return list(rows), stats
 
-        return await self.backend.execute_read(_search)
+        return await self.backend.execute_read(_search_postgresql)
 
-    async def get_by_ids(self, context_ids: list[int]) -> list[sqlite3.Row]:
+    async def get_by_ids(self, context_ids: list[int]) -> list[Any]:
         """Get context entries by their IDs.
 
         Args:
             context_ids: List of context entry IDs
 
         Returns:
-            List of context entry rows
+            List of context entry rows (sqlite3.Row or asyncpg.Record depending on backend)
         """
-        def _fetch(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-            cursor = conn.cursor()
-            placeholders = ','.join(['?' for _ in context_ids])
+        # Defensive check: return empty list if no IDs provided
+        # Prevents SQL syntax errors when constructing IN clauses
+        if not context_ids:
+            return []
+
+        if self.backend.backend_type == 'sqlite':
+
+            def _fetch_sqlite(conn: sqlite3.Connection) -> list[Any]:
+                cursor = conn.cursor()
+                placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
+                query = f'''
+                    SELECT * FROM context_entries
+                    WHERE id IN ({placeholders})
+                    ORDER BY created_at DESC
+                '''
+                cursor.execute(query, tuple(context_ids))
+                return list(cursor.fetchall())
+
+            return await self.backend.execute_read(_fetch_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _fetch_postgresql(conn: asyncpg.Connection) -> list[Any]:
+            placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
             query = f'''
                 SELECT * FROM context_entries
                 WHERE id IN ({placeholders})
                 ORDER BY created_at DESC
             '''
-            cursor.execute(query, tuple(context_ids))
-            rows = cursor.fetchall()
+            rows = await conn.fetch(query, *context_ids)
             return list(rows)
 
-        return await self.backend.execute_read(_fetch)
+        return await self.backend.execute_read(_fetch_postgresql)
 
     async def delete_by_ids(self, context_ids: list[int]) -> int:
         """Delete context entries by their IDs.
@@ -294,17 +489,35 @@ class ContextRepository(BaseRepository):
         Returns:
             Number of deleted entries
         """
-        def _delete_by_ids(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            placeholders = ','.join(['?' for _ in context_ids])
-            cursor.execute(
-                f'DELETE FROM context_entries WHERE id IN ({placeholders})',
-                tuple(context_ids),
-            )
-            count: int = cursor.rowcount
-            return count
+        # Defensive check: return 0 if no IDs provided
+        # Prevents SQL syntax errors when constructing IN clauses
+        if not context_ids:
+            return 0
 
-        return await self.backend.execute_write(_delete_by_ids)
+        if self.backend.backend_type == 'sqlite':
+
+            def _delete_by_ids_sqlite(conn: sqlite3.Connection) -> int:
+                cursor = conn.cursor()
+                placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
+                cursor.execute(
+                    f'DELETE FROM context_entries WHERE id IN ({placeholders})',
+                    tuple(context_ids),
+                )
+                return cursor.rowcount
+
+            return await self.backend.execute_write(_delete_by_ids_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _delete_by_ids_postgresql(conn: asyncpg.Connection) -> int:
+            placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
+            result = await conn.execute(
+                f'DELETE FROM context_entries WHERE id IN ({placeholders})',
+                *context_ids,
+            )
+            # asyncpg returns "DELETE N" where N is the count
+            return int(result.split()[-1]) if result else 0
+
+        return await self.backend.execute_write(_delete_by_ids_postgresql)
 
     async def delete_by_thread(self, thread_id: str) -> int:
         """Delete all context entries in a thread.
@@ -315,16 +528,28 @@ class ContextRepository(BaseRepository):
         Returns:
             Number of deleted entries
         """
-        def _delete_by_thread(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute(
-                'DELETE FROM context_entries WHERE thread_id = ?',
-                (thread_id,),
-            )
-            count: int = cursor.rowcount
-            return count
+        if self.backend.backend_type == 'sqlite':
 
-        return await self.backend.execute_write(_delete_by_thread)
+            def _delete_by_thread_sqlite(conn: sqlite3.Connection) -> int:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'DELETE FROM context_entries WHERE thread_id = {self._placeholder(1)}',
+                    (thread_id,),
+                )
+                return cursor.rowcount
+
+            return await self.backend.execute_write(_delete_by_thread_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _delete_by_thread_postgresql(conn: asyncpg.Connection) -> int:
+            result = await conn.execute(
+                f'DELETE FROM context_entries WHERE thread_id = {self._placeholder(1)}',
+                thread_id,
+            )
+            # asyncpg returns "DELETE N" where N is the count
+            return int(result.split()[-1]) if result else 0
+
+        return await self.backend.execute_write(_delete_by_thread_postgresql)
 
     async def update_context_entry(
         self,
@@ -342,13 +567,65 @@ class ContextRepository(BaseRepository):
         Returns:
             Tuple of (success, list_of_updated_fields)
         """
-        def _update_entry(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
-            cursor = conn.cursor()
+        if self.backend.backend_type == 'sqlite':
+
+            def _update_entry_sqlite(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
+                cursor = conn.cursor()
+                updated_fields: list[str] = []
+
+                # First, check if the entry exists
+                cursor.execute(
+                    f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
+                    (context_id,),
+                )
+                if not cursor.fetchone():
+                    return False, []
+
+                # Build update query dynamically based on provided fields
+                update_parts: list[str] = []
+                params: list[Any] = []
+
+                if text_content is not None:
+                    update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
+                    params.append(text_content)
+                    updated_fields.append('text_content')
+
+                if metadata is not None:
+                    update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
+                    params.append(metadata)
+                    updated_fields.append('metadata')
+
+                # If no fields to update, return early
+                if not update_parts:
+                    return False, []
+
+                # Always update the updated_at timestamp
+                update_parts.append('updated_at = CURRENT_TIMESTAMP')
+
+                # Execute update
+                query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {self._placeholder(len(params) + 1)}"
+                params.append(context_id)
+                cursor.execute(query, tuple(params))
+
+                # Check if any rows were affected
+                if cursor.rowcount > 0:
+                    logger.debug(f'Updated context entry {context_id}, fields: {updated_fields}')
+                    return True, updated_fields
+
+                return False, []
+
+            return await self.backend.execute_write(_update_entry_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _update_entry_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
             updated_fields: list[str] = []
 
             # First, check if the entry exists
-            cursor.execute('SELECT id FROM context_entries WHERE id = ?', (context_id,))
-            if not cursor.fetchone():
+            row = await conn.fetchrow(
+                f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
+                context_id,
+            )
+            if not row:
                 return False, []
 
             # Build update query dynamically based on provided fields
@@ -356,12 +633,12 @@ class ContextRepository(BaseRepository):
             params: list[Any] = []
 
             if text_content is not None:
-                update_parts.append('text_content = ?')
+                update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
                 params.append(text_content)
                 updated_fields.append('text_content')
 
             if metadata is not None:
-                update_parts.append('metadata = ?')
+                update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
                 params.append(metadata)
                 updated_fields.append('metadata')
 
@@ -373,18 +650,19 @@ class ContextRepository(BaseRepository):
             update_parts.append('updated_at = CURRENT_TIMESTAMP')
 
             # Execute update
-            query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = ?"
+            query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {self._placeholder(len(params) + 1)}"
             params.append(context_id)
-            cursor.execute(query, tuple(params))
+            result = await conn.execute(query, *params)
 
-            # Check if any rows were affected
-            if cursor.rowcount > 0:
+            # Check if any rows were affected (asyncpg returns "UPDATE N")
+            rows_affected = int(result.split()[-1]) if result else 0
+            if rows_affected > 0:
                 logger.debug(f'Updated context entry {context_id}, fields: {updated_fields}')
                 return True, updated_fields
 
             return False, []
 
-        return await self.backend.execute_write(_update_entry)
+        return await self.backend.execute_write(_update_entry_postgresql)
 
     async def check_entry_exists(self, context_id: int) -> bool:
         """Check if a context entry exists.
@@ -395,12 +673,27 @@ class ContextRepository(BaseRepository):
         Returns:
             True if the entry exists, False otherwise
         """
-        def _check_exists(conn: sqlite3.Connection) -> bool:
-            cursor = conn.cursor()
-            cursor.execute('SELECT 1 FROM context_entries WHERE id = ? LIMIT 1', (context_id,))
-            return cursor.fetchone() is not None
+        if self.backend.backend_type == 'sqlite':
 
-        return await self.backend.execute_read(_check_exists)
+            def _check_exists_sqlite(conn: sqlite3.Connection) -> bool:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                    (context_id,),
+                )
+                return cursor.fetchone() is not None
+
+            return await self.backend.execute_read(_check_exists_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _check_exists_postgresql(conn: asyncpg.Connection) -> bool:
+            row = await conn.fetchrow(
+                f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                context_id,
+            )
+            return row is not None
+
+        return await self.backend.execute_read(_check_exists_postgresql)
 
     async def get_content_type(self, context_id: int) -> str | None:
         """Get the content type of a context entry.
@@ -411,13 +704,28 @@ class ContextRepository(BaseRepository):
         Returns:
             Content type ('text' or 'multimodal') or None if entry doesn't exist
         """
-        def _get_content_type(conn: sqlite3.Connection) -> str | None:
-            cursor = conn.cursor()
-            cursor.execute('SELECT content_type FROM context_entries WHERE id = ?', (context_id,))
-            row = cursor.fetchone()
+        if self.backend.backend_type == 'sqlite':
+
+            def _get_content_type_sqlite(conn: sqlite3.Connection) -> str | None:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}',
+                    (context_id,),
+                )
+                row = cursor.fetchone()
+                return row['content_type'] if row else None
+
+            return await self.backend.execute_read(_get_content_type_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _get_content_type_postgresql(conn: asyncpg.Connection) -> str | None:
+            row = await conn.fetchrow(
+                f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}',
+                context_id,
+            )
             return row['content_type'] if row else None
 
-        return await self.backend.execute_read(_get_content_type)
+        return await self.backend.execute_read(_get_content_type_postgresql)
 
     async def update_content_type(self, context_id: int, content_type: str) -> bool:
         """Update the content type of a context entry.
@@ -429,15 +737,34 @@ class ContextRepository(BaseRepository):
         Returns:
             True if updated successfully, False otherwise
         """
-        def _update_content_type(conn: sqlite3.Connection) -> bool:
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE context_entries SET content_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                (content_type, context_id),
-            )
-            return cursor.rowcount > 0
+        if self.backend.backend_type == 'sqlite':
 
-        return await self.backend.execute_write(_update_content_type)
+            def _update_content_type_sqlite(conn: sqlite3.Connection) -> bool:
+                cursor = conn.cursor()
+                content_type_placeholder = self._placeholder(1)
+                id_placeholder = self._placeholder(2)
+                query = (
+                    f'UPDATE context_entries SET content_type = {content_type_placeholder}, '
+                    f'updated_at = CURRENT_TIMESTAMP WHERE id = {id_placeholder}'
+                )
+                cursor.execute(query, (content_type, context_id))
+                return cursor.rowcount > 0
+
+            return await self.backend.execute_write(_update_content_type_sqlite)
+
+        # PostgreSQL/Supabase
+        async def _update_content_type_postgresql(conn: asyncpg.Connection) -> bool:
+            content_type_placeholder = self._placeholder(1)
+            id_placeholder = self._placeholder(2)
+            query = (
+                f'UPDATE context_entries SET content_type = {content_type_placeholder}, '
+                f'updated_at = CURRENT_TIMESTAMP WHERE id = {id_placeholder}'
+            )
+            result = await conn.execute(query, content_type, context_id)
+            # asyncpg returns "UPDATE N" where N is the count
+            return int(result.split()[-1]) > 0 if result else False
+
+        return await self.backend.execute_write(_update_content_type_postgresql)
 
     @staticmethod
     def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

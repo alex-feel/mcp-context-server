@@ -69,8 +69,8 @@ class MCPServerIntegrationTest:
                 os.environ['MCP_TEST_MODE'] = '1'  # THIS IS CRITICAL!
 
                 print('[INFO] Environment set BEFORE Client creation:')
-                print(f'[INFO] DB_PATH={os.environ.get("DB_PATH")}')
-                print(f'[INFO] MCP_TEST_MODE={os.environ.get("MCP_TEST_MODE")}')
+                print(f"[INFO] DB_PATH={os.environ.get('DB_PATH')}")
+                print(f"[INFO] MCP_TEST_MODE={os.environ.get('MCP_TEST_MODE')}")
                 print(f'[INFO] Using temporary database: {self.temp_db_path}')
 
                 # Verify it's not the default database
@@ -402,58 +402,73 @@ class MCPServerIntegrationTest:
                     return False
 
             # Test 1: Simple metadata filtering
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata': {'status': 'active'},
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata': {'status': 'active'},
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 2:
-                print(f'Simple filter failed: expected 2, got {len(result_data.get("results", []))}')
+                print(f"Simple filter failed: expected 2, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Simple metadata filter failed'))
                 return False
 
             # Test 2: Advanced metadata filtering with gte operator
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 5}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 5}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 3:
-                print(f'Advanced gte filter failed: expected 3, got {len(result_data.get("results", []))}')
+                print(f"Advanced gte filter failed: expected 3, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Advanced gte filter failed'))
                 return False
 
             # Test 3: Combined metadata filters
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata': {'status': 'active'},
-                'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 7}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata': {'status': 'active'},
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 7}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 1:
-                print(f'Combined filter failed: expected 1, got {len(result_data.get("results", []))}')
+                print(f"Combined filter failed: expected 1, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Combined filter failed'))
                 return False
 
             # Test 4: Exists operator
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'completed', 'operator': 'exists', 'value': None}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata_filters': [{'key': 'completed', 'operator': 'exists', 'value': None}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 1:
-                print(f'Exists filter failed: expected 1, got {len(result_data.get("results", []))}')
+                print(f"Exists filter failed: expected 1, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'Exists operator filter failed'))
                 return False
 
             # Test 5: In operator
-            result = await self.client.call_tool('search_context', {
-                'thread_id': f'{self.test_thread_id}_metadata',
-                'metadata_filters': [{'key': 'agent_name', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
-            })
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_metadata',
+                    'metadata_filters': [{'key': 'agent_name', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
+                },
+            )
             result_data = self._extract_content(result)
             if len(result_data.get('results', [])) != 2:
-                print(f'In operator filter failed: expected 2, got {len(result_data.get("results", []))}')
+                print(f"In operator filter failed: expected 2, got {len(result_data.get('results', []))}")
                 self.test_results.append((test_name, False, 'In operator filter failed'))
                 return False
 
@@ -714,10 +729,7 @@ class MCPServerIntegrationTest:
                 # Check that threads have correct statistics
                 for thread_info in listed_threads:
                     if thread_info['thread_id'] in threads and thread_info.get('entry_count', 0) != 3:
-                        error_msg = (
-                            f"Thread {thread_info['thread_id']} has wrong count: "
-                            f"{thread_info.get('entry_count', 0)}"
-                        )
+                        error_msg = f"Thread {thread_info['thread_id']} has wrong count: {thread_info.get('entry_count', 0)}"
                         self.test_results.append((test_name, False, error_msg))
                         return False
 
@@ -1229,13 +1241,11 @@ async def test_real_server(tmp_path: Path) -> None:
     default_db = Path.home() / '.mcp' / 'context_storage.db'
     if temp_db.resolve() == default_db.resolve():
         raise RuntimeError(
-            f'Test attempting to use default database!\n'
-            f'Default: {default_db}\n'
-            f'Test DB: {temp_db}',
+            f'Test attempting to use default database!\nDefault: {default_db}\nTest DB: {temp_db}',
         )
 
     print(f'[TEST] Running with temp database: {temp_db}')
-    print(f'[TEST] MCP_TEST_MODE: {os.environ.get("MCP_TEST_MODE")}')
+    print(f"[TEST] MCP_TEST_MODE: {os.environ.get('MCP_TEST_MODE')}")
 
     test = MCPServerIntegrationTest(temp_db_path=temp_db)
     success = await test.run_all_tests()
@@ -1258,7 +1268,7 @@ if __name__ == '__main__':
             print('[INFO] Running directly with test mode enabled')
             print(f'[INFO] Using temporary directory: {tmpdir}')
             print(f'[INFO] DB_PATH set to: {temp_db_path}')
-            print(f'[INFO] MCP_TEST_MODE: {os.environ.get("MCP_TEST_MODE")}')
+            print(f"[INFO] MCP_TEST_MODE: {os.environ.get('MCP_TEST_MODE')}")
 
             test = MCPServerIntegrationTest(temp_db_path=temp_db_path)
             success = await test.run_all_tests()

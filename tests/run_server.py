@@ -16,6 +16,7 @@ sys.path.insert(0, str(project_root))
 if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # We're in a test context - use temporary database
     import tempfile
+
     temp_dir = tempfile.mkdtemp(prefix='mcp_server_wrapper_')
     test_db = Path(temp_dir) / 'test_wrapper.db'
 
@@ -28,9 +29,7 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     default_db = Path.home() / '.mcp' / 'context_storage.db'
     if test_db.resolve() == default_db.resolve():
         raise RuntimeError(
-            f'CRITICAL: Test server attempting to use default database!\n'
-            f'Default: {default_db}\n'
-            f'DB_PATH: {test_db}',
+            f'CRITICAL: Test server attempting to use default database!\nDefault: {default_db}\nDB_PATH: {test_db}',
         )
 else:
     # Normal mode - check environment
@@ -43,9 +42,7 @@ else:
             default_db = Path.home() / '.mcp' / 'context_storage.db'
             if Path(db_path).resolve() == default_db.resolve():
                 raise RuntimeError(
-                    f'CRITICAL: Test server attempting to use default database!\n'
-                    f'Default: {default_db}\n'
-                    f'DB_PATH: {db_path}',
+                    f'CRITICAL: Test server attempting to use default database!\nDefault: {default_db}\nDB_PATH: {db_path}',
                 )
         else:
             print('[TEST SERVER] WARNING: MCP_TEST_MODE=1 but DB_PATH not set!', file=sys.stderr)

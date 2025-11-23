@@ -11,8 +11,9 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 15 powerful operators
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
-- **Semantic Search**: Optional vector similarity search using EmbeddingGemma for meaning-based retrieval
-- **High Performance**: SQLite with WAL mode, strategic indexing, and async operations
+- **Semantic Search**: Optional vector similarity search for meaning-based retrieval
+- **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
+- **High Performance**: WAL mode (SQLite) / MVCC (PostgreSQL), strategic indexing, and async operations
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client
 - **Production Ready**: Comprehensive test coverage, type safety, and robust error handling
 
@@ -94,7 +95,7 @@ Example configuration with environment variables:
       "args": ["mcp-context-server"],
       "env": {
         "LOG_LEVEL": "${LOG_LEVEL:-INFO}",
-        "MCP_CONTEXT_DB": "${MCP_CONTEXT_DB:-~/.mcp/context_storage.db}",
+        "DB_PATH": "${DB_PATH:-~/.mcp/context_storage.db}",
         "MAX_IMAGE_SIZE_MB": "${MAX_IMAGE_SIZE_MB:-10}",
         "MAX_TOTAL_SIZE_MB": "${MAX_TOTAL_SIZE_MB:-100}"
       }
@@ -107,14 +108,25 @@ For more details on environment variable expansion, see: https://docs.claude.com
 
 ### Supported Environment Variables
 
+**Core Settings:**
+- **STORAGE_BACKEND**: Database backend - `sqlite` (default) or `postgresql`
 - **LOG_LEVEL**: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) - defaults to INFO
-- **MCP_CONTEXT_DB**: Database file location - defaults to ~/.mcp/context_storage.db
+- **DB_PATH**: Database file location (SQLite only) - defaults to ~/.mcp/context_storage.db
 - **MAX_IMAGE_SIZE_MB**: Maximum size per image in MB - defaults to 10
 - **MAX_TOTAL_SIZE_MB**: Maximum total request size in MB - defaults to 100
+
+**Semantic Search Settings:**
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
 - **OLLAMA_HOST**: Ollama API host URL for embedding generation - defaults to http://localhost:11434
 - **EMBEDDING_MODEL**: Embedding model name for semantic search - defaults to embeddinggemma:latest
 - **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 768. **Note**: Changing this after initial setup requires database migration (see [Semantic Search Guide](docs/semantic-search.md#changing-embedding-dimensions))
+
+**PostgreSQL Settings** (only when STORAGE_BACKEND=postgresql):
+- **POSTGRESQL_HOST**: PostgreSQL server host - defaults to localhost
+- **POSTGRESQL_PORT**: PostgreSQL server port - defaults to 5432
+- **POSTGRESQL_USER**: PostgreSQL username - defaults to postgres
+- **POSTGRESQL_PASSWORD**: PostgreSQL password - defaults to postgres
+- **POSTGRESQL_DATABASE**: PostgreSQL database name - defaults to mcp_context
 
 ### Advanced Configuration
 
@@ -130,6 +142,81 @@ For a complete list of all configuration options, see [app/settings.py](app/sett
 ### Semantic Search
 
 For detailed instructions on enabling optional semantic search with Ollama and EmbeddingGemma, see the [Semantic Search Guide](docs/semantic-search.md).
+
+## Database Backends
+
+The server supports multiple database backends, selectable via the `STORAGE_BACKEND` environment variable.
+
+### SQLite (Default)
+
+Zero-configuration local storage, perfect for single-user deployments.
+
+**Features:**
+- No installation required - works out of the box
+- Production-grade connection pooling and write queue
+- WAL mode for better concurrency
+- Suitable for single-user and moderate workloads
+
+**Configuration:** No configuration needed - just start the server!
+
+### PostgreSQL
+
+High-performance backend for multi-user and high-traffic deployments.
+
+**Features:**
+- 10x+ write throughput vs SQLite via MVCC
+- Native concurrent write support
+- JSONB indexing for fast metadata queries
+- Production-grade connection pooling with asyncpg
+- pgvector extension for semantic search
+
+**Quick Start with Docker:**
+
+Running PostgreSQL with pgvector is incredibly simple - just 2 commands:
+
+```bash
+# 1. Pull and run PostgreSQL with pgvector (all-in-one)
+docker run --name pgvector18 \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=mcp_context \
+  -p 5432:5432 \
+  -d pgvector/pgvector:pg18-trixie
+
+# 2. Configure the server (minimal setup - just 2 variables)
+export STORAGE_BACKEND=postgresql
+export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
+```
+
+**That's it!** The server will automatically:
+- Connect to PostgreSQL on startup
+- Initialize the schema (creates tables and indexes)
+- Enable pgvector extension (comes pre-installed in the Docker image)
+- Apply semantic search migration if enabled
+
+**Configuration in .mcp.json:**
+
+```json
+{
+  "mcpServers": {
+    "context-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-context-server"],
+      "env": {
+        "STORAGE_BACKEND": "postgresql",
+        "POSTGRESQL_HOST": "localhost",
+        "POSTGRESQL_USER": "postgres",
+        "POSTGRESQL_PASSWORD": "postgres",
+        "POSTGRESQL_DATABASE": "mcp_context",
+        "ENABLE_SEMANTIC_SEARCH": "true"
+      }
+    }
+  }
+}
+```
+
+**Note:** PostgreSQL settings are only needed when using PostgreSQL. The server uses SQLite by default if `STORAGE_BACKEND` is not set.
 
 ## API Reference
 
@@ -285,7 +372,9 @@ Update specific fields of an existing context entry.
 
 Perform semantic similarity search using vector embeddings.
 
-Note: This tool is only available when semantic search is enabled via `ENABLE_SEMANTIC_SEARCH=true` and all dependencies are installed (ollama, numpy, sqlite-vec packages, and EmbeddingGemma model).
+Note: This tool is only available when semantic search is enabled via `ENABLE_SEMANTIC_SEARCH=true` and all dependencies are installed. The implementation varies by backend:
+- **SQLite**: Uses sqlite-vec extension with embedding model via Ollama
+- **PostgreSQL**: Uses pgvector extension (pre-installed in pgvector Docker image) with embedding model via Ollama
 
 **Parameters:**
 - `query` (str, required): Natural language search query

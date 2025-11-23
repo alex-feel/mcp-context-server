@@ -89,6 +89,32 @@ class StorageSettings(BaseSettings):
     queue_timeout_s: float = Field(default=1.0, alias='QUEUE_TIMEOUT_S')
     queue_timeout_test_s: float = Field(default=0.1, alias='QUEUE_TIMEOUT_TEST_S')
 
+    # PostgreSQL connection settings
+    postgresql_connection_string: str | None = Field(default=None, alias='POSTGRESQL_CONNECTION_STRING')
+    postgresql_host: str = Field(default='localhost', alias='POSTGRESQL_HOST')
+    postgresql_port: int = Field(default=5432, alias='POSTGRESQL_PORT')
+    postgresql_user: str = Field(default='postgres', alias='POSTGRESQL_USER')
+    postgresql_password: str = Field(default='postgres', alias='POSTGRESQL_PASSWORD')
+    postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
+
+    # PostgreSQL connection pool settings
+    postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN')
+    postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX')
+    postgresql_pool_timeout_s: float = Field(default=10.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
+    postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
+
+    # PostgreSQL SSL settings
+    postgresql_ssl_mode: Literal['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'] = Field(
+        default='prefer',
+        alias='POSTGRESQL_SSL_MODE',
+    )
+
+    # Supabase-specific settings
+    is_supabase: bool = Field(default=False, alias='IS_SUPABASE')
+    supabase_url: str | None = Field(default=None, alias='SUPABASE_URL')
+    supabase_service_role_key: str | None = Field(default=None, alias='SUPABASE_SERVICE_ROLE_KEY')
+    supabase_transaction_mode: bool = Field(default=True, alias='SUPABASE_TRANSACTION_MODE')
+
     @property
     def resolved_busy_timeout_ms(self) -> int:
         """Resolve busy timeout to a valid integer value for SQLite."""
@@ -119,8 +145,7 @@ class AppSettings(CommonSettings):
         """Validate embedding dimension is reasonable and warn about non-standard values."""
         if v > 4096:
             raise ValueError(
-                'EMBEDDING_DIM exceeds reasonable limit (4096). '
-                'Most Ollama embedding models use dimensions between 128-1024.',
+                'EMBEDDING_DIM exceeds reasonable limit (4096). Most Ollama embedding models use dimensions between 128-1024.',
             )
         if v % 64 != 0:
             logger.warning(

@@ -138,7 +138,7 @@ Key points:
             thread_id=thread_id,
             source='user',
             text='Build a REST API with authentication',
-            metadata={'project': 'api_v2', 'priority': 'high'},
+            metadata={'project': 'api_v2', 'priority': 10},
             tags=['task', 'api', 'authentication'],
         )
 
@@ -541,7 +541,9 @@ class TestErrorRecovery:
     async def test_recovery_after_error(self) -> None:
         """Test that system recovers after errors."""
         # Cause an error - using cast() to bypass Pydantic, database CHECK constraint catches invalid source
-        with pytest.raises(ToolError, match=r'CHECK constraint failed.*source'):
+        # SQLite: "CHECK constraint failed: source"
+        # PostgreSQL: "new row for relation \"context_entries\" violates check constraint"
+        with pytest.raises(ToolError, match=r'(CHECK constraint failed.*source|violates check constraint.*source)'):
             await store_context(
                 thread_id='test',
                 source='invalid_source',  # Invalid

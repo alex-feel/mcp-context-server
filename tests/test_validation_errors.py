@@ -129,6 +129,7 @@ class TestStoreContextValidation:
     async def test_oversized_image(self, mock_repos):
         """Test that oversized images raise ToolError."""
         import base64
+
         with patch('app.server._ensure_repositories', return_value=mock_repos):
             # Create actual oversized binary data and encode it
             # 11MB of binary data (over the 10MB limit)
@@ -227,6 +228,7 @@ class TestUpdateContextValidation:
     async def test_oversized_images(self, mock_repos):
         """Test that oversized images in update raise ToolError."""
         import base64
+
         with patch('app.server._ensure_repositories', return_value=mock_repos):
             # Create actual oversized binary data and encode it
             # 11MB of binary data (over the 10MB limit)
@@ -338,17 +340,19 @@ class TestGetContextByIdsValidation:
     async def test_valid_integer_strings(self, mock_repos):
         """Test that valid integer IDs work correctly."""
         with patch('app.server._ensure_repositories', return_value=mock_repos):
-            mock_repos.context.get_by_ids = AsyncMock(return_value=[
-                {
-                    'id': 1,
-                    'thread_id': 'test',
-                    'source': 'user',
-                    'content_type': 'text',
-                    'text_content': 'Test',
-                    'created_at': '2025-01-01',
-                    'updated_at': '2025-01-01',
-                },
-            ])
+            mock_repos.context.get_by_ids = AsyncMock(
+                return_value=[
+                    {
+                        'id': 1,
+                        'thread_id': 'test',
+                        'source': 'user',
+                        'content_type': 'text',
+                        'text_content': 'Test',
+                        'created_at': '2025-01-01',
+                        'updated_at': '2025-01-01',
+                    },
+                ],
+            )
 
             result = await get_context_by_ids(context_ids=[1])
             assert len(result) == 1

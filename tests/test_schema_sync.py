@@ -1,10 +1,10 @@
 """
-Test suite for schema synchronization between file and embedded schemas.
+Test suite for schema synchronization between legacy and new schema files.
 
-This test ensures that the embedded fallback schema in app/server.py remains
-synchronized with the primary schema file app/schema.sql. The test uses database
-introspection to compare the resulting database structures, which is resilient
-to formatting differences while catching semantic changes.
+This test ensures that the legacy app/schema.sql remains synchronized with
+the new app/schemas/sqlite_schema.sql. The test uses database introspection
+to compare the resulting database structures, which is resilient to formatting
+differences while catching semantic changes.
 """
 
 import re
@@ -81,50 +81,16 @@ def normalize_sql(sql: str | None) -> str:
     return sql.strip()
 
 
-def extract_embedded_schema_from_server() -> str:
-    """
-    Extract the embedded fallback schema from app/server.py.
-
-    Parses the server.py file to extract the schema SQL defined in the
-    init_database() function's fallback branch (lines 370-445).
-
-    Returns:
-        Embedded schema SQL as a string
-
-    Raises:
-        RuntimeError: If schema cannot be extracted from server.py
-    """
-    server_path = Path(__file__).parent.parent / 'app' / 'server.py'
-
-    if not server_path.exists():
-        raise RuntimeError(f'Server file not found: {server_path}')
-
-    server_content = server_path.read_text(encoding='utf-8')
-
-    # Find the embedded schema using regex
-    # Looking for: schema_sql = '''...'''
-    pattern = r"schema_sql\s*=\s*'''(.*?)'''"
-    match = re.search(pattern, server_content, re.DOTALL)
-
-    if not match:
-        raise RuntimeError('Could not find embedded schema in server.py')
-
-    embedded_schema = match.group(1)
-
-    # Remove any leading/trailing whitespace but preserve the schema structure
-    return embedded_schema.strip()
-
-
 class TestSchemaSynchronization:
-    """Test schema synchronization between file and embedded schemas."""
+    """Test schema synchronization between legacy and new schema files."""
 
-    def test_schema_file_matches_embedded_schema(self) -> None:
+    def test_schema_file_matches_sqlite_schema(self) -> None:
         """
-        Test that the embedded fallback schema matches the file schema.
+        Test that the legacy app/schema.sql matches app/schemas/sqlite_schema.sql.
 
         This test creates two in-memory SQLite databases:
-        1. One initialized with the schema from app/schema.sql
-        2. One initialized with the embedded schema from app/server.py
+        1. One initialized with the schema from app/schema.sql (legacy)
+        2. One initialized with the schema from app/schemas/sqlite_schema.sql (new)
 
         It then compares the resulting database structures using sqlite_master
         introspection. This approach ensures semantic equivalence while being
@@ -141,60 +107,62 @@ class TestSchemaSynchronization:
         - Comment differences
         - Statement ordering (if semantically equivalent)
         """
-        # Read schema from file
-        schema_file_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
-        if not schema_file_path.exists():
-            pytest.fail(f'Schema file not found: {schema_file_path}')
+        # Read legacy schema
+        legacy_schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
+        if not legacy_schema_path.exists():
+            pytest.fail(f'Legacy schema file not found: {legacy_schema_path}')
 
-        file_schema_sql = schema_file_path.read_text(encoding='utf-8')
+        legacy_schema_sql = legacy_schema_path.read_text(encoding='utf-8')
 
-        # Extract embedded schema from server.py
-        embedded_schema_sql = extract_embedded_schema_from_server()
+        # Read new SQLite schema
+        new_schema_path = Path(__file__).parent.parent / 'app' / 'schemas' / 'sqlite_schema.sql'
+        if not new_schema_path.exists():
+            pytest.fail(f'New schema file not found: {new_schema_path}')
 
-        # Create in-memory database with file schema
-        conn_file = sqlite3.connect(':memory:')
+        new_schema_sql = new_schema_path.read_text(encoding='utf-8')
+
+        # Create in-memory database with legacy schema
+        conn_legacy = sqlite3.connect(':memory:')
         try:
-            conn_file.executescript(file_schema_sql)
-            file_structure = extract_schema_structure(conn_file)
+            conn_legacy.executescript(legacy_schema_sql)
+            legacy_structure = extract_schema_structure(conn_legacy)
         finally:
-            conn_file.close()
+            conn_legacy.close()
 
-        # Create in-memory database with embedded schema
-        conn_embedded = sqlite3.connect(':memory:')
+        # Create in-memory database with new schema
+        conn_new = sqlite3.connect(':memory:')
         try:
-            conn_embedded.executescript(embedded_schema_sql)
-            embedded_structure = extract_schema_structure(conn_embedded)
+            conn_new.executescript(new_schema_sql)
+            new_structure = extract_schema_structure(conn_new)
         finally:
-            conn_embedded.close()
+            conn_new.close()
 
         # Compare table names
-        file_table_names = {name for name, _ in file_structure['tables']}
-        embedded_table_names = {name for name, _ in embedded_structure['tables']}
+        legacy_table_names = {name for name, _ in legacy_structure['tables']}
+        new_table_names = {name for name, _ in new_structure['tables']}
 
-        if file_table_names != embedded_table_names:
-            missing_in_embedded = file_table_names - embedded_table_names
-            extra_in_embedded = embedded_table_names - file_table_names
+        if legacy_table_names != new_table_names:
+            missing_in_new = legacy_table_names - new_table_names
+            extra_in_new = new_table_names - legacy_table_names
             error_msg = 'Schema synchronization failed - Table names mismatch!\n\n'
-            if missing_in_embedded:
-                error_msg += f'Tables in file schema but missing in embedded: {sorted(missing_in_embedded)}\n'
-            if extra_in_embedded:
-                error_msg += f'Tables in embedded schema but not in file: {sorted(extra_in_embedded)}\n'
+            if missing_in_new:
+                error_msg += f'Tables in legacy schema but missing in new: {sorted(missing_in_new)}\n'
+            if extra_in_new:
+                error_msg += f'Tables in new schema but not in legacy: {sorted(extra_in_new)}\n'
             pytest.fail(error_msg)
 
         # Compare table definitions
-        file_tables_dict = dict(file_structure['tables'])
-        embedded_tables_dict = dict(embedded_structure['tables'])
+        legacy_tables_dict = dict(legacy_structure['tables'])
+        new_tables_dict = dict(new_structure['tables'])
 
         table_diffs = []
-        for table_name in sorted(file_table_names):
-            file_sql = normalize_sql(file_tables_dict[table_name])
-            embedded_sql = normalize_sql(embedded_tables_dict[table_name])
+        for table_name in sorted(legacy_table_names):
+            legacy_sql = normalize_sql(legacy_tables_dict[table_name])
+            new_sql = normalize_sql(new_tables_dict[table_name])
 
-            if file_sql != embedded_sql:
+            if legacy_sql != new_sql:
                 table_diffs.append(
-                    f'\nTable: {table_name}\n'
-                    f'  File schema SQL:\n    {file_sql}\n'
-                    f'  Embedded schema SQL:\n    {embedded_sql}\n',
+                    f'\nTable: {table_name}\n  Legacy schema SQL:\n    {legacy_sql}\n  New schema SQL:\n    {new_sql}\n',
                 )
 
         if table_diffs:
@@ -203,33 +171,31 @@ class TestSchemaSynchronization:
             pytest.fail(error_msg)
 
         # Compare index names
-        file_index_names = {name for name, _ in file_structure['indexes']}
-        embedded_index_names = {name for name, _ in embedded_structure['indexes']}
+        legacy_index_names = {name for name, _ in legacy_structure['indexes']}
+        new_index_names = {name for name, _ in new_structure['indexes']}
 
-        if file_index_names != embedded_index_names:
-            missing_in_embedded = file_index_names - embedded_index_names
-            extra_in_embedded = embedded_index_names - file_index_names
+        if legacy_index_names != new_index_names:
+            missing_in_new = legacy_index_names - new_index_names
+            extra_in_new = new_index_names - legacy_index_names
             error_msg = 'Schema synchronization failed - Index names mismatch!\n\n'
-            if missing_in_embedded:
-                error_msg += f'Indexes in file schema but missing in embedded: {sorted(missing_in_embedded)}\n'
-            if extra_in_embedded:
-                error_msg += f'Indexes in embedded schema but not in file: {sorted(extra_in_embedded)}\n'
+            if missing_in_new:
+                error_msg += f'Indexes in legacy schema but missing in new: {sorted(missing_in_new)}\n'
+            if extra_in_new:
+                error_msg += f'Indexes in new schema but not in legacy: {sorted(extra_in_new)}\n'
             pytest.fail(error_msg)
 
         # Compare index definitions
-        file_indexes_dict = dict(file_structure['indexes'])
-        embedded_indexes_dict = dict(embedded_structure['indexes'])
+        legacy_indexes_dict = dict(legacy_structure['indexes'])
+        new_indexes_dict = dict(new_structure['indexes'])
 
         index_diffs = []
-        for index_name in sorted(file_index_names):
-            file_sql = normalize_sql(file_indexes_dict[index_name])
-            embedded_sql = normalize_sql(embedded_indexes_dict[index_name])
+        for index_name in sorted(legacy_index_names):
+            legacy_sql = normalize_sql(legacy_indexes_dict[index_name])
+            new_sql = normalize_sql(new_indexes_dict[index_name])
 
-            if file_sql != embedded_sql:
+            if legacy_sql != new_sql:
                 index_diffs.append(
-                    f'\nIndex: {index_name}\n'
-                    f'  File schema SQL:\n    {file_sql}\n'
-                    f'  Embedded schema SQL:\n    {embedded_sql}\n',
+                    f'\nIndex: {index_name}\n  Legacy schema SQL:\n    {legacy_sql}\n  New schema SQL:\n    {new_sql}\n',
                 )
 
         if index_diffs:
@@ -239,5 +205,5 @@ class TestSchemaSynchronization:
 
         # If we got here, schemas are synchronized
         print('\nSchema synchronization validated successfully!')
-        print(f'  Tables: {len(file_table_names)}')
-        print(f'  Indexes: {len(file_index_names)}')
+        print(f'  Tables: {len(legacy_table_names)}')
+        print(f'  Indexes: {len(legacy_index_names)}')

@@ -129,6 +129,7 @@ class TestStoreContextErrors:
         # Create a large base64 image (simulate > 10MB)
         large_data = 'A' * (15 * 1024 * 1024)  # 15MB of 'A'
         import base64
+
         encoded = base64.b64encode(large_data.encode()).decode()
 
         with pytest.raises(ToolError, match='Image 0 exceeds .* limit'):

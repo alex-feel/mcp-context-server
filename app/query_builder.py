@@ -16,11 +16,36 @@ class MetadataQueryBuilder:
     15 different operators and nested JSON paths.
     """
 
-    def __init__(self) -> None:
-        """Initialize the query builder."""
+    def __init__(
+        self,
+        backend_type: str = 'sqlite',
+        json_extract_fn: str | None = None,
+        param_offset: int = 0,
+    ) -> None:
+        """Initialize the query builder.
+
+        Args:
+            backend_type: Backend type ('sqlite' or 'postgresql') for placeholder generation
+            json_extract_fn: Optional JSON extraction function name override
+            param_offset: Starting position for PostgreSQL placeholders (for combining queries)
+        """
         self.conditions: list[str] = []
         self.parameters: list[Any] = []
         self._filter_count = 0
+        self.backend_type = backend_type
+        self.json_extract_fn = json_extract_fn or ('json_extract' if backend_type == 'sqlite' else 'jsonb_extract_path_text')
+        self.param_offset = param_offset
+
+    def _placeholder(self) -> str:
+        """Generate placeholder for current parameter position.
+
+        Returns:
+            Placeholder string ('?' for SQLite, '$N' for PostgreSQL)
+        """
+        if self.backend_type == 'sqlite':
+            return '?'
+        # PostgreSQL uses $1, $2, $3... with offset
+        return f'${self.param_offset + len(self.parameters) + 1}'
 
     def add_simple_filter(self, key: str, value: str | float | bool | None) -> None:
         """Add a simple key=value metadata filter.
@@ -36,7 +61,30 @@ class MetadataQueryBuilder:
             raise ValueError(f'Invalid metadata key: {key}')
 
         json_path = self._build_json_path(key)
-        self.conditions.append(f"json_extract(metadata, '{json_path}') = ?")
+        placeholder = self._placeholder()
+        if self.backend_type == 'sqlite':
+            self.conditions.append(f"json_extract(metadata, '{json_path}') = {placeholder}")
+        else:  # postgresql
+            # For nested paths, use #>> with array notation
+            key_path = json_path[2:]  # Remove $. prefix
+            if '.' in key_path:
+                # Nested path: convert 'user.preferences.theme' to array notation '{user,preferences,theme}'
+                path_parts = key_path.split('.')
+                array_path = '{' + ','.join(path_parts) + '}'
+                if isinstance(value, (int, float)):
+                    # Numeric comparison
+                    self.conditions.append(f"(metadata#>>'{array_path}')::NUMERIC = {placeholder}")
+                else:
+                    # Text comparison
+                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
+            else:
+                # Single-level path
+                if isinstance(value, (int, float)):
+                    # Numeric comparison: cast JSON field to numeric
+                    self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC = {placeholder}")
+                else:
+                    # Text comparison
+                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
         self.parameters.append(self._normalize_value(value))
         self._filter_count += 1
 
@@ -169,27 +217,72 @@ class MetadataQueryBuilder:
         return value
 
     def _add_equality_condition(
-        self, json_path: str, value: str | float | bool | None, case_sensitive: bool,
+        self,
+        json_path: str,
+        value: str | float | bool | None,
+        case_sensitive: bool,
     ) -> None:
         """Add an equality condition."""
-        if isinstance(value, str) and not case_sensitive:
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) = LOWER(?)")
-        else:
-            self.conditions.append(f"json_extract(metadata, '{json_path}') = ?")
+        placeholder = self._placeholder()
+        key_path = json_path[2:]  # Remove $. prefix
+
+        if self.backend_type == 'sqlite':
+            if isinstance(value, str) and not case_sensitive:
+                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) = LOWER({placeholder})")
+            else:
+                self.conditions.append(f"json_extract(metadata, '{json_path}') = {placeholder}")
+        else:  # postgresql
+            # For nested paths, use #>> with array notation
+            if '.' in key_path:
+                path_parts = key_path.split('.')
+                array_path = '{' + ','.join(path_parts) + '}'
+                if isinstance(value, (int, float)):
+                    self.conditions.append(f"(metadata#>>'{array_path}')::NUMERIC = {placeholder}")
+                elif isinstance(value, str) and not case_sensitive:
+                    self.conditions.append(f"LOWER(metadata#>>'{array_path}') = LOWER({placeholder}::TEXT)")
+                else:
+                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
+            else:
+                if isinstance(value, (int, float)):
+                    # Numeric comparison: cast JSON field to numeric
+                    self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC = {placeholder}")
+                elif isinstance(value, str) and not case_sensitive:
+                    self.conditions.append(f"LOWER(metadata->>'{key_path}') = LOWER({placeholder}::TEXT)")
+                else:
+                    # String comparison
+                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
         self.parameters.append(self._normalize_value(value))
 
     def _add_not_equal_condition(
-        self, json_path: str, value: str | float | bool | None, case_sensitive: bool,
+        self,
+        json_path: str,
+        value: str | float | bool | None,
+        case_sensitive: bool,
     ) -> None:
         """Add a not-equal condition."""
-        if isinstance(value, str) and not case_sensitive:
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) != LOWER(?)")
-        else:
-            self.conditions.append(f"json_extract(metadata, '{json_path}') != ?")
+        placeholder = self._placeholder()
+        key_path = json_path[2:]
+
+        if self.backend_type == 'sqlite':
+            if isinstance(value, str) and not case_sensitive:
+                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) != LOWER({placeholder})")
+            else:
+                self.conditions.append(f"json_extract(metadata, '{json_path}') != {placeholder}")
+        else:  # postgresql
+            if isinstance(value, (int, float)):
+                # Numeric comparison
+                self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC != {placeholder}")
+            elif isinstance(value, str) and not case_sensitive:
+                self.conditions.append(f"LOWER(metadata->>'{key_path}') != LOWER({placeholder}::TEXT)")
+            else:
+                self.conditions.append(f"metadata->>'{key_path}' != {placeholder}::TEXT")
         self.parameters.append(self._normalize_value(value))
 
     def _add_comparison_condition(
-        self, json_path: str, operator: MetadataOperator, value: str | float | bool | None,
+        self,
+        json_path: str,
+        operator: MetadataOperator,
+        value: str | float | bool | None,
     ) -> None:
         """Add numeric comparison conditions (GT, GTE, LT, LTE)."""
         sql_operators = {
@@ -199,69 +292,121 @@ class MetadataQueryBuilder:
             MetadataOperator.LTE: '<=',
         }
         sql_op = sql_operators[operator]
+        placeholder = self._placeholder()
+        key_path = json_path[2:]
 
-        # Cast to appropriate type for numeric comparisons
         if isinstance(value, (int, float)):
-            self.conditions.append(f"CAST(json_extract(metadata, '{json_path}') AS NUMERIC) {sql_op} ?")
+            if self.backend_type == 'sqlite':
+                self.conditions.append(f"CAST(json_extract(metadata, '{json_path}') AS NUMERIC) {sql_op} {placeholder}")
+            else:  # postgresql - use ->> and cast
+                self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC {sql_op} {placeholder}")
             self.parameters.append(value)
         else:
-            # String comparison
-            self.conditions.append(f"json_extract(metadata, '{json_path}') {sql_op} ?")
+            if self.backend_type == 'sqlite':
+                self.conditions.append(f"json_extract(metadata, '{json_path}') {sql_op} {placeholder}")
+            else:  # postgresql
+                self.conditions.append(f"metadata->>'{key_path}' {sql_op} {placeholder}::TEXT")
             self.parameters.append(str(value))
 
     def _add_in_condition(
-        self, json_path: str, values: list[str | int | float | bool], case_sensitive: bool,
+        self,
+        json_path: str,
+        values: list[str | int | float | bool],
+        case_sensitive: bool,
     ) -> None:
         """Add an IN condition for list membership."""
         if not values:
-            # Empty list - nothing matches
             self.conditions.append('0 = 1')
             return
 
-        placeholders = ', '.join(['?' for _ in values])
-        if not case_sensitive and any(isinstance(v, str) for v in values):
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) IN ({placeholders})")
-            self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
-        else:
-            self.conditions.append(f"json_extract(metadata, '{json_path}') IN ({placeholders})")
-            self.parameters.extend([self._normalize_value(v) for v in values])
+        key_path = json_path[2:]
+
+        if self.backend_type == 'sqlite':
+            # Generate placeholders BEFORE extending parameters
+            placeholders = ', '.join(['?' for _ in values])
+            if not case_sensitive and any(isinstance(v, str) for v in values):
+                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) IN ({placeholders})")
+                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+            else:
+                self.conditions.append(f"json_extract(metadata, '{json_path}') IN ({placeholders})")
+                self.parameters.extend([self._normalize_value(v) for v in values])
+        else:  # postgresql
+            # Generate placeholders with proper numbering BEFORE extending parameters
+            start_pos = self.param_offset + len(self.parameters) + 1
+            cast_placeholders = ', '.join([f'${start_pos + i}::TEXT' for i in range(len(values))])
+            if not case_sensitive and any(isinstance(v, str) for v in values):
+                self.conditions.append(f"LOWER(metadata->>'{key_path}') IN ({cast_placeholders})")
+                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+            else:
+                self.conditions.append(f"metadata->>'{key_path}' IN ({cast_placeholders})")
+                self.parameters.extend([self._normalize_value(v) for v in values])
 
     def _add_not_in_condition(
-        self, json_path: str, values: list[str | int | float | bool], case_sensitive: bool,
+        self,
+        json_path: str,
+        values: list[str | int | float | bool],
+        case_sensitive: bool,
     ) -> None:
         """Add a NOT IN condition."""
         if not values:
-            # Empty list - everything matches
             self.conditions.append('1 = 1')
             return
 
-        placeholders = ', '.join(['?' for _ in values])
-        if not case_sensitive and any(isinstance(v, str) for v in values):
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) NOT IN ({placeholders})")
-            self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
-        else:
-            self.conditions.append(f"json_extract(metadata, '{json_path}') NOT IN ({placeholders})")
-            self.parameters.extend([self._normalize_value(v) for v in values])
+        key_path = json_path[2:]
+
+        if self.backend_type == 'sqlite':
+            placeholders = ', '.join(['?' for _ in values])
+            if not case_sensitive and any(isinstance(v, str) for v in values):
+                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) NOT IN ({placeholders})")
+                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+            else:
+                self.conditions.append(f"json_extract(metadata, '{json_path}') NOT IN ({placeholders})")
+                self.parameters.extend([self._normalize_value(v) for v in values])
+        else:  # postgresql
+            start_pos = self.param_offset + len(self.parameters) + 1
+            cast_placeholders = ', '.join([f'${start_pos + i}::TEXT' for i in range(len(values))])
+            if not case_sensitive and any(isinstance(v, str) for v in values):
+                self.conditions.append(f"LOWER(metadata->>'{key_path}') NOT IN ({cast_placeholders})")
+                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+            else:
+                self.conditions.append(f"metadata->>'{key_path}' NOT IN ({cast_placeholders})")
+                self.parameters.extend([self._normalize_value(v) for v in values])
 
     def _add_exists_condition(self, json_path: str) -> None:
         """Add a condition to check if a key exists."""
-        self.conditions.append(f"json_extract(metadata, '{json_path}') IS NOT NULL")
+        key_path = json_path[2:]
+        if self.backend_type == 'sqlite':
+            self.conditions.append(f"json_extract(metadata, '{json_path}') IS NOT NULL")
+        else:  # postgresql
+            self.conditions.append(f"metadata->>'{key_path}' IS NOT NULL")
 
     def _add_not_exists_condition(self, json_path: str) -> None:
         """Add a condition to check if a key does not exist."""
-        self.conditions.append(f"json_extract(metadata, '{json_path}') IS NULL")
+        key_path = json_path[2:]
+        if self.backend_type == 'sqlite':
+            self.conditions.append(f"json_extract(metadata, '{json_path}') IS NULL")
+        else:  # postgresql
+            self.conditions.append(f"metadata->>'{key_path}' IS NULL")
 
     def _add_contains_condition(self, json_path: str, value: str | None, case_sensitive: bool) -> None:
         """Add a string contains condition."""
         if value is None:
             return
 
-        if case_sensitive:
-            # Use INSTR for case-sensitive contains (LIKE is case-insensitive by default in SQLite)
-            self.conditions.append(f"INSTR(json_extract(metadata, '{json_path}'), ?) > 0")
+        placeholder = self._placeholder()
+        key_path = json_path[2:]
+
+        if self.backend_type == 'sqlite':
+            if case_sensitive:
+                self.conditions.append(f"INSTR(json_extract(metadata, '{json_path}'), {placeholder}) > 0")
+            else:
+                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER({placeholder}) || '%'")
             self.parameters.append(value)
-        else:
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER(?) || '%'")
+        else:  # postgresql
+            if case_sensitive:
+                self.conditions.append(f"metadata->>'{key_path}' LIKE '%' || {placeholder}::TEXT || '%'")
+            else:
+                self.conditions.append(f"LOWER(metadata->>'{key_path}') LIKE '%' || LOWER({placeholder}::TEXT) || '%'")
             self.parameters.append(value)
 
     def _add_starts_with_condition(self, json_path: str, value: str | None, case_sensitive: bool) -> None:
@@ -269,14 +414,22 @@ class MetadataQueryBuilder:
         if value is None:
             return
 
-        if case_sensitive:
-            # Use GLOB for case-sensitive pattern matching (LIKE is case-insensitive in SQLite)
-            # GLOB uses * for wildcards, need to escape special GLOB characters in the value
-            escaped_value = self._escape_glob_pattern(value)
-            self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB ? || '*'")
-            self.parameters.append(escaped_value)
-        else:
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE LOWER(?) || '%'")
+        placeholder = self._placeholder()
+        key_path = json_path[2:]
+
+        if self.backend_type == 'sqlite':
+            if case_sensitive:
+                escaped_value = self._escape_glob_pattern(value)
+                self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB {placeholder} || '*'")
+                self.parameters.append(escaped_value)
+            else:
+                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE LOWER({placeholder}) || '%'")
+                self.parameters.append(value)
+        else:  # postgresql
+            if case_sensitive:
+                self.conditions.append(f"metadata->>'{key_path}' LIKE {placeholder}::TEXT || '%'")
+            else:
+                self.conditions.append(f"LOWER(metadata->>'{key_path}') LIKE LOWER({placeholder}::TEXT) || '%'")
             self.parameters.append(value)
 
     def _add_ends_with_condition(self, json_path: str, value: str | None, case_sensitive: bool) -> None:
@@ -284,14 +437,22 @@ class MetadataQueryBuilder:
         if value is None:
             return
 
-        if case_sensitive:
-            # Use GLOB for case-sensitive pattern matching (LIKE is case-insensitive in SQLite)
-            # GLOB uses * for wildcards, need to escape special GLOB characters in the value
-            escaped_value = self._escape_glob_pattern(value)
-            self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB '*' || ?")
-            self.parameters.append(escaped_value)
-        else:
-            self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER(?)")
+        placeholder = self._placeholder()
+        key_path = json_path[2:]
+
+        if self.backend_type == 'sqlite':
+            if case_sensitive:
+                escaped_value = self._escape_glob_pattern(value)
+                self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB '*' || {placeholder}")
+                self.parameters.append(escaped_value)
+            else:
+                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER({placeholder})")
+                self.parameters.append(value)
+        else:  # postgresql
+            if case_sensitive:
+                self.conditions.append(f"metadata->>'{key_path}' LIKE '%' || {placeholder}::TEXT")
+            else:
+                self.conditions.append(f"LOWER(metadata->>'{key_path}') LIKE '%' || LOWER({placeholder}::TEXT)")
             self.parameters.append(value)
 
     def _add_regex_condition(self, json_path: str, pattern: str | None, case_sensitive: bool) -> None:
@@ -317,12 +478,21 @@ class MetadataQueryBuilder:
 
     def _add_is_null_condition(self, json_path: str) -> None:
         """Add a condition to check if value is JSON null."""
-        # In SQLite JSON, null values are stored as JSON null, not SQL NULL
-        self.conditions.append(f"json_type(metadata, '{json_path}') = 'null'")
+        key_path = json_path[2:]
+        if self.backend_type == 'sqlite':
+            # In SQLite JSON, null values are stored as JSON null, not SQL NULL
+            self.conditions.append(f"json_type(metadata, '{json_path}') = 'null'")
+        else:  # postgresql
+            # In PostgreSQL, check if the value is NULL or the JSON value is null
+            self.conditions.append(f"metadata->>'{key_path}' IS NULL OR metadata->'{key_path}' = 'null'::jsonb")
 
     def _add_is_not_null_condition(self, json_path: str) -> None:
         """Add a condition to check if value is not JSON null."""
-        self.conditions.append(f"json_type(metadata, '{json_path}') != 'null'")
+        key_path = json_path[2:]
+        if self.backend_type == 'sqlite':
+            self.conditions.append(f"json_type(metadata, '{json_path}') != 'null'")
+        else:  # postgresql
+            self.conditions.append(f"metadata->>'{key_path}' IS NOT NULL AND metadata->'{key_path}' != 'null'::jsonb")
 
     @staticmethod
     def _escape_glob_pattern(value: str) -> str:

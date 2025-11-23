@@ -143,9 +143,11 @@ class TestUpdateContext:
             },
         ]
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories), \
-             patch('app.server.MAX_IMAGE_SIZE_MB', 10), \
-             patch('app.server.MAX_TOTAL_SIZE_MB', 100):
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.server.MAX_IMAGE_SIZE_MB', 10),
+            patch('app.server.MAX_TOTAL_SIZE_MB', 100),
+        ):
             result = await update_context(
                 context_id=111,
                 text=None,
@@ -289,6 +291,7 @@ class TestUpdateContext:
         """Test error when individual image exceeds size limit."""
         # Create actual large binary data and encode it to base64
         import base64
+
         large_binary = b'\x00' * (15 * 1024 * 1024)  # 15MB of binary data
         large_data = base64.b64encode(large_binary).decode('ascii')
         images = [
@@ -298,8 +301,10 @@ class TestUpdateContext:
             },
         ]
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories), \
-             patch('app.server.MAX_IMAGE_SIZE_MB', 10):  # 10MB limit
+        with (
+            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.server.MAX_IMAGE_SIZE_MB', 10),
+        ):  # 10MB limit
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id=777,
@@ -317,6 +322,7 @@ class TestUpdateContext:
         # Create multiple images that together exceed total limit
         # Create actual binary data and encode it to base64
         import base64
+
         binary_data = b'X' * (30 * 1024 * 1024)  # 30MB of binary data
         image_data = base64.b64encode(binary_data).decode('utf-8')
         images = [

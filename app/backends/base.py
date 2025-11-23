@@ -9,6 +9,7 @@ The protocol uses @runtime_checkable to enable isinstance() checks and TypeVar
 for generic operation signatures that preserve return types.
 """
 
+from collections.abc import Awaitable
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
@@ -194,7 +195,7 @@ class StorageBackend(Protocol):
 
     async def execute_write(
         self,
-        operation: Callable[..., T],
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
         **kwargs: Any,
     ) -> T:
@@ -208,7 +209,9 @@ class StorageBackend(Protocol):
         - Error handling
 
         Args:
-            operation: Callable that performs the write operation
+            operation: Sync or async callable that performs the write operation.
+                      SQLite backend expects sync callable: Callable[..., T]
+                      PostgreSQL backend expects async callable: Callable[..., Awaitable[T]]
             *args: Positional arguments to pass to operation
             **kwargs: Keyword arguments to pass to operation
 
@@ -220,17 +223,19 @@ class StorageBackend(Protocol):
             - Uses single writer connection
             - Retries on transient errors (SQLITE_BUSY, SQLITE_LOCKED)
             - Circuit breaker prevents cascading failures
+            - Expects sync callable: operation(conn, *args, **kwargs) -> T
 
         For PostgreSQL:
             - Uses connection from pool
             - Wraps in transaction
             - Retries on connection errors
+            - Expects async callable: await operation(conn, *args, **kwargs) -> T
 
         Raises:
             RuntimeError: If backend is shut down or circuit breaker is open
             Exception: Original exception from operation after retries exhausted
 
-        Example:
+        Example (SQLite - sync):
             def insert_context(conn, text, thread_id):
                 cursor = conn.execute(
                     'INSERT INTO context_entries (text_content, thread_id) VALUES (?, ?)',
@@ -239,12 +244,22 @@ class StorageBackend(Protocol):
                 return cursor.lastrowid
 
             context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123')
+
+        Example (PostgreSQL - async):
+            async def insert_context(conn, text, thread_id):
+                row = await conn.fetchrow(
+                    'INSERT INTO context_entries (text_content, thread_id) VALUES ($1, $2) RETURNING id',
+                    text, thread_id
+                )
+                return row['id']
+
+            context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123')
         """
         ...
 
     async def execute_read(
         self,
-        operation: Callable[..., T],
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
         **kwargs: Any,
     ) -> T:
@@ -257,7 +272,9 @@ class StorageBackend(Protocol):
         - Connection cleanup
 
         Args:
-            operation: Callable that performs the read operation
+            operation: Sync or async callable that performs the read operation.
+                      SQLite backend expects sync callable: Callable[..., T]
+                      PostgreSQL backend expects async callable: Callable[..., Awaitable[T]]
             *args: Positional arguments to pass to operation
             **kwargs: Keyword arguments to pass to operation
 
@@ -268,18 +285,30 @@ class StorageBackend(Protocol):
             - Uses connection from reader pool
             - No retry logic needed (reads don't cause locks)
             - Load balancing across multiple readers
+            - Expects sync callable: operation(conn, *args, **kwargs) -> T
 
         For PostgreSQL:
             - Uses connection from pool
             - Can use read replicas if configured
+            - Expects async callable: await operation(conn, *args, **kwargs) -> T
 
-        Example:
+        Example (SQLite - sync):
             def get_context_by_id(conn, context_id):
                 cursor = conn.execute(
                     'SELECT * FROM context_entries WHERE id = ?',
                     (context_id,)
                 )
                 return cursor.fetchone()
+
+            entry = await backend.execute_read(get_context_by_id, 123)
+
+        Example (PostgreSQL - async):
+            async def get_context_by_id(conn, context_id):
+                row = await conn.fetchrow(
+                    'SELECT * FROM context_entries WHERE id = $1',
+                    context_id
+                )
+                return row
 
             entry = await backend.execute_read(get_context_by_id, 123)
         """

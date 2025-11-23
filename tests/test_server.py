@@ -485,16 +485,30 @@ class TestSearchContext:
         )
 
         # Directly update database to set text_content to empty (edge case)
-        import sqlite3
+        # Use backend-agnostic approach for both SQLite and PostgreSQL
+        backend = app.server._backend
+        assert backend is not None
 
-        with sqlite3.connect(str(temp_db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                'UPDATE context_entries SET text_content = ? WHERE thread_id = ?',
-                ('', 'null_test'),
-            )
-            conn.commit()
+        # Get backend type to determine SQL syntax
+        backend_type = getattr(backend, 'backend_type', 'sqlite')
+
+        if backend_type == 'sqlite':
+            # SQLite uses execute_write to avoid connection pool issues
+            def update_text_content(conn: sqlite3.Connection) -> None:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'UPDATE context_entries SET text_content = ? WHERE thread_id = ?',
+                    ('', 'null_test'),
+                )
+
+            await backend.execute_write(update_text_content)
+        else:
+            # PostgreSQL uses async connection
+            async with backend.get_connection() as conn:
+                await conn.execute(
+                    'UPDATE context_entries SET text_content = $1 WHERE thread_id = $2',
+                    '', 'null_test',
+                )
 
         results = await search_context(thread_id='null_test')
         assert isinstance(results, dict)

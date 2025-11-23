@@ -21,6 +21,26 @@ from app.backends import StorageBackend
 from app.backends.sqlite_backend import SQLiteBackend
 
 
+@pytest.fixture(scope='module', autouse=True)
+def cleanup_before_resource_tests():
+    """Ensure all database connections from previous tests are cleaned up.
+
+    This fixture runs once before ANY test in this module to ensure that
+    connections created by fixtures in other test modules are fully
+    garbage collected and closed.
+    """
+    import time
+
+    # Aggressive synchronous cleanup to collect any lingering connections
+    gc.collect()
+    time.sleep(0.5)
+    gc.collect()
+    time.sleep(0.5)
+    gc.collect()
+    return
+    # No cleanup needed after - tests handle their own cleanup
+
+
 class TestResourceWarningDetection:
     """Test suite to detect and verify ResourceWarning fixes."""
 

@@ -5,10 +5,22 @@ This module handles all database operations related to tags,
 including storage and retrieval of normalized tags.
 """
 
+from __future__ import annotations
+
+import contextlib
 import sqlite3
+from typing import TYPE_CHECKING
+from typing import Any
+from typing import cast
 
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
+
+if TYPE_CHECKING:
+    import asyncpg
+else:
+    with contextlib.suppress(ImportError):
+        import asyncpg
 
 
 class TagRepository(BaseRepository):
@@ -33,17 +45,31 @@ class TagRepository(BaseRepository):
             context_id: ID of the context entry
             tags: List of tags to store (will be normalized)
         """
-        def _store_tags(conn: sqlite3.Connection) -> None:
-            cursor = conn.cursor()
-            for tag in tags:
-                tag = tag.strip().lower()
-                if tag:
-                    cursor.execute(
-                        'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
-                        (context_id, tag),
-                    )
+        if self.backend.backend_type == 'sqlite':
 
-        await self.backend.execute_write(_store_tags)
+            def _store_tags_sqlite(conn: sqlite3.Connection) -> None:
+                cursor = conn.cursor()
+                for tag in tags:
+                    tag = tag.strip().lower()
+                    if tag:
+                        query = (
+                            f'INSERT INTO tags (context_entry_id, tag) VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
+                        )
+                        cursor.execute(query, (context_id, tag))
+
+            await self.backend.execute_write(_store_tags_sqlite)
+        else:  # postgresql, supabase
+
+            async def _store_tags_postgresql(conn: asyncpg.Connection) -> None:
+                for tag in tags:
+                    tag = tag.strip().lower()
+                    if tag:
+                        query = (
+                            f'INSERT INTO tags (context_entry_id, tag) VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
+                        )
+                        await conn.execute(query, context_id, tag)
+
+            await self.backend.execute_write(cast(Any, _store_tags_postgresql))
 
     async def get_tags_for_context(self, context_id: int) -> list[str]:
         """Get all tags for a specific context entry.
@@ -54,15 +80,24 @@ class TagRepository(BaseRepository):
         Returns:
             List of tags associated with the context entry
         """
-        def _get_tags(conn: sqlite3.Connection, ctx_id: int) -> list[str]:
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag',
-                (ctx_id,),
-            )
-            return [row['tag'] for row in cursor.fetchall()]
+        if self.backend.backend_type == 'sqlite':
 
-        return await self.backend.execute_read(_get_tags, context_id)
+            def _get_tags_sqlite(conn: sqlite3.Connection) -> list[str]:
+                cursor = conn.cursor()
+                query = f'SELECT tag FROM tags WHERE context_entry_id = {self._placeholder(1)} ORDER BY tag'
+                cursor.execute(query, (context_id,))
+                return [row['tag'] for row in cursor.fetchall()]
+
+            return await self.backend.execute_read(_get_tags_sqlite)
+
+        # postgresql, supabase
+
+        async def _get_tags_postgresql(conn: asyncpg.Connection) -> list[str]:
+            query = f'SELECT tag FROM tags WHERE context_entry_id = {self._placeholder(1)} ORDER BY tag'
+            rows = await conn.fetch(query, context_id)
+            return [row['tag'] for row in rows]
+
+        return await self.backend.execute_read(_get_tags_postgresql)
 
     async def get_tags_for_contexts(self, context_ids: list[int]) -> dict[int, list[str]]:
         """Get tags for multiple context entries in a single query.
@@ -76,35 +111,60 @@ class TagRepository(BaseRepository):
         if not context_ids:
             return {}
 
-        def _get_tags_batch(conn: sqlite3.Connection) -> dict[int, list[str]]:
-            cursor = conn.cursor()
-            placeholders = ','.join(['?' for _ in context_ids])
-            cursor.execute(
-                f'''
-                SELECT context_entry_id, tag
-                FROM tags
-                WHERE context_entry_id IN ({placeholders})
-                ORDER BY context_entry_id, tag
-                ''',
-                tuple(context_ids),
-            )
+        if self.backend.backend_type == 'sqlite':
 
-            # Group tags by context_id
+            def _get_tags_batch_sqlite(conn: sqlite3.Connection) -> dict[int, list[str]]:
+                cursor = conn.cursor()
+                placeholders = self._placeholders(len(context_ids))
+                query = f'''
+                    SELECT context_entry_id, tag
+                    FROM tags
+                    WHERE context_entry_id IN ({placeholders})
+                    ORDER BY context_entry_id, tag
+                '''
+                cursor.execute(query, tuple(context_ids))
+
+                result: dict[int, list[str]] = {}
+                for row in cursor.fetchall():
+                    ctx_id = row['context_entry_id']
+                    if ctx_id not in result:
+                        result[ctx_id] = []
+                    result[ctx_id].append(row['tag'])
+
+                for ctx_id in context_ids:
+                    if ctx_id not in result:
+                        result[ctx_id] = []
+
+                return result
+
+            return await self.backend.execute_read(_get_tags_batch_sqlite)
+
+        # postgresql, supabase
+
+        async def _get_tags_batch_postgresql(conn: asyncpg.Connection) -> dict[int, list[str]]:
+            placeholders = self._placeholders(len(context_ids))
+            query = f'''
+                    SELECT context_entry_id, tag
+                    FROM tags
+                    WHERE context_entry_id IN ({placeholders})
+                    ORDER BY context_entry_id, tag
+                '''
+            rows = await conn.fetch(query, *context_ids)
+
             result: dict[int, list[str]] = {}
-            for row in cursor.fetchall():
+            for row in rows:
                 ctx_id = row['context_entry_id']
                 if ctx_id not in result:
                     result[ctx_id] = []
                 result[ctx_id].append(row['tag'])
 
-            # Ensure all requested IDs have an entry (even if empty)
             for ctx_id in context_ids:
                 if ctx_id not in result:
                     result[ctx_id] = []
 
             return result
 
-        return await self.backend.execute_read(_get_tags_batch)
+        return await self.backend.execute_read(_get_tags_batch_postgresql)
 
     async def replace_tags_for_context(self, context_id: int, tags: list[str]) -> None:
         """Replace all tags for a context entry.
@@ -117,22 +177,35 @@ class TagRepository(BaseRepository):
             context_id: ID of the context entry
             tags: New list of tags (will be normalized)
         """
-        def _replace_tags(conn: sqlite3.Connection) -> None:
-            cursor = conn.cursor()
+        if self.backend.backend_type == 'sqlite':
 
-            # Delete all existing tags for this context entry
-            cursor.execute(
-                'DELETE FROM tags WHERE context_entry_id = ?',
-                (context_id,),
-            )
+            def _replace_tags_sqlite(conn: sqlite3.Connection) -> None:
+                cursor = conn.cursor()
 
-            # Insert new tags (normalized)
-            for tag in tags:
-                tag = tag.strip().lower()
-                if tag:
-                    cursor.execute(
-                        'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
-                        (context_id, tag),
-                    )
+                delete_query = f'DELETE FROM tags WHERE context_entry_id = {self._placeholder(1)}'
+                cursor.execute(delete_query, (context_id,))
 
-        await self.backend.execute_write(_replace_tags)
+                for tag in tags:
+                    tag = tag.strip().lower()
+                    if tag:
+                        insert_query = (
+                            f'INSERT INTO tags (context_entry_id, tag) VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
+                        )
+                        cursor.execute(insert_query, (context_id, tag))
+
+            await self.backend.execute_write(_replace_tags_sqlite)
+        else:  # postgresql, supabase
+
+            async def _replace_tags_postgresql(conn: asyncpg.Connection) -> None:
+                delete_query = f'DELETE FROM tags WHERE context_entry_id = {self._placeholder(1)}'
+                await conn.execute(delete_query, context_id)
+
+                for tag in tags:
+                    tag = tag.strip().lower()
+                    if tag:
+                        insert_query = (
+                            f'INSERT INTO tags (context_entry_id, tag) VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
+                        )
+                        await conn.execute(insert_query, context_id, tag)
+
+            await self.backend.execute_write(cast(Any, _replace_tags_postgresql))

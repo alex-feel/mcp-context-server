@@ -23,8 +23,16 @@ class TestDatabaseInitialization:
     @pytest.mark.asyncio
     async def test_init_database_creates_schema(self, temp_db_path: Path) -> None:
         """Test database initialization creates all required tables."""
+        from app.backends import create_backend
+
+        # Create SQLite backend explicitly
+        backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
+        await backend.initialize()
+
         with patch('app.server.DB_PATH', temp_db_path):
-            await init_database()
+            await init_database(backend=backend)
+
+        await backend.shutdown()
 
         # Verify database exists
         assert temp_db_path.exists()
@@ -71,8 +79,19 @@ class TestDatabaseInitialization:
     @pytest.mark.asyncio
     async def test_init_database_with_missing_schema_file(self, temp_db_path: Path) -> None:
         """Test database initialization falls back to embedded schema."""
-        with patch('app.server.DB_PATH', temp_db_path), patch('app.server.SCHEMA_PATH', Path('/nonexistent/schema.sql')):
-            await init_database()
+        from app.backends import create_backend
+
+        # Create SQLite backend explicitly
+        backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
+        await backend.initialize()
+
+        with (
+            patch('app.server.DB_PATH', temp_db_path),
+            patch('app.server.SCHEMA_PATH', Path('/nonexistent/schema.sql')),
+        ):
+            await init_database(backend=backend)
+
+        await backend.shutdown()
 
         # Verify database was still created
         assert temp_db_path.exists()
@@ -85,15 +104,21 @@ class TestDatabaseInitialization:
     @pytest.mark.asyncio
     async def test_init_database_handles_errors(self, temp_db_path: Path) -> None:
         """Test database initialization handles errors properly."""
+        from app.backends import create_backend
+
         # Make directory read-only to cause error
         temp_db_path.parent.mkdir(exist_ok=True)
         temp_db_path.touch()
         temp_db_path.chmod(0o444)  # Read-only
 
-        with patch('app.server.DB_PATH', temp_db_path), pytest.raises(sqlite3.DatabaseError, match='.*'):
-            await init_database()
+        # Create SQLite backend explicitly - expect error during initialization
+        backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
 
-        # Clean up
+        # Backend initialization should fail with OperationalError when file is read-only
+        with pytest.raises(sqlite3.OperationalError, match='.*readonly database.*'):
+            await backend.initialize()
+
+        # Clean up (no need to shutdown as initialization failed)
         temp_db_path.chmod(0o644)
 
 

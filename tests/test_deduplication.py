@@ -9,9 +9,9 @@ instead of creating new rows.
 import asyncio
 import json
 import sqlite3
+import time
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -23,23 +23,33 @@ from app.repositories import RepositoryContainer
 
 @pytest_asyncio.fixture
 async def backend(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
-    """Create a StorageBackend with a test database."""
+    """Create a StorageBackend with a test database (SQLite only)."""
     db_path = tmp_path / 'test.db'
 
     # Initialize database with schema
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
-    conn.executescript(schema_path.read_text())
+    from app.schemas import load_schema
+
+    schema_sql = load_schema('sqlite')
+    conn.executescript(schema_sql)
     conn.close()
 
-    # Create manager with db_path
+    # Create backend with db_path
     backend = create_backend(backend_type='sqlite', db_path=str(db_path))
     await backend.initialize()
 
     yield backend
 
-    await backend.shutdown()
+    # Proper async cleanup with timeout protection to prevent hangs
+    try:
+        await asyncio.wait_for(backend.shutdown(), timeout=5.0)
+    except TimeoutError:
+        import logging
+        logging.getLogger(__name__).warning('Backend shutdown timed out after 5 seconds')
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f'Error during backend shutdown: {e}')
 
 
 @pytest_asyncio.fixture
@@ -55,7 +65,6 @@ class TestDeduplication:
     async def test_identical_consecutive_entries_update(
         self,
         repos: RepositoryContainer,
-        backend: StorageBackend,
     ) -> None:
         """Test that identical consecutive entries update the timestamp instead of inserting."""
         # Store first entry
@@ -71,7 +80,8 @@ class TestDeduplication:
         assert was_updated1 is False  # First entry should be inserted
 
         # Wait to ensure timestamp would differ (SQLite has second precision)
-        await asyncio.sleep(1.1)
+        # Using to_thread to run sync sleep and avoid Windows asyncio deadlock
+        await asyncio.to_thread(time.sleep, 1.1)
 
         # Store identical entry
         context_id2, was_updated2 = await repos.context.store_with_deduplication(
@@ -85,30 +95,27 @@ class TestDeduplication:
         assert context_id2 == context_id1  # Should return same ID
         assert was_updated2 is True  # Should indicate update
 
-        # Verify only one row exists
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
-
-        count = await backend.execute_read(_count_entries)
-        assert count == 1
+        # Verify only one row exists using repository
+        all_entries, _ = await repos.context.search_contexts(
+            thread_id='test-thread',
+            source=None,
+            content_type=None,
+            tags=None,
+            metadata_filters=None,
+            limit=1000,
+            offset=0,
+        )
+        assert len(all_entries) == 1
 
         # Verify updated_at was actually updated
-        def _get_timestamps(conn: sqlite3.Connection) -> dict[str, Any]:
-            cursor = conn.cursor()
-            cursor.execute('SELECT created_at, updated_at FROM context_entries WHERE id = ?', (context_id1,))
-            row = cursor.fetchone()
-            return {'created_at': row[0], 'updated_at': row[1]} if row else {}
-
-        timestamps = await backend.execute_read(_get_timestamps)
-        assert timestamps['created_at'] != timestamps['updated_at']
+        entries = await repos.context.get_by_ids([context_id1])
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry['created_at'] != entry['updated_at']
 
     async def test_non_identical_entries_insert_normally(
         self,
         repos: RepositoryContainer,
-        backend: StorageBackend,
     ) -> None:
         """Test that non-identical entries still insert as new rows."""
         # Store first entry
@@ -162,17 +169,14 @@ class TestDeduplication:
         assert context_id4 > context_id3  # Should be newer
         assert was_updated4 is False  # Should be insertion
 
-        # Verify we have 4 entries
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
+        # Verify we have 4 entries - search across all threads
+        entries_thread1, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        entries_thread2, _ = await repos.context.search_contexts(thread_id='different-thread', limit=1000)
+        assert len(entries_thread1) == 3  # 2 user + 1 agent
+        assert len(entries_thread2) == 1  # 1 agent
+        # Total: 4 entries
 
-        count = await backend.execute_read(_count_entries)
-        assert count == 4
-
-    async def test_only_latest_entry_checked(self, repos: RepositoryContainer, backend: StorageBackend) -> None:
+    async def test_only_latest_entry_checked(self, repos: RepositoryContainer) -> None:
         """Test that only the LATEST entry is checked for deduplication, not all entries."""
         # Store first entry
         context_id1, _ = await repos.context.store_with_deduplication(
@@ -227,14 +231,8 @@ class TestDeduplication:
         assert was_updated5 is True  # Should be update
 
         # Verify we have 4 unique entries
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
-
-        count = await backend.execute_read(_count_entries)
-        assert count == 4
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        assert len(entries) == 4
 
     async def test_return_values_correct(
         self,
@@ -286,7 +284,6 @@ class TestDeduplication:
     async def test_metadata_changes_do_not_affect_dedup(
         self,
         repos: RepositoryContainer,
-        backend: StorageBackend,
     ) -> None:
         """Test that metadata changes don't affect deduplication logic."""
         # Store with metadata
@@ -325,19 +322,12 @@ class TestDeduplication:
         assert was_updated3 is True
 
         # Verify only one entry exists
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
-
-        count = await backend.execute_read(_count_entries)
-        assert count == 1
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        assert len(entries) == 1
 
     async def test_content_type_does_not_affect_dedup(
         self,
         repos: RepositoryContainer,
-        backend: StorageBackend,
     ) -> None:
         """Test that content_type field doesn't affect deduplication (only thread_id, source, text_content)."""
         # Store as text type
@@ -364,19 +354,12 @@ class TestDeduplication:
         assert was_updated2 is True
 
         # Verify only one entry
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
-
-        count = await backend.execute_read(_count_entries)
-        assert count == 1
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        assert len(entries) == 1
 
     async def test_rapid_successive_duplicates(
         self,
         repos: RepositoryContainer,
-        backend: StorageBackend,
     ) -> None:
         """Test handling of rapid successive duplicate entries."""
         # Store multiple duplicates in quick succession
@@ -398,16 +381,10 @@ class TestDeduplication:
             assert results[i][1] is True  # Updates
 
         # Verify only one entry exists
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
+        entries, _ = await repos.context.search_contexts(thread_id='rapid-thread', limit=1000)
+        assert len(entries) == 1
 
-        count = await backend.execute_read(_count_entries)
-        assert count == 1
-
-    async def test_empty_text_content_dedup(self, repos: RepositoryContainer, backend: StorageBackend) -> None:
+    async def test_empty_text_content_dedup(self, repos: RepositoryContainer) -> None:
         """Test deduplication with empty text content."""
         # Store empty content
         context_id1, was_updated1 = await repos.context.store_with_deduplication(
@@ -445,16 +422,10 @@ class TestDeduplication:
         assert was_updated3 is False
 
         # Verify we have 2 entries
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        assert len(entries) == 2
 
-        count = await backend.execute_read(_count_entries)
-        assert count == 2
-
-    async def test_long_text_content_dedup(self, repos: RepositoryContainer, backend: StorageBackend) -> None:
+    async def test_long_text_content_dedup(self, repos: RepositoryContainer) -> None:
         """Test deduplication with very long text content."""
         # Create long text
         long_text = 'A' * 10000 + ' middle content ' + 'B' * 10000
@@ -496,11 +467,5 @@ class TestDeduplication:
         assert was_updated3 is False
 
         # Verify we have 2 entries
-        def _count_entries(conn: sqlite3.Connection) -> int:
-            cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) as count FROM context_entries')
-            result = cursor.fetchone()
-            return result[0] if result else 0
-
-        count = await backend.execute_read(_count_entries)
-        assert count == 2
+        entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
+        assert len(entries) == 2

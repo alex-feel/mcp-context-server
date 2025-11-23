@@ -18,6 +18,7 @@ from typing import Any
 from typing import Literal
 from typing import cast
 
+import asyncpg
 from fastmcp import Context
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -165,7 +166,21 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
     if not settings.enable_semantic_search:
         return
 
-    migration_path = Path(__file__).parent / 'migrations' / 'add_semantic_search.sql'
+    # Determine backend type to select correct migration file
+    if backend is not None:
+        backend_type = backend.backend_type
+    else:
+        # Create temporary backend to determine type
+        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
+        backend_type = temp_backend.backend_type
+
+    # Select migration file based on backend type
+    if backend_type in ('postgresql', 'supabase'):
+        migration_filename = 'add_semantic_search_postgresql.sql'
+    else:
+        migration_filename = 'add_semantic_search.sql'
+
+    migration_path = Path(__file__).parent / 'migrations' / migration_filename
 
     if not migration_path.exists():
         logger.warning(f'Semantic search migration file not found: {migration_path}')
@@ -202,25 +217,46 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
-    # Check for existing table and dimension compatibility
-    def _check_existing_dimension(conn: sqlite3.Connection) -> tuple[bool, int | None]:
-        # Check if vector table exists
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_context_embeddings'",
-        )
-        table_exists = cursor.fetchone() is not None
+    # Check for existing table and dimension compatibility - backend-specific
+    if manager.backend_type == 'sqlite':
 
-        if not table_exists:
-            return False, None
+        def _check_existing_dimension_sqlite(conn: sqlite3.Connection) -> tuple[bool, int | None]:
+            # Check if vector table exists
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_context_embeddings'",
+            )
+            table_exists = cursor.fetchone() is not None
 
-        # Get existing dimension from any embedding metadata
-        cursor = conn.execute('SELECT dimensions FROM embedding_metadata LIMIT 1')
-        row = cursor.fetchone()
-        existing_dim = row[0] if row else None
+            if not table_exists:
+                return False, None
 
-        return True, existing_dim
+            # Get existing dimension from any embedding metadata
+            cursor = conn.execute('SELECT dimensions FROM embedding_metadata LIMIT 1')
+            row = cursor.fetchone()
+            existing_dim = row[0] if row else None
 
-    table_exists, existing_dim = await manager.execute_read(_check_existing_dimension)
+            return True, existing_dim
+
+        table_exists, existing_dim = await manager.execute_read(_check_existing_dimension_sqlite)
+    else:  # postgresql, supabase
+
+        async def _check_existing_dimension_postgresql(conn: asyncpg.Connection) -> tuple[bool, int | None]:
+            # Check if vector table exists
+            row = await conn.fetchrow(
+                "SELECT tablename FROM pg_tables WHERE tablename = 'vec_context_embeddings'",
+            )
+            table_exists = row is not None
+
+            if not table_exists:
+                return False, None
+
+            # Get existing dimension from any embedding metadata
+            row = await conn.fetchrow('SELECT dimensions FROM embedding_metadata LIMIT 1')
+            existing_dim = row['dimensions'] if row else None
+
+            return True, existing_dim
+
+        table_exists, existing_dim = await manager.execute_read(cast(Any, _check_existing_dimension_postgresql))
 
     # Validate dimension compatibility
     if table_exists and existing_dim is not None and existing_dim != settings.embedding_dim:
@@ -239,38 +275,75 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
 
     # Template the migration SQL with configured dimension
     migration_sql = migration_sql_template.replace(
-        '{EMBEDDING_DIM}', str(settings.embedding_dim),
+        '{EMBEDDING_DIM}',
+        str(settings.embedding_dim),
     )
 
-    # Apply migration
-    def _apply_migration(conn: sqlite3.Connection) -> None:
-        # Load sqlite-vec extension before executing migration
-        try:
-            import sqlite_vec
+    # Apply migration - backend-specific
+    if manager.backend_type == 'sqlite':
 
-            conn.enable_load_extension(True)
-            sqlite_vec.load(conn)
-            conn.enable_load_extension(False)
-            logger.debug('sqlite-vec extension loaded for migration')
-        except ImportError:
-            raise RuntimeError(
-                'sqlite-vec package required for semantic search migration. '
-                'Install with: uv sync --extra semantic-search',
-            ) from None
-        except AttributeError:
-            raise RuntimeError(
-                'SQLite does not support extension loading. '
-                'Semantic search requires SQLite with extension support.',
-            ) from None
-        except Exception as e:
-            raise RuntimeError(f'Failed to load sqlite-vec extension: {e}') from e
+        def _apply_migration_sqlite(conn: sqlite3.Connection) -> None:
+            # Load sqlite-vec extension before executing migration
+            try:
+                import sqlite_vec
 
-        # Now safe to execute migration with vec0 module
-        conn.executescript(migration_sql)
+                conn.enable_load_extension(True)
+                sqlite_vec.load(conn)
+                conn.enable_load_extension(False)
+                logger.debug('sqlite-vec extension loaded for migration')
+            except ImportError:
+                raise RuntimeError(
+                    'sqlite-vec package required for semantic search migration. Install with: uv sync --extra semantic-search',
+                ) from None
+            except AttributeError:
+                raise RuntimeError(
+                    'SQLite does not support extension loading. Semantic search requires SQLite with extension support.',
+                ) from None
+            except Exception as e:
+                raise RuntimeError(f'Failed to load sqlite-vec extension: {e}') from e
 
-    await manager.execute_write(_apply_migration)
+            # Now safe to execute migration with vec0 module
+            conn.executescript(migration_sql)
 
-    if existing_dim is None:
+        await manager.execute_write(_apply_migration_sqlite)
+    else:  # postgresql, supabase
+
+        async def _apply_migration_postgresql(conn: asyncpg.Connection) -> None:
+            # PostgreSQL: pgvector extension registration happens in backend initialization
+            # Just execute the migration SQL statements
+            statements = []
+            current_stmt = []
+            in_function = False
+
+            for line in migration_sql.split('\n'):
+                stripped = line.strip()
+                # Skip comment-only lines
+                if stripped.startswith('--'):
+                    continue
+                # Track dollar-quoted strings (function bodies)
+                if '$$' in stripped:
+                    in_function = not in_function
+                if stripped:
+                    current_stmt.append(line)
+                # End of statement: semicolon when not in dollar quotes
+                if stripped.endswith(';') and not in_function:
+                    statements.append('\n'.join(current_stmt))
+                    current_stmt = []
+
+            # Add any remaining statement
+            if current_stmt:
+                statements.append('\n'.join(current_stmt))
+
+            # Execute each statement
+            for stmt in statements:
+                stmt = stmt.strip()
+                if stmt and not stmt.startswith('--'):
+                    await conn.execute(stmt)
+
+        await manager.execute_write(cast(Any, _apply_migration_postgresql))
+
+    # Check table existence (not row existence) to determine if migration was applied
+    if not table_exists:
         logger.info(
             f'Semantic search migration applied successfully with dimension: {settings.embedding_dim}',
         )
@@ -333,7 +406,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('⚠ semantic_search_context not registered (feature disabled)')
 
-        logger.info(f'MCP Context Server initialized with database: {DB_PATH}')
+        logger.info(f'MCP Context Server initialized (backend: {_backend.backend_type})')
     except Exception as e:
         logger.error(f'Failed to initialize server: {e}')
         if _backend:
@@ -372,115 +445,127 @@ async def init_database(backend: StorageBackend | None = None) -> None:
     This function can work in two modes:
     1. With backend parameter (normal server startup): Uses provided backend, no temp backend created
     2. Without backend parameter (tests/direct calls): Creates temporary backend for isolation
+
+    Raises:
+        RuntimeError: If no schema file found or backend initialization fails.
     """
     try:
-        # Ensure database path exists
+        # Ensure database path exists (only for file-based backends)
         if DB_PATH:
             DB_PATH.parent.mkdir(parents=True, exist_ok=True)
             if not DB_PATH.exists():
                 DB_PATH.touch()
 
-        # Read schema from file or fallback
-        if SCHEMA_PATH.exists():
-            schema_sql = SCHEMA_PATH.read_text(encoding='utf-8')
+        # Determine backend type to select correct schema file
+        if backend is not None:
+            backend_type = backend.backend_type
         else:
-            logger.warning(f'Schema file not found at {SCHEMA_PATH}, using embedded schema')
-            # Fallback to embedded schema
-            schema_sql = '''
--- Main context storage table
-CREATE TABLE IF NOT EXISTS context_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    thread_id TEXT NOT NULL,
-    source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
-    content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
-    text_content TEXT,
-    metadata JSON,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+            # Create temporary backend to determine type
+            temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
+            backend_type = temp_backend.backend_type
 
-CREATE INDEX IF NOT EXISTS idx_thread_id ON context_entries(thread_id);
-CREATE INDEX IF NOT EXISTS idx_source ON context_entries(source);
-CREATE INDEX IF NOT EXISTS idx_created_at ON context_entries(created_at);
-CREATE INDEX IF NOT EXISTS idx_thread_source ON context_entries(thread_id, source);
+        # Select schema file based on backend type
+        schema_filename = 'postgresql_schema.sql' if backend_type in ('postgresql', 'supabase') else 'sqlite_schema.sql'
 
-CREATE TABLE IF NOT EXISTS tags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context_entry_id INTEGER NOT NULL,
-    tag TEXT NOT NULL,
-    FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
-);
+        schema_path = Path(__file__).parent / 'schemas' / schema_filename
 
-CREATE INDEX IF NOT EXISTS idx_tags_entry ON tags(context_entry_id);
-CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+        # Read schema from file
+        if schema_path.exists():
+            schema_sql = schema_path.read_text(encoding='utf-8')
+        else:
+            logger.warning(f'Schema file not found at {schema_path}, falling back to app/schema.sql')
+            # Fallback to old schema file for backward compatibility
+            if SCHEMA_PATH.exists():
+                schema_sql = SCHEMA_PATH.read_text(encoding='utf-8')
+            else:
+                raise RuntimeError(f'No schema file found: tried {schema_path} and {SCHEMA_PATH}')
 
-CREATE TABLE IF NOT EXISTS image_attachments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context_entry_id INTEGER NOT NULL,
-    image_data BLOB NOT NULL,
-    mime_type TEXT NOT NULL,
-    image_metadata JSON,
-    position INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_id);
-
--- Functional indexes for common metadata patterns (improves metadata filtering performance)
--- These indexes extract specific JSON fields for faster querying
-
--- Status-based filtering (most common use case)
-CREATE INDEX IF NOT EXISTS idx_metadata_status
-ON context_entries(json_extract(metadata, '$.status'))
-WHERE json_extract(metadata, '$.status') IS NOT NULL;
-
--- Priority-based filtering (numeric comparisons)
-CREATE INDEX IF NOT EXISTS idx_metadata_priority
-ON context_entries(json_extract(metadata, '$.priority'))
-WHERE json_extract(metadata, '$.priority') IS NOT NULL;
-
--- Agent name filtering (identify specific agents)
-CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
-ON context_entries(json_extract(metadata, '$.agent_name'))
-WHERE json_extract(metadata, '$.agent_name') IS NOT NULL;
-
--- Task name filtering (search by task title/name)
-CREATE INDEX IF NOT EXISTS idx_metadata_task_name
-ON context_entries(json_extract(metadata, '$.task_name'))
-WHERE json_extract(metadata, '$.task_name') IS NOT NULL;
-
--- Composite indexes for common filter combinations
-CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
-ON context_entries(thread_id, json_extract(metadata, '$.status'));
-
-CREATE INDEX IF NOT EXISTS idx_thread_metadata_priority
-ON context_entries(thread_id, json_extract(metadata, '$.priority'));
-
--- Boolean flag indexes
-CREATE INDEX IF NOT EXISTS idx_metadata_completed
-ON context_entries(json_extract(metadata, '$.completed'))
-WHERE json_extract(metadata, '$.completed') IS NOT NULL;
-            '''
-
-        # Apply schema - use provided backend or create temporary one
+        # Apply schema - backend-specific approach
         if backend is not None:
             # Use provided backend (normal server startup)
-            def _init_schema(conn: sqlite3.Connection) -> None:
-                # Single executescript to create all objects atomically
-                conn.executescript(schema_sql)
-            await backend.execute_write(_init_schema)
-            logger.info('Database schema initialized successfully')
+            if backend.backend_type == 'sqlite':
+
+                def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
+                    # Single executescript to create all objects atomically
+                    conn.executescript(schema_sql)
+
+                await backend.execute_write(_init_schema_sqlite)
+            else:  # postgresql, supabase
+
+                async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
+                    # PostgreSQL: parse and execute statements individually
+                    statements = []
+                    current_stmt = []
+                    in_function = False
+
+                    for line in schema_sql.split('\n'):
+                        stripped = line.strip()
+                        # Skip comment-only lines
+                        if stripped.startswith('--'):
+                            continue
+                        # Track dollar-quoted strings (function bodies)
+                        if '$$' in stripped:
+                            in_function = not in_function
+                        if stripped:
+                            current_stmt.append(line)
+                        # End of statement: semicolon when not in dollar quotes
+                        if stripped.endswith(';') and not in_function:
+                            statements.append('\n'.join(current_stmt))
+                            current_stmt = []
+
+                    # Add any remaining statement
+                    if current_stmt:
+                        statements.append('\n'.join(current_stmt))
+
+                    # Execute each statement
+                    for stmt in statements:
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith('--'):
+                            await conn.execute(stmt)
+
+                await backend.execute_write(cast(Any, _init_schema_postgresql))
+            logger.info(f'Database schema initialized successfully ({backend.backend_type})')
         else:
             # Backward compatibility: create temporary backend for tests
             temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
             await temp_manager.initialize()
             try:
-                def _init_schema(conn: sqlite3.Connection) -> None:
-                    # Single executescript to create all objects atomically
-                    conn.executescript(schema_sql)
-                await temp_manager.execute_write(_init_schema)
-                logger.info('Database schema initialized successfully')
+                if temp_manager.backend_type == 'sqlite':
+
+                    def _init_schema_sqlite(conn: sqlite3.Connection) -> None:
+                        conn.executescript(schema_sql)
+
+                    await temp_manager.execute_write(_init_schema_sqlite)
+                else:  # postgresql, supabase
+
+                    async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
+                        # PostgreSQL: parse and execute statements individually
+                        statements = []
+                        current_stmt = []
+                        in_function = False
+
+                        for line in schema_sql.split('\n'):
+                            stripped = line.strip()
+                            if stripped.startswith('--'):
+                                continue
+                            if '$$' in stripped:
+                                in_function = not in_function
+                            if stripped:
+                                current_stmt.append(line)
+                            if stripped.endswith(';') and not in_function:
+                                statements.append('\n'.join(current_stmt))
+                                current_stmt = []
+
+                        if current_stmt:
+                            statements.append('\n'.join(current_stmt))
+
+                        for stmt in statements:
+                            stmt = stmt.strip()
+                            if stmt and not stmt.startswith('--'):
+                                await conn.execute(stmt)
+
+                    await temp_manager.execute_write(cast(Any, _init_schema_postgresql))
+                logger.info(f'Database schema initialized successfully ({temp_manager.backend_type})')
             finally:
                 # Always shutdown to stop background tasks and close connections
                 await temp_manager.shutdown()
