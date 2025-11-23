@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/alex-feel/mcp-context-server/compare/v0.4.1...v0.5.0) (2025-11-23)
+
+
+### Features
+
+* add PostgreSQL backend with pgvector semantic search ([03ad9b0](https://github.com/alex-feel/mcp-context-server/commit/03ad9b023ead730805bc448cf3d3ee7a7ea0f58f))
+* add storage backend abstraction for multi-database support ([4e7744a](https://github.com/alex-feel/mcp-context-server/commit/4e7744a6924be6c1f4cd0448b54d944e7c6d6848))
+
+
+### Bug Fixes
+
+* eliminate duplicate tool registration and improve naming ([d46cb7c](https://github.com/alex-feel/mcp-context-server/commit/d46cb7c3b524a3609b9f78801a01c09f27429f79))
+* eliminate redundant backend initializations during startup ([dcd14d7](https://github.com/alex-feel/mcp-context-server/commit/dcd14d73c2ab3b8854edb7e269aac5f58577470a))
+* load sqlite-vec extension before semantic search migration ([3069460](https://github.com/alex-feel/mcp-context-server/commit/306946028d2a6a6ae86a1d6d8368036ebb19d2c9))
+* resolve asyncio primitives event loop binding issue ([705fd9d](https://github.com/alex-feel/mcp-context-server/commit/705fd9d37af693298d482b787f7feb46b79beafe))
+* resolve integration test hang with persistent backend ([35219db](https://github.com/alex-feel/mcp-context-server/commit/35219dbc79dc2d8bc823d00032773ccc02e2c345))
+
 ## [0.4.1](https://github.com/alex-feel/mcp-context-server/compare/v0.4.0...v0.4.1) (2025-10-10)
 
 
