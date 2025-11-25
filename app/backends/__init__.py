@@ -2,7 +2,7 @@
 Storage backend implementations for mcp-context-server.
 
 This package provides a protocol-based abstraction for different database backends,
-enabling support for SQLite, PostgreSQL, Supabase, and other storage systems.
+enabling support for SQLite, PostgreSQL, and other storage systems.
 
 Key Components:
     - StorageBackend: Protocol defining the interface for all storage backends

@@ -58,7 +58,7 @@ class TagRepository(BaseRepository):
                         cursor.execute(query, (context_id, tag))
 
             await self.backend.execute_write(_store_tags_sqlite)
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _store_tags_postgresql(conn: asyncpg.Connection) -> None:
                 for tag in tags:
@@ -90,7 +90,7 @@ class TagRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_tags_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _get_tags_postgresql(conn: asyncpg.Connection) -> list[str]:
             query = f'SELECT tag FROM tags WHERE context_entry_id = {self._placeholder(1)} ORDER BY tag'
@@ -139,7 +139,7 @@ class TagRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_tags_batch_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _get_tags_batch_postgresql(conn: asyncpg.Connection) -> dict[int, list[str]]:
             placeholders = self._placeholders(len(context_ids))
@@ -194,7 +194,7 @@ class TagRepository(BaseRepository):
                         cursor.execute(insert_query, (context_id, tag))
 
             await self.backend.execute_write(_replace_tags_sqlite)
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _replace_tags_postgresql(conn: asyncpg.Connection) -> None:
                 delete_query = f'DELETE FROM tags WHERE context_entry_id = {self._placeholder(1)}'

@@ -1,7 +1,7 @@
 """Schema loading utilities for different storage backends.
 
 This module provides utilities to load the appropriate SQL schema
-based on the storage backend type (SQLite, PostgreSQL, Supabase).
+based on the storage backend type (SQLite, PostgreSQL).
 """
 
 from pathlib import Path
@@ -11,7 +11,7 @@ def get_schema_path(backend_type: str) -> Path:
     """Get the schema file path for a given backend type.
 
     Args:
-        backend_type: The storage backend type ('sqlite', 'postgresql', 'supabase')
+        backend_type: The storage backend type ('sqlite', 'postgresql')
 
     Returns:
         Path to the schema SQL file
@@ -23,7 +23,7 @@ def get_schema_path(backend_type: str) -> Path:
 
     if backend_type == 'sqlite':
         return schemas_dir / 'sqlite_schema.sql'
-    if backend_type in ('postgresql', 'supabase'):
+    if backend_type == 'postgresql':
         return schemas_dir / 'postgresql_schema.sql'
     raise ValueError(f'Unsupported backend type: {backend_type}')
 
@@ -32,7 +32,7 @@ def load_schema(backend_type: str) -> str:
     """Load the SQL schema for a given backend type.
 
     Args:
-        backend_type: The storage backend type ('sqlite', 'postgresql', 'supabase')
+        backend_type: The storage backend type ('sqlite', 'postgresql')
 
     Returns:
         SQL schema as a string

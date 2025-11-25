@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any
 from typing import TypeVar
 from typing import cast
+from urllib.parse import quote
 
 import asyncpg
 
@@ -196,45 +197,40 @@ class PostgreSQLBackend:
         """Return the backend type identifier for PostgreSQL.
 
         Returns:
-            str: 'postgresql' or 'supabase' depending on configuration
+            str: Always returns 'postgresql' (includes Supabase via direct connection)
         """
-        if settings.storage.is_supabase:
-            return 'supabase'
         return 'postgresql'
 
     def _build_connection_string(self) -> str:
         """Build PostgreSQL connection string from settings.
 
+        Supports both self-hosted PostgreSQL and Supabase via standard PostgreSQL settings.
+        For Supabase, use POSTGRESQL_CONNECTION_STRING or individual settings with Supabase host.
+
+        URL-encodes password to handle special characters like #, @, :, /, etc. that would
+        otherwise break URL parsing in asyncpg connection strings.
+
         Returns:
-            Connection string for asyncpg
+            Connection string for asyncpg with properly URL-encoded credentials
         """
         # Use explicit connection string if provided
         if settings.storage.postgresql_connection_string:
-            return settings.storage.postgresql_connection_string
+            return settings.storage.postgresql_connection_string.get_secret_value()
 
-        # Build from components
+        # Build from components (works for both self-hosted PostgreSQL and Supabase)
         host = settings.storage.postgresql_host
         port = settings.storage.postgresql_port
         user = settings.storage.postgresql_user
-        password = settings.storage.postgresql_password
+        password = settings.storage.postgresql_password.get_secret_value()
         database = settings.storage.postgresql_database
 
-        # Supabase detection and connection string construction
-        if settings.storage.is_supabase and settings.storage.supabase_url:
-            # Extract host from Supabase URL
-            # Format: https://xxxxx.supabase.co -> xxxxx.supabase.co
-            import urllib.parse
+        # URL-encode password to handle special characters like #, @, :, /, etc.
+        # safe='' ensures ALL special characters are encoded (e.g., # becomes %23)
+        # asyncpg automatically URL-decodes the connection string
+        encoded_password = quote(password, safe='')
 
-            parsed = urllib.parse.urlparse(settings.storage.supabase_url)
-            host = parsed.netloc
-            # Supabase transaction mode uses port 6543
-            port = 6543 if settings.storage.supabase_transaction_mode else 5432
-            # Use service role key as password
-            if settings.storage.supabase_service_role_key:
-                password = settings.storage.supabase_service_role_key
-
-        # Build connection string
-        conn_str = f'postgresql://{user}:{password}@{host}:{port}/{database}'
+        # Build connection string with encoded password
+        conn_str = f'postgresql://{user}:{encoded_password}@{host}:{port}/{database}'
 
         # Add SSL mode if specified
         if settings.storage.postgresql_ssl_mode != 'prefer':
@@ -249,8 +245,11 @@ class PostgreSQLBackend:
         then immediately closes it. This allows pool connections to
         successfully register pgvector types during initialization.
 
-        Prevents "unknown type: public.vector" warnings by ensuring
-        the extension exists before the connection pool is created.
+        STRICT MODE: Fails fast if extension cannot be created.
+        On Supabase: Enable via Dashboard → Extensions → vector (recommended).
+
+        Raises:
+            RuntimeError: If pgvector extension cannot be created or is inaccessible
         """
         try:
             conn = await asyncpg.connect(
@@ -262,8 +261,22 @@ class PostgreSQLBackend:
                 logger.debug('pgvector extension ensured before pool creation')
             finally:
                 await conn.close()
+
+        except asyncpg.exceptions.InsufficientPrivilegeError as e:
+            # Permission denied - common on managed services
+            logger.error(
+                'Cannot CREATE EXTENSION (insufficient privileges). '
+                'Enable pgvector via database management interface: '
+                'Supabase: Dashboard → Extensions → vector, '
+                'AWS RDS: rds_superuser privileges required',
+            )
+            raise RuntimeError(
+                f'pgvector extension required but cannot be created (insufficient privileges): {e}',
+            ) from e
+
         except Exception as e:
-            logger.warning(f'Failed to pre-initialize pgvector extension: {e}')
+            logger.error(f'Failed to ensure pgvector extension: {e}')
+            raise RuntimeError(f'pgvector extension is required but could not be created: {e}') from e
 
     async def initialize(self) -> None:
         """Initialize the PostgreSQL backend with connection pool and schema."""
@@ -277,16 +290,56 @@ class PostgreSQLBackend:
 
             # Define connection initialization function for pgvector support
             async def _init_connection(conn: asyncpg.Connection) -> None:
-                """Initialize each connection with pgvector type registration."""
+                """Initialize each connection with pgvector type registration.
+
+                Auto-detects the schema where pgvector extension is installed and registers
+                the vector type codec. Works universally for all PostgreSQL variants:
+                - Local PostgreSQL: pgvector in 'public' schema (default)
+                - Supabase: pgvector in 'extensions' schema (managed)
+                - AWS RDS / custom: pgvector in any schema
+
+                Raises:
+                    RuntimeError: If pgvector extension is not installed or codec registration fails
+                """
                 try:
                     from pgvector.asyncpg import register_vector
 
-                    await register_vector(conn)
-                    logger.debug('Registered pgvector types for connection')
+                    # AUTO-DETECT: Query where pgvector extension is installed
+                    # Works for ALL PostgreSQL variants (local, Supabase, AWS RDS, etc.)
+                    result = await conn.fetchrow('''
+                        SELECT n.nspname
+                        FROM pg_extension e
+                        JOIN pg_namespace n ON e.extnamespace = n.oid
+                        WHERE e.extname = 'vector'
+                    ''')
+
+                    if not result:
+                        # Extension not installed - fail fast with clear instructions
+                        raise RuntimeError(
+                            'pgvector extension is not installed. '
+                            'Enable it via: CREATE EXTENSION vector; (PostgreSQL) '
+                            'or Dashboard → Extensions → vector (Supabase)',
+                        )
+
+                    schema = result['nspname']
+
+                    # Register vector types using detected schema
+                    # Note: Type stubs for register_vector are incomplete (missing schema parameter)
+                    # Actual function signature: async def register_vector(conn, schema='public')
+                    # Using cast to work around incomplete type stubs
+                    register_func = cast(Callable[..., Awaitable[None]], register_vector)
+                    await register_func(conn, schema)
+                    logger.debug(f'Registered pgvector types from schema: {schema}')
+
                 except ImportError:
+                    # ImportError is OK - semantic search is optional
                     logger.debug('pgvector not installed, skipping vector type registration')
+
                 except Exception as e:
-                    logger.warning(f'Failed to register pgvector types: {e}')
+                    # STRICT: All other errors are FATAL
+                    logger.error(f'Failed to register pgvector type codec: {e}')
+                    logger.error('Ensure pgvector extension is enabled and accessible')
+                    raise RuntimeError(f'pgvector codec registration failed: {e}') from e
 
             # Create connection pool with pgvector initialization
             self._pool = await asyncpg.create_pool(

@@ -111,7 +111,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_write(_store_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         # Note: TYPE_CHECKING ensures asyncpg.Connection type is only used during type checking
         async def _store_postgresql(conn: asyncpg.Connection) -> tuple[int, bool]:
             # Check latest entry
@@ -324,7 +324,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_read(_search_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _search_postgresql(conn: asyncpg.Connection) -> tuple[list[Any], dict[str, Any]]:
             start_time = time_module.time()
 
@@ -467,7 +467,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_read(_fetch_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _fetch_postgresql(conn: asyncpg.Connection) -> list[Any]:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
             query = f'''
@@ -507,7 +507,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_write(_delete_by_ids_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _delete_by_ids_postgresql(conn: asyncpg.Connection) -> int:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
             result = await conn.execute(
@@ -540,7 +540,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_write(_delete_by_thread_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _delete_by_thread_postgresql(conn: asyncpg.Connection) -> int:
             result = await conn.execute(
                 f'DELETE FROM context_entries WHERE thread_id = {self._placeholder(1)}',
@@ -616,7 +616,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_write(_update_entry_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _update_entry_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
             updated_fields: list[str] = []
 
@@ -685,7 +685,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_read(_check_exists_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _check_exists_postgresql(conn: asyncpg.Connection) -> bool:
             row = await conn.fetchrow(
                 f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
@@ -717,7 +717,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_content_type_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _get_content_type_postgresql(conn: asyncpg.Connection) -> str | None:
             row = await conn.fetchrow(
                 f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}',
@@ -752,7 +752,7 @@ class ContextRepository(BaseRepository):
 
             return await self.backend.execute_write(_update_content_type_sqlite)
 
-        # PostgreSQL/Supabase
+        # PostgreSQL
         async def _update_content_type_postgresql(conn: asyncpg.Connection) -> bool:
             content_type_placeholder = self._placeholder(1)
             id_placeholder = self._placeholder(2)

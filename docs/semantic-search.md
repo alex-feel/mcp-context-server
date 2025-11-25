@@ -190,6 +190,116 @@ While EmbeddingGemma is the default, Ollama supports other embedding models:
 
 Change via `EMBEDDING_MODEL` environment variable and adjust `EMBEDDING_DIM` accordingly.
 
+## PostgreSQL Backend Setup
+
+When using PostgreSQL backend (including Supabase), you need to ensure the pgvector extension is enabled before using semantic search.
+
+### Docker PostgreSQL (pgvector/pgvector image)
+
+If you're using the recommended `pgvector/pgvector` Docker image, the pgvector extension comes pre-enabled. No additional setup needed:
+
+```bash
+# Extension is automatically enabled in pgvector Docker image
+docker run --name pgvector18 \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=mcp_context \
+  -p 5432:5432 \
+  -d pgvector/pgvector:pg18-trixie
+
+# Configure and run - pgvector is ready to use
+export STORAGE_BACKEND=postgresql
+export ENABLE_SEMANTIC_SEARCH=true
+uv run mcp-context-server
+```
+
+The server will automatically create vector columns and indexes on first run.
+
+### Supabase Setup
+
+Supabase provides the pgvector extension on all projects, but **you must manually enable it** before using semantic search.
+
+**Step 1: Enable pgvector extension**
+
+Choose one of these methods:
+
+**Method A: Via Supabase Dashboard (Easiest)**
+
+1. Navigate to your Supabase project dashboard
+2. Click **Database → Extensions** (left sidebar)
+3. Search for "vector" in the extensions list
+4. Find the "vector" extension (version 0.8.0+)
+5. Click the **toggle switch** to enable it (turns green when enabled)
+
+**Method B: Via SQL Editor**
+
+1. Navigate to **SQL Editor** in Supabase Dashboard
+2. Execute this SQL command:
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+   ```
+3. Verify it's enabled:
+   ```sql
+   SELECT * FROM pg_extension WHERE extname = 'vector';
+   ```
+
+**Step 2: Configure connection**
+
+Add to your `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "context-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--with",
+        "mcp-context-server[semantic-search]",
+        "mcp-context-server"
+      ],
+      "env": {
+        "STORAGE_BACKEND": "postgresql",
+        "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-password@db.your-project.supabase.co:5432/postgres",
+        "ENABLE_SEMANTIC_SEARCH": "true",
+        "OLLAMA_HOST": "http://localhost:11434",
+        "EMBEDDING_MODEL": "embeddinggemma:latest",
+        "EMBEDDING_DIM": "768"
+      }
+    }
+  }
+}
+```
+
+**Step 3: Start the server**
+
+The server will automatically create vector columns and indexes using the enabled pgvector extension.
+
+**Important Supabase Notes:**
+- pgvector is available on all Supabase projects (Free, Pro, Team, Enterprise)
+- You only need to enable it once - it stays enabled
+- The extension uses the "extensions" schema (not "public")
+- No additional configuration or permissions needed
+- Works identically to self-hosted PostgreSQL with pgvector
+
+### Other PostgreSQL Deployments
+
+For self-hosted PostgreSQL or other cloud providers:
+
+1. Install pgvector extension:
+   ```sql
+   CREATE EXTENSION IF NOT EXISTS vector;
+   ```
+
+2. Verify installation:
+   ```sql
+   SELECT * FROM pg_available_extensions WHERE name = 'vector';
+   ```
+
+3. Configure connection string with `ENABLE_SEMANTIC_SEARCH=true`
+
+The server handles all vector table creation and index management automatically.
+
 ## Changing Embedding Dimensions
 
 **IMPORTANT**: Changing embedding dimensions requires database migration and will result in loss of existing embeddings.

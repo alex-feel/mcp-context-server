@@ -25,7 +25,7 @@ class StorageBackend(Protocol):
     """
     Protocol defining the interface for storage backend implementations.
 
-    All storage backends (SQLite, PostgreSQL, Supabase, etc.) must implement
+    All storage backends (SQLite, PostgreSQL, etc.) must implement
     this protocol to ensure compatibility with the repository layer.
 
     The protocol defines methods for:
@@ -111,10 +111,6 @@ class StorageBackend(Protocol):
             - Creates asyncpg connection pool
             - Verifies schema exists
             - Configures statement cache
-
-        For Supabase:
-            - Same as PostgreSQL, but connects to Supabase's transaction mode
-            - Uses service role key for authentication
 
         Raises:
             RuntimeError: If initialization fails
@@ -323,7 +319,7 @@ class StorageBackend(Protocol):
 
         Returns:
             Dictionary with metrics. Common keys:
-                - backend_type: str - Backend identifier (sqlite, postgresql, supabase)
+                - backend_type: str - Backend identifier (sqlite, postgresql)
                 - pool_size: int - Total connections in pool
                 - active_connections: int - Connections currently in use
                 - circuit_breaker_state: str - Circuit breaker status
@@ -368,7 +364,7 @@ class StorageBackend(Protocol):
         Get the backend type identifier.
 
         Returns:
-            Backend type string: 'sqlite', 'postgresql', or 'supabase'
+            Backend type string: 'sqlite' or 'postgresql'
 
         This property is used for:
         - Logging and monitoring

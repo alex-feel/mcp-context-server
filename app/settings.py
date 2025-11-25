@@ -8,6 +8,7 @@ from typing import Literal
 
 from dotenv import find_dotenv
 from pydantic import Field
+from pydantic import SecretStr
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
@@ -42,7 +43,7 @@ class StorageSettings(BaseSettings):
         populate_by_name=True,
     )
     # Backend selection
-    backend_type: Literal['sqlite', 'postgresql', 'supabase'] = Field(
+    backend_type: Literal['sqlite', 'postgresql'] = Field(
         default='sqlite',
         alias='STORAGE_BACKEND',
     )
@@ -90,11 +91,11 @@ class StorageSettings(BaseSettings):
     queue_timeout_test_s: float = Field(default=0.1, alias='QUEUE_TIMEOUT_TEST_S')
 
     # PostgreSQL connection settings
-    postgresql_connection_string: str | None = Field(default=None, alias='POSTGRESQL_CONNECTION_STRING')
+    postgresql_connection_string: SecretStr | None = Field(default=None, alias='POSTGRESQL_CONNECTION_STRING')
     postgresql_host: str = Field(default='localhost', alias='POSTGRESQL_HOST')
     postgresql_port: int = Field(default=5432, alias='POSTGRESQL_PORT')
     postgresql_user: str = Field(default='postgres', alias='POSTGRESQL_USER')
-    postgresql_password: str = Field(default='postgres', alias='POSTGRESQL_PASSWORD')
+    postgresql_password: SecretStr = Field(default=SecretStr('postgres'), alias='POSTGRESQL_PASSWORD')
     postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
 
     # PostgreSQL connection pool settings
@@ -108,12 +109,6 @@ class StorageSettings(BaseSettings):
         default='prefer',
         alias='POSTGRESQL_SSL_MODE',
     )
-
-    # Supabase-specific settings
-    is_supabase: bool = Field(default=False, alias='IS_SUPABASE')
-    supabase_url: str | None = Field(default=None, alias='SUPABASE_URL')
-    supabase_service_role_key: str | None = Field(default=None, alias='SUPABASE_SERVICE_ROLE_KEY')
-    supabase_transaction_mode: bool = Field(default=True, alias='SUPABASE_TRANSACTION_MODE')
 
     @property
     def resolved_busy_timeout_ms(self) -> int:
