@@ -69,7 +69,7 @@ class StatisticsRepository(BaseRepository):
 
             return await self.backend.execute_read(_list_threads_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _list_threads_postgresql(conn: asyncpg.Connection) -> list[ThreadInfoDict]:
             rows = await conn.fetch('''
@@ -157,7 +157,7 @@ class StatisticsRepository(BaseRepository):
                 return stats
 
             stats = await self.backend.execute_read(_get_stats_sqlite)
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
                 stats: dict[str, Any] = {}
@@ -281,7 +281,7 @@ class StatisticsRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_thread_stats_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _get_thread_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
             stats: dict[str, Any] = {'thread_id': thread_id}
@@ -371,7 +371,7 @@ class StatisticsRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_tag_stats_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _get_tag_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
             stats: dict[str, Any] = {}

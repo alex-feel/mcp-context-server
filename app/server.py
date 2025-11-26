@@ -175,10 +175,7 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
         backend_type = temp_backend.backend_type
 
     # Select migration file based on backend type
-    if backend_type in ('postgresql', 'supabase'):
-        migration_filename = 'add_semantic_search_postgresql.sql'
-    else:
-        migration_filename = 'add_semantic_search.sql'
+    migration_filename = 'add_semantic_search_postgresql.sql' if backend_type == 'postgresql' else 'add_semantic_search.sql'
 
     migration_path = Path(__file__).parent / 'migrations' / migration_filename
 
@@ -238,12 +235,12 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
             return True, existing_dim
 
         table_exists, existing_dim = await manager.execute_read(_check_existing_dimension_sqlite)
-    else:  # postgresql, supabase
+    else:  # postgresql
 
         async def _check_existing_dimension_postgresql(conn: asyncpg.Connection) -> tuple[bool, int | None]:
             # Check if vector table exists
             row = await conn.fetchrow(
-                "SELECT tablename FROM pg_tables WHERE tablename = 'vec_context_embeddings'",
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'vec_context_embeddings'",
             )
             table_exists = row is not None
 
@@ -306,7 +303,7 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
             conn.executescript(migration_sql)
 
         await manager.execute_write(_apply_migration_sqlite)
-    else:  # postgresql, supabase
+    else:  # postgresql
 
         async def _apply_migration_postgresql(conn: asyncpg.Connection) -> None:
             # PostgreSQL: pgvector extension registration happens in backend initialization
@@ -465,7 +462,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
             backend_type = temp_backend.backend_type
 
         # Select schema file based on backend type
-        schema_filename = 'postgresql_schema.sql' if backend_type in ('postgresql', 'supabase') else 'sqlite_schema.sql'
+        schema_filename = 'postgresql_schema.sql' if backend_type == 'postgresql' else 'sqlite_schema.sql'
 
         schema_path = Path(__file__).parent / 'schemas' / schema_filename
 
@@ -490,7 +487,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                     conn.executescript(schema_sql)
 
                 await backend.execute_write(_init_schema_sqlite)
-            else:  # postgresql, supabase
+            else:  # postgresql
 
                 async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
                     # PostgreSQL: parse and execute statements individually
@@ -536,7 +533,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                         conn.executescript(schema_sql)
 
                     await temp_manager.execute_write(_init_schema_sqlite)
-                else:  # postgresql, supabase
+                else:  # postgresql
 
                     async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
                         # PostgreSQL: parse and execute statements individually
@@ -783,19 +780,29 @@ async def store_context(
 
         # Store images if provided
         total_size: float = 0.0
+        valid_image_count = 0
         if images:
-            # Validate image sizes first
+            # Pre-validate ALL images before storing any
             for idx, img in enumerate(images):
-                img_data_str = img.get('data', '')
-                if not img_data_str:
-                    logger.warning(f'Image {idx} has no data, skipping')
-                    continue
+                # Validate required data field
+                if 'data' not in img:
+                    raise ToolError(f'Image {idx} is missing required "data" field')
 
+                img_data_str = img.get('data', '')
+                if not img_data_str or not img_data_str.strip():
+                    raise ToolError(f'Image {idx} has empty "data" field')
+
+                # mime_type is optional - defaults to 'image/png' if not provided
+                if 'mime_type' not in img:
+                    img['mime_type'] = 'image/png'
+
+                # Validate base64 encoding
                 try:
                     image_binary = base64.b64decode(img_data_str)
-                except Exception:
-                    raise ToolError(f'Invalid base64 encoded data in image {idx}') from None
+                except Exception as e:
+                    raise ToolError(f'Image {idx} has invalid base64 encoding: {str(e)}') from None
 
+                # Validate image size
                 image_size_mb = len(image_binary) / (1024 * 1024)
 
                 if image_size_mb > MAX_IMAGE_SIZE_MB:
@@ -805,7 +812,10 @@ async def store_context(
                 if total_size > MAX_TOTAL_SIZE_MB:
                     raise ToolError(f'Total size exceeds {MAX_TOTAL_SIZE_MB}MB limit')
 
+                valid_image_count += 1
+
             # All validations passed, store the images
+            logger.debug(f'Pre-validation passed for {valid_image_count} images, total size: {total_size:.2f}MB')
             try:
                 await repos.images.store_images(context_id, images)
             except Exception as e:

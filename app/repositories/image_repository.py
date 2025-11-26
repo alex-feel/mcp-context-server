@@ -73,7 +73,7 @@ class ImageRepository(BaseRepository):
                 )
 
             await self.backend.execute_write(_store_image_sqlite)
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _store_image_postgresql(conn: asyncpg.Connection) -> None:
                 query = f'''
@@ -108,12 +108,19 @@ class ImageRepository(BaseRepository):
 
             def _store_images_sqlite(conn: sqlite3.Connection) -> None:
                 cursor = conn.cursor()
+                stored_count = 0
                 for idx, img in enumerate(images):
                     img_data_str = img.get('data', '')
                     if not img_data_str:
-                        continue
+                        logger.error(f'Image {idx} for context {context_id} has no data - should have been validated')
+                        raise ValueError(f'Image {idx} has no data')
 
-                    image_binary = base64.b64decode(img_data_str)
+                    try:
+                        image_binary = base64.b64decode(img_data_str)
+                    except Exception as e:
+                        logger.error(f'Failed to decode base64 for image {idx} in context {context_id}: {e}')
+                        raise ValueError(f'Invalid base64 data in image {idx}') from e
+
                     query = f'''
                         INSERT INTO image_attachments
                         (context_entry_id, image_data, mime_type, image_metadata, position)
@@ -130,17 +137,27 @@ class ImageRepository(BaseRepository):
                             idx,
                         ),
                     )
+                    stored_count += 1
+
+                logger.debug(f'Stored {stored_count} images for context {context_id} (SQLite)')
 
             await self.backend.execute_write(_store_images_sqlite)
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _store_images_postgresql(conn: asyncpg.Connection) -> None:
+                stored_count = 0
                 for idx, img in enumerate(images):
                     img_data_str = img.get('data', '')
                     if not img_data_str:
-                        continue
+                        logger.error(f'Image {idx} for context {context_id} has no data - should have been validated')
+                        raise ValueError(f'Image {idx} has no data')
 
-                    image_binary = base64.b64decode(img_data_str)
+                    try:
+                        image_binary = base64.b64decode(img_data_str)
+                    except Exception as e:
+                        logger.error(f'Failed to decode base64 for image {idx} in context {context_id}: {e}')
+                        raise ValueError(f'Invalid base64 data in image {idx}') from e
+
                     query = f'''
                         INSERT INTO image_attachments
                         (context_entry_id, image_data, mime_type, image_metadata, position)
@@ -155,6 +172,9 @@ class ImageRepository(BaseRepository):
                         json.dumps(img.get('metadata')) if img.get('metadata') else None,
                         idx,
                     )
+                    stored_count += 1
+
+                logger.debug(f'Stored {stored_count} images for context {context_id} (PostgreSQL)')
 
             await self.backend.execute_write(cast(Any, _store_images_postgresql))
 
@@ -212,7 +232,7 @@ class ImageRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_images_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _get_images_postgresql(conn: asyncpg.Connection) -> list[ImageDict]:
             if include_data:
@@ -317,7 +337,7 @@ class ImageRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_images_batch_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _get_images_batch_postgresql(conn: asyncpg.Connection) -> dict[int, list[ImageDict]]:
             placeholders = self._placeholders(len(context_ids))
@@ -386,7 +406,7 @@ class ImageRepository(BaseRepository):
 
             return await self.backend.execute_read(_count_images_sqlite)
 
-        # postgresql, supabase
+        # postgresql
 
         async def _count_images_postgresql(conn: asyncpg.Connection) -> int:
             query = f'SELECT COUNT(*) as count FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
@@ -447,7 +467,7 @@ class ImageRepository(BaseRepository):
                     )
 
             await self.backend.execute_write(_replace_images_sqlite)
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _replace_images_postgresql(conn: asyncpg.Connection) -> None:
                 delete_query = f'DELETE FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'

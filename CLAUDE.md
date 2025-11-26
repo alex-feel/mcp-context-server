@@ -119,7 +119,11 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Base64 image encoding/decoding with configurable size limits
    - `ContextEntry`, `ImageAttachment`, `StoreContextRequest` as main models
 
-5. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
+5. **Services Layer** (`app/services/`):
+   - **EmbeddingService** (`embedding_service.py`): Generates embeddings via Ollama API for semantic search
+   - Handles model communication, vector dimension validation, and graceful degradation
+
+6. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
    - **MetadataFilter**: Advanced filter specification with 15 operators (eq, ne, gt, lt, contains, etc.)
    - **QueryBuilder**: Backend-aware SQL generation with proper parameter binding and type casting
    - Supports nested JSON path queries (e.g., "user.preferences.theme")
@@ -127,7 +131,7 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Safe SQL generation with injection prevention
    - Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) JSON operators
 
-6. **Database Layer** (`app/schemas/`):
+7. **Database Layer** (`app/schemas/`):
    - **SQLite Schema** (`sqlite_schema.sql`): 3 tables with JSON support, BLOB storage
    - **PostgreSQL Schema** (`postgresql_schema.sql`): 3 tables with JSONB support, BYTEA storage
    - Thread-scoped context isolation with strategic indexing
@@ -191,19 +195,42 @@ The codebase uses a comprehensive multi-layered testing approach:
   - All fixtures create SQLite temporary databases (no PostgreSQL fixtures in test suite)
 
 #### Test Files and Their Purpose:
+
+**Core Tests:**
 - **`test_models.py`**: Validates Pydantic data models, field validation, and type conversions
 - **`test_database.py`**: Tests SQLite operations, constraints, indexes, and cascade deletes
 - **`test_server.py`**: Tests MCP tool handlers with mocked database connections
 - **`test_integration.py`**: End-to-end workflows with real database operations
 - **`test_real_server.py`**: Tests actual running server via FastMCP client connection
+
+**Parameter and JSON Handling:**
 - **`test_parameter_handling.py`**: Validates tool parameter parsing and type coercion
 - **`test_json_parameter_handling.py`**: Tests JSON parameter serialization/deserialization
 - **`test_json_string_handling.py`**: Validates JSON string handling in tool responses
-- **`test_deduplication.py`**: Tests context deduplication logic
-- **`test_resource_warnings.py`**: Validates proper resource cleanup
+- **`test_encoding.py`**: Tests character encoding edge cases
+
+**Metadata and Filtering:**
 - **`test_metadata_filtering.py`**: Tests advanced metadata filtering with operators
 - **`test_metadata_error_handling.py`**: Tests metadata filtering error cases
+- **`test_nested_metadata_storage.py`**: Tests nested JSON metadata storage and retrieval
+
+**Feature-Specific Tests:**
 - **`test_update_context.py`**: Tests update_context tool functionality
+- **`test_deduplication.py`**: Tests context deduplication logic
+- **`test_semantic_search_filters.py`**: Tests semantic search with filtering options
+- **`test_embedding_service.py`**: Tests embedding generation service
+
+**Error and Validation:**
+- **`test_error_formats.py`**: Tests error response formatting consistency
+- **`test_error_handling_json.py`**: Tests JSON error handling edge cases
+- **`test_json_error_consistency.py`**: Tests consistent error messages across JSON operations
+- **`test_validation_errors.py`**: Tests input validation error messages
+- **`test_validation_consistency.py`**: Tests validation behavior consistency
+
+**Backend and Infrastructure:**
+- **`test_postgresql_backend.py`**: Tests PostgreSQL-specific backend functionality
+- **`test_schema_sync.py`**: Validates SQLite and PostgreSQL schemas are in sync
+- **`test_resource_warnings.py`**: Validates proper resource cleanup
 
 #### Test Fixtures (`conftest.py`):
 - **`test_settings`**: Creates test-specific AppSettings with temp database
@@ -291,6 +318,7 @@ The `semantic_search_context` tool is an optional feature that enables vector si
 - **Application**: Migrations are applied automatically on server startup if semantic search is enabled
 - **Idempotency**: All migrations use `IF NOT EXISTS` or `CREATE EXTENSION IF NOT EXISTS` for safe re-runs
 - **Manual Migration** (if needed): Execute migration SQL directly against database
+- **Note**: All migrations are version-controlled and tracked in `app/migrations/`. The server automatically detects and applies pending migrations on startup.
 
 ## Package Configuration
 
@@ -310,6 +338,87 @@ The project uses [Release Please](https://github.com/googleapis/release-please) 
 - PyPI publishing is handled by GitHub Actions
 - To trigger a release, merge commits following [Conventional Commits](https://www.conventionalcommits.org/)
 
+## MCP Registry and server.json Maintenance
+
+The `server.json` file enables MCP client discovery and configuration of this server. It must comply with the official [MCP Registry specification](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md).
+
+### Official Specification
+
+- **Schema URL**: `https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/server-json/server.schema.json`
+- **Specification**: [MCP Registry Generic Server JSON Reference](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md)
+- **Purpose**: Provides standardized metadata for MCP client auto-configuration
+
+### Valid Environment Variable Fields
+
+Environment variables in `server.json` support ONLY these fields:
+
+**Required Fields:**
+- `name` - Variable identifier (e.g., `LOG_LEVEL`)
+- `description` - Description of the input
+- `format` - Specifies the input format
+- `isRequired` - Boolean requirement flag
+
+**Optional Fields:**
+- `isSecret` - Sensitivity indicator (default: false)
+- `default` - Default value
+- `choices` - Array of allowed values
+
+### Synchronization with app/settings.py
+
+All environment variables in `server.json` must match Field definitions in `app/settings.py`:
+
+**When adding a new environment variable:**
+1. Add Field to appropriate class in `app/settings.py` with `alias` parameter
+2. Add corresponding entry to `server.json` environmentVariables array
+3. Verify synchronization using validation commands below
+
+**Example Field in settings.py:**
+```python
+log_level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(
+    default='ERROR',
+    alias='LOG_LEVEL',
+)
+```
+
+**Corresponding server.json entry:**
+```json
+{
+    "description": "Log level",
+    "isRequired": false,
+    "format": "string",
+    "isSecret": false,
+    "name": "LOG_LEVEL"
+}
+```
+
+### Validation Commands
+
+**Validate JSON syntax:**
+```bash
+python -m json.tool server.json > /dev/null && echo "JSON is valid" || echo "JSON is invalid"
+```
+
+**Count environment variables:**
+```bash
+# Should match number of Field aliases in app/settings.py
+python -c "import json; print(len(json.load(open('server.json'))['packages'][0]['environmentVariables']))"
+```
+
+**List all environment variable names:**
+```bash
+python -c "import json; print('\n'.join([e['name'] for e in json.load(open('server.json'))['packages'][0]['environmentVariables']]))"
+```
+
+### Version Synchronization
+
+The version in `server.json` must match `pyproject.toml`:
+- Top-level `version` field
+- Package-level `version` field (inside packages array)
+- Both must be identical semantic versions (e.g., `0.5.0`)
+
+**Automated version updates:**
+- Release Please automatically updates `server.json` version during releases
+
 ## Environment Variables
 
 Configuration via `.env` file or environment:
@@ -328,6 +437,7 @@ Configuration via `.env` file or environment:
 - `EMBEDDING_DIM`: Embedding vector dimensions (default: 768)
 
 **PostgreSQL Settings** (only when STORAGE_BACKEND=postgresql):
+- `POSTGRESQL_CONNECTION_STRING`: Full PostgreSQL connection string (if provided, overrides individual host/port/user/password/database settings)
 - `POSTGRESQL_HOST`: PostgreSQL server host (default: localhost)
 - `POSTGRESQL_PORT`: PostgreSQL server port (default: 5432)
 - `POSTGRESQL_USER`: PostgreSQL username (default: postgres)
@@ -422,6 +532,151 @@ The PostgreSQL backend automatically handles initialization on first run:
 
 All initialization is idempotent - safe to run multiple times.
 
+#### Supabase
+
+**Compatibility:** Supabase is fully compatible via direct PostgreSQL connection - no special code or configuration needed.
+
+Supabase provides TWO connection methods for persistent database connections. Choose based on your network environment.
+
+##### Connection Method 1: Direct Connection (Recommended - Requires IPv6)
+
+**Best for:** VMs, long-running containers, systems with IPv6 support
+**Performance:** Lowest latency (~15-20ms)
+**Network:** Requires IPv6 (unless you have paid dedicated IPv4 add-on)
+
+**Connection String Format:**
+```
+postgresql://postgres:[YOUR-PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres
+```
+
+**How to Get Connection String:**
+1. Navigate to: Database → Settings (left sidebar) in Supabase Dashboard
+2. Find: "Connect to your project" section
+3. Select: "Connection String" tab → "Direct connection" method
+4. Copy connection string (you'll need to replace `[YOUR-PASSWORD]` with your actual password)
+
+**Setup Steps:**
+```bash
+# 1. Get your database password
+# IMPORTANT: Database password is NEVER displayed in Supabase Dashboard (security)
+# Either: Use the password you set when creating your project
+# Or: Click "Reset database password" button (below connection string) to set a new one
+# Note: [YOUR-PASSWORD] is a placeholder - replace with your actual password
+
+# 2. Configure environment with Direct Connection
+export STORAGE_BACKEND=postgresql
+export POSTGRESQL_CONNECTION_STRING=postgresql://postgres:your-actual-password@db.[PROJECT-REF].supabase.co:5432/postgres
+export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
+
+# 3. Enable pgvector extension (required for semantic search)
+# Option A: Via Supabase Dashboard (easiest)
+#   - Navigate to: Database → Extensions (left sidebar)
+#   - Search for "vector"
+#   - Toggle the "vector" extension to enable (turns green)
+# Option B: Via SQL Editor
+#   - Navigate to: SQL Editor in Supabase Dashboard
+#   - Run: CREATE EXTENSION IF NOT EXISTS vector;
+
+# 4. Run server (schema auto-initializes)
+uv run mcp-context-server
+```
+
+##### Connection Method 2: Session Pooler (IPv4 Compatible)
+
+**Best for:** Systems without IPv6 support (Windows, corporate networks with IPv4-only)
+**Performance:** Good (~20-30ms, +5-10ms vs Direct Connection via Supavisor proxy)
+**Network:** Works with both IPv4 and IPv6 (universal compatibility)
+
+**Connection String Format:**
+```
+postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+```
+
+**How to Get Connection String:**
+1. Navigate to: Database → Settings (left sidebar) in Supabase Dashboard
+2. Find: "Connect to your project" section
+3. Select: "Connection String" tab → "Session pooler" method
+4. Copy connection string (you'll need to replace `[YOUR-PASSWORD]` with your actual password)
+
+**Important Differences from Direct Connection:**
+- **Different hostname**: `aws-0-[REGION].pooler.supabase.com` instead of `db.[PROJECT-REF].supabase.co`
+- **Different username format**: `postgres.[PROJECT-REF]` instead of `postgres`
+- **Same port**: 5432 (NOT 6543 - Transaction Pooler is different and not for persistent connections)
+- **Connection routed through Supavisor**: Adds IPv4 support but slightly higher latency
+
+**Setup Steps:**
+```bash
+# 1. Get your database password (same as Direct Connection method)
+# IMPORTANT: Database password is NEVER displayed in Supabase Dashboard (security)
+# Either: Use the password you set when creating your project
+# Or: Click "Reset database password" button (below connection string) to set a new one
+
+# 2. Configure environment with Session Pooler connection
+export STORAGE_BACKEND=postgresql
+export POSTGRESQL_CONNECTION_STRING=postgresql://postgres.[PROJECT-REF]:your-actual-password@aws-0-[REGION].pooler.supabase.com:5432/postgres
+export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
+
+# 3. Enable pgvector extension (same as Direct Connection)
+# Option A: Via Supabase Dashboard (easiest)
+#   - Navigate to: Database → Extensions (left sidebar)
+#   - Search for "vector"
+#   - Toggle the "vector" extension to enable (turns green)
+# Option B: Via SQL Editor
+#   - Navigate to: SQL Editor in Supabase Dashboard
+#   - Run: CREATE EXTENSION IF NOT EXISTS vector;
+
+# 4. Run server (schema auto-initializes)
+uv run mcp-context-server
+```
+
+##### Decision Matrix: Which Connection Method to Use?
+
+| Factor | Direct Connection | Session Pooler |
+|--------|------------------|----------------|
+| **IPv6 Required?** | Yes (unless paid IPv4 add-on) | No (works with IPv4) |
+| **Performance** | Lowest latency (~15-20ms) | Good (+5-10ms via proxy) |
+| **Hostname** | `db.[PROJECT-REF].supabase.co` | `aws-0-[REGION].pooler.supabase.com` |
+| **Username** | `postgres` | `postgres.[PROJECT-REF]` |
+| **Port** | 5432 | 5432 |
+| **Best For** | VMs with IPv6, production deployments | Windows, corporate networks, IPv4-only systems |
+| **Universal Compatibility** | No (IPv6 only) | Yes (IPv4 and IPv6) |
+
+##### Troubleshooting: "getaddrinfo failed" Error
+
+If you see errors like:
+```
+OSError: [Errno -3] Temporary failure in name resolution
+gaierror: [Errno -3] getaddrinfo failed
+```
+
+**Cause:** Your system doesn't support IPv6 and you're using Direct Connection method.
+
+**Solution:** Switch to Session Pooler method (Connection Method 2 above):
+1. Get Session Pooler connection string from Supabase Dashboard (Connection String → Session pooler)
+2. Update your connection string to use `aws-0-[REGION].pooler.supabase.com` hostname
+3. Update username format to `postgres.[PROJECT-REF]`
+4. Keep port as 5432
+5. Restart server
+
+**Important Connection Details:**
+- **Database password is never shown** - you must use your original password or reset it
+- **NOT API keys** - API keys (including service_role) are for REST/GraphQL APIs, not direct database connection
+- **Port 5432** for both connection methods (Transaction Pooler on port 6543 is different - only for serverless functions)
+- **pgvector extension** is available on all Supabase projects - must be manually enabled via Dashboard → Extensions (toggle "vector") or SQL (`CREATE EXTENSION IF NOT EXISTS vector;`) before using semantic search
+- **All PostgreSQL features** work identically - JSONB, transactions, metadata filtering
+
+**Why No Special Supabase Support:**
+- Supabase IS PostgreSQL - creating separate abstraction would violate DRY and YAGNI principles
+- Both connection methods use standard PostgreSQL wire protocol - identical to self-hosted PostgreSQL
+- Zero maintenance burden - no Supabase-specific code to maintain
+- Future-proof - works regardless of Supabase changes
+- Clear semantics - users understand they're using PostgreSQL
+
+**Testing with Supabase:**
+- Tests use SQLite temporary databases (no Supabase required for testing)
+- Production deployment can use Supabase via standard PostgreSQL configuration (either connection method)
+- All PostgreSQL backend features tested with SQLite work identically on Supabase
+
 ### StorageBackend Protocol
 
 All backends implement the `StorageBackend` protocol with these required methods:
@@ -431,7 +686,7 @@ All backends implement the `StorageBackend` protocol with these required methods
 - `execute_write(operation, *args, **kwargs)`: Execute write operation with retry logic
 - `execute_read(operation, *args, **kwargs)`: Execute read operation
 - `get_metrics()`: Return backend health metrics
-- `backend_type` property: Return backend identifier ('sqlite', 'postgresql', 'supabase')
+- `backend_type` property: Return backend identifier ('sqlite', 'postgresql')
 
 ### Backend Benefits
 

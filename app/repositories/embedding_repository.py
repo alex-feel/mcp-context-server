@@ -34,13 +34,12 @@ class EmbeddingRepository(BaseRepository):
     """Repository for vector embeddings supporting both sqlite-vec and pgvector.
 
     This repository handles all database operations for semantic search embeddings,
-    using either sqlite-vec extension (SQLite) or pgvector extension (PostgreSQL/Supabase)
+    using either sqlite-vec extension (SQLite) or pgvector extension (PostgreSQL)
     depending on the configured storage backend.
 
     Supported backends:
     - SQLite: Uses sqlite-vec with BLOB storage and vec_distance_l2()
     - PostgreSQL: Uses pgvector with native vector type and <-> operator
-    - Supabase: Uses pgvector (same as PostgreSQL)
     """
 
     def __init__(self, backend: StorageBackend) -> None:
@@ -91,24 +90,15 @@ class EmbeddingRepository(BaseRepository):
             await self.backend.execute_write(_store_sqlite)
             logger.debug(f'Stored embedding for context {context_id} (SQLite)')
 
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _store_postgresql(conn: asyncpg.Connection) -> None:
-                try:
-                    import numpy as np
-                except ImportError as e:
-                    raise RuntimeError(
-                        'numpy package is required for semantic search. Install with: uv sync --extra semantic-search',
-                    ) from e
-
-                embedding_array = np.array(embedding, dtype=np.float32)
-
                 # Insert into vec_context_embeddings
                 query1 = (
                     f'INSERT INTO vec_context_embeddings(context_id, embedding) '
                     f'VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
                 )
-                await conn.execute(query1, context_id, embedding_array)
+                await conn.execute(query1, context_id, embedding)
 
                 # Insert into embedding_metadata
                 query2 = (
@@ -203,19 +193,10 @@ class EmbeddingRepository(BaseRepository):
 
             return await self.backend.execute_read(_search_sqlite)
 
-        # postgresql, supabase
+        # postgresql
         async def _search_postgresql(conn: asyncpg.Connection) -> list[dict[str, Any]]:
-            try:
-                import numpy as np
-            except ImportError as e:
-                raise RuntimeError(
-                    'numpy package is required for semantic search. Install with: uv sync --extra semantic-search',
-                ) from e
-
-            embedding_array = np.array(query_embedding, dtype=np.float32)
-
             filter_conditions = ['1=1']  # Always true, makes building easier
-            filter_params: list[Any] = [embedding_array]
+            filter_params: list[Any] = [query_embedding]
             param_position = 2  # Start at 2 because $1 is embedding
 
             if thread_id:
@@ -289,24 +270,15 @@ class EmbeddingRepository(BaseRepository):
             await self.backend.execute_write(_update_sqlite)
             logger.debug(f'Updated embedding for context {context_id} (SQLite)')
 
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _update_postgresql(conn: asyncpg.Connection) -> None:
-                try:
-                    import numpy as np
-                except ImportError as e:
-                    raise RuntimeError(
-                        'numpy package is required for semantic search. Install with: uv sync --extra semantic-search',
-                    ) from e
-
-                embedding_array = np.array(embedding, dtype=np.float32)
-
                 # Update vec_context_embeddings
                 query1 = (
                     f'UPDATE vec_context_embeddings SET embedding = {self._placeholder(1)} '
                     f'WHERE context_id = {self._placeholder(2)}'
                 )
-                await conn.execute(query1, embedding_array, context_id)
+                await conn.execute(query1, embedding, context_id)
 
                 # Update timestamp in embedding_metadata (trigger handles updated_at)
                 query2 = (
@@ -335,7 +307,7 @@ class EmbeddingRepository(BaseRepository):
             await self.backend.execute_write(_delete_sqlite)
             logger.debug(f'Deleted embedding for context {context_id} (SQLite)')
 
-        else:  # postgresql, supabase
+        else:  # postgresql
 
             async def _delete_postgresql(conn: asyncpg.Connection) -> None:
                 # Delete from vec_context_embeddings (CASCADE will delete from embedding_metadata)
@@ -363,7 +335,7 @@ class EmbeddingRepository(BaseRepository):
 
             return await self.backend.execute_read(_exists_sqlite)
 
-        # postgresql, supabase
+        # postgresql
         async def _exists_postgresql(conn: asyncpg.Connection) -> bool:
             query = f'SELECT 1 FROM embedding_metadata WHERE context_id = {self._placeholder(1)} LIMIT 1'
             row = await conn.fetchrow(query, context_id)
@@ -414,7 +386,7 @@ class EmbeddingRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_stats_sqlite)
 
-        # postgresql, supabase
+        # postgresql
         async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
             if thread_id:
                 query1 = f'SELECT COUNT(*) FROM context_entries WHERE thread_id = {self._placeholder(1)}'
@@ -461,7 +433,7 @@ class EmbeddingRepository(BaseRepository):
 
             return await self.backend.execute_read(_get_dimension_sqlite)
 
-        # postgresql, supabase
+        # postgresql
         async def _get_dimension_postgresql(conn: asyncpg.Connection) -> int | None:
             row = await conn.fetchrow('SELECT dimensions FROM embedding_metadata LIMIT 1')
             return row['dimensions'] if row else None

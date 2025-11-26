@@ -16,7 +16,7 @@ from app.settings import get_settings
 
 
 def create_backend(
-    backend_type: Literal['sqlite', 'postgresql', 'supabase'] | None = None,
+    backend_type: Literal['sqlite', 'postgresql'] | None = None,
     db_path: Path | str | None = None,
     connection_string: str | None = None,
 ) -> StorageBackend:
@@ -28,14 +28,14 @@ def create_backend(
     returning a StorageBackend protocol implementation.
 
     Args:
-        backend_type: Type of backend to create ('sqlite', 'postgresql', 'supabase').
+        backend_type: Type of backend to create ('sqlite', 'postgresql').
                      If None, reads from settings.storage.backend_type
         db_path: Path to database file (SQLite only). If None, uses settings.storage.db_path
-        connection_string: PostgreSQL connection string (PostgreSQL/Supabase only).
+        connection_string: PostgreSQL connection string (PostgreSQL only).
                           If None, builds from settings.storage.postgresql_* settings
 
     Returns:
-        StorageBackend implementation (SQLiteBackend, PostgreSQLBackend, etc.)
+        StorageBackend implementation (SQLiteBackend, PostgreSQLBackend)
 
     Raises:
         ValueError: If backend_type is invalid or required parameters are missing
@@ -59,10 +59,6 @@ def create_backend(
             connection_string='postgresql://user:pass@localhost:5432/dbname',
         )
         await backend.initialize()
-
-        # Create Supabase backend (uses PostgreSQLBackend)
-        backend = create_backend(backend_type='supabase')
-        await backend.initialize()
     """
     settings = get_settings()
 
@@ -71,9 +67,9 @@ def create_backend(
         backend_type = getattr(settings.storage, 'backend_type', 'sqlite')
 
     # Validate backend type
-    if backend_type not in ('sqlite', 'postgresql', 'supabase'):
+    if backend_type not in ('sqlite', 'postgresql'):
         raise ValueError(
-            f'Invalid backend_type: {backend_type}. Must be one of: sqlite, postgresql, supabase',
+            f'Invalid backend_type: {backend_type}. Must be one of: sqlite, postgresql',
         )
 
     # Create appropriate backend
@@ -89,13 +85,6 @@ def create_backend(
         # Create SQLite backend
         return SQLiteBackend(db_path=db_path)
 
-    if backend_type == 'postgresql':
-        # Create PostgreSQL backend
-        return PostgreSQLBackend(connection_string=connection_string)
-
-    if backend_type == 'supabase':
-        # Supabase backend uses PostgreSQLBackend with Supabase-specific settings
-        return PostgreSQLBackend(connection_string=connection_string)
-
-    # This should never be reached due to validation above
-    raise ValueError(f'Unsupported backend_type: {backend_type}')
+    # backend_type == 'postgresql'
+    # Create PostgreSQL backend
+    return PostgreSQLBackend(connection_string=connection_string)

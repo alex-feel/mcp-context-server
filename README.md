@@ -218,6 +218,254 @@ export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
 
 **Note:** PostgreSQL settings are only needed when using PostgreSQL. The server uses SQLite by default if `STORAGE_BACKEND` is not set.
 
+### Using with Supabase
+
+Supabase is fully compatible with the PostgreSQL backend using direct database connection. No special configuration needed - Supabase IS PostgreSQL.
+
+**Connection Methods:**
+
+Supabase offers TWO connection methods. Choose based on your network capabilities:
+
+1. **Direct Connection** (IPv6 required, lowest latency)
+2. **Session Pooler** (IPv4 compatible, universal)
+
+#### Connection Method 1: Direct Connection (Recommended)
+
+Best for: VMs, servers, and local development with IPv6 support
+
+**Requirements:**
+- IPv6 connectivity (or paid dedicated IPv4 add-on)
+- Port 5432 accessible
+- Lowest latency (~15-20ms)
+
+**Quick Setup:**
+
+1. **Get your database connection details:**
+
+   Navigate to your Supabase Dashboard:
+   - Go to **Database → Settings** (left sidebar → Database → Settings)
+   - Find the **"Connect to your project"** section
+   - Select **"Connection String"** tab, then **"Direct connection"** method
+   - You'll see: `postgresql://postgres:[YOUR_PASSWORD]@db.[PROJECT_REF].supabase.co:5432/postgres`
+
+2. **Get or reset your database password:**
+
+   **IMPORTANT:** For security reasons, your database password is **never displayed** in the Supabase Dashboard.
+
+   You must use one of these approaches:
+   - **Use the password you set** when creating your Supabase project, OR
+   - **Click "Reset database password"** (below the connection string) to generate a new password
+
+   **Note:** Replace `[YOUR_PASSWORD]` in the connection string with your actual database password (NOT API keys - those are for REST/GraphQL APIs).
+
+3. **Configure the connection:**
+
+   Add to your `.mcp.json` with your actual password:
+
+   ```json
+   {
+     "mcpServers": {
+       "context-server": {
+         "type": "stdio",
+         "command": "uvx",
+         "args": ["mcp-context-server"],
+         "env": {
+           "STORAGE_BACKEND": "postgresql",
+           "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres"
+         }
+       }
+     }
+   }
+   ```
+
+   Or using individual environment variables:
+
+   ```json
+   {
+     "mcpServers": {
+       "context-server": {
+         "type": "stdio",
+         "command": "uvx",
+         "args": ["mcp-context-server"],
+         "env": {
+           "STORAGE_BACKEND": "postgresql",
+           "POSTGRESQL_HOST": "db.[PROJECT_REF].supabase.co",
+           "POSTGRESQL_PORT": "5432",
+           "POSTGRESQL_USER": "postgres",
+           "POSTGRESQL_PASSWORD": "your-actual-password",
+           "POSTGRESQL_DATABASE": "postgres",
+           "ENABLE_SEMANTIC_SEARCH": "true"
+         }
+       }
+     }
+   }
+   ```
+
+   **Replace** `[PROJECT_REF]` with your actual project reference ID and `your-actual-password` with your database password.
+
+#### Connection Method 2: Session Pooler (IPv4 Compatible)
+
+Best for: Systems without IPv6 support (Windows, corporate networks, restricted environments)
+
+**Requirements:**
+- IPv4 connectivity (works universally)
+- Port 5432 accessible
+- Slightly higher latency (~20-30ms, +5-10ms vs Direct)
+
+**Important Differences from Direct Connection:**
+- **Different hostname**: Uses `*.pooler.supabase.com` (NOT `db.*.supabase.co`)
+- **Different username format**: `postgres.[PROJECT-REF]` (includes project reference)
+- **Same port**: 5432 (NOT 6543 - that's Transaction Pooler for serverless only)
+- **IPv4 compatible**: Works on all systems without IPv6 configuration
+
+**Quick Setup:**
+
+1. **Get your Session Pooler connection string:**
+
+   Navigate to your Supabase Dashboard:
+   - Go to **Database → Settings** (left sidebar → Database → Settings)
+   - Find the **"Connect to your project"** section
+   - Select **"Connection String"** tab, then **"Session pooler"** method (NOT "Transaction pooler")
+   - You'll see: `postgresql://postgres.[PROJECT-REF]:[YOUR_PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres`
+
+   **Example:**
+   ```
+   postgresql://postgres.abcdefghijklmno:your-password@aws-0-us-east-1.pooler.supabase.com:5432/postgres
+   ```
+
+2. **Get or reset your database password** (same as Direct Connection - see above)
+
+3. **Configure the connection:**
+
+   Add to your `.mcp.json`:
+
+   ```json
+   {
+     "mcpServers": {
+       "context-server": {
+         "type": "stdio",
+         "command": "uvx",
+         "args": ["mcp-context-server"],
+         "env": {
+           "STORAGE_BACKEND": "postgresql",
+           "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres.[PROJECT-REF]:your-actual-password@aws-0-[REGION].pooler.supabase.com:5432/postgres"
+         }
+       }
+     }
+   }
+   ```
+
+   Or using individual environment variables:
+
+   ```json
+   {
+     "mcpServers": {
+       "context-server": {
+         "type": "stdio",
+         "command": "uvx",
+         "args": ["mcp-context-server"],
+         "env": {
+           "STORAGE_BACKEND": "postgresql",
+           "POSTGRESQL_HOST": "aws-0-[REGION].pooler.supabase.com",
+           "POSTGRESQL_PORT": "5432",
+           "POSTGRESQL_USER": "postgres.[PROJECT-REF]",
+           "POSTGRESQL_PASSWORD": "your-actual-password",
+           "POSTGRESQL_DATABASE": "postgres",
+           "ENABLE_SEMANTIC_SEARCH": "true"
+         }
+       }
+     }
+   }
+   ```
+
+   **Replace** `[PROJECT-REF]` with your actual project reference, `[REGION]` with your project region (e.g., `us-east-1`), and `your-actual-password` with your database password.
+
+#### Which Connection Method Should I Use?
+
+| Consideration | Direct Connection | Session Pooler |
+|--------------|-------------------|----------------|
+| **IPv6 Required** | Yes (or paid IPv4 add-on) | No - IPv4 compatible |
+| **Latency** | Lowest (~15-20ms) | +5-10ms overhead |
+| **Windows Compatibility** | May require IPv6 config | Works universally |
+| **Corporate Networks** | May be blocked | Usually works |
+| **Configuration** | Simpler (standard PostgreSQL) | Requires correct hostname |
+| **Best For** | VMs, servers with IPv6 | Windows, restricted networks |
+
+**Recommendation:**
+- **Try Direct Connection first** - it's simpler and faster
+- **Switch to Session Pooler if you get "getaddrinfo failed" errors** (indicates IPv6 connectivity issues)
+
+#### Troubleshooting
+
+**"getaddrinfo failed" Error:**
+
+If you see this error with Direct Connection:
+```
+Error: getaddrinfo ENOTFOUND db.[PROJECT-REF].supabase.co
+```
+
+**Solution:** Your system doesn't support IPv6 or it's disabled. Use Session Pooler instead (Method 2 above).
+
+**Why?** Direct Connection (`db.*.supabase.co`) uses IPv6 by default. Session Pooler (`*.pooler.supabase.com`) provides IPv4 compatibility through Supavisor proxy.
+
+**Enabling Semantic Search (pgvector extension):**
+
+If you want to use semantic search with Supabase, you must enable the pgvector extension:
+
+1. **Via Supabase Dashboard** (easiest method):
+   - Navigate to **Database → Extensions** (left sidebar)
+   - Search for "vector" in the extensions list
+   - Find "vector" extension (version 0.8.0+)
+   - Click the **toggle switch** to enable it (turns green when enabled)
+
+2. **Via SQL Editor** (alternative method):
+   - Navigate to **SQL Editor** in Supabase Dashboard
+   - Run: `CREATE EXTENSION IF NOT EXISTS vector;`
+   - Verify: `SELECT * FROM pg_extension WHERE extname = 'vector';`
+
+3. **Configure environment**:
+   ```json
+   {
+     "mcpServers": {
+       "context-server": {
+         "type": "stdio",
+         "command": "uvx",
+         "args": ["mcp-context-server"],
+         "env": {
+           "STORAGE_BACKEND": "postgresql",
+           "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres",
+           "ENABLE_SEMANTIC_SEARCH": "true"
+         }
+       }
+     }
+   }
+   ```
+
+**Note:** The pgvector extension is available on all Supabase projects but must be manually enabled. The server will automatically create the necessary vector columns and indexes on first run.
+
+**Why Direct Connection?**
+
+- **Recommended by Supabase** for backend services and server-side applications
+- **Full PostgreSQL capabilities**: pgvector (available, must be enabled), JSONB, transactions, all extensions
+- **Better performance**: Lower latency than REST API, native connection pooling
+- **Production-ready**: MVCC for concurrent writes, connection pooling with asyncpg
+- **Zero special code**: Uses standard PostgreSQL backend - no Supabase-specific implementation needed
+
+**Important Notes:**
+
+- ✅ **Use database password** from Settings → Database section
+- ❌ **NOT API keys** - API keys (including legacy service_role key) are for REST/GraphQL APIs, not direct database connection
+- ✅ **Use port 5432** for direct connection (recommended for backend services)
+- ✅ **pgvector extension** is available on all Supabase projects - enable it via Dashboard → Extensions for semantic search
+- ✅ **All PostgreSQL features** work identically - JSONB indexing, metadata filtering, transactions
+
+**Security Best Practices:**
+
+- Store database password in environment variables, not in code
+- Use Supabase's connection string format for simplicity
+- Enable SSL/TLS by default (handled automatically by Supabase connection)
+- Consider using read-only credentials if your use case only needs read access
+
 ## API Reference
 
 ### Tools

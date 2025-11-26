@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import TYPE_CHECKING
+from typing import Any
+from typing import cast
 
 from app.logger_config import config_logger
 from app.settings import get_settings
@@ -101,7 +103,11 @@ class EmbeddingService:
 
                 # Extract embedding from response
                 if hasattr(response, 'embeddings') and response.embeddings:
-                    embedding = list(response.embeddings[0])
+                    # Use .tolist() to convert numpy.float32 to Python float
+                    # asyncpg with pgvector requires Python float, not numpy.float32
+                    # Cast to Any for runtime type check - Ollama returns numpy array but types say Sequence
+                    emb = response.embeddings[0]
+                    embedding = cast(Any, emb).tolist() if hasattr(emb, 'tolist') else list(emb)
                 else:
                     raise RuntimeError(f'Unexpected embedding response format: {type(response)}')
 
@@ -142,7 +148,13 @@ class EmbeddingService:
 
                 # Extract embeddings from response
                 if hasattr(response, 'embeddings'):
-                    embeddings = [list(emb) for emb in response.embeddings]
+                    # Use .tolist() to convert numpy.float32 to Python float
+                    # asyncpg with pgvector requires Python float, not numpy.float32
+                    # Cast to Any for runtime type check - Ollama returns numpy array but types say Sequence
+                    embeddings = [
+                        cast(Any, emb).tolist() if hasattr(emb, 'tolist') else list(emb)
+                        for emb in response.embeddings
+                    ]
                 else:
                     raise RuntimeError(f'Unexpected embedding response format: {type(response)}')
 
