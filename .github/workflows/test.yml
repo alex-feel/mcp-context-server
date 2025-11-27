@@ -80,7 +80,7 @@ jobs:
         run: |
           echo "## Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ All tests completed successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "[OK] All tests completed successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Platform" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Ubuntu" >> $GITHUB_STEP_SUMMARY
+          echo "- [OK] Ubuntu" >> $GITHUB_STEP_SUMMARY

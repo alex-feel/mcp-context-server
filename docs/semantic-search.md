@@ -513,9 +513,9 @@ Run through this checklist to verify your semantic search installation:
 
 7. **Check server logs** for:
    ```
-   ✓ All semantic search dependencies available
-   ✓ Semantic search enabled and available
-   ✓ semantic_search_context registered and exposed
+   [OK] All semantic search dependencies available
+   [OK] Semantic search enabled and available
+   [OK] semantic_search_context registered and exposed
    ```
 
 8. **Verify MCP client** - List available tools and confirm `semantic_search_context` is present
@@ -612,7 +612,7 @@ ollama list
    ```
 
 2. **Check server logs** for dependency check messages:
-   - Look for "✓ All semantic search dependencies available"
+   - Look for "[OK] All semantic search dependencies available"
    - Or error messages indicating which dependency failed
 
 3. **Call `get_statistics` tool**:
