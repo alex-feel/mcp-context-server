@@ -254,9 +254,10 @@ class TestResourceWarningDetection:
         # Initialize database with schema
         conn = sqlite3.connect(str(db_path))
         try:
-            schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
-            if schema_path.exists():
-                conn.executescript(schema_path.read_text())
+            from app.schemas import load_schema
+
+            schema_sql = load_schema('sqlite')
+            conn.executescript(schema_sql)
             conn.commit()
         finally:
             # This is the fix - always close the connection

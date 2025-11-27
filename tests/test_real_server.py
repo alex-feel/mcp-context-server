@@ -116,10 +116,10 @@ class MCPServerIntegrationTest:
             self.temp_db_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Create database and apply schema
-            schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
+            from app.schemas import load_schema
+
+            schema_sql = load_schema('sqlite')
             with sqlite3.connect(str(self.temp_db_path)) as conn:
-                # Read and execute schema
-                schema_sql = schema_path.read_text(encoding='utf-8')
                 conn.executescript(schema_sql)
 
                 # Apply optimizations

@@ -177,8 +177,9 @@ def test_db(temp_db_path: Path) -> Generator[sqlite3.Connection, None, None]:
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='context_entries'")
     if not cursor.fetchone():
         # Tables don't exist, create them
-        schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
-        schema_sql = schema_path.read_text(encoding='utf-8')
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
         conn.executescript(schema_sql)
 
     # Apply optimizations
@@ -198,8 +199,9 @@ async def async_test_db(temp_db_path: Path) -> AsyncGenerator[sqlite3.Connection
     loop = asyncio.get_event_loop()
 
     def _create_db():
-        schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
-        schema_sql = schema_path.read_text(encoding='utf-8')
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
 
         # Use check_same_thread=False for async tests to avoid thread safety issues
         conn = sqlite3.connect(str(temp_db_path), check_same_thread=False, timeout=30.0)
@@ -384,17 +386,17 @@ def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> 
     if not temp_db_path.exists():
         temp_db_path.parent.mkdir(parents=True, exist_ok=True)
         # Create database with schema
-        schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
-        if schema_path.exists():
-            schema_sql = schema_path.read_text(encoding='utf-8')
-            conn = sqlite3.connect(str(temp_db_path))
-            try:
-                conn.executescript(schema_sql)
-                conn.execute('PRAGMA foreign_keys = ON')
-                conn.execute('PRAGMA journal_mode = WAL')
-                conn.commit()
-            finally:
-                conn.close()
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+        conn = sqlite3.connect(str(temp_db_path))
+        try:
+            conn.executescript(schema_sql)
+            conn.execute('PRAGMA foreign_keys = ON')
+            conn.execute('PRAGMA journal_mode = WAL')
+            conn.commit()
+        finally:
+            conn.close()
 
     # Store original STORAGE_BACKEND environment variable
     original_storage_backend = os.environ.get('STORAGE_BACKEND')

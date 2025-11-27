@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 DB_PATH = settings.storage.db_path
 MAX_IMAGE_SIZE_MB = settings.storage.max_image_size_mb
 MAX_TOTAL_SIZE_MB = settings.storage.max_total_size_mb
-SCHEMA_PATH = Path(__file__).parent / 'schema.sql'
 
 # Global connection manager and repositories
 _backend: StorageBackend | None = None
@@ -470,12 +469,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
         if schema_path.exists():
             schema_sql = schema_path.read_text(encoding='utf-8')
         else:
-            logger.warning(f'Schema file not found at {schema_path}, falling back to app/schema.sql')
-            # Fallback to old schema file for backward compatibility
-            if SCHEMA_PATH.exists():
-                schema_sql = SCHEMA_PATH.read_text(encoding='utf-8')
-            else:
-                raise RuntimeError(f'No schema file found: tried {schema_path} and {SCHEMA_PATH}')
+            raise RuntimeError(f'Schema file not found: {schema_path}')
 
         # Apply schema - backend-specific approach
         if backend is not None:
