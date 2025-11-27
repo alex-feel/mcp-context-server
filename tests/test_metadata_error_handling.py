@@ -143,3 +143,113 @@ class TestMetadataErrorHandling:
         )
         assert 'entries' in result3
         assert len(result3['entries']) == 1  # Should find the entry (exact match)
+
+
+class TestMetadataFilterValidation:
+    """Test MetadataFilter pydantic model validation directly."""
+
+    def test_empty_key_raises_validation_error(self) -> None:
+        """Test that empty metadata key raises validation error."""
+        from pydantic import ValidationError
+
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        with pytest.raises(ValidationError, match='Metadata key cannot be empty'):
+            MetadataFilter(key='', operator=MetadataOperator.EQ, value='test')
+
+    def test_whitespace_only_key_raises_validation_error(self) -> None:
+        """Test that whitespace-only metadata key raises validation error."""
+        from pydantic import ValidationError
+
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        with pytest.raises(ValidationError, match='Metadata key cannot be empty'):
+            MetadataFilter(key='   ', operator=MetadataOperator.EQ, value='test')
+
+    def test_invalid_key_pattern_raises_validation_error(self) -> None:
+        """Test that invalid key pattern raises validation error."""
+        from pydantic import ValidationError
+
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        # Special characters not allowed
+        with pytest.raises(ValidationError, match='Invalid metadata key'):
+            MetadataFilter(key='status@field', operator=MetadataOperator.EQ, value='test')
+
+        # Spaces not allowed
+        with pytest.raises(ValidationError, match='Invalid metadata key'):
+            MetadataFilter(key='my field', operator=MetadataOperator.EQ, value='test')
+
+        # SQL injection attempts blocked
+        with pytest.raises(ValidationError, match='Invalid metadata key'):
+            MetadataFilter(key="status'; DROP TABLE", operator=MetadataOperator.EQ, value='test')
+
+    def test_valid_key_patterns_accepted(self) -> None:
+        """Test that valid key patterns are accepted."""
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        # Simple keys
+        f1 = MetadataFilter(key='status', operator=MetadataOperator.EQ, value='active')
+        assert f1.key == 'status'
+
+        # Nested paths with dots
+        f2 = MetadataFilter(key='user.preferences.theme', operator=MetadataOperator.EQ, value='dark')
+        assert f2.key == 'user.preferences.theme'
+
+        # Underscores and hyphens
+        f3 = MetadataFilter(key='task_name', operator=MetadataOperator.EQ, value='test')
+        assert f3.key == 'task_name'
+
+        f4 = MetadataFilter(key='agent-name', operator=MetadataOperator.EQ, value='test')
+        assert f4.key == 'agent-name'
+
+    def test_in_operator_requires_list(self) -> None:
+        """Test that IN operator requires list value."""
+        from pydantic import ValidationError
+
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        with pytest.raises(ValidationError, match='requires a list value'):
+            MetadataFilter(key='status', operator=MetadataOperator.IN, value='active')
+
+        with pytest.raises(ValidationError, match='requires a list value'):
+            MetadataFilter(key='priority', operator=MetadataOperator.NOT_IN, value=5)
+
+    def test_string_operators_require_string(self) -> None:
+        """Test that string operators require string value."""
+        from pydantic import ValidationError
+
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        with pytest.raises(ValidationError, match='requires a string value'):
+            MetadataFilter(key='name', operator=MetadataOperator.CONTAINS, value=123)
+
+        with pytest.raises(ValidationError, match='requires a string value'):
+            MetadataFilter(key='name', operator=MetadataOperator.STARTS_WITH, value=['list'])
+
+        with pytest.raises(ValidationError, match='requires a string value'):
+            MetadataFilter(key='name', operator=MetadataOperator.ENDS_WITH, value=True)
+
+    def test_existence_operators_ignore_value(self) -> None:
+        """Test that existence operators ignore provided value."""
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        # Value is set to None for existence operators
+        f1 = MetadataFilter(key='status', operator=MetadataOperator.EXISTS, value='ignored')
+        assert f1.value is None
+
+        f2 = MetadataFilter(key='status', operator=MetadataOperator.NOT_EXISTS, value=123)
+        assert f2.value is None
+
+        f3 = MetadataFilter(key='status', operator=MetadataOperator.IS_NULL)
+        assert f3.value is None
+
+        f4 = MetadataFilter(key='status', operator=MetadataOperator.IS_NOT_NULL, value=['ignored'])
+        assert f4.value is None

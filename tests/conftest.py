@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib.util
 import json
 import os
 import sqlite3
@@ -31,6 +32,52 @@ import app.server
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.settings import AppSettings
+
+# ============================================================================
+# Conditional Skip Helpers for Optional Dependencies
+# ============================================================================
+
+
+def is_ollama_available() -> bool:
+    """Check if ollama package is installed."""
+    return importlib.util.find_spec('ollama') is not None
+
+
+def is_sqlite_vec_available() -> bool:
+    """Check if sqlite-vec package is installed."""
+    return importlib.util.find_spec('sqlite_vec') is not None
+
+
+def is_numpy_available() -> bool:
+    """Check if numpy package is installed."""
+    return importlib.util.find_spec('numpy') is not None
+
+
+def are_semantic_search_deps_available() -> bool:
+    """Check if all semantic search dependencies are available."""
+    return is_ollama_available() and is_sqlite_vec_available() and is_numpy_available()
+
+
+# Pytest markers for conditional skipping
+requires_ollama = pytest.mark.skipif(
+    not is_ollama_available(),
+    reason='ollama package not installed',
+)
+
+requires_sqlite_vec = pytest.mark.skipif(
+    not is_sqlite_vec_available(),
+    reason='sqlite-vec package not installed',
+)
+
+requires_numpy = pytest.mark.skipif(
+    not is_numpy_available(),
+    reason='numpy package not installed',
+)
+
+requires_semantic_search = pytest.mark.skipif(
+    not are_semantic_search_deps_available(),
+    reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
+)
 
 # Load .env file to make environment variables available for PostgreSQL tests
 load_dotenv()
@@ -536,3 +583,81 @@ def temporary_env_vars(**kwargs):
                 os.environ[key] = value
             elif key in os.environ:
                 del os.environ[key]
+
+
+@pytest_asyncio.fixture
+async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
+    """Initialize async database with semantic search migration applied.
+
+    This fixture creates a database with the full schema AND the semantic search
+    migration (vec_context_embeddings table). Use this fixture for tests that
+    require the EmbeddingRepository.
+
+    Yields:
+        StorageBackend: Initialized SQLite backend with semantic search tables.
+    """
+    from app.repositories import RepositoryContainer
+    from app.schemas import load_schema
+    from app.settings import get_settings
+
+    settings = get_settings()
+    db_path = tmp_path / 'test_context.db'
+
+    # Create storage backend
+    backend = create_backend(backend_type='sqlite', db_path=str(db_path))
+    await backend.initialize()
+
+    # Set in server module
+    app.server._backend = backend
+    app.server.DB_PATH = db_path
+
+    # Initialize repositories
+    app.server._repositories = RepositoryContainer(backend)
+
+    # Initialize the base database schema
+    schema_sql = load_schema('sqlite')
+
+    def _init_schema(conn: sqlite3.Connection) -> None:
+        conn.executescript(schema_sql)
+
+    await backend.execute_write(_init_schema)
+
+    # Apply semantic search migration with correct dimension
+    migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search.sql'
+    migration_sql = migration_path.read_text(encoding='utf-8')
+    # Replace the template with actual dimension
+    migration_sql = migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding_dim))
+
+    def _apply_migration(conn: sqlite3.Connection) -> None:
+        # Load sqlite-vec extension before executing migration
+        # The migration SQL uses vec0 module which requires sqlite-vec extension
+        try:
+            import sqlite_vec
+
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except ImportError as e:
+            raise RuntimeError(
+                'sqlite_vec package is required for embedding tests. '
+                'Install with: uv sync --extra semantic-search',
+            ) from e
+
+        conn.executescript(migration_sql)
+
+    await backend.execute_write(_apply_migration)
+
+    try:
+        yield backend
+    finally:
+        # Proper cleanup
+        if hasattr(app.server, '_backend') and app.server._backend is not None:
+            try:
+                await app.server._backend.shutdown()
+            except Exception:
+                pass
+            finally:
+                app.server._backend = None
+
+        if hasattr(app.server, '_repositories'):
+            app.server._repositories = None

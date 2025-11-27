@@ -244,11 +244,6 @@ class TestResourceWarningDetection:
 
         gc.collect()
 
-    @pytest.mark.asyncio
-    async def test_singleton_manager_cleanup(self) -> None:
-        """Test that singleton manager properly cleans up."""
-        pytest.skip('Test skipped: obsolete functionality that has been removed')
-
     def test_temp_db_fixture_no_leaks(self, tmp_path: Path) -> None:
         """Test that the temp_db fixture doesn't leak connections."""
 
