@@ -62,15 +62,18 @@ class MCPServerIntegrationTest:
                 # Store original env to restore later
                 self.original_env['DB_PATH'] = os.environ.get('DB_PATH')
                 self.original_env['MCP_TEST_MODE'] = os.environ.get('MCP_TEST_MODE')
+                self.original_env['ENABLE_SEMANTIC_SEARCH'] = os.environ.get('ENABLE_SEMANTIC_SEARCH')
 
-                # Set BOTH DB_PATH and MCP_TEST_MODE
+                # Set DB_PATH, MCP_TEST_MODE, and ENABLE_SEMANTIC_SEARCH
                 # These MUST be set before Client() is called
                 os.environ['DB_PATH'] = str(self.temp_db_path)
                 os.environ['MCP_TEST_MODE'] = '1'  # THIS IS CRITICAL!
+                os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'  # Enable semantic search for tests
 
                 print('[INFO] Environment set BEFORE Client creation:')
                 print(f"[INFO] DB_PATH={os.environ.get('DB_PATH')}")
                 print(f"[INFO] MCP_TEST_MODE={os.environ.get('MCP_TEST_MODE')}")
+                print(f"[INFO] ENABLE_SEMANTIC_SEARCH={os.environ.get('ENABLE_SEMANTIC_SEARCH')}")
                 print(f'[INFO] Using temporary database: {self.temp_db_path}')
 
                 # Verify it's not the default database
