@@ -663,3 +663,17 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
 
         if hasattr(app.server, '_repositories'):
             app.server._repositories = None
+
+
+@pytest.fixture
+def embedding_dim() -> int:
+    """Provide embedding dimension from settings.
+
+    The configured embedding dimension defaults to 768 but can be overridden
+    via EMBEDDING_DIM environment variable (e.g., 384 in CI).
+
+    Returns:
+        int: The embedding dimension from settings.
+    """
+    from app.settings import get_settings
+    return get_settings().embedding_dim

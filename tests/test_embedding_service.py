@@ -26,7 +26,7 @@ class TestEmbeddingService:
 
     @requires_ollama
     @pytest.mark.asyncio
-    async def test_generate_embedding_success(self) -> None:
+    async def test_generate_embedding_success(self, embedding_dim: int) -> None:
         """Test successful embedding generation."""
         from app.services.embedding_service import EmbeddingService
 
@@ -34,7 +34,7 @@ class TestEmbeddingService:
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_embedding = MagicMock()
-        mock_embedding.tolist.return_value = [0.1] * 768
+        mock_embedding.tolist.return_value = [0.1] * embedding_dim
         mock_response.embeddings = [mock_embedding]
         mock_client.embed.return_value = mock_response
 
@@ -44,13 +44,13 @@ class TestEmbeddingService:
 
         embedding = await service.generate_embedding('test text')
 
-        assert len(embedding) == 768
+        assert len(embedding) == embedding_dim
         assert all(isinstance(x, float) for x in embedding)
         mock_client.embed.assert_called_once()
 
     @requires_ollama
     @pytest.mark.asyncio
-    async def test_generate_embeddings_batch(self) -> None:
+    async def test_generate_embeddings_batch(self, embedding_dim: int) -> None:
         """Test batch embedding generation."""
         from app.services.embedding_service import EmbeddingService
 
@@ -61,7 +61,7 @@ class TestEmbeddingService:
         mock_embeddings = []
         for i in range(3):
             mock_emb = MagicMock()
-            mock_emb.tolist.return_value = [0.1 * (i + 1)] * 768
+            mock_emb.tolist.return_value = [0.1 * (i + 1)] * embedding_dim
             mock_embeddings.append(mock_emb)
         mock_response.embeddings = mock_embeddings
         mock_client.embed.return_value = mock_response
@@ -72,7 +72,7 @@ class TestEmbeddingService:
         embeddings = await service.generate_embeddings(['text1', 'text2', 'text3'])
 
         assert len(embeddings) == 3
-        assert all(len(e) == 768 for e in embeddings)
+        assert all(len(e) == embedding_dim for e in embeddings)
         mock_client.embed.assert_called_once()
 
     @requires_ollama
@@ -109,19 +109,19 @@ class TestEmbeddingService:
         assert is_available is False
 
     @requires_ollama
-    def test_get_dimension(self) -> None:
+    def test_get_dimension(self, embedding_dim: int) -> None:
         """Test get_dimension method."""
         from app.services.embedding_service import EmbeddingService
 
         with patch('app.services.embedding_service.settings') as mock_settings:
             mock_settings.embedding_model = 'embeddinggemma:latest'
-            mock_settings.embedding_dim = 768
+            mock_settings.embedding_dim = embedding_dim
             mock_settings.ollama_host = 'http://localhost:11434'
 
             service = EmbeddingService()
             dim = service.get_dimension()
 
-            assert dim == 768
+            assert dim == embedding_dim
 
     @requires_ollama
     @pytest.mark.asyncio
@@ -131,7 +131,8 @@ class TestEmbeddingService:
 
         mock_client = MagicMock()
 
-        # Return wrong dimension embedding
+        # Return wrong dimension embedding (512 will always be wrong since
+        # settings.embedding_dim defaults to 768 or CI sets it to 384)
         mock_response = MagicMock()
         mock_embedding = MagicMock()
         mock_embedding.tolist.return_value = [0.1] * 512  # Wrong dimension
@@ -161,7 +162,9 @@ class TestEmbeddingService:
 
     @requires_ollama
     @pytest.mark.asyncio
-    async def test_generate_embeddings_batch_dimension_mismatch(self) -> None:
+    async def test_generate_embeddings_batch_dimension_mismatch(
+        self, embedding_dim: int,
+    ) -> None:
         """Test batch embedding with dimension mismatch."""
         from app.services.embedding_service import EmbeddingService
 
@@ -172,8 +175,8 @@ class TestEmbeddingService:
         mock_embeddings = []
         for i in range(3):
             mock_emb = MagicMock()
-            # Second embedding has wrong dimension
-            dim = 512 if i == 1 else 768
+            # Second embedding has wrong dimension (always 512 as wrong)
+            dim = 512 if i == 1 else embedding_dim
             mock_emb.tolist.return_value = [0.1] * dim
             mock_embeddings.append(mock_emb)
         mock_response.embeddings = mock_embeddings
@@ -209,7 +212,7 @@ class TestEmbeddingService:
 
     @requires_ollama
     @pytest.mark.asyncio
-    async def test_generate_embedding_without_tolist(self) -> None:
+    async def test_generate_embedding_without_tolist(self, embedding_dim: int) -> None:
         """Test embedding generation when response doesn't have tolist method."""
         from app.services.embedding_service import EmbeddingService
 
@@ -217,7 +220,7 @@ class TestEmbeddingService:
 
         # Mock embedding response without tolist method (plain list)
         mock_response = MagicMock()
-        mock_response.embeddings = [[0.1] * 768]  # Plain list, no tolist method
+        mock_response.embeddings = [[0.1] * embedding_dim]  # Plain list, no tolist method
         mock_client.embed.return_value = mock_response
 
         service = EmbeddingService()
@@ -225,7 +228,7 @@ class TestEmbeddingService:
 
         embedding = await service.generate_embedding('test text')
 
-        assert len(embedding) == 768
+        assert len(embedding) == embedding_dim
 
     @requires_ollama
     @pytest.mark.asyncio

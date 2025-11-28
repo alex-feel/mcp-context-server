@@ -38,6 +38,7 @@ class TestSemanticSearchFilters:
     async def test_thread_filter_returns_correct_count(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Regression test: thread_id filter returns correct number of results.
 
@@ -65,7 +66,7 @@ class TestSemanticSearchFilters:
                 metadata=None,
             )
             # Store mock embedding
-            mock_embedding = [0.1 * (i + 1)] * 768
+            mock_embedding = [0.1 * (i + 1)] * embedding_dim
             await embedding_repo.store(context_id, mock_embedding)
 
         # Create 5 entries in other threads
@@ -77,11 +78,11 @@ class TestSemanticSearchFilters:
                 text_content=f'Entry in other-thread-{i}',
                 metadata=None,
             )
-            mock_embedding = [0.2 * (i + 1)] * 768
+            mock_embedding = [0.2 * (i + 1)] * embedding_dim
             await embedding_repo.store(context_id, mock_embedding)
 
         # Perform search with thread filter
-        query_embedding = [0.1] * 768
+        query_embedding = [0.1] * embedding_dim
         results = await embedding_repo.search(
             query_embedding=query_embedding,
             limit=3,
@@ -97,6 +98,7 @@ class TestSemanticSearchFilters:
     async def test_source_filter_returns_correct_count(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Regression test: source filter returns correct number of results."""
         from app.repositories import RepositoryContainer
@@ -115,7 +117,7 @@ class TestSemanticSearchFilters:
                 text_content=f'User entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create 5 entries with source="agent"
         for i in range(5):
@@ -126,11 +128,11 @@ class TestSemanticSearchFilters:
                 text_content=f'Agent entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with source filter
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=5,
             source='user',
         )
@@ -144,6 +146,7 @@ class TestSemanticSearchFilters:
     async def test_combined_filters_return_correct_count(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Regression test: combined filters return correct number of results."""
         from app.repositories import RepositoryContainer
@@ -162,7 +165,7 @@ class TestSemanticSearchFilters:
                 text_content=f'User entry {i} in test-thread',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create entries in test-thread with source="agent"
         for i in range(3):
@@ -173,11 +176,11 @@ class TestSemanticSearchFilters:
                 text_content=f'Agent entry {i} in test-thread',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with both filters
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='test-thread',
             source='user',
@@ -193,6 +196,7 @@ class TestSemanticSearchFilters:
     async def test_no_filters_still_works_correctly(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Verify that search without filters still works correctly."""
         from app.repositories import RepositoryContainer
@@ -211,11 +215,11 @@ class TestSemanticSearchFilters:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search without filters
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=3,
         )
 
@@ -226,6 +230,7 @@ class TestSemanticSearchFilters:
     async def test_filter_returns_empty_when_no_matches(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Test that filter returns empty list when no entries match."""
         from app.repositories import RepositoryContainer
@@ -244,11 +249,11 @@ class TestSemanticSearchFilters:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with non-existent thread
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='thread-b',  # Does not exist
         )
@@ -260,6 +265,7 @@ class TestSemanticSearchFilters:
     async def test_filter_returns_less_when_fewer_exist(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Test that filter returns fewer results when fewer entries exist."""
         from app.repositories import RepositoryContainer
@@ -278,11 +284,11 @@ class TestSemanticSearchFilters:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 10 but only 2 exist
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='small-thread',
         )
@@ -299,6 +305,7 @@ class TestSemanticSearchPerformance:
     async def test_performance_with_small_filtered_set(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Verify acceptable performance with small filtered sets (<100 entries)."""
         import time
@@ -319,7 +326,7 @@ class TestSemanticSearchPerformance:
                 text_content=f'Target entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * embedding_dim)
 
         # Create 100 entries in other threads
         for i in range(100):
@@ -330,12 +337,12 @@ class TestSemanticSearchPerformance:
                 text_content=f'Other entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2 * ((i % 10) + 1)] * 768)
+            await embedding_repo.store(context_id, [0.2 * ((i % 10) + 1)] * embedding_dim)
 
         # Measure search time
         start_time = time.perf_counter()
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-thread',
         )
@@ -349,6 +356,7 @@ class TestSemanticSearchPerformance:
     async def test_performance_with_medium_filtered_set(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Verify acceptable performance with medium filtered sets (100-500 entries)."""
         import time
@@ -369,12 +377,12 @@ class TestSemanticSearchPerformance:
                 text_content=f'Medium entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * embedding_dim)
 
         # Measure search time
         start_time = time.perf_counter()
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=20,
             thread_id='medium-thread',
         )
@@ -393,6 +401,7 @@ class TestSemanticSearchEdgeCases:
     async def test_single_entry_thread_returns_one_result(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Test filtering a thread with exactly one entry."""
         from app.repositories import RepositoryContainer
@@ -410,7 +419,7 @@ class TestSemanticSearchEdgeCases:
             text_content='Single entry',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * 768)
+        await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
         # Create entries in other threads
         for i in range(5):
@@ -421,11 +430,11 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Other {i}',
                 metadata=None,
             )
-            await embedding_repo.store(ctx_id, [0.2 * (i + 1)] * 768)
+            await embedding_repo.store(ctx_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search for single thread
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='single-thread',
         )
@@ -437,6 +446,7 @@ class TestSemanticSearchEdgeCases:
     async def test_all_entries_in_same_thread(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Test when all entries are in the target thread."""
         from app.repositories import RepositoryContainer
@@ -455,11 +465,11 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 5 from only-thread
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='only-thread',
         )
@@ -472,6 +482,7 @@ class TestSemanticSearchEdgeCases:
     async def test_null_thread_id_filter(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Test that None thread_id doesn't filter (searches all threads)."""
         from app.repositories import RepositoryContainer
@@ -490,11 +501,11 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with thread_id=None
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id=None,
         )
@@ -508,6 +519,7 @@ class TestSemanticSearchEdgeCases:
     async def test_null_source_filter(
         self,
         async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
     ) -> None:
         """Test that None source doesn't filter (searches all sources)."""
         from app.repositories import RepositoryContainer
@@ -526,11 +538,11 @@ class TestSemanticSearchEdgeCases:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with source=None
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=10,
             source=None,
         )

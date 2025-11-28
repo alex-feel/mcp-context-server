@@ -26,16 +26,21 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     os.environ['MCP_TEST_MODE'] = '1'
     os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
 
-    # Pass through embedding configuration from CI environment or use test defaults
+    # Only pass through embedding configuration if explicitly set (e.g., by CI)
     # CI sets EMBEDDING_MODEL=all-minilm (46MB) and EMBEDDING_DIM=384 for fast tests
-    embedding_model = os.environ.get('EMBEDDING_MODEL', 'all-minilm')
-    embedding_dim = os.environ.get('EMBEDDING_DIM', '384')
-    os.environ['EMBEDDING_MODEL'] = embedding_model
-    os.environ['EMBEDDING_DIM'] = embedding_dim
-
+    # When not set, app/settings.py uses defaults: embeddinggemma:latest (768 dim)
     print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
     print('[TEST SERVER] ENABLE_SEMANTIC_SEARCH=true', file=sys.stderr)
-    print(f'[TEST SERVER] EMBEDDING_MODEL={embedding_model}, EMBEDDING_DIM={embedding_dim}', file=sys.stderr)
+
+    if 'EMBEDDING_MODEL' in os.environ:
+        print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]} (from environment)', file=sys.stderr)
+    else:
+        print('[TEST SERVER] EMBEDDING_MODEL not set, using app defaults (embeddinggemma:latest)', file=sys.stderr)
+
+    if 'EMBEDDING_DIM' in os.environ:
+        print(f'[TEST SERVER] EMBEDDING_DIM={os.environ["EMBEDDING_DIM"]} (from environment)', file=sys.stderr)
+    else:
+        print('[TEST SERVER] EMBEDDING_DIM not set, using app defaults (768)', file=sys.stderr)
 
     # Double-check we're not using the default database
     default_db = Path.home() / '.mcp' / 'context_storage.db'

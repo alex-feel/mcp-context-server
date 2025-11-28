@@ -28,7 +28,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_store_embedding(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test storing embedding for context entry."""
         from app.repositories import RepositoryContainer
@@ -48,7 +48,7 @@ class TestEmbeddingRepository:
         )
 
         # Store embedding
-        embedding = [0.1] * 768
+        embedding = [0.1] * embedding_dim
         await embedding_repo.store(context_id=context_id, embedding=embedding)
 
         # Verify stored
@@ -57,7 +57,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_store_embedding_with_model(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test storing embedding with custom model name."""
         from app.repositories import RepositoryContainer
@@ -78,7 +78,7 @@ class TestEmbeddingRepository:
         # Store with custom model name
         await embedding_repo.store(
             context_id=context_id,
-            embedding=[0.1] * 768,
+            embedding=[0.1] * embedding_dim,
             model='custom-model:latest',
         )
 
@@ -86,7 +86,9 @@ class TestEmbeddingRepository:
         assert exists is True
 
     @requires_sqlite_vec
-    async def test_search_basic(self, async_db_with_embeddings: StorageBackend) -> None:
+    async def test_search_basic(
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
+    ) -> None:
         """Test basic KNN search."""
         from app.repositories import RepositoryContainer
         from app.repositories.embedding_repository import EmbeddingRepository
@@ -105,11 +107,11 @@ class TestEmbeddingRepository:
                 metadata=None,
             )
             # Create embeddings with varying values
-            embedding = [0.1 * (i + 1)] * 768
+            embedding = [0.1 * (i + 1)] * embedding_dim
             await embedding_repo.store(context_id, embedding)
 
         # Search for similar embeddings
-        query_embedding = [0.1] * 768
+        query_embedding = [0.1] * embedding_dim
         results = await embedding_repo.search(
             query_embedding=query_embedding,
             limit=3,
@@ -124,7 +126,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_search_with_thread_filter(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test search with thread_id filter."""
         from app.repositories import RepositoryContainer
@@ -143,7 +145,7 @@ class TestEmbeddingRepository:
                 text_content=f'Target entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * 768)
+            await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -153,11 +155,11 @@ class TestEmbeddingRepository:
                 text_content=f'Other entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * 768)
+            await embedding_repo.store(context_id, [0.2] * embedding_dim)
 
         # Search with thread filter
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-thread',
         )
@@ -168,7 +170,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_search_with_source_filter(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test search with source filter."""
         from app.repositories import RepositoryContainer
@@ -187,7 +189,7 @@ class TestEmbeddingRepository:
                 text_content=f'User entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * 768)
+            await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -197,11 +199,11 @@ class TestEmbeddingRepository:
                 text_content=f'Agent entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * 768)
+            await embedding_repo.store(context_id, [0.2] * embedding_dim)
 
         # Search with source filter
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=10,
             source='user',
         )
@@ -212,7 +214,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_update_embedding(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test updating an existing embedding."""
         from app.repositories import RepositoryContainer
@@ -230,15 +232,15 @@ class TestEmbeddingRepository:
             text_content='Entry to update',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * 768)
+        await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
         # Update embedding
-        new_embedding = [0.5] * 768
+        new_embedding = [0.5] * embedding_dim
         await embedding_repo.update(context_id, new_embedding)
 
         # Verify update by searching
         results = await embedding_repo.search(
-            query_embedding=[0.5] * 768,
+            query_embedding=[0.5] * embedding_dim,
             limit=1,
         )
 
@@ -247,7 +249,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_delete_embedding(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test deleting an embedding."""
         from app.repositories import RepositoryContainer
@@ -265,7 +267,7 @@ class TestEmbeddingRepository:
             text_content='Entry to delete',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * 768)
+        await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
         # Verify exists
         assert await embedding_repo.exists(context_id) is True
@@ -292,7 +294,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_get_statistics(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test getting embedding statistics."""
         from app.repositories import RepositoryContainer
@@ -311,7 +313,7 @@ class TestEmbeddingRepository:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * 768)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Create entries without embeddings
         for i in range(3):
@@ -334,7 +336,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_get_statistics_with_thread_filter(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test getting statistics filtered by thread."""
         from app.repositories import RepositoryContainer
@@ -353,7 +355,7 @@ class TestEmbeddingRepository:
                 text_content=f'Target {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * 768)
+            await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
         # Create entry in target thread without embedding
         await repos.context.store_with_deduplication(
@@ -373,7 +375,7 @@ class TestEmbeddingRepository:
                 text_content=f'Other {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * 768)
+            await embedding_repo.store(context_id, [0.2] * embedding_dim)
 
         # Get statistics for target thread only
         stats = await embedding_repo.get_statistics(thread_id='target-stats')
@@ -385,7 +387,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_get_table_dimension(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test getting table dimension."""
         from app.repositories import RepositoryContainer
@@ -403,12 +405,12 @@ class TestEmbeddingRepository:
             text_content='Entry for dimension',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * 768)
+        await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
         # Get dimension
         dimension = await embedding_repo.get_table_dimension()
 
-        assert dimension == 768
+        assert dimension == embedding_dim
 
     @requires_sqlite_vec
     async def test_get_table_dimension_empty(
@@ -427,7 +429,7 @@ class TestEmbeddingRepository:
 
     @requires_sqlite_vec
     async def test_search_empty_database(
-        self, async_db_with_embeddings: StorageBackend,
+        self, async_db_with_embeddings: StorageBackend, embedding_dim: int,
     ) -> None:
         """Test search returns empty list when no embeddings exist."""
         from app.repositories.embedding_repository import EmbeddingRepository
@@ -437,7 +439,7 @@ class TestEmbeddingRepository:
 
         # Search empty database
         results = await embedding_repo.search(
-            query_embedding=[0.1] * 768,
+            query_embedding=[0.1] * embedding_dim,
             limit=10,
         )
 
