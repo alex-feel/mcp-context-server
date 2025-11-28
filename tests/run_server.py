@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # We're in a test context - use temporary database
     # Note: FastMCP Client spawns subprocesses without inheriting environment,
-    # so we create our own temp database and enable semantic search for testing
+    # so we create our own temp database and enable semantic search
     import tempfile
 
     temp_dir = tempfile.mkdtemp(prefix='mcp_server_wrapper_')
@@ -24,10 +24,18 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
 
     os.environ['DB_PATH'] = str(test_db)
     os.environ['MCP_TEST_MODE'] = '1'
-    os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'  # Enable semantic search in test mode
+    os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
+
+    # Pass through embedding configuration from CI environment or use test defaults
+    # CI sets EMBEDDING_MODEL=all-minilm (46MB) and EMBEDDING_DIM=384 for fast tests
+    embedding_model = os.environ.get('EMBEDDING_MODEL', 'all-minilm')
+    embedding_dim = os.environ.get('EMBEDDING_DIM', '384')
+    os.environ['EMBEDDING_MODEL'] = embedding_model
+    os.environ['EMBEDDING_DIM'] = embedding_dim
 
     print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
     print('[TEST SERVER] ENABLE_SEMANTIC_SEARCH=true', file=sys.stderr)
+    print(f'[TEST SERVER] EMBEDDING_MODEL={embedding_model}, EMBEDDING_DIM={embedding_dim}', file=sys.stderr)
 
     # Double-check we're not using the default database
     default_db = Path.home() / '.mcp' / 'context_storage.db'

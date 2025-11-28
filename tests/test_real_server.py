@@ -68,7 +68,7 @@ class MCPServerIntegrationTest:
                 # These MUST be set before Client() is called
                 os.environ['DB_PATH'] = str(self.temp_db_path)
                 os.environ['MCP_TEST_MODE'] = '1'  # THIS IS CRITICAL!
-                os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'  # Enable semantic search for tests
+                os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
 
                 print('[INFO] Environment set BEFORE Client creation:')
                 print(f"[INFO] DB_PATH={os.environ.get('DB_PATH')}")
