@@ -127,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           tag='${{ github.event.release.tag_name }}'
-          version="${tag#v}"  # срезаем префикс v, если есть
+          version="${tag#v}"  # strip leading 'v' if present
           for i in {1..30}; do
             if curl -sf https://pypi.org/pypi/${PACKAGE_NAME}/json | jq -e --arg v "$version" '.releases[$v]'; then
               echo "PyPI has version $version"

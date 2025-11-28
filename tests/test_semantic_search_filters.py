@@ -10,14 +10,36 @@ virtual table level BEFORE JOIN and WHERE filters are applied.
 Solution: CTE-based pre-filtering with vec_distance_l2() scalar function.
 """
 
+from __future__ import annotations
+
+import importlib.util
+from typing import TYPE_CHECKING
+
 import pytest
+
+if TYPE_CHECKING:
+    from app.backends import StorageBackend
+
+# Conditional skip marker for tests requiring semantic search dependencies
+requires_semantic_search = pytest.mark.skipif(
+    not all(
+        importlib.util.find_spec(pkg) is not None
+        for pkg in ['ollama', 'sqlite_vec', 'numpy']
+    ),
+    reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
+)
 
 
 @pytest.mark.asyncio
 class TestSemanticSearchFilters:
     """Test semantic search filtering with regression tests."""
 
-    async def test_thread_filter_returns_correct_count(self) -> None:
+    @requires_semantic_search
+    async def test_thread_filter_returns_correct_count(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
         """Regression test: thread_id filter returns correct number of results.
 
         This test verifies the fix for the bug where requesting top_k=3 with
@@ -25,180 +47,508 @@ class TestSemanticSearchFilters:
 
         The bug occurred because sqlite-vec's k parameter limited results
         at virtual table level BEFORE the thread_id filter was applied.
-
-        Setup:
-        - Create 2 context entries in thread "test-thread" with embeddings
-        - Create 100 context entries in other threads with embeddings
-        - Search for top_k=3 with thread_id="test-thread" filter
-
-        Expected:
-        - Returns 2 results (all entries from "test-thread")
-        - NOT 1 result (which was the bug)
         """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
 
-    async def test_source_filter_returns_correct_count(self) -> None:
-        """Regression test: source filter returns correct number of results.
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
 
-        Similar to thread_id filter bug, source filter should return
-        correct number of results.
+        # Store context entries in different threads
+        # Create 2 entries in "test-thread"
+        for i in range(2):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='test-thread',
+                source='user',
+                content_type='text',
+                text_content=f'Test entry {i} in test-thread',
+                metadata=None,
+            )
+            # Store mock embedding
+            mock_embedding = [0.1 * (i + 1)] * embedding_dim
+            await embedding_repo.store(context_id, mock_embedding)
 
-        Setup:
-        - Create 3 context entries with source="user" and embeddings
-        - Create 100 context entries with source="agent" and embeddings
-        - Search for top_k=3 with source="user" filter
+        # Create 5 entries in other threads
+        for i in range(5):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'other-thread-{i}',
+                source='user',
+                content_type='text',
+                text_content=f'Entry in other-thread-{i}',
+                metadata=None,
+            )
+            mock_embedding = [0.2 * (i + 1)] * embedding_dim
+            await embedding_repo.store(context_id, mock_embedding)
 
-        Expected:
-        - Returns 3 results (all "user" entries)
-        - NOT fewer results
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        # Perform search with thread filter
+        query_embedding = [0.1] * embedding_dim
+        results = await embedding_repo.search(
+            query_embedding=query_embedding,
+            limit=3,
+            thread_id='test-thread',
+        )
 
-    async def test_combined_filters_return_correct_count(self) -> None:
-        """Regression test: combined filters return correct number of results.
+        # Should return 2 results (all from "test-thread"), not fewer
+        assert len(results) == 2
+        for result in results:
+            assert result['thread_id'] == 'test-thread'
 
-        Tests that combining thread_id and source filters works correctly.
+    @requires_semantic_search
+    async def test_source_filter_returns_correct_count(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Regression test: source filter returns correct number of results."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
 
-        Setup:
-        - Create 2 entries in thread "test-thread" with source="user" and embeddings
-        - Create 50 entries in thread "test-thread" with source="agent" and embeddings
-        - Create 50 entries in other threads with source="user" and embeddings
-        - Search for top_k=3 with thread_id="test-thread" and source="user"
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
 
-        Expected:
-        - Returns 2 results (matching both filters)
-        - NOT fewer results
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        # Create 3 entries with source="user"
+        for i in range(3):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'thread-user-{i}',
+                source='user',
+                content_type='text',
+                text_content=f'User entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
-    async def test_no_filters_still_works_correctly(self) -> None:
-        """Verify that search without filters still works correctly.
+        # Create 5 entries with source="agent"
+        for i in range(5):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'thread-agent-{i}',
+                source='agent',
+                content_type='text',
+                text_content=f'Agent entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
-        Ensures the CTE-based approach doesn't break unfiltered search.
+        # Search with source filter
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=5,
+            source='user',
+        )
 
-        Setup:
-        - Create 5 context entries with embeddings
-        - Search for top_k=3 without any filters
+        # Should return 3 results (all "user" entries)
+        assert len(results) == 3
+        for result in results:
+            assert result['source'] == 'user'
 
-        Expected:
-        - Returns 3 results (top-3 nearest neighbors globally)
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+    @requires_semantic_search
+    async def test_combined_filters_return_correct_count(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Regression test: combined filters return correct number of results."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
 
-    async def test_filter_returns_empty_when_no_matches(self) -> None:
-        """Test that filter returns empty list when no entries match.
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
 
-        Setup:
-        - Create entries in thread "thread-a"
-        - Search with thread_id="thread-b" (non-existent)
+        # Create 2 entries in "test-thread" with source="user"
+        for i in range(2):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='test-thread',
+                source='user',
+                content_type='text',
+                text_content=f'User entry {i} in test-thread',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
-        Expected:
-        - Returns empty list []
-        - NOT an error
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        # Create entries in test-thread with source="agent"
+        for i in range(3):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='test-thread',
+                source='agent',
+                content_type='text',
+                text_content=f'Agent entry {i} in test-thread',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
-    async def test_filter_returns_less_when_fewer_exist(self) -> None:
-        """Test that filter returns fewer results when fewer entries exist.
+        # Search with both filters
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=5,
+            thread_id='test-thread',
+            source='user',
+        )
 
-        This is expected behavior - if requesting top_k=10 but only
-        3 entries match the filter, should return 3.
+        # Should return 2 results (matching both filters)
+        assert len(results) == 2
+        for result in results:
+            assert result['thread_id'] == 'test-thread'
+            assert result['source'] == 'user'
 
-        Setup:
-        - Create 2 entries in thread "small-thread" with embeddings
-        - Search for top_k=10 with thread_id="small-thread"
+    @requires_semantic_search
+    async def test_no_filters_still_works_correctly(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Verify that search without filters still works correctly."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
 
-        Expected:
-        - Returns 2 results (all available matches)
-        - NOT an error or 10 results
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create 5 entries
+        for i in range(5):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'thread-{i}',
+                source='user' if i % 2 == 0 else 'agent',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search without filters
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=3,
+        )
+
+        # Should return 3 results
+        assert len(results) == 3
+
+    @requires_semantic_search
+    async def test_filter_returns_empty_when_no_matches(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that filter returns empty list when no entries match."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create entries in thread-a
+        for i in range(3):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='thread-a',
+                source='user',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search with non-existent thread
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=5,
+            thread_id='thread-b',  # Does not exist
+        )
+
+        # Should return empty list, not an error
+        assert results == []
+
+    @requires_semantic_search
+    async def test_filter_returns_less_when_fewer_exist(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that filter returns fewer results when fewer entries exist."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create only 2 entries in small-thread
+        for i in range(2):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='small-thread',
+                source='user',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search for 10 but only 2 exist
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=10,
+            thread_id='small-thread',
+        )
+
+        # Should return 2 results (all available)
+        assert len(results) == 2
 
 
 @pytest.mark.asyncio
 class TestSemanticSearchPerformance:
     """Test performance characteristics of CTE-based filtering."""
 
-    async def test_performance_with_small_filtered_set(self) -> None:
-        """Verify acceptable performance with small filtered sets (<100 entries).
+    @requires_semantic_search
+    async def test_performance_with_small_filtered_set(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Verify acceptable performance with small filtered sets (<100 entries)."""
+        import time
 
-        According to analysis, filtered sets <100 should have <5ms query time.
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
 
-        Setup:
-        - Create 50 entries in target thread
-        - Create 1000 entries in other threads
-        - Measure search time with thread_id filter
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
 
-        Expected:
-        - Query completes in <100ms (generous threshold for test env)
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        # Create 50 entries in target thread
+        for i in range(50):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='target-thread',
+                source='user',
+                content_type='text',
+                text_content=f'Target entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * embedding_dim)
 
-    async def test_performance_with_medium_filtered_set(self) -> None:
-        """Verify acceptable performance with medium filtered sets (100-1K entries).
+        # Create 100 entries in other threads
+        for i in range(100):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'other-thread-{i}',
+                source='user',
+                content_type='text',
+                text_content=f'Other entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.2 * ((i % 10) + 1)] * embedding_dim)
 
-        According to analysis, 100-1K entries should have 5-20ms query time.
+        # Measure search time
+        start_time = time.perf_counter()
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=10,
+            thread_id='target-thread',
+        )
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-        Setup:
-        - Create 500 entries in target thread
-        - Create 1000 entries in other threads
-        - Measure search time with thread_id filter
+        # Query should complete in reasonable time (generous threshold for test env)
+        assert elapsed_ms < 500  # 500ms threshold
+        assert len(results) == 10
 
-        Expected:
-        - Query completes in <200ms (generous threshold for test env)
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+    @requires_semantic_search
+    async def test_performance_with_medium_filtered_set(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Verify acceptable performance with medium filtered sets (100-500 entries)."""
+        import time
+
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create 200 entries in target thread
+        for i in range(200):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='medium-thread',
+                source='user',
+                content_type='text',
+                text_content=f'Medium entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * ((i % 10) + 1)] * embedding_dim)
+
+        # Measure search time
+        start_time = time.perf_counter()
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=20,
+            thread_id='medium-thread',
+        )
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+        # Query should complete in reasonable time
+        assert elapsed_ms < 1000  # 1 second threshold
+        assert len(results) == 20
 
 
 @pytest.mark.asyncio
 class TestSemanticSearchEdgeCases:
     """Test edge cases for semantic search filtering."""
 
-    async def test_single_entry_thread_returns_one_result(self) -> None:
-        """Test filtering a thread with exactly one entry.
+    @requires_semantic_search
+    async def test_single_entry_thread_returns_one_result(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test filtering a thread with exactly one entry."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
 
-        Setup:
-        - Create 1 entry in thread "single-thread" with embedding
-        - Create 100 entries in other threads
-        - Search for top_k=5 with thread_id="single-thread"
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
 
-        Expected:
-        - Returns 1 result
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        # Create 1 entry in single-thread
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='single-thread',
+            source='user',
+            content_type='text',
+            text_content='Single entry',
+            metadata=None,
+        )
+        await embedding_repo.store(context_id, [0.1] * embedding_dim)
 
-    async def test_all_entries_in_same_thread(self) -> None:
-        """Test when all entries are in the target thread.
+        # Create entries in other threads
+        for i in range(5):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'other-{i}',
+                source='user',
+                content_type='text',
+                text_content=f'Other {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(ctx_id, [0.2 * (i + 1)] * embedding_dim)
 
-        Setup:
-        - Create 10 entries all in thread "only-thread"
-        - Search for top_k=5 with thread_id="only-thread"
+        # Search for single thread
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=5,
+            thread_id='single-thread',
+        )
 
-        Expected:
-        - Returns 5 results (top-5 from the 10 available)
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        assert len(results) == 1
+        assert results[0]['thread_id'] == 'single-thread'
 
-    async def test_null_thread_id_filter(self) -> None:
-        """Test that None thread_id doesn't filter (searches all threads).
+    @requires_semantic_search
+    async def test_all_entries_in_same_thread(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test when all entries are in the target thread."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
 
-        Setup:
-        - Create entries in multiple threads
-        - Search with thread_id=None
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
 
-        Expected:
-        - Returns results from all threads (no filtering)
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+        # Create 10 entries all in "only-thread"
+        for i in range(10):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='only-thread',
+                source='user',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
-    async def test_null_source_filter(self) -> None:
-        """Test that None source doesn't filter (searches all sources).
+        # Search for 5 from only-thread
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=5,
+            thread_id='only-thread',
+        )
 
-        Setup:
-        - Create entries with both sources
-        - Search with source=None
+        assert len(results) == 5
+        for result in results:
+            assert result['thread_id'] == 'only-thread'
 
-        Expected:
-        - Returns results from both sources (no filtering)
-        """
-        pytest.skip('Requires sqlite-vec package - optional dependency')
+    @requires_semantic_search
+    async def test_null_thread_id_filter(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that None thread_id doesn't filter (searches all threads)."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create entries in multiple threads
+        for i in range(5):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'thread-{i}',
+                source='user',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search with thread_id=None
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=10,
+            thread_id=None,
+        )
+
+        # Should return results from all threads
+        assert len(results) == 5
+        thread_ids = {r['thread_id'] for r in results}
+        assert len(thread_ids) == 5
+
+    @requires_semantic_search
+    async def test_null_source_filter(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that None source doesn't filter (searches all sources)."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create entries with both sources
+        for i in range(4):
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id=f'thread-{i}',
+                source='user' if i % 2 == 0 else 'agent',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search with source=None
+        results = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=10,
+            source=None,
+        )
+
+        # Should return results from both sources
+        assert len(results) == 4
+        sources = {r['source'] for r in results}
+        assert 'user' in sources
+        assert 'agent' in sources

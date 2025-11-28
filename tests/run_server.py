@@ -15,6 +15,8 @@ sys.path.insert(0, str(project_root))
 # Check if we're being run from pytest or in a test context
 if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # We're in a test context - use temporary database
+    # Note: FastMCP Client spawns subprocesses without inheriting environment,
+    # so we create our own temp database and enable semantic search
     import tempfile
 
     temp_dir = tempfile.mkdtemp(prefix='mcp_server_wrapper_')
@@ -22,8 +24,23 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
 
     os.environ['DB_PATH'] = str(test_db)
     os.environ['MCP_TEST_MODE'] = '1'
+    os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
 
-    print(f'[TEST SERVER] FORCED test mode with DB_PATH={test_db}', file=sys.stderr)
+    # Only pass through embedding configuration if explicitly set (e.g., by CI)
+    # CI sets EMBEDDING_MODEL=all-minilm (46MB) and EMBEDDING_DIM=384 for fast tests
+    # When not set, app/settings.py uses defaults: embeddinggemma:latest (768 dim)
+    print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
+    print('[TEST SERVER] ENABLE_SEMANTIC_SEARCH=true', file=sys.stderr)
+
+    if 'EMBEDDING_MODEL' in os.environ:
+        print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]} (from environment)', file=sys.stderr)
+    else:
+        print('[TEST SERVER] EMBEDDING_MODEL not set, using app defaults (embeddinggemma:latest)', file=sys.stderr)
+
+    if 'EMBEDDING_DIM' in os.environ:
+        print(f'[TEST SERVER] EMBEDDING_DIM={os.environ["EMBEDDING_DIM"]} (from environment)', file=sys.stderr)
+    else:
+        print('[TEST SERVER] EMBEDDING_DIM not set, using app defaults (768)', file=sys.stderr)
 
     # Double-check we're not using the default database
     default_db = Path.home() / '.mcp' / 'context_storage.db'

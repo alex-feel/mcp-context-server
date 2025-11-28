@@ -62,15 +62,18 @@ class MCPServerIntegrationTest:
                 # Store original env to restore later
                 self.original_env['DB_PATH'] = os.environ.get('DB_PATH')
                 self.original_env['MCP_TEST_MODE'] = os.environ.get('MCP_TEST_MODE')
+                self.original_env['ENABLE_SEMANTIC_SEARCH'] = os.environ.get('ENABLE_SEMANTIC_SEARCH')
 
-                # Set BOTH DB_PATH and MCP_TEST_MODE
+                # Set DB_PATH, MCP_TEST_MODE, and ENABLE_SEMANTIC_SEARCH
                 # These MUST be set before Client() is called
                 os.environ['DB_PATH'] = str(self.temp_db_path)
                 os.environ['MCP_TEST_MODE'] = '1'  # THIS IS CRITICAL!
+                os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
 
                 print('[INFO] Environment set BEFORE Client creation:')
                 print(f"[INFO] DB_PATH={os.environ.get('DB_PATH')}")
                 print(f"[INFO] MCP_TEST_MODE={os.environ.get('MCP_TEST_MODE')}")
+                print(f"[INFO] ENABLE_SEMANTIC_SEARCH={os.environ.get('ENABLE_SEMANTIC_SEARCH')}")
                 print(f'[INFO] Using temporary database: {self.temp_db_path}')
 
                 # Verify it's not the default database
@@ -116,10 +119,10 @@ class MCPServerIntegrationTest:
             self.temp_db_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Create database and apply schema
-            schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
+            from app.schemas import load_schema
+
+            schema_sql = load_schema('sqlite')
             with sqlite3.connect(str(self.temp_db_path)) as conn:
-                # Read and execute schema
-                schema_sql = schema_path.read_text(encoding='utf-8')
                 conn.executescript(schema_sql)
 
                 # Apply optimizations

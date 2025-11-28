@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""Run integration tests for MCP Context Storage Server."""
+"""Run integration tests for MCP Context Storage Server.
+
+This script runs the full integration test suite against a real MCP server.
+The server subprocess (run_server.py) automatically enables test mode and
+semantic search when detecting test context.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +14,11 @@ import sys
 from tests.test_real_server import MCPServerIntegrationTest
 
 
-async def main():
+async def main() -> None:
     """Run the integration test suite."""
+    print('[INFO] Running integration tests')
+    print('[INFO] Note: Server wrapper handles temp DB and semantic search enablement')
+
     test = MCPServerIntegrationTest()
     try:
         success = await test.run_all_tests()

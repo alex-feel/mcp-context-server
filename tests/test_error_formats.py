@@ -190,19 +190,7 @@ class TestErrorFormatConsistency:
     async def test_search_context_invalid_limit(self, mock_server_dependencies: None) -> None:
         """Test search_context with invalid limit - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        # Ensure clean backend state before test
-        from contextlib import suppress
-
         from fastmcp.exceptions import ToolError
-
-        import app.server
-
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
-            with suppress(Exception):
-                await app.server._backend.shutdown()
-            app.server._backend = None
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
 
         # When called directly (bypassing FastMCP), no runtime validation occurs.
         # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
@@ -228,18 +216,6 @@ class TestErrorFormatConsistency:
         """Test search_context with excessive limit - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
 
-        # Ensure clean backend state before test
-        from contextlib import suppress
-
-        import app.server
-
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
-            with suppress(Exception):
-                await app.server._backend.shutdown()
-            app.server._backend = None
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
-
         # When called directly (bypassing FastMCP), no runtime validation occurs.
         # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
         # We trust Pydantic completely and don't add redundant runtime checks.
@@ -255,18 +231,7 @@ class TestErrorFormatConsistency:
     async def test_search_context_negative_offset(self, mock_server_dependencies: None) -> None:
         """Test search_context with negative offset - Pydantic handles at protocol layer."""
         _ = mock_server_dependencies  # Fixture needed for proper test setup
-        from contextlib import suppress
-
         from fastmcp.exceptions import ToolError
-
-        import app.server
-
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
-            with suppress(Exception):
-                await app.server._backend.shutdown()
-            app.server._backend = None
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
 
         # When called directly (bypassing FastMCP), no runtime validation occurs.
         # This is correct - Pydantic Field(ge=0) validates at the MCP protocol layer.

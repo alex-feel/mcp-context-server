@@ -77,31 +77,6 @@ class TestDatabaseInitialization:
             assert set(indexes) == expected_indexes
 
     @pytest.mark.asyncio
-    async def test_init_database_with_missing_schema_file(self, temp_db_path: Path) -> None:
-        """Test database initialization falls back to embedded schema."""
-        from app.backends import create_backend
-
-        # Create SQLite backend explicitly
-        backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
-        await backend.initialize()
-
-        with (
-            patch('app.server.DB_PATH', temp_db_path),
-            patch('app.server.SCHEMA_PATH', Path('/nonexistent/schema.sql')),
-        ):
-            await init_database(backend=backend)
-
-        await backend.shutdown()
-
-        # Verify database was still created
-        assert temp_db_path.exists()
-        with sqlite3.connect(str(temp_db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [row[0] for row in cursor.fetchall() if not row[0].startswith('sqlite_')]
-            assert len(tables) == 3
-
-    @pytest.mark.asyncio
     async def test_init_database_handles_errors(self, temp_db_path: Path) -> None:
         """Test database initialization handles errors properly."""
         from app.backends import create_backend

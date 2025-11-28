@@ -1166,7 +1166,7 @@ stalled = await search_context(
 ### Performance Tuning
 
 For advanced performance optimization:
-- Review indexed fields in [`app/schema.sql`](../app/schema.sql)
+- Review indexed fields in [`app/schemas/sqlite_schema.sql`](../app/schemas/sqlite_schema.sql)
 - Check query execution plans with `explain_query=True`
 - Monitor execution time in query statistics
 - Optimize metadata schema design for your use case

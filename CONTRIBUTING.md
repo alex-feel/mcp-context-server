@@ -265,7 +265,7 @@ To add a new metadata operator:
 
 When adding frequently-queried metadata fields:
 
-1. Add functional index in `app/schema.sql`:
+1. Add functional index in `app/schemas/sqlite_schema.sql`:
    ```sql
    CREATE INDEX IF NOT EXISTS idx_metadata_fieldname ON context_entries(
        json_extract(metadata, '$.fieldname')

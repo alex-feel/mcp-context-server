@@ -244,11 +244,6 @@ class TestResourceWarningDetection:
 
         gc.collect()
 
-    @pytest.mark.asyncio
-    async def test_singleton_manager_cleanup(self) -> None:
-        """Test that singleton manager properly cleans up."""
-        pytest.skip('Test skipped: obsolete functionality that has been removed')
-
     def test_temp_db_fixture_no_leaks(self, tmp_path: Path) -> None:
         """Test that the temp_db fixture doesn't leak connections."""
 
@@ -259,9 +254,10 @@ class TestResourceWarningDetection:
         # Initialize database with schema
         conn = sqlite3.connect(str(db_path))
         try:
-            schema_path = Path(__file__).parent.parent / 'app' / 'schema.sql'
-            if schema_path.exists():
-                conn.executescript(schema_path.read_text())
+            from app.schemas import load_schema
+
+            schema_sql = load_schema('sqlite')
+            conn.executescript(schema_sql)
             conn.commit()
         finally:
             # This is the fix - always close the connection

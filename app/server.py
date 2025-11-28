@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 DB_PATH = settings.storage.db_path
 MAX_IMAGE_SIZE_MB = settings.storage.max_image_size_mb
 MAX_TOTAL_SIZE_MB = settings.storage.max_total_size_mb
-SCHEMA_PATH = Path(__file__).parent / 'schema.sql'
 
 # Global connection manager and repositories
 _backend: StorageBackend | None = None
@@ -75,9 +74,9 @@ async def check_semantic_search_dependencies() -> bool:
     try:
         import ollama
 
-        logger.debug('✓ ollama package available')
+        logger.debug('[OK] ollama package available')
     except ImportError as e:
-        logger.warning(f'✗ ollama package not available: {e}')
+        logger.warning(f'[X] ollama package not available: {e}')
         return False
 
     # Check numpy package
@@ -85,20 +84,20 @@ async def check_semantic_search_dependencies() -> bool:
         import importlib.util
 
         if importlib.util.find_spec('numpy') is None:
-            logger.warning('✗ numpy package not available')
+            logger.warning('[X] numpy package not available')
             return False
-        logger.debug('✓ numpy package available')
+        logger.debug('[OK] numpy package available')
     except ImportError as e:
-        logger.warning(f'✗ numpy package not available: {e}')
+        logger.warning(f'[X] numpy package not available: {e}')
         return False
 
     # Check sqlite_vec package
     try:
         import sqlite_vec
 
-        logger.debug('✓ sqlite_vec package available')
+        logger.debug('[OK] sqlite_vec package available')
     except ImportError as e:
-        logger.warning(f'✗ sqlite_vec package not available: {e}')
+        logger.warning(f'[X] sqlite_vec package not available: {e}')
         return False
 
     # Check Ollama service
@@ -108,21 +107,21 @@ async def check_semantic_search_dependencies() -> bool:
         async with httpx.AsyncClient() as client:
             response = await client.get(settings.ollama_host, timeout=1.0)
             if response.status_code == 200:
-                logger.debug('✓ Ollama service running')
+                logger.debug('[OK] Ollama service running')
             else:
-                logger.warning(f'✗ Ollama service returned status {response.status_code}')
+                logger.warning(f'[X] Ollama service returned status {response.status_code}')
                 return False
     except Exception as e:
-        logger.warning(f'✗ Ollama service not accessible: {e}')
+        logger.warning(f'[X] Ollama service not accessible: {e}')
         return False
 
     # Check EmbeddingGemma model
     try:
         ollama_client = ollama.Client(host=settings.ollama_host)
         ollama_client.show(settings.embedding_model)
-        logger.debug(f'✓ EmbeddingGemma model "{settings.embedding_model}" available')
+        logger.debug(f'[OK] EmbeddingGemma model "{settings.embedding_model}" available')
     except Exception as e:
-        logger.warning(f'✗ EmbeddingGemma model not available: {e}')
+        logger.warning(f'[X] EmbeddingGemma model not available: {e}')
         logger.warning(f'  Run: ollama pull {settings.embedding_model}')
         return False
 
@@ -135,12 +134,12 @@ async def check_semantic_search_dependencies() -> bool:
         sqlite_vec.load(test_conn)
         test_conn.enable_load_extension(False)
         test_conn.close()
-        logger.debug('✓ sqlite-vec extension loads successfully')
+        logger.debug('[OK] sqlite-vec extension loads successfully')
     except Exception as e:
-        logger.warning(f'✗ sqlite-vec extension failed to load: {e}')
+        logger.warning(f'[X] sqlite-vec extension failed to load: {e}')
         return False
 
-    logger.info('✓ All semantic search dependencies available')
+    logger.info('[OK] All semantic search dependencies available')
     return True
 
 
@@ -385,23 +384,23 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
                     from app.services.embedding_service import EmbeddingService
 
                     _embedding_service = EmbeddingService()
-                    logger.info('✓ Semantic search enabled and available')
-                    logger.info('✓ semantic_search_context registered and exposed')
+                    logger.info('[OK] Semantic search enabled and available')
+                    logger.info('[OK] semantic_search_context registered and exposed')
                 except Exception as e:
                     logger.error(f'Failed to initialize embedding service: {e}')
                     _embedding_service = None
-                    logger.warning('⚠ Semantic search enabled but initialization failed - feature disabled')
-                    logger.info('⚠ semantic_search_context not registered (initialization failed)')
+                    logger.warning('[!] Semantic search enabled but initialization failed - feature disabled')
+                    logger.info('[!] semantic_search_context not registered (initialization failed)')
             else:
                 _embedding_service = None
-                logger.warning('⚠ Semantic search enabled but dependencies not met - feature disabled')
+                logger.warning('[!] Semantic search enabled but dependencies not met - feature disabled')
                 logger.warning('  Install dependencies: uv sync --extra semantic-search')
                 logger.warning(f'  Download model: ollama pull {settings.embedding_model}')
-                logger.info('⚠ semantic_search_context not registered (dependencies not met)')
+                logger.info('[!] semantic_search_context not registered (dependencies not met)')
         else:
             _embedding_service = None
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
-            logger.info('⚠ semantic_search_context not registered (feature disabled)')
+            logger.info('[!] semantic_search_context not registered (feature disabled)')
 
         logger.info(f'MCP Context Server initialized (backend: {_backend.backend_type})')
     except Exception as e:
@@ -470,12 +469,7 @@ async def init_database(backend: StorageBackend | None = None) -> None:
         if schema_path.exists():
             schema_sql = schema_path.read_text(encoding='utf-8')
         else:
-            logger.warning(f'Schema file not found at {schema_path}, falling back to app/schema.sql')
-            # Fallback to old schema file for backward compatibility
-            if SCHEMA_PATH.exists():
-                schema_sql = SCHEMA_PATH.read_text(encoding='utf-8')
-            else:
-                raise RuntimeError(f'No schema file found: tried {schema_path} and {SCHEMA_PATH}')
+            raise RuntimeError(f'Schema file not found: {schema_path}')
 
         # Apply schema - backend-specific approach
         if backend is not None:
