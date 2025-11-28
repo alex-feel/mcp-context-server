@@ -220,6 +220,20 @@ The codebase uses a comprehensive multi-layered testing approach:
 - **`test_semantic_search_filters.py`**: Tests semantic search with filtering options
 - **`test_embedding_service.py`**: Tests embedding generation service
 
+**Repository Tests:**
+- **`test_context_repository_extended.py`**: Extended context repository tests
+- **`test_image_repository.py`**: Image attachment repository tests
+- **`test_statistics_repository.py`**: Statistics repository tests
+- **`test_tag_repository.py`**: Tag repository tests
+- **`test_embedding_repository.py`**: Embedding repository tests
+
+**Server Tests:**
+- **`test_server_edge_cases.py`**: Edge case handling in server tools
+- **`test_server_error_paths.py`**: Error path coverage for server
+- **`test_server_tools.py`**: Tool implementation tests
+- **`test_server_utilities.py`**: Server utility function tests
+- **`test_server_json_schema.py`**: JSON schema validation tests
+
 **Error and Validation:**
 - **`test_error_formats.py`**: Tests error response formatting consistency
 - **`test_error_handling_json.py`**: Tests JSON error handling edge cases
@@ -229,6 +243,8 @@ The codebase uses a comprehensive multi-layered testing approach:
 
 **Backend and Infrastructure:**
 - **`test_postgresql_backend.py`**: Tests PostgreSQL-specific backend functionality
+- **`test_backend_factory.py`**: Tests backend factory and selection logic
+- **`test_query_builder_postgresql.py`**: Tests PostgreSQL query builder
 - **`test_schema_sync.py`**: Validates SQLite and PostgreSQL schemas are in sync
 - **`test_resource_warnings.py`**: Validates proper resource cleanup
 
@@ -238,15 +254,24 @@ The codebase uses a comprehensive multi-layered testing approach:
 - **`test_db`**: SQLite connection with schema initialization (for direct DB tests)
 - **`initialized_server`**: Full server initialization with database (for integration tests)
 - **`async_db_initialized`**: Async storage backend with proper lifecycle management
+- **`async_db_with_embeddings`**: Async backend with semantic search migration applied (for embedding tests)
 - **`mock_context`**: Mock FastMCP Context for unit tests
 - **`sample_image_data`**: Base64 encoded test PNG image
 - **`multiple_context_entries`**: Pre-populated database entries for testing
 - **`mock_server_dependencies`**: Patches server settings for isolated testing
+- **`embedding_dim`**: Dynamic embedding dimension from settings (for semantic search tests)
+
+**Conditional Skip Markers** (for optional dependencies):
+- `@requires_ollama`: Skip if ollama package not installed
+- `@requires_sqlite_vec`: Skip if sqlite-vec package not installed
+- `@requires_numpy`: Skip if numpy package not installed
+- `@requires_semantic_search`: Skip if any semantic search dependency missing
 
 **Fixture Selection Guide**:
 - Direct SQLite testing → use `test_db`
 - Server tool testing (mocked) → use `mock_server_dependencies`
 - Full integration testing → use `initialized_server` or `async_db_initialized`
+- Semantic search testing → use `async_db_with_embeddings` with `@requires_semantic_search`
 - All fixtures use SQLite temporary databases for consistency and speed
 
 ### Key Implementation Details
