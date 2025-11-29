@@ -118,8 +118,10 @@ class EmbeddingRepository(BaseRepository):
         limit: int = 20,
         thread_id: str | None = None,
         source: Literal['user', 'agent'] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> list[dict[str, Any]]:
-        """KNN search with optional filters.
+        """KNN search with optional filters including date range.
 
         SQLite: Uses CTE-based pre-filtering with vec_distance_l2() function
         PostgreSQL: Uses direct JOIN with <-> operator for L2 distance
@@ -129,6 +131,8 @@ class EmbeddingRepository(BaseRepository):
             limit: Maximum number of results to return
             thread_id: Optional filter by thread
             source: Optional filter by source type
+            start_date: Filter by created_at >= date (ISO 8601 format)
+            end_date: Filter by created_at <= date (ISO 8601 format)
 
         Returns:
             List of search results with context and similarity scores
@@ -157,6 +161,20 @@ class EmbeddingRepository(BaseRepository):
                 if source:
                     filter_conditions.append(f'source = {self._placeholder(param_position)}')
                     filter_params.append(source)
+                    param_position += 1
+
+                # Date range filtering - Use datetime() to normalize ISO 8601 input
+                # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
+                # to SQLite's space-separated format 'YYYY-MM-DD HH:MM:SS' for proper comparison.
+                # Without datetime(), TEXT comparison fails because 'T' > ' ' in ASCII ordering.
+                if start_date:
+                    filter_conditions.append(f'created_at >= datetime({self._placeholder(param_position)})')
+                    filter_params.append(start_date)
+                    param_position += 1
+
+                if end_date:
+                    filter_conditions.append(f'created_at <= datetime({self._placeholder(param_position)})')
+                    filter_params.append(end_date)
                     param_position += 1
 
                 where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
@@ -207,6 +225,18 @@ class EmbeddingRepository(BaseRepository):
             if source:
                 filter_conditions.append(f'ce.source = {self._placeholder(param_position)}')
                 filter_params.append(source)
+                param_position += 1
+
+            # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
+            # asyncpg requires Python datetime objects, not strings, for TIMESTAMPTZ parameters
+            if start_date:
+                filter_conditions.append(f'ce.created_at >= {self._placeholder(param_position)}')
+                filter_params.append(self._parse_date_for_postgresql(start_date))
+                param_position += 1
+
+            if end_date:
+                filter_conditions.append(f'ce.created_at <= {self._placeholder(param_position)}')
+                filter_params.append(self._parse_date_for_postgresql(end_date))
                 param_position += 1
 
             where_clause = ' AND '.join(filter_conditions)

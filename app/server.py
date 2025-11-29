@@ -783,6 +783,112 @@ def truncate_text(text: str | None, max_length: int = 150) -> tuple[str | None, 
     return truncated + '...', True
 
 
+def validate_date_param(date_str: str | None, param_name: str) -> str | None:
+    """Validate and normalize date parameter for database filtering.
+
+    Accepts ISO 8601 format dates and returns the validated string for database use.
+    Both date-only (YYYY-MM-DD) and datetime (YYYY-MM-DDTHH:MM:SS) formats are supported.
+    Timezone suffixes (Z or +HH:MM) are also accepted.
+
+    For end_date with date-only format: automatically expands to end-of-day (T23:59:59)
+    to match user expectations. This follows Elasticsearch's precedent where missing time
+    components are replaced with max values for 'lte' (less-than-or-equal) operations.
+    See: https://www.elastic.co/docs/reference/query-languages/query-dsl/query-dsl-range-query
+
+    Args:
+        date_str: ISO 8601 date string or None
+        param_name: Parameter name for error messages (e.g., 'start_date', 'end_date')
+
+    Returns:
+        Validated date string (possibly expanded for end_date) or None if input was None
+
+    Raises:
+        ToolError: If date format is invalid
+    """
+    from datetime import date
+    from datetime import datetime as dt
+
+    if date_str is None:
+        return None
+
+    # Detect date-only format by checking for absence of time separators
+    # Date-only: '2025-11-29' (no 'T' or space separator)
+    # Datetime: '2025-11-29T10:00:00' or '2025-11-29 10:00:00'
+    is_date_only = 'T' not in date_str and ' ' not in date_str
+
+    # Validate the date string
+    try:
+        if is_date_only:
+            # Parse as date-only format (YYYY-MM-DD)
+            date.fromisoformat(date_str)
+        else:
+            # Parse as datetime format (with optional timezone)
+            # Python 3.11+ handles 'Z' natively
+            dt.fromisoformat(date_str)
+    except ValueError:
+        raise ToolError(
+            f'Invalid {param_name} format: "{date_str}". '
+            f'Use ISO 8601 format (e.g., "2025-11-29" or "2025-11-29T10:00:00")',
+        ) from None
+
+    # For end_date with date-only format: expand to end-of-day with microsecond precision
+    # This follows Elasticsearch precedent where missing time components are replaced
+    # with max values for 'lte' operations, matching user expectations that
+    # end_date='2025-11-29' should include ALL entries on November 29th.
+    #
+    # Uses T23:59:59.999999 (microsecond precision) for PostgreSQL compatibility:
+    # PostgreSQL's CURRENT_TIMESTAMP stores microseconds (e.g., 23:59:59.500000),
+    # so T23:59:59 (microsecond=0) would exclude entries at 23:59:59.xxx.
+    # SQLite is unaffected as CURRENT_TIMESTAMP stores second precision only.
+    if param_name == 'end_date' and is_date_only:
+        date_str = f'{date_str}T23:59:59.999999'
+
+    return date_str
+
+
+def validate_date_range(start_date: str | None, end_date: str | None) -> None:
+    """Validate that start_date is not after end_date.
+
+    Args:
+        start_date: Validated start date string
+        end_date: Validated end date string
+
+    Raises:
+        ToolError: If start_date is after end_date
+    """
+    from datetime import date
+    from datetime import datetime as dt
+
+    def _parse_and_normalize(date_str: str) -> dt:
+        """Parse date string and normalize to naive datetime for comparison.
+
+        Handles all ISO 8601 formats: date-only, datetime, datetime+tz, datetime+Z.
+        Strips timezone info to allow comparison between mixed formats.
+
+        Returns:
+            Naive datetime object for comparison purposes.
+        """
+        # Handle Z suffix - replace with +00:00 for fromisoformat
+        normalized = date_str.replace('Z', '+00:00') if date_str.endswith('Z') else date_str
+
+        try:
+            parsed = dt.fromisoformat(normalized)
+            # Strip timezone info for comparison (we just need relative ordering)
+            return parsed.replace(tzinfo=None)
+        except ValueError:
+            # Date-only format - convert to datetime for comparison
+            return dt.combine(date.fromisoformat(date_str), dt.min.time())
+
+    if start_date and end_date:
+        start_dt = _parse_and_normalize(start_date)
+        end_dt = _parse_and_normalize(end_date)
+
+        if start_dt > end_dt:
+            raise ToolError(
+                f'Invalid date range: start_date ({start_date}) is after end_date ({end_date})',
+            )
+
+
 # MCP Tools
 
 
@@ -990,6 +1096,18 @@ async def search_context(
             'starts_with, ends_with, is_null, is_not_null',
         ),
     ] = None,
+    start_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at >= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T10:00:00")',
+        ),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
+        ),
+    ] = None,
     limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (max 500)')] = 50,
     offset: Annotated[int, Field(ge=0, description='Pagination offset')] = 0,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
@@ -1005,6 +1123,7 @@ async def search_context(
     - tags: OR logic (matches ANY of provided tags)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+    - start_date/end_date: Filter by creation timestamp (ISO 8601)
 
     Performance tips:
     - Always specify thread_id to reduce search space
@@ -1017,6 +1136,8 @@ async def search_context(
         content_type: Filter by content type
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
+        start_date: Filter entries created on or after this date (ISO 8601)
+        end_date: Filter entries created on or before this date (ISO 8601)
         limit: Maximum results (max 500)
         offset: Pagination offset
         include_images: Whether to include image data
@@ -1030,13 +1151,18 @@ async def search_context(
         ToolError: If validation fails or search operation fails.
     """
     try:
+        # Validate date parameters
+        start_date = validate_date_param(start_date, 'start_date')
+        end_date = validate_date_param(end_date, 'end_date')
+        validate_date_range(start_date, end_date)
+
         if ctx:
             await ctx.info(f'Searching context with filters: thread_id={thread_id}, source={source}')
 
         # Get repositories
         repos = await _ensure_repositories()
 
-        # Use the improved search_contexts method that now supports metadata
+        # Use the improved search_contexts method that now supports metadata and date filtering
         result = await repos.context.search_contexts(
             thread_id=thread_id,
             source=source,
@@ -1044,6 +1170,8 @@ async def search_context(
             tags=tags,
             metadata=metadata,
             metadata_filters=metadata_filters,
+            start_date=start_date,
+            end_date=end_date,
             limit=limit,
             offset=offset,
             explain_query=explain_query,
@@ -1639,6 +1767,18 @@ async def semantic_search_context(
     top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return (default: 20)')] = 20,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
+    start_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at >= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T10:00:00")',
+        ),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Find semantically similar context using vector embeddings. Returns FULL text content.
@@ -1657,6 +1797,10 @@ async def semantic_search_context(
     The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
     Typical interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
 
+    Date filtering:
+    - start_date/end_date: Optional ISO 8601 date filters applied before similarity search
+    - Useful for finding similar content within a specific time period
+
     Requires: ENABLE_SEMANTIC_SEARCH=true and dependencies (ollama, numpy, sqlite-vec/pgvector).
 
     Args:
@@ -1664,6 +1808,8 @@ async def semantic_search_context(
         top_k: Number of results to return (1-100)
         thread_id: Optional filter to narrow results by thread
         source: Optional filter to narrow results by source type
+        start_date: Filter entries created on or after this date (ISO 8601)
+        end_date: Filter entries created on or before this date (ISO 8601)
         ctx: FastMCP context object
 
     Returns:
@@ -1672,6 +1818,11 @@ async def semantic_search_context(
     Raises:
         ToolError: If semantic search is not available or search fails.
     """
+    # Validate date parameters
+    start_date = validate_date_param(start_date, 'start_date')
+    end_date = validate_date_param(end_date, 'end_date')
+    validate_date_range(start_date, end_date)
+
     # Check if semantic search is available
     if _embedding_service is None:
         raise ToolError(
@@ -1694,13 +1845,15 @@ async def semantic_search_context(
             logger.error(f'Failed to generate query embedding: {e}')
             raise ToolError(f'Failed to generate embedding for query: {str(e)}') from e
 
-        # Perform similarity search
+        # Perform similarity search with optional date filtering
         try:
             results = await repos.embeddings.search(
                 query_embedding=query_embedding,
                 limit=top_k,
                 thread_id=thread_id,
                 source=source,
+                start_date=start_date,
+                end_date=end_date,
             )
         except Exception as e:
             logger.error(f'Semantic search failed: {e}')
