@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/alex-feel/mcp-context-server/compare/v0.6.0...v0.7.0) (2025-11-29)
+
+
+### Features
+
+* support date filtering in search_context and semantic_search_context ([e433f5e](https://github.com/alex-feel/mcp-context-server/commit/e433f5e195b8bd3278f55ef4685d7be0844b3c2b))
+
 ## [0.6.0](https://github.com/alex-feel/mcp-context-server/compare/v0.5.1...v0.6.0) (2025-11-29)
 
 
