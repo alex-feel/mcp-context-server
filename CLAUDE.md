@@ -206,60 +206,6 @@ The codebase uses a comprehensive multi-layered testing approach:
   - Use `async_db_initialized` for async database operations
   - All fixtures create SQLite temporary databases (no PostgreSQL fixtures in test suite)
 
-#### Test Files and Their Purpose:
-
-**Core Tests:**
-- **`test_models.py`**: Validates Pydantic data models, field validation, and type conversions
-- **`test_database.py`**: Tests SQLite operations, constraints, indexes, and cascade deletes
-- **`test_server.py`**: Tests MCP tool handlers with mocked database connections
-- **`test_integration.py`**: End-to-end workflows with real database operations
-- **`test_real_server.py`**: Tests actual running server via FastMCP client connection
-
-**Parameter and JSON Handling:**
-- **`test_parameter_handling.py`**: Validates tool parameter parsing and type coercion
-- **`test_json_parameter_handling.py`**: Tests JSON parameter serialization/deserialization
-- **`test_json_string_handling.py`**: Validates JSON string handling in tool responses
-- **`test_encoding.py`**: Tests character encoding edge cases
-
-**Metadata and Filtering:**
-- **`test_metadata_filtering.py`**: Tests advanced metadata filtering with operators
-- **`test_metadata_error_handling.py`**: Tests metadata filtering error cases
-- **`test_nested_metadata_storage.py`**: Tests nested JSON metadata storage and retrieval
-
-**Feature-Specific Tests:**
-- **`test_update_context.py`**: Tests update_context tool functionality
-- **`test_deduplication.py`**: Tests context deduplication logic
-- **`test_semantic_search_filters.py`**: Tests semantic search with filtering options
-- **`test_embedding_service.py`**: Tests embedding generation service
-
-**Repository Tests:**
-- **`test_context_repository_extended.py`**: Extended context repository tests
-- **`test_image_repository.py`**: Image attachment repository tests
-- **`test_statistics_repository.py`**: Statistics repository tests
-- **`test_tag_repository.py`**: Tag repository tests
-- **`test_embedding_repository.py`**: Embedding repository tests
-
-**Server Tests:**
-- **`test_server_edge_cases.py`**: Edge case handling in server tools
-- **`test_server_error_paths.py`**: Error path coverage for server
-- **`test_server_tools.py`**: Tool implementation tests
-- **`test_server_utilities.py`**: Server utility function tests
-- **`test_server_json_schema.py`**: JSON schema validation tests
-
-**Error and Validation:**
-- **`test_error_formats.py`**: Tests error response formatting consistency
-- **`test_error_handling_json.py`**: Tests JSON error handling edge cases
-- **`test_json_error_consistency.py`**: Tests consistent error messages across JSON operations
-- **`test_validation_errors.py`**: Tests input validation error messages
-- **`test_validation_consistency.py`**: Tests validation behavior consistency
-
-**Backend and Infrastructure:**
-- **`test_postgresql_backend.py`**: Tests PostgreSQL-specific backend functionality
-- **`test_backend_factory.py`**: Tests backend factory and selection logic
-- **`test_query_builder_postgresql.py`**: Tests PostgreSQL query builder
-- **`test_schema_sync.py`**: Validates SQLite and PostgreSQL schemas are in sync
-- **`test_resource_warnings.py`**: Validates proper resource cleanup
-
 #### Test Fixtures (`conftest.py`):
 - **`test_settings`**: Creates test-specific AppSettings with temp database
 - **`temp_db_path`**: Provides temporary database file path
@@ -571,148 +517,13 @@ All initialization is idempotent - safe to run multiple times.
 
 #### Supabase
 
-**Compatibility:** Supabase is fully compatible via direct PostgreSQL connection - no special code or configuration needed.
+Supabase is fully compatible via PostgreSQL connection - see README.md for detailed setup instructions.
 
-Supabase provides TWO connection methods for persistent database connections. Choose based on your network environment.
-
-##### Connection Method 1: Direct Connection (Recommended - Requires IPv6)
-
-**Best for:** VMs, long-running containers, systems with IPv6 support
-**Performance:** Lowest latency (~15-20ms)
-**Network:** Requires IPv6 (unless you have paid dedicated IPv4 add-on)
-
-**Connection String Format:**
-```
-postgresql://postgres:[YOUR-PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres
-```
-
-**How to Get Connection String:**
-1. Navigate to: Database → Settings (left sidebar) in Supabase Dashboard
-2. Find: "Connect to your project" section
-3. Select: "Connection String" tab → "Direct connection" method
-4. Copy connection string (you'll need to replace `[YOUR-PASSWORD]` with your actual password)
-
-**Setup Steps:**
-```bash
-# 1. Get your database password
-# IMPORTANT: Database password is NEVER displayed in Supabase Dashboard (security)
-# Either: Use the password you set when creating your project
-# Or: Click "Reset database password" button (below connection string) to set a new one
-# Note: [YOUR-PASSWORD] is a placeholder - replace with your actual password
-
-# 2. Configure environment with Direct Connection
-export STORAGE_BACKEND=postgresql
-export POSTGRESQL_CONNECTION_STRING=postgresql://postgres:your-actual-password@db.[PROJECT-REF].supabase.co:5432/postgres
-export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
-
-# 3. Enable pgvector extension (required for semantic search)
-# Option A: Via Supabase Dashboard (easiest)
-#   - Navigate to: Database → Extensions (left sidebar)
-#   - Search for "vector"
-#   - Toggle the "vector" extension to enable (turns green)
-# Option B: Via SQL Editor
-#   - Navigate to: SQL Editor in Supabase Dashboard
-#   - Run: CREATE EXTENSION IF NOT EXISTS vector;
-
-# 4. Run server (schema auto-initializes)
-uv run mcp-context-server
-```
-
-##### Connection Method 2: Session Pooler (IPv4 Compatible)
-
-**Best for:** Systems without IPv6 support (Windows, corporate networks with IPv4-only)
-**Performance:** Good (~20-30ms, +5-10ms vs Direct Connection via Supavisor proxy)
-**Network:** Works with both IPv4 and IPv6 (universal compatibility)
-
-**Connection String Format:**
-```
-postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
-```
-
-**How to Get Connection String:**
-1. Navigate to: Database → Settings (left sidebar) in Supabase Dashboard
-2. Find: "Connect to your project" section
-3. Select: "Connection String" tab → "Session pooler" method
-4. Copy connection string (you'll need to replace `[YOUR-PASSWORD]` with your actual password)
-
-**Important Differences from Direct Connection:**
-- **Different hostname**: `aws-0-[REGION].pooler.supabase.com` instead of `db.[PROJECT-REF].supabase.co`
-- **Different username format**: `postgres.[PROJECT-REF]` instead of `postgres`
-- **Same port**: 5432 (NOT 6543 - Transaction Pooler is different and not for persistent connections)
-- **Connection routed through Supavisor**: Adds IPv4 support but slightly higher latency
-
-**Setup Steps:**
-```bash
-# 1. Get your database password (same as Direct Connection method)
-# IMPORTANT: Database password is NEVER displayed in Supabase Dashboard (security)
-# Either: Use the password you set when creating your project
-# Or: Click "Reset database password" button (below connection string) to set a new one
-
-# 2. Configure environment with Session Pooler connection
-export STORAGE_BACKEND=postgresql
-export POSTGRESQL_CONNECTION_STRING=postgresql://postgres.[PROJECT-REF]:your-actual-password@aws-0-[REGION].pooler.supabase.com:5432/postgres
-export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
-
-# 3. Enable pgvector extension (same as Direct Connection)
-# Option A: Via Supabase Dashboard (easiest)
-#   - Navigate to: Database → Extensions (left sidebar)
-#   - Search for "vector"
-#   - Toggle the "vector" extension to enable (turns green)
-# Option B: Via SQL Editor
-#   - Navigate to: SQL Editor in Supabase Dashboard
-#   - Run: CREATE EXTENSION IF NOT EXISTS vector;
-
-# 4. Run server (schema auto-initializes)
-uv run mcp-context-server
-```
-
-##### Decision Matrix: Which Connection Method to Use?
-
-| Factor | Direct Connection | Session Pooler |
-|--------|------------------|----------------|
-| **IPv6 Required?** | Yes (unless paid IPv4 add-on) | No (works with IPv4) |
-| **Performance** | Lowest latency (~15-20ms) | Good (+5-10ms via proxy) |
-| **Hostname** | `db.[PROJECT-REF].supabase.co` | `aws-0-[REGION].pooler.supabase.com` |
-| **Username** | `postgres` | `postgres.[PROJECT-REF]` |
-| **Port** | 5432 | 5432 |
-| **Best For** | VMs with IPv6, production deployments | Windows, corporate networks, IPv4-only systems |
-| **Universal Compatibility** | No (IPv6 only) | Yes (IPv4 and IPv6) |
-
-##### Troubleshooting: "getaddrinfo failed" Error
-
-If you see errors like:
-```
-OSError: [Errno -3] Temporary failure in name resolution
-gaierror: [Errno -3] getaddrinfo failed
-```
-
-**Cause:** Your system doesn't support IPv6 and you're using Direct Connection method.
-
-**Solution:** Switch to Session Pooler method (Connection Method 2 above):
-1. Get Session Pooler connection string from Supabase Dashboard (Connection String → Session pooler)
-2. Update your connection string to use `aws-0-[REGION].pooler.supabase.com` hostname
-3. Update username format to `postgres.[PROJECT-REF]`
-4. Keep port as 5432
-5. Restart server
-
-**Important Connection Details:**
-- **Database password is never shown** - you must use your original password or reset it
-- **NOT API keys** - API keys (including service_role) are for REST/GraphQL APIs, not direct database connection
-- **Port 5432** for both connection methods (Transaction Pooler on port 6543 is different - only for serverless functions)
-- **pgvector extension** is available on all Supabase projects - must be manually enabled via Dashboard → Extensions (toggle "vector") or SQL (`CREATE EXTENSION IF NOT EXISTS vector;`) before using semantic search
-- **All PostgreSQL features** work identically - JSONB, transactions, metadata filtering
-
-**Why No Special Supabase Support:**
-- Supabase IS PostgreSQL - creating separate abstraction would violate DRY and YAGNI principles
-- Both connection methods use standard PostgreSQL wire protocol - identical to self-hosted PostgreSQL
-- Zero maintenance burden - no Supabase-specific code to maintain
-- Future-proof - works regardless of Supabase changes
-- Clear semantics - users understand they're using PostgreSQL
-
-**Testing with Supabase:**
-- Tests use SQLite temporary databases (no Supabase required for testing)
-- Production deployment can use Supabase via standard PostgreSQL configuration (either connection method)
-- All PostgreSQL backend features tested with SQLite work identically on Supabase
+**Quick Reference:**
+- Use `STORAGE_BACKEND=postgresql` with `POSTGRESQL_CONNECTION_STRING`
+- Two connection methods: Direct (IPv6 required) or Session Pooler (IPv4 compatible)
+- Enable pgvector via Dashboard → Extensions for semantic search
+- "getaddrinfo failed" error = switch from Direct to Session Pooler
 
 ### StorageBackend Protocol
 
@@ -812,6 +623,32 @@ Both mypy and pyright are configured:
 2. **Tool signatures must include `ctx: Context | None = None`** as the last parameter (hidden from MCP clients)
 3. **Return types must be serializable dicts/lists** - use TypedDicts from `app/types.py`
 4. **Tool decorators require specific imports**: Use `Annotated` and `Field` from `typing` and `pydantic`
+
+### Adding New MCP Tools
+
+When adding a new tool to the server, follow this pattern:
+
+```python
+# In app/server.py
+@mcp.tool()
+async def my_new_tool(
+    required_param: Annotated[str, Field(description='Description for MCP clients')],
+    optional_param: Annotated[int | None, Field(description='Optional parameter')] = None,
+    ctx: Context | None = None,  # ALWAYS last, hidden from MCP clients
+) -> MyToolResponse:  # Use TypedDict from app/types.py
+    """Tool docstring shown to MCP clients."""
+    repos = _ensure_repositories()
+    # Use repository methods for database operations
+    result = await repos.context.some_method(required_param)
+    return {'success': True, 'data': result}
+```
+
+**Checklist for new tools:**
+1. Add TypedDict response type to `app/types.py`
+2. Add repository methods if database access needed
+3. Use `Literal["user", "agent"]` for source parameters
+4. Add tests in `tests/test_server.py` or dedicated test file
+5. Update server.json if tool adds new environment variables
 
 ### Repository Pattern Implementation
 
