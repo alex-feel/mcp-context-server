@@ -967,6 +967,115 @@ search_context(
 )
 ```
 
+## Partial Metadata Updates (metadata_patch)
+
+The `update_context` tool supports partial metadata updates using the `metadata_patch` parameter, which implements RFC 7396 JSON Merge Patch semantics.
+
+### When to Use metadata_patch vs metadata
+
+| Scenario | Use | Parameter |
+|----------|-----|-----------|
+| Replace entire metadata object | Full replacement | `metadata` |
+| Update a single field | Partial update | `metadata_patch` |
+| Add new fields while preserving existing | Partial update | `metadata_patch` |
+| Delete specific fields | Partial update | `metadata_patch` |
+| Clear all metadata | Full replacement | `metadata={}` |
+
+**Mutual Exclusivity:** You cannot use both `metadata` and `metadata_patch` in the same call.
+
+### RFC 7396 JSON Merge Patch Semantics
+
+The `metadata_patch` parameter follows [RFC 7396](https://datatracker.ietf.org/doc/html/rfc7396) semantics:
+
+- **New keys** in patch are ADDED to existing metadata
+- **Existing keys** are REPLACED with new values from patch
+- **Null values** DELETE keys from metadata
+
+### Basic Operations
+
+```python
+# Original metadata: {"status": "pending", "priority": 5, "assignee": "alice"}
+
+# Add a new field
+update_context(context_id=123, metadata_patch={"category": "backend"})
+# Result: {"status": "pending", "priority": 5, "assignee": "alice", "category": "backend"}
+
+# Update existing field
+update_context(context_id=123, metadata_patch={"status": "completed"})
+# Result: {"status": "completed", "priority": 5, "assignee": "alice", "category": "backend"}
+
+# Delete a field using null
+update_context(context_id=123, metadata_patch={"assignee": None})
+# Result: {"status": "completed", "priority": 5, "category": "backend"}
+
+# Multiple operations in one call
+update_context(
+    context_id=123,
+    metadata_patch={
+        "status": "archived",      # Update existing
+        "archived_at": "2025-10",  # Add new
+        "category": None           # Delete
+    }
+)
+# Result: {"status": "archived", "priority": 5, "archived_at": "2025-10"}
+```
+
+### Combined with Other Updates
+
+The `metadata_patch` can be combined with other update fields:
+
+```python
+# Update text and patch metadata in one operation
+update_context(
+    context_id=123,
+    text="Updated analysis results",
+    metadata_patch={"status": "reviewed", "reviewer": "bob"}
+)
+
+# Update tags and patch metadata
+update_context(
+    context_id=123,
+    tags=["completed", "verified"],
+    metadata_patch={"completed": True}
+)
+```
+
+### Limitations (RFC 7396)
+
+**1. Cannot Set Null Values**
+
+Using `null` in the patch always DELETES the key. If you need to store a null value, use full metadata replacement:
+
+```python
+# This DELETES the field, not sets it to null
+update_context(context_id=123, metadata_patch={"optional_field": None})
+# Result: field is removed
+
+# To store null, use full replacement
+current = get_context_by_ids(context_ids=[123])
+new_metadata = current[0]["metadata"]
+new_metadata["optional_field"] = None
+update_context(context_id=123, metadata=new_metadata)
+```
+
+**2. Arrays are Replaced Entirely**
+
+Array operations are replace-only - no element-wise add/remove:
+
+```python
+# Original: {"tags": ["a", "b", "c"]}
+
+# This replaces the entire array
+update_context(context_id=123, metadata_patch={"tags": ["x", "y"]})
+# Result: {"tags": ["x", "y"]}  (not ["a", "b", "c", "x", "y"])
+
+# To append, read current array first
+current = get_context_by_ids(context_ids=[123])
+tags = current[0]["metadata"]["tags"]
+tags.append("new_tag")
+update_context(context_id=123, metadata_patch={"tags": tags})
+```
+
 ## Integration Examples
 
 ### Task Queue System
@@ -999,11 +1108,11 @@ async def get_next_task():
     )
     return result["entries"][0] if result["entries"] else None
 
-# Mark task as completed
+# Mark task as completed (preserves existing metadata like priority, task_name)
 async def complete_task(context_id):
     await update_context(
         context_id=context_id,
-        metadata={
+        metadata_patch={
             "status": "completed",
             "completed": True,
             "completed_at": datetime.now().isoformat()
