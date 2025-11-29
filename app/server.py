@@ -347,6 +347,119 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         logger.info('Semantic search migration: tables already exist, skipping')
 
 
+async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = None) -> None:
+    """Apply jsonb_merge_patch function migration for PostgreSQL.
+
+    This migration creates the jsonb_merge_patch() PL/pgSQL function that implements
+    TRUE RFC 7396 recursive deep merge semantics. The function is required by the
+    context_repository.patch_metadata() method for PostgreSQL backends.
+
+    Args:
+        backend: Optional backend to use. If None, creates temporary backend.
+
+    Raises:
+        RuntimeError: If migration execution fails.
+
+    Note:
+        - Only applies to PostgreSQL backends (SQLite uses native json_patch)
+        - Idempotent: Uses CREATE OR REPLACE FUNCTION
+        - Must be called after init_database() to ensure tables exist
+    """
+    # Determine backend type
+    if backend is not None:
+        backend_type = backend.backend_type
+    else:
+        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
+        backend_type = temp_backend.backend_type
+
+    # Only apply to PostgreSQL backends
+    if backend_type != 'postgresql':
+        return
+
+    migration_path = Path(__file__).parent / 'migrations' / 'add_jsonb_merge_patch_postgresql.sql'
+
+    if not migration_path.exists():
+        logger.warning(f'jsonb_merge_patch migration file not found: {migration_path}')
+        return
+
+    try:
+        migration_sql = migration_path.read_text(encoding='utf-8')
+
+        if backend is not None:
+
+            async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
+                # Parse SQL statements, handling dollar-quoted function bodies
+                statements = []
+                current_stmt: list[str] = []
+                in_function = False
+
+                for line in migration_sql.split('\n'):
+                    stripped = line.strip()
+                    # Skip comment-only lines (but preserve function comments)
+                    if stripped.startswith('--') and not in_function:
+                        continue
+                    # Track dollar-quoted strings (function bodies)
+                    if '$$' in stripped:
+                        in_function = not in_function
+                    if stripped:
+                        current_stmt.append(line)
+                    # End of statement: semicolon when not in dollar quotes
+                    if stripped.endswith(';') and not in_function:
+                        statements.append('\n'.join(current_stmt))
+                        current_stmt = []
+
+                # Add any remaining statement
+                if current_stmt:
+                    statements.append('\n'.join(current_stmt))
+
+                # Execute each statement
+                for stmt in statements:
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        await conn.execute(stmt)
+
+            await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
+            logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+        else:
+            # Backward compatibility: create temporary backend
+            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
+            await temp_manager.initialize()
+            try:
+
+                async def _apply_jsonb_merge_patch_temp(conn: asyncpg.Connection) -> None:
+                    statements = []
+                    current_stmt: list[str] = []
+                    in_function = False
+
+                    for line in migration_sql.split('\n'):
+                        stripped = line.strip()
+                        if stripped.startswith('--') and not in_function:
+                            continue
+                        if '$$' in stripped:
+                            in_function = not in_function
+                        if stripped:
+                            current_stmt.append(line)
+                        if stripped.endswith(';') and not in_function:
+                            statements.append('\n'.join(current_stmt))
+                            current_stmt = []
+
+                    if current_stmt:
+                        statements.append('\n'.join(current_stmt))
+
+                    for stmt in statements:
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith('--'):
+                            await conn.execute(stmt)
+
+                await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
+                logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+            finally:
+                await temp_manager.shutdown()
+    except Exception as e:
+        logger.error(f'Failed to apply jsonb_merge_patch migration: {e}')
+        raise RuntimeError(f'jsonb_merge_patch migration failed: {e}') from e
+
+
 # Lifespan context manager for FastMCP
 @asynccontextmanager
 async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
@@ -372,7 +485,9 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         await init_database(backend=_backend)
         # 2) Apply semantic search migration if enabled using the shared backend
         await apply_semantic_search_migration(backend=_backend)
-        # 3) Initialize repositories with the backend
+        # 3) Apply jsonb_merge_patch migration for PostgreSQL (required for metadata_patch)
+        await apply_jsonb_merge_patch_migration(backend=_backend)
+        # 4) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
         # 5) Initialize semantic search if enabled
@@ -1147,6 +1262,14 @@ async def update_context(
     context_id: Annotated[int, Field(gt=0, description='ID of the context entry to update')],
     text: Annotated[str | None, Field(min_length=1, description='New text content (replaces existing)')] = None,
     metadata: Annotated[MetadataDict | None, Field(description='New metadata object (replaces existing)')] = None,
+    metadata_patch: Annotated[
+        MetadataDict | None,
+        Field(
+            description='Partial metadata update using RFC 7396 JSON Merge Patch semantics. '
+            'Merges with existing metadata: new keys are added, existing keys are updated, '
+            'null values DELETE keys. Cannot be used together with metadata parameter.',
+        ),
+    ] = None,
     tags: Annotated[list[str] | None, Field(description='New tags list (replaces all existing tags)')] = None,
     images: Annotated[
         list[dict[str, str]] | None,
@@ -1161,10 +1284,27 @@ async def update_context(
     immutable fields like ID, thread_id, source, and created_at. The content_type
     field is automatically recalculated based on the presence of images.
 
+    Metadata Update Options:
+    - Use `metadata` for FULL REPLACEMENT of the entire metadata object
+    - Use `metadata_patch` for PARTIAL UPDATE using RFC 7396 JSON Merge Patch semantics
+    - These parameters are MUTUALLY EXCLUSIVE - providing both will result in an error
+
+    RFC 7396 JSON Merge Patch Semantics (for metadata_patch):
+    - New keys in patch are ADDED to existing metadata
+    - Existing keys are REPLACED with new values from patch
+    - Keys with null values are DELETED from metadata
+
+    IMPORTANT LIMITATIONS of metadata_patch (RFC 7396):
+    - Cannot set a value to null: null always means DELETE the key. If you need to
+      store null values, use full metadata replacement instead.
+    - Array operations are replace-only: Arrays are replaced entirely, not merged.
+      Individual array elements cannot be added/removed - the entire array is replaced.
+
     Args:
         context_id: ID of the context entry to update
         text: New text content (replaces existing if provided)
         metadata: New metadata object (replaces existing if provided)
+        metadata_patch: Partial metadata update (RFC 7396 merge patch semantics)
         tags: New tags list (replaces all existing tags if provided)
         images: New images list (replaces all existing images if provided)
         ctx: FastMCP context object
@@ -1183,8 +1323,17 @@ async def update_context(
             if not text:
                 raise ToolError('text cannot be empty or contain only whitespace')
 
+        # Validate mutual exclusivity: metadata and metadata_patch cannot be used together
+        # RFC 7396 Note: metadata_patch is for partial updates (merge), metadata is for full replacement
+        if metadata is not None and metadata_patch is not None:
+            raise ToolError(
+                'Cannot use both metadata and metadata_patch parameters together. '
+                'Use metadata for full replacement or metadata_patch for partial updates.',
+            )
+
         # Validate that at least one field is provided for update
-        if text is None and metadata is None and tags is None and images is None:
+        # Note: metadata_patch is also a valid update field
+        if text is None and metadata is None and metadata_patch is None and tags is None and images is None:
             raise ToolError('At least one field must be provided for update')
 
         if ctx:
@@ -1202,7 +1351,7 @@ async def update_context(
 
         # Start transaction-like operations
         try:
-            # Update text content and/or metadata if provided
+            # Update text content and/or metadata (full replacement) if provided
             if text is not None or metadata is not None:
                 # Prepare metadata JSON string if provided
                 metadata_str: str | None = None
@@ -1220,6 +1369,23 @@ async def update_context(
                     raise ToolError('Failed to update context entry')
 
                 updated_fields.extend(fields)
+
+            # Apply metadata patch (partial update) if provided
+            # RFC 7396 JSON Merge Patch: merges with existing metadata
+            # - New keys are added
+            # - Existing keys are replaced with new values
+            # - null values DELETE keys (cannot store null values with patch)
+            if metadata_patch is not None:
+                success, fields = await repos.context.patch_metadata(
+                    context_id=context_id,
+                    patch=metadata_patch,
+                )
+
+                if not success:
+                    raise ToolError('Failed to patch metadata')
+
+                updated_fields.extend(fields)
+                logger.debug(f'Applied metadata patch to context {context_id}')
 
             # Replace tags if provided
             if tags is not None:
