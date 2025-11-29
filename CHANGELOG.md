@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/alex-feel/mcp-context-server/compare/v0.5.1...v0.6.0) (2025-11-29)
+
+
+### Features
+
+* add metadata_patch parameter for partial metadata updates ([42f7a5f](https://github.com/alex-feel/mcp-context-server/commit/42f7a5fc33cd0b544db97b5de71406bbe78c8beb))
+
 ## [0.5.1](https://github.com/alex-feel/mcp-context-server/compare/v0.5.0...v0.5.1) (2025-11-26)
 
 
