@@ -411,6 +411,8 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 - `top_k` (int, optional): Number of results to return (1-100, default: 20)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
+- `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 
 **Returns**:
 ```json
@@ -457,6 +459,16 @@ If embedding generation fails, the context is still stored successfully (gracefu
 3. **Filtered search**: Combine semantic and structured filters
    ```
    semantic_search_context(query="error handling", thread_id="current-task", top_k=5)
+   ```
+
+4. **Time-bounded search**: Find similar content within a specific date range
+   ```
+   semantic_search_context(query="database optimization", start_date="2025-11-01", end_date="2025-11-30")
+   ```
+
+5. **Recent context discovery**: Find semantically similar content from the past week
+   ```
+   semantic_search_context(query="deployment issues", start_date="2025-11-22")
    ```
 
 ### Performance Characteristics

@@ -963,7 +963,26 @@ search_context(
     metadata={"status": "active"},        # Simple metadata filter
     metadata_filters=[                    # Advanced metadata filters
         {"key": "priority", "operator": "gte", "value": 5}
-    ]
+    ],
+    start_date="2025-11-01",              # Date range filter
+    end_date="2025-11-30"
+)
+```
+
+**Date Filtering:**
+
+The `start_date` and `end_date` parameters filter entries by creation timestamp using ISO 8601 format:
+
+```python
+# Find entries from a specific day
+search_context(thread_id="project-123", start_date="2025-11-29", end_date="2025-11-29")
+
+# Find entries from a date range with metadata filters
+search_context(
+    thread_id="project-123",
+    metadata={"status": "active"},
+    start_date="2025-11-01",
+    end_date="2025-11-30"
 )
 ```
 

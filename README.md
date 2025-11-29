@@ -10,6 +10,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Multimodal Context Storage**: Store and retrieve both text and images
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 15 powerful operators
+- **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
 - **Semantic Search**: Optional vector similarity search for meaning-based retrieval
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
@@ -501,7 +502,7 @@ The metadata field accepts any JSON-serializable structure, making the server ad
 
 #### search_context
 
-Search context entries with powerful filtering including metadata queries.
+Search context entries with powerful filtering including metadata queries and date ranges.
 
 **Parameters:**
 - `thread_id` (str, optional): Filter by thread
@@ -510,6 +511,8 @@ Search context entries with powerful filtering including metadata queries.
 - `content_type` (str, optional): Filter by type ('text' or 'multimodal')
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
+- `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `limit` (int, optional): Maximum results (default: 50, max: 500)
 - `offset` (int, optional): Pagination offset
 - `include_images` (bool, optional): Include image data in response
@@ -544,6 +547,28 @@ metadata_filters=[
 All string operators support `case_sensitive: true/false` option.
 
 For comprehensive documentation on metadata filtering including real-world use cases, operator examples, nested JSON paths, and performance optimization, see the [Metadata Filtering Guide](docs/metadata-filtering.md).
+
+**Date Filtering:**
+
+Filter entries by creation timestamp using ISO 8601 format:
+```python
+# Find entries from a specific day
+search_context(thread_id="project-123", start_date="2025-11-29", end_date="2025-11-29")
+
+# Find entries from a date range
+search_context(thread_id="project-123", start_date="2025-11-01", end_date="2025-11-30")
+
+# Find entries with precise timestamp
+search_context(thread_id="project-123", start_date="2025-11-29T10:00:00")
+```
+
+Supported ISO 8601 formats:
+- Date-only: `2025-11-29`
+- DateTime: `2025-11-29T10:00:00`
+- UTC (Z suffix): `2025-11-29T10:00:00Z`
+- Timezone offset: `2025-11-29T10:00:00+02:00`
+
+**Note:** Date-only `end_date` values automatically expand to end-of-day (`T23:59:59.999999`) for intuitive "entire day" behavior. Naive datetime (without timezone) is interpreted as UTC.
 
 **Returns:** List of matching context entries with optional query statistics
 
@@ -649,6 +674,8 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 - `top_k` (int, optional): Number of results to return (1-100) - defaults to 20
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
+- `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 
 **Returns:** Dictionary with:
 - Query string
@@ -660,6 +687,17 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 - Find related work across different threads based on semantic similarity
 - Discover contexts with similar meaning but different wording
 - Concept-based retrieval without exact keyword matching
+- Find similar content within a specific time period using date filters
+
+**Date Filtering Example:**
+```python
+# Find similar content from the past week
+semantic_search_context(
+    query="authentication implementation",
+    start_date="2025-11-22",
+    end_date="2025-11-29"
+)
+```
 
 For setup instructions, see the [Semantic Search Guide](docs/semantic-search.md).
 
