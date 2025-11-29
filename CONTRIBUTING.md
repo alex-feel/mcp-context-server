@@ -55,6 +55,9 @@ uv run pytest tests/test_metadata_error_handling.py -v
 # Run semantic search tests
 uv run pytest tests/test_semantic_search_filters.py -v
 
+# Run date filtering tests
+uv run pytest tests/test_date_filtering.py -v
+
 # Run integration tests only
 uv run pytest -m integration
 

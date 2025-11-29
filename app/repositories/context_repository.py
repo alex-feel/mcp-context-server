@@ -168,11 +168,13 @@ class ContextRepository(BaseRepository):
         tags: list[str] | None = None,
         metadata: dict[str, str | int | float | bool] | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         limit: int = 50,
         offset: int = 0,
         explain_query: bool = False,
     ) -> tuple[list[Any], dict[str, Any]]:
-        """Search for context entries with filtering including metadata.
+        """Search for context entries with filtering including metadata and date range.
 
         Args:
             thread_id: Filter by thread ID
@@ -181,6 +183,8 @@ class ContextRepository(BaseRepository):
             tags: Filter by tags (OR logic)
             metadata: Simple metadata filters (key=value)
             metadata_filters: Advanced metadata filters with operators
+            start_date: Filter by created_at >= date (ISO 8601 format)
+            end_date: Filter by created_at <= date (ISO 8601 format)
             limit: Maximum number of results
             offset: Pagination offset
             explain_query: If True, include query execution plan
@@ -218,6 +222,18 @@ class ContextRepository(BaseRepository):
                 if content_type:
                     query += f' AND content_type = {self._placeholder(len(params) + 1)}'
                     params.append(content_type)
+
+                # Date range filtering - Use datetime() to normalize ISO 8601 input
+                # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
+                # to SQLite's space-separated format 'YYYY-MM-DD HH:MM:SS' for proper comparison.
+                # Without datetime(), TEXT comparison fails because 'T' > ' ' in ASCII ordering.
+                if start_date:
+                    query += f' AND created_at >= datetime({self._placeholder(len(params) + 1)})'
+                    params.append(start_date)
+
+                if end_date:
+                    query += f' AND created_at <= datetime({self._placeholder(len(params) + 1)})'
+                    params.append(end_date)
 
                 # Add metadata filtering
                 metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
@@ -346,6 +362,16 @@ class ContextRepository(BaseRepository):
             if content_type:
                 query += f' AND content_type = {self._placeholder(len(params) + 1)}'
                 params.append(content_type)
+
+            # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
+            # asyncpg requires Python datetime objects, not strings, for TIMESTAMPTZ parameters
+            if start_date:
+                query += f' AND created_at >= {self._placeholder(len(params) + 1)}'
+                params.append(self._parse_date_for_postgresql(start_date))
+
+            if end_date:
+                query += f' AND created_at <= {self._placeholder(len(params) + 1)}'
+                params.append(self._parse_date_for_postgresql(end_date))
 
             # Add metadata filtering
             # Pass param_offset so metadata builder knows current parameter position

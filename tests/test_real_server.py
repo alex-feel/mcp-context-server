@@ -1430,6 +1430,271 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_search_context_with_date_filtering(self) -> bool:
+        """Test search_context with start_date and end_date parameters.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_context_date_filtering'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Create a separate thread for date filtering tests
+            date_filter_thread = f'{self.test_thread_id}_date_filter'
+
+            # Store a test entry (will be created at current time)
+            store_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': date_filter_thread,
+                    'source': 'user',
+                    'text': 'Entry for date filtering test',
+                    'tags': ['date-filter', 'test'],
+                },
+            )
+
+            store_data = self._extract_content(store_result)
+            if not store_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to store test entry: {store_data}'))
+                return False
+
+            # Get current date information for testing
+            from datetime import UTC
+            from datetime import datetime
+            from datetime import timedelta
+
+            today = datetime.now(UTC).strftime('%Y-%m-%d')
+            tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
+            yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
+            future_date = (datetime.now(UTC) + timedelta(days=30)).strftime('%Y-%m-%d')
+            past_date = (datetime.now(UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
+
+            # Test 1: Search with valid date range (today to tomorrow) - should find entry
+            valid_range_result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': date_filter_thread,
+                    'start_date': today,
+                    'end_date': tomorrow,
+                },
+            )
+            valid_range_data = self._extract_content(valid_range_result)
+            if not valid_range_data.get('success') or len(valid_range_data.get('results', [])) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Valid date range search failed: {valid_range_data}'),
+                )
+                return False
+
+            # Test 2: Search with future start_date - should NOT find entry
+            future_start_result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': date_filter_thread,
+                    'start_date': future_date,
+                },
+            )
+            future_start_data = self._extract_content(future_start_result)
+            if not future_start_data.get('success') or len(future_start_data.get('results', [])) != 0:
+                self.test_results.append(
+                    (test_name, False, f'Future start_date returned results unexpectedly: {future_start_data}'),
+                )
+                return False
+
+            # Test 3: Search with past end_date - should NOT find entry
+            past_end_result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': date_filter_thread,
+                    'end_date': past_date,
+                },
+            )
+            past_end_data = self._extract_content(past_end_result)
+            if not past_end_data.get('success') or len(past_end_data.get('results', [])) != 0:
+                self.test_results.append(
+                    (test_name, False, f'Past end_date returned results unexpectedly: {past_end_data}'),
+                )
+                return False
+
+            # Test 4: Search with date-only end_date for today - should find entry
+            # This verifies the UX fix where date-only end_date is expanded to end-of-day
+            today_end_result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': date_filter_thread,
+                    'end_date': today,
+                },
+            )
+            today_end_data = self._extract_content(today_end_result)
+            if not today_end_data.get('success') or len(today_end_data.get('results', [])) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Date-only end_date failed to find today entry: {today_end_data}'),
+                )
+                return False
+
+            # Test 5: Combined filters (date + source)
+            combined_result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': date_filter_thread,
+                    'source': 'user',
+                    'start_date': yesterday,
+                    'end_date': tomorrow,
+                },
+            )
+            combined_data = self._extract_content(combined_result)
+            if not combined_data.get('success') or len(combined_data.get('results', [])) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Combined date+source filter failed: {combined_data}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'All date filtering tests passed'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_semantic_search_context_with_date_filtering(self) -> bool:
+        """Test semantic_search_context with date filtering parameters.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'semantic_search_date_filtering'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if semantic search is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            is_enabled = semantic_info.get('enabled', False)
+            is_available = semantic_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for semantic search date filtering tests
+            semantic_date_thread = f'{self.test_thread_id}_semantic_date'
+
+            # Store semantically meaningful test content
+            test_contexts = [
+                'Machine learning algorithms process data to make predictions',
+                'Database indexing improves query performance significantly',
+            ]
+
+            for text in test_contexts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': semantic_date_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation
+            import asyncio
+
+            await asyncio.sleep(0.5)
+
+            # Get date information for filtering
+            from datetime import UTC
+            from datetime import datetime
+            from datetime import timedelta
+
+            today = datetime.now(UTC).strftime('%Y-%m-%d')
+            tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
+            future_date = (datetime.now(UTC) + timedelta(days=30)).strftime('%Y-%m-%d')
+            past_date = (datetime.now(UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
+
+            # Test 1: Semantic search with valid date range - should find results
+            valid_range_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'machine learning artificial intelligence',
+                    'thread_id': semantic_date_thread,
+                    'start_date': today,
+                    'end_date': tomorrow,
+                    'top_k': 5,
+                },
+            )
+            valid_range_data = self._extract_content(valid_range_result)
+            if 'results' not in valid_range_data or len(valid_range_data.get('results', [])) == 0:
+                self.test_results.append(
+                    (test_name, False, f'Valid date range semantic search failed: {valid_range_data}'),
+                )
+                return False
+
+            # Test 2: Semantic search with future start_date - should return empty
+            future_start_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'machine learning',
+                    'thread_id': semantic_date_thread,
+                    'start_date': future_date,
+                    'top_k': 5,
+                },
+            )
+            future_start_data = self._extract_content(future_start_result)
+            if 'results' not in future_start_data or len(future_start_data.get('results', [])) != 0:
+                self.test_results.append(
+                    (test_name, False, f'Future start_date returned results unexpectedly: {future_start_data}'),
+                )
+                return False
+
+            # Test 3: Semantic search with past end_date - should return empty
+            past_end_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'database indexing',
+                    'thread_id': semantic_date_thread,
+                    'end_date': past_date,
+                    'top_k': 5,
+                },
+            )
+            past_end_data = self._extract_content(past_end_result)
+            if 'results' not in past_end_data or len(past_end_data.get('results', [])) != 0:
+                self.test_results.append(
+                    (test_name, False, f'Past end_date returned results unexpectedly: {past_end_data}'),
+                )
+                return False
+
+            # Test 4: Combined filters (date + source)
+            combined_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'algorithms data processing',
+                    'thread_id': semantic_date_thread,
+                    'source': 'agent',
+                    'start_date': today,
+                    'end_date': tomorrow,
+                    'top_k': 5,
+                },
+            )
+            combined_data = self._extract_content(combined_result)
+            if 'results' not in combined_data or len(combined_data.get('results', [])) == 0:
+                self.test_results.append(
+                    (test_name, False, f'Combined date+source filter failed: {combined_data}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'All semantic search date filtering tests passed'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_semantic_search_context(self) -> bool:
         """Test semantic search functionality (conditional on availability).
 
@@ -1606,6 +1871,7 @@ class MCPServerIntegrationTest:
         tests = [
             ('Store Context', self.test_store_context),
             ('Search Context', self.test_search_context),
+            ('Search Context Date Filtering', self.test_search_context_with_date_filtering),
             ('Metadata Filtering', self.test_metadata_filtering),
             ('Get Context by IDs', self.test_get_context_by_ids),
             ('Delete Context', self.test_delete_context),
@@ -1614,6 +1880,7 @@ class MCPServerIntegrationTest:
             ('List Threads', self.test_list_threads),
             ('Get Statistics', self.test_get_statistics),
             ('Semantic Search', self.test_semantic_search_context),
+            ('Semantic Search Date Filtering', self.test_semantic_search_context_with_date_filtering),
         ]
 
         print('\nRunning tests...\n')
