@@ -766,6 +766,129 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_write(_update_content_type_postgresql)
 
+    async def patch_metadata(
+        self,
+        context_id: int,
+        patch: dict[str, Any],
+    ) -> tuple[bool, list[str]]:
+        """Apply RFC 7396 JSON Merge Patch to metadata atomically.
+
+        This method performs a partial update of the metadata field using database-native
+        JSON patching functions for atomic, race-condition-free operations.
+
+        RFC 7396 JSON Merge Patch Semantics:
+        - New keys in patch are ADDED to existing metadata
+        - Existing keys are REPLACED with new values
+        - Keys with null values are DELETED from metadata
+
+        IMPORTANT LIMITATIONS (RFC 7396):
+        - Cannot set a value to null: null always means DELETE. If you need to store
+          null values, use the full metadata replacement (metadata parameter) instead.
+        - Array operations are replace-only: Arrays are replaced entirely, not merged.
+          Individual array elements cannot be added, removed, or modified - the entire
+          array is replaced with the new value.
+        - Empty patch {} is a no-op for data but still updates the updated_at timestamp.
+
+        Backend-specific implementation:
+        - SQLite: Uses json_patch() function (available in SQLite 3.38.0+)
+        - PostgreSQL: Uses custom jsonb_merge_patch() function for TRUE recursive deep merge.
+          The function is created by migration app/migrations/add_jsonb_merge_patch_postgresql.sql
+          and provides identical RFC 7396 semantics to SQLite's json_patch().
+
+        Args:
+            context_id: ID of the context entry to update
+            patch: Dictionary containing the merge patch to apply
+
+        Returns:
+            Tuple of (success, list_of_updated_fields).
+            Updated fields will include 'metadata' if successful.
+        """
+        # Convert patch dict to JSON string for database operations
+        patch_json = json.dumps(patch, ensure_ascii=False)
+
+        if self.backend.backend_type == 'sqlite':
+
+            def _patch_metadata_sqlite(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
+                cursor = conn.cursor()
+
+                # Verify entry exists before attempting update
+                cursor.execute(
+                    f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
+                    (context_id,),
+                )
+                if not cursor.fetchone():
+                    return False, []
+
+                # Apply JSON Merge Patch using SQLite's json_patch() function
+                # json_patch() implements RFC 7396 semantics:
+                # - COALESCE ensures null metadata is treated as empty object '{}'
+                # - json_patch(target, patch) merges patch into target
+                # - null values in patch DELETE keys from result
+                cursor.execute(
+                    f'''
+                    UPDATE context_entries
+                    SET metadata = json_patch(COALESCE(metadata, '{{}}'), {self._placeholder(1)}),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {self._placeholder(2)}
+                    ''',
+                    (patch_json, context_id),
+                )
+
+                if cursor.rowcount > 0:
+                    logger.debug(f'Patched metadata for context entry {context_id}')
+                    return True, ['metadata']
+
+                return False, []
+
+            return await self.backend.execute_write(_patch_metadata_sqlite)
+
+        # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
+        async def _patch_metadata_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
+            # Verify entry exists before attempting update
+            row = await conn.fetchrow(
+                f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
+                context_id,
+            )
+            if not row:
+                return False, []
+
+            # RFC 7396 JSON Merge Patch Implementation for PostgreSQL
+            #
+            # Uses the custom jsonb_merge_patch() function that implements TRUE recursive
+            # deep merge semantics as specified in RFC 7396:
+            # - New keys in patch are ADDED to existing metadata
+            # - Existing keys are REPLACED with new values from patch
+            # - Keys with null values are DELETED from metadata
+            # - Nested objects are RECURSIVELY merged (not replaced like || operator)
+            #
+            # The jsonb_merge_patch() function is created by the migration file:
+            # app/migrations/add_jsonb_merge_patch_postgresql.sql
+            #
+            # This approach provides identical behavior to SQLite's json_patch() function,
+            # ensuring consistent RFC 7396 semantics across both backends.
+            p1 = self._placeholder(1)
+            p2 = self._placeholder(2)
+            result = await conn.execute(
+                f'''
+                UPDATE context_entries
+                SET metadata = jsonb_merge_patch(COALESCE(metadata, '{{}}'::jsonb), {p1}::jsonb),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = {p2}
+                ''',
+                patch_json,
+                context_id,
+            )
+
+            # asyncpg returns "UPDATE N" where N is the count
+            rows_affected = int(result.split()[-1]) if result else 0
+            if rows_affected > 0:
+                logger.debug(f'Patched metadata for context entry {context_id}')
+                return True, ['metadata']
+
+            return False, []
+
+        return await self.backend.execute_write(_patch_metadata_postgresql)
+
     @staticmethod
     def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         """Convert a database row to a dictionary.

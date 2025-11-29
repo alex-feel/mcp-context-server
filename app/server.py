@@ -347,6 +347,119 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         logger.info('Semantic search migration: tables already exist, skipping')
 
 
+async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = None) -> None:
+    """Apply jsonb_merge_patch function migration for PostgreSQL.
+
+    This migration creates the jsonb_merge_patch() PL/pgSQL function that implements
+    TRUE RFC 7396 recursive deep merge semantics. The function is required by the
+    context_repository.patch_metadata() method for PostgreSQL backends.
+
+    Args:
+        backend: Optional backend to use. If None, creates temporary backend.
+
+    Raises:
+        RuntimeError: If migration execution fails.
+
+    Note:
+        - Only applies to PostgreSQL backends (SQLite uses native json_patch)
+        - Idempotent: Uses CREATE OR REPLACE FUNCTION
+        - Must be called after init_database() to ensure tables exist
+    """
+    # Determine backend type
+    if backend is not None:
+        backend_type = backend.backend_type
+    else:
+        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
+        backend_type = temp_backend.backend_type
+
+    # Only apply to PostgreSQL backends
+    if backend_type != 'postgresql':
+        return
+
+    migration_path = Path(__file__).parent / 'migrations' / 'add_jsonb_merge_patch_postgresql.sql'
+
+    if not migration_path.exists():
+        logger.warning(f'jsonb_merge_patch migration file not found: {migration_path}')
+        return
+
+    try:
+        migration_sql = migration_path.read_text(encoding='utf-8')
+
+        if backend is not None:
+
+            async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
+                # Parse SQL statements, handling dollar-quoted function bodies
+                statements = []
+                current_stmt: list[str] = []
+                in_function = False
+
+                for line in migration_sql.split('\n'):
+                    stripped = line.strip()
+                    # Skip comment-only lines (but preserve function comments)
+                    if stripped.startswith('--') and not in_function:
+                        continue
+                    # Track dollar-quoted strings (function bodies)
+                    if '$$' in stripped:
+                        in_function = not in_function
+                    if stripped:
+                        current_stmt.append(line)
+                    # End of statement: semicolon when not in dollar quotes
+                    if stripped.endswith(';') and not in_function:
+                        statements.append('\n'.join(current_stmt))
+                        current_stmt = []
+
+                # Add any remaining statement
+                if current_stmt:
+                    statements.append('\n'.join(current_stmt))
+
+                # Execute each statement
+                for stmt in statements:
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        await conn.execute(stmt)
+
+            await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
+            logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+        else:
+            # Backward compatibility: create temporary backend
+            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
+            await temp_manager.initialize()
+            try:
+
+                async def _apply_jsonb_merge_patch_temp(conn: asyncpg.Connection) -> None:
+                    statements = []
+                    current_stmt: list[str] = []
+                    in_function = False
+
+                    for line in migration_sql.split('\n'):
+                        stripped = line.strip()
+                        if stripped.startswith('--') and not in_function:
+                            continue
+                        if '$$' in stripped:
+                            in_function = not in_function
+                        if stripped:
+                            current_stmt.append(line)
+                        if stripped.endswith(';') and not in_function:
+                            statements.append('\n'.join(current_stmt))
+                            current_stmt = []
+
+                    if current_stmt:
+                        statements.append('\n'.join(current_stmt))
+
+                    for stmt in statements:
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith('--'):
+                            await conn.execute(stmt)
+
+                await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
+                logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+            finally:
+                await temp_manager.shutdown()
+    except Exception as e:
+        logger.error(f'Failed to apply jsonb_merge_patch migration: {e}')
+        raise RuntimeError(f'jsonb_merge_patch migration failed: {e}') from e
+
+
 # Lifespan context manager for FastMCP
 @asynccontextmanager
 async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
@@ -372,7 +485,9 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         await init_database(backend=_backend)
         # 2) Apply semantic search migration if enabled using the shared backend
         await apply_semantic_search_migration(backend=_backend)
-        # 3) Initialize repositories with the backend
+        # 3) Apply jsonb_merge_patch migration for PostgreSQL (required for metadata_patch)
+        await apply_jsonb_merge_patch_migration(backend=_backend)
+        # 4) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
         # 5) Initialize semantic search if enabled
@@ -676,7 +791,10 @@ async def store_context(
     thread_id: Annotated[str, Field(min_length=1, description='Unique identifier for the conversation/task thread')],
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
     text: Annotated[str, Field(min_length=1, description='Text content to store')],
-    images: Annotated[list[dict[str, str]] | None, Field(description='List of base64 encoded images with mime_type')] = None,
+    images: Annotated[
+        list[dict[str, str]] | None,
+        Field(description='List of base64 encoded images with mime_type. Each image max 10MB, total max 100MB'),
+    ] = None,
     metadata: Annotated[
         MetadataDict | None,
         Field(
@@ -687,26 +805,32 @@ async def store_context(
             'These fields are indexed for faster filtering but not required.',
         ),
     ] = None,
-    tags: Annotated[list[str] | None, Field(description='List of tags (will be normalized and stored separately)')] = None,
+    tags: Annotated[list[str] | None, Field(description='List of tags (normalized to lowercase)')] = None,
     ctx: Context | None = None,
 ) -> StoreContextSuccessDict:
-    """
-    Store a context entry with optional images.
+    """Store a context entry with optional images and metadata.
 
-    Thread_id is critical for context scoping - all agents working on the same task
-    should use the same thread_id to share context.
+    All agents working on the same task should use the same thread_id to share context.
+    If an entry with identical thread_id, source, and text already exists, it will be
+    updated instead of creating a duplicate (deduplication).
+
+    Notes:
+    - Tags are normalized to lowercase and stored separately for efficient filtering
+    - If semantic search is enabled, an embedding is automatically generated
+    - Use indexed metadata fields (status, priority, agent_name, task_name, completed)
+      for faster filtering in search_context
 
     Args:
         thread_id: Unique identifier for the conversation/task thread
         source: Either 'user' or 'agent'
-        text: Text content
-        images: List of base64 encoded images with mime_type
-        metadata: Additional structured data
-        tags: List of tags (will be normalized and stored separately)
+        text: Text content to store
+        images: List of base64 encoded images with mime_type (max 10MB each, 100MB total)
+        metadata: Additional structured data with optional indexed fields
+        tags: List of tags (normalized to lowercase)
         ctx: FastMCP context object
 
     Returns:
-        dict: Success status with context_id if successful.
+        StoreContextSuccessDict: {success, context_id, thread_id, message}
 
     Raises:
         ToolError: If validation fails or context insertion fails.
@@ -850,9 +974,9 @@ async def store_context(
 
 @mcp.tool()
 async def search_context(
-    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (uses index)')] = None,
-    source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (uses index)')] = None,
-    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags')] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (indexed)')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (indexed)')] = None,
+    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     metadata: Annotated[
         dict[str, str | int | float | bool] | None,
@@ -860,25 +984,36 @@ async def search_context(
     ] = None,
     metadata_filters: Annotated[
         list[dict[str, Any]] | None,
-        Field(description='Advanced metadata filters with operators [{"key": "priority", "operator": "gt", "value": 5}]'),
+        Field(
+            description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
+            'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
+            'starts_with, ends_with, is_null, is_not_null',
+        ),
     ] = None,
     limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (max 500)')] = 50,
     offset: Annotated[int, Field(ge=0, description='Pagination offset')] = 0,
-    include_images: Annotated[bool, Field(description='Whether to include image data')] = False,
+    include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """
-    Search context entries with efficient filtering including metadata.
+    """Search context entries with filtering. Returns TRUNCATED text_content (150 chars max).
 
-    Uses database indexes for optimal performance on thread_id and source filters.
-    Tag filtering uses OR logic (matches any of the provided tags).
-    Supports both simple metadata filtering (key=value) and advanced filtering with operators.
+    Use get_context_by_ids to retrieve full content for specific entries of interest.
+
+    Filtering options:
+    - thread_id, source: Indexed for fast filtering (always prefer specifying thread_id)
+    - tags: OR logic (matches ANY of provided tags)
+    - metadata: Simple key=value equality matching
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+
+    Performance tips:
+    - Always specify thread_id to reduce search space
+    - Use indexed metadata fields: status, priority, agent_name, task_name, completed
 
     Args:
-        thread_id: Filter by thread (uses index)
-        source: Filter by source type (uses index)
-        tags: Filter by any of these tags
+        thread_id: Filter by thread (indexed)
+        source: Filter by source type (indexed)
+        tags: Filter by any of these tags (OR logic)
         content_type: Filter by content type
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
@@ -889,7 +1024,7 @@ async def search_context(
         ctx: FastMCP context object
 
     Returns:
-        dict: Contains 'entries' list and optional 'stats' if explain_query is True.
+        dict: Contains 'entries' list with truncated text_content and 'stats' for query metrics.
 
     Raises:
         ToolError: If validation fails or search operation fails.
@@ -983,19 +1118,20 @@ async def get_context_by_ids(
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
     ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
-    """
-    Fetch specific context entries by their IDs.
+    """Fetch specific context entries by their IDs with FULL (non-truncated) text content.
 
-    Useful when agents need to reference specific pieces of context.
-    Always includes full content for completeness.
+    Use this after search_context to retrieve complete content for entries of interest,
+    or when you have specific context IDs from previous operations.
+
+    Workflow: search_context (browse, truncated) -> get_context_by_ids (retrieve full content)
 
     Args:
-        context_ids: List of context entry IDs
-        include_images: Whether to include image data
+        context_ids: List of context entry IDs to retrieve
+        include_images: Whether to include image data (default: True)
         ctx: FastMCP context object
 
     Returns:
-        list: List of context entries with full content.
+        list: List of context entries with full text_content, metadata, tags, and images.
 
     Raises:
         ToolError: If fetching entries fails.
@@ -1055,23 +1191,30 @@ async def get_context_by_ids(
 
 @mcp.tool()
 async def delete_context(
-    context_ids: Annotated[list[int] | None, Field(min_length=1, description='Specific context entry IDs to delete')] = None,
-    thread_id: Annotated[str | None, Field(min_length=1, description='Delete all entries in a thread')] = None,
+    context_ids: Annotated[
+        list[int] | None,
+        Field(min_length=1, description='Specific context entry IDs to delete (mutually exclusive with thread_id)'),
+    ] = None,
+    thread_id: Annotated[
+        str | None,
+        Field(min_length=1, description='Delete ALL entries in thread (mutually exclusive with context_ids)'),
+    ] = None,
     ctx: Context | None = None,
 ) -> dict[str, bool | int | str]:
-    """
-    Delete context entries by IDs or thread.
+    """Delete context entries by specific IDs or by entire thread. IRREVERSIBLE.
 
-    Cascading deletes ensure tags and images are also removed.
-    Use with caution as this operation cannot be undone.
+    Provide EITHER context_ids OR thread_id (not both). Cascading delete removes
+    associated tags, images, and embeddings.
+
+    WARNING: This operation cannot be undone. Verify IDs/thread before deletion.
 
     Args:
-        context_ids: Specific IDs to delete
-        thread_id: Delete all entries in a thread
+        context_ids: Specific IDs to delete (mutually exclusive with thread_id)
+        thread_id: Delete all entries in thread (mutually exclusive with context_ids)
         ctx: FastMCP context object
 
     Returns:
-        dict: Success status with deletion count or error message.
+        dict: {success: bool, deleted_count: int, message: str}
 
     Raises:
         ToolError: If validation fails or deletion fails.
@@ -1146,31 +1289,46 @@ async def delete_context(
 async def update_context(
     context_id: Annotated[int, Field(gt=0, description='ID of the context entry to update')],
     text: Annotated[str | None, Field(min_length=1, description='New text content (replaces existing)')] = None,
-    metadata: Annotated[MetadataDict | None, Field(description='New metadata object (replaces existing)')] = None,
-    tags: Annotated[list[str] | None, Field(description='New tags list (replaces all existing tags)')] = None,
+    metadata: Annotated[MetadataDict | None, Field(description='New metadata (FULL REPLACEMENT)')] = None,
+    metadata_patch: Annotated[
+        MetadataDict | None,
+        Field(
+            description='Partial metadata update (RFC 7396 JSON Merge Patch): new keys added, '
+            'existing updated, null values DELETE keys. MUTUALLY EXCLUSIVE with metadata.',
+        ),
+    ] = None,
+    tags: Annotated[list[str] | None, Field(description='New tags list (REPLACES all existing)')] = None,
     images: Annotated[
         list[dict[str, str]] | None,
-        Field(description='New images list with base64 data and mime_type (replaces all existing images)'),
+        Field(description='New images with base64 data and mime_type (REPLACES all existing)'),
     ] = None,
     ctx: Context | None = None,
 ) -> UpdateContextSuccessDict:
-    """
-    Update an existing context entry with selective field updates.
+    """Update an existing context entry. Only provided fields are modified.
 
-    Allows updating text content, metadata, tags, and images while preserving
-    immutable fields like ID, thread_id, source, and created_at. The content_type
-    field is automatically recalculated based on the presence of images.
+    Immutable fields: id, thread_id, source, created_at (cannot be changed)
+    Auto-managed: content_type (recalculated based on images), updated_at
+
+    Metadata options (MUTUALLY EXCLUSIVE):
+    - metadata: FULL REPLACEMENT of entire metadata object
+    - metadata_patch: RFC 7396 JSON Merge Patch - merge with existing
+      - New keys added, existing keys updated, null values DELETE keys
+      - Limitation: Cannot store null values (use full replacement instead)
+      - Limitation: Arrays replaced entirely (no element-wise merge)
+
+    Tags and images use REPLACEMENT semantics (not merge).
 
     Args:
         context_id: ID of the context entry to update
-        text: New text content (replaces existing if provided)
-        metadata: New metadata object (replaces existing if provided)
-        tags: New tags list (replaces all existing tags if provided)
-        images: New images list (replaces all existing images if provided)
+        text: New text content (replaces existing)
+        metadata: New metadata object (full replacement)
+        metadata_patch: Partial metadata update (RFC 7396 merge patch)
+        tags: New tags list (replaces all existing)
+        images: New images list (replaces all existing)
         ctx: FastMCP context object
 
     Returns:
-        UpdateContextSuccessDict on success.
+        UpdateContextSuccessDict: {success, context_id, updated_fields, message}
 
     Raises:
         ToolError: If validation fails or update operation fails.
@@ -1183,8 +1341,17 @@ async def update_context(
             if not text:
                 raise ToolError('text cannot be empty or contain only whitespace')
 
+        # Validate mutual exclusivity: metadata and metadata_patch cannot be used together
+        # RFC 7396 Note: metadata_patch is for partial updates (merge), metadata is for full replacement
+        if metadata is not None and metadata_patch is not None:
+            raise ToolError(
+                'Cannot use both metadata and metadata_patch parameters together. '
+                'Use metadata for full replacement or metadata_patch for partial updates.',
+            )
+
         # Validate that at least one field is provided for update
-        if text is None and metadata is None and tags is None and images is None:
+        # Note: metadata_patch is also a valid update field
+        if text is None and metadata is None and metadata_patch is None and tags is None and images is None:
             raise ToolError('At least one field must be provided for update')
 
         if ctx:
@@ -1202,7 +1369,7 @@ async def update_context(
 
         # Start transaction-like operations
         try:
-            # Update text content and/or metadata if provided
+            # Update text content and/or metadata (full replacement) if provided
             if text is not None or metadata is not None:
                 # Prepare metadata JSON string if provided
                 metadata_str: str | None = None
@@ -1220,6 +1387,23 @@ async def update_context(
                     raise ToolError('Failed to update context entry')
 
                 updated_fields.extend(fields)
+
+            # Apply metadata patch (partial update) if provided
+            # RFC 7396 JSON Merge Patch: merges with existing metadata
+            # - New keys are added
+            # - Existing keys are replaced with new values
+            # - null values DELETE keys (cannot store null values with patch)
+            if metadata_patch is not None:
+                success, fields = await repos.context.patch_metadata(
+                    context_id=context_id,
+                    patch=metadata_patch,
+                )
+
+                if not success:
+                    raise ToolError('Failed to patch metadata')
+
+                updated_fields.extend(fields)
+                logger.debug(f'Applied metadata patch to context {context_id}')
 
             # Replace tags if provided
             if tags is not None:
@@ -1335,12 +1519,25 @@ async def update_context(
 
 @mcp.tool()
 async def list_threads(ctx: Context | None = None) -> ThreadListDict:
-    """
-    List all active threads with statistics.
-    Read-only resource for thread discovery.
+    """List all threads with entry statistics. Use for thread discovery and overview.
+
+    Returns: {
+      threads: [{thread_id, entry_count, source_types, multimodal_count, first_entry, last_entry, last_id}],
+      total_threads: int
+    }
+
+    Fields explained:
+    - entry_count: Total context entries in thread
+    - source_types: Number of distinct sources (1=user only or agent only, 2=both)
+    - multimodal_count: Entries containing images
+    - first_entry/last_entry: ISO timestamps of earliest/latest entries
+    - last_id: ID of most recent entry (useful for pagination)
+
+    Args:
+        ctx: FastMCP context object
 
     Returns:
-        dict: Dictionary containing list of threads and total count.
+        ThreadListDict: Dictionary containing list of threads and total count.
 
     Raises:
         ToolError: If listing threads fails.
@@ -1368,12 +1565,22 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
 
 @mcp.tool()
 async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
-    """
-    Database statistics and usage metrics.
-    Useful for monitoring and debugging.
+    """Get database statistics for monitoring and debugging.
+
+    Returns comprehensive metrics including:
+    - total_contexts, total_threads: Entry and thread counts
+    - total_images, total_tags: Attachment counts
+    - database_size_mb: Storage usage
+    - connection_metrics: Backend health (pool size, active connections)
+    - semantic_search: {enabled, available, model, dimensions, embedding_count, coverage_percentage}
+
+    Use for: capacity planning, debugging performance issues, verifying semantic search status.
+
+    Args:
+        ctx: FastMCP context object
 
     Returns:
-        dict: Database statistics including counts and size metrics.
+        dict: Database statistics including counts, size metrics, and connection health.
 
     Raises:
         ToolError: If getting statistics fails.
@@ -1429,33 +1636,41 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 @mcp.tool()
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
-    top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return')] = 20,
-    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
-    source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type')] = None,
+    top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return (default: 20)')] = 20,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """
-    Semantic similarity search using vector embeddings.
+    """Find semantically similar context using vector embeddings. Returns FULL text content.
 
-    This tool performs semantic search on stored context using vector similarity.
-    It finds contexts that are semantically similar to the query, even if they
-    don't share exact keywords.
+    Unlike keyword search (search_context), this finds entries with similar MEANING
+    even without matching keywords. Use for: finding related concepts, similar discussions,
+    thematic grouping.
 
-    Note: This tool is only available when semantic search is enabled and all
-    dependencies are met (ollama, numpy, sqlite-vec, EmbeddingGemma model).
+    Returns: {
+      query: str,
+      results: [{id, thread_id, source, text_content, metadata, distance, tags, ...}],
+      count: int,
+      model: str
+    }
+
+    The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
+    Typical interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
+
+    Requires: ENABLE_SEMANTIC_SEARCH=true and dependencies (ollama, numpy, sqlite-vec/pgvector).
 
     Args:
         query: Natural language search query
         top_k: Number of results to return (1-100)
-        thread_id: Optional filter by thread
-        source: Optional filter by source type
+        thread_id: Optional filter to narrow results by thread
+        source: Optional filter to narrow results by source type
         ctx: FastMCP context object
 
     Returns:
-        dict: Search results with context entries and similarity scores
+        dict: Search results with context entries, similarity distances, and model info.
 
     Raises:
-        ToolError: If semantic search is not available or search fails
+        ToolError: If semantic search is not available or search fails.
     """
     # Check if semantic search is available
     if _embedding_service is None:

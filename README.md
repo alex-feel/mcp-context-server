@@ -596,8 +596,28 @@ Update specific fields of an existing context entry.
 - `context_id` (int, required): ID of the context entry to update
 - `text` (str, optional): New text content
 - `metadata` (dict, optional): New metadata (full replacement)
+- `metadata_patch` (dict, optional): Partial metadata update using RFC 7396 JSON Merge Patch
 - `tags` (list, optional): New tags (full replacement)
 - `images` (list, optional): New images (full replacement)
+
+**Metadata Update Options:**
+
+Use `metadata` for full replacement or `metadata_patch` for partial updates. These parameters are mutually exclusive.
+
+RFC 7396 JSON Merge Patch semantics (`metadata_patch`):
+- New keys are ADDED to existing metadata
+- Existing keys are REPLACED with new values
+- Null values DELETE keys
+
+```python
+# Update single field while preserving others
+update_context(context_id=123, metadata_patch={"status": "completed"})
+
+# Add new field and delete another
+update_context(context_id=123, metadata_patch={"reviewer": "alice", "draft": None})
+```
+
+**Limitations (RFC 7396):** Null values cannot be stored (null means delete key - use full replacement if needed), arrays are replaced entirely (not merged). See [Metadata Filtering Guide](docs/metadata-filtering.md#partial-metadata-updates-metadata_patch) for details.
 
 **Field Update Rules:**
 - **Updatable fields**: text_content, metadata, tags, images

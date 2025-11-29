@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Quick Reference
+
+```bash
+# Essential commands
+uv sync                                    # Install dependencies
+uv run pytest                              # Run all tests
+uv run pytest tests/test_server.py -v      # Run specific test file
+uv run pytest tests/test_server.py::TestStoreContext::test_store_text_context -v  # Single test
+uv run pre-commit run --all-files          # Lint + type check
+uv run mcp-context-server                  # Start server
+```
+
 ## Common Development Commands
 
 ### Building and Running
