@@ -980,12 +980,450 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, 'Content type not changed back to text'))
                 return False
 
+            # Test 6: Metadata patch - add new field to existing metadata
+            # First restore metadata for patch testing
+            restore_metadata_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'metadata': {'status': 'active', 'priority': 5},
+                },
+            )
+
+            restore_metadata_data = self._extract_content(restore_metadata_result)
+
+            if not restore_metadata_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to restore metadata: {restore_metadata_data}'))
+                return False
+
+            # Now patch to add new field
+            patch_add_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'metadata_patch': {'new_field': 'added_value'},
+                },
+            )
+
+            patch_add_data = self._extract_content(patch_add_result)
+
+            if not patch_add_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to patch-add new field: {patch_add_data}'))
+                return False
+
+            # Verify patch added new field while preserving existing ones
+            verify_patch_add = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+
+            verify_patch_add_data = self._extract_content(verify_patch_add)
+
+            if not verify_patch_add_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify patch-add'))
+                return False
+
+            patched_metadata = verify_patch_add_data['results'][0].get('metadata', {})
+
+            # Check that existing fields are preserved and new field was added
+            if patched_metadata.get('status') != 'active':
+                self.test_results.append((test_name, False, 'Patch-add did not preserve existing status field'))
+                return False
+
+            if patched_metadata.get('priority') != 5:
+                self.test_results.append((test_name, False, 'Patch-add did not preserve existing priority field'))
+                return False
+
+            if patched_metadata.get('new_field') != 'added_value':
+                self.test_results.append((test_name, False, 'Patch-add did not add new field'))
+                return False
+
+            # Test 7: Metadata patch - update existing field
+            patch_update_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'metadata_patch': {'priority': 10},
+                },
+            )
+
+            patch_update_data = self._extract_content(patch_update_result)
+
+            if not patch_update_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to patch-update existing field: {patch_update_data}'))
+                return False
+
+            # Verify patch updated field while preserving others
+            verify_patch_update = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+
+            verify_patch_update_data = self._extract_content(verify_patch_update)
+
+            if not verify_patch_update_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify patch-update'))
+                return False
+
+            updated_metadata = verify_patch_update_data['results'][0].get('metadata', {})
+
+            if updated_metadata.get('priority') != 10:
+                self.test_results.append((test_name, False, 'Patch-update did not change priority'))
+                return False
+
+            if updated_metadata.get('status') != 'active':
+                self.test_results.append((test_name, False, 'Patch-update did not preserve status field'))
+                return False
+
+            if updated_metadata.get('new_field') != 'added_value':
+                self.test_results.append((test_name, False, 'Patch-update did not preserve new_field'))
+                return False
+
+            # Test 8: Metadata patch - delete field with null value (RFC 7396 semantics)
+            patch_delete_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'metadata_patch': {'new_field': None},
+                },
+            )
+
+            patch_delete_data = self._extract_content(patch_delete_result)
+
+            if not patch_delete_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to patch-delete field: {patch_delete_data}'))
+                return False
+
+            # Verify patch deleted the field
+            verify_patch_delete = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+
+            verify_patch_delete_data = self._extract_content(verify_patch_delete)
+
+            if not verify_patch_delete_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify patch-delete'))
+                return False
+
+            deleted_metadata = verify_patch_delete_data['results'][0].get('metadata', {})
+
+            if 'new_field' in deleted_metadata:
+                self.test_results.append((test_name, False, 'Patch-delete did not remove field (RFC 7396 null semantics)'))
+                return False
+
+            if deleted_metadata.get('status') != 'active' or deleted_metadata.get('priority') != 10:
+                self.test_results.append((test_name, False, 'Patch-delete modified other fields'))
+                return False
+
+            # Test 9: Mutual exclusivity - providing both metadata and metadata_patch should fail
+            # The server raises ToolError which may propagate as an exception to the client
+            mutual_exclusivity_validated = False
+            try:
+                mutual_exclusion_result = await self.client.call_tool(
+                    'update_context',
+                    {
+                        'context_id': context_id,
+                        'metadata': {'full': 'replacement'},
+                        'metadata_patch': {'partial': 'update'},
+                    },
+                )
+
+                mutual_exclusion_data = self._extract_content(mutual_exclusion_result)
+
+                # If we get here without exception, check the response
+                if mutual_exclusion_data.get('success'):
+                    self.test_results.append(
+                        (test_name, False, 'Mutual exclusivity check failed - both metadata and metadata_patch accepted'),
+                    )
+                    return False
+
+                # Check error message in response
+                error_msg = mutual_exclusion_data.get('error', '')
+                error_mentions_mutual_exclusivity = 'mutual' in error_msg.lower() or 'exclusive' in error_msg.lower()
+                error_mentions_metadata_params = 'metadata' in error_msg.lower() and 'patch' in error_msg.lower()
+                if error_mentions_mutual_exclusivity or error_mentions_metadata_params:
+                    mutual_exclusivity_validated = True
+                else:
+                    self.test_results.append(
+                        (test_name, False, f'Mutual exclusivity error message unclear: {error_msg}'),
+                    )
+                    return False
+
+            except Exception as mutual_exc:
+                # ToolError is expected - verify the error message mentions mutual exclusivity
+                error_msg = str(mutual_exc)
+                error_mentions_mutual_exclusivity = 'mutual' in error_msg.lower() or 'exclusive' in error_msg.lower()
+                error_mentions_metadata_params = 'metadata' in error_msg.lower() and 'patch' in error_msg.lower()
+                if error_mentions_mutual_exclusivity or error_mentions_metadata_params:
+                    mutual_exclusivity_validated = True
+                else:
+                    self.test_results.append(
+                        (test_name, False, f'Unexpected exception during mutual exclusivity test: {mutual_exc}'),
+                    )
+                    return False
+
+            if not mutual_exclusivity_validated:
+                self.test_results.append((test_name, False, 'Mutual exclusivity validation did not complete'))
+                return False
+
+            # Test 10: Metadata patch on context with no existing metadata
+            # Create new context without metadata
+            no_metadata_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': update_thread,
+                    'source': 'agent',
+                    'text': 'Context without initial metadata',
+                },
+            )
+
+            no_metadata_data = self._extract_content(no_metadata_result)
+
+            if not no_metadata_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to create context without metadata: {no_metadata_data}'))
+                return False
+
+            no_metadata_context_id = no_metadata_data.get('context_id')
+
+            # Apply patch to context with no metadata
+            patch_empty_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': no_metadata_context_id,
+                    'metadata_patch': {'created_via': 'patch', 'version': 1},
+                },
+            )
+
+            patch_empty_data = self._extract_content(patch_empty_result)
+
+            if not patch_empty_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to patch empty metadata: {patch_empty_data}'))
+                return False
+
+            # Verify metadata was created from scratch
+            verify_patch_empty = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [no_metadata_context_id]},
+            )
+
+            verify_patch_empty_data = self._extract_content(verify_patch_empty)
+
+            if not verify_patch_empty_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify patch on empty metadata'))
+                return False
+
+            created_metadata = verify_patch_empty_data['results'][0].get('metadata', {})
+
+            if created_metadata.get('created_via') != 'patch' or created_metadata.get('version') != 1:
+                self.test_results.append((test_name, False, 'Patch on empty metadata did not create expected fields'))
+                return False
+
             # Verify immutable fields remain unchanged
             if text_only_entry.get('thread_id') != update_thread or text_only_entry.get('source') != 'agent':
                 self.test_results.append((test_name, False, 'Immutable fields were modified'))
                 return False
 
             self.test_results.append((test_name, True, 'All update operations passed'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_patch_deep_merge(self) -> bool:
+        """Test RFC 7396 deep merge semantics for metadata_patch.
+
+        This test verifies that nested objects are correctly merged according to
+        RFC 7396 JSON Merge Patch specification, including deep merge and nested
+        null deletion.
+
+        RFC 7396 Specification: https://datatracker.ietf.org/doc/html/rfc7396
+
+        Returns:
+            bool: True if all deep merge tests passed.
+        """
+        test_name = 'metadata_patch_deep_merge'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Create a separate thread for deep merge tests
+            deep_merge_thread = f'{self.test_thread_id}_deep_merge'
+
+            # Test 1: Setup - Create context with nested metadata
+            setup_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': deep_merge_thread,
+                    'source': 'agent',
+                    'text': 'Context for RFC 7396 deep merge testing',
+                    'metadata': {
+                        'a': {
+                            'b': 'original_b',
+                            'd': 'original_d',
+                        },
+                        'top_level': 'preserved',
+                    },
+                },
+            )
+
+            setup_data = self._extract_content(setup_result)
+            if not setup_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to create test context: {setup_data}'))
+                return False
+
+            context_id = setup_data.get('context_id')
+
+            # Test 2: RFC 7396 Case #7 - Deep merge with nested update (preserves siblings)
+            # Patch: {"a": {"b": "updated"}} should preserve "d" in nested object
+            patch_deep_merge = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'metadata_patch': {'a': {'b': 'updated_b'}},
+                },
+            )
+
+            patch_deep_data = self._extract_content(patch_deep_merge)
+            if not patch_deep_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed deep merge patch: {patch_deep_data}'))
+                return False
+
+            # Verify deep merge preserved sibling key
+            verify_deep = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+
+            verify_deep_data = self._extract_content(verify_deep)
+            if not verify_deep_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify deep merge'))
+                return False
+
+            deep_metadata = verify_deep_data['results'][0].get('metadata', {})
+
+            # RFC 7396: Nested sibling key "d" MUST be preserved
+            if deep_metadata.get('a', {}).get('b') != 'updated_b':
+                self.test_results.append((test_name, False, 'Deep merge did not update nested key "b"'))
+                return False
+
+            if deep_metadata.get('a', {}).get('d') != 'original_d':
+                error_msg = f'RFC 7396 VIOLATION: Deep merge did not preserve sibling key "d". Got: {deep_metadata}'
+                self.test_results.append((test_name, False, error_msg))
+                return False
+
+            if deep_metadata.get('top_level') != 'preserved':
+                self.test_results.append((test_name, False, 'Deep merge did not preserve top-level key'))
+                return False
+
+            # Test 3: Nested null deletion (RFC 7396 Case #7 variant)
+            # Patch: {"a": {"b": null}} should delete "b" but preserve "d"
+            patch_nested_delete = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'metadata_patch': {'a': {'b': None}},  # RFC 7396: null means delete
+                },
+            )
+
+            patch_delete_data = self._extract_content(patch_nested_delete)
+            if not patch_delete_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed nested deletion patch: {patch_delete_data}'))
+                return False
+
+            # Verify nested deletion preserved sibling
+            verify_delete = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+
+            verify_delete_data = self._extract_content(verify_delete)
+            if not verify_delete_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify nested deletion'))
+                return False
+
+            delete_metadata = verify_delete_data['results'][0].get('metadata', {})
+
+            # RFC 7396: Key "b" should be deleted
+            if 'b' in delete_metadata.get('a', {}):
+                self.test_results.append(
+                    (test_name, False, f'RFC 7396 VIOLATION: Nested null did not delete key "b". Got: {delete_metadata}'),
+                )
+                return False
+
+            # RFC 7396: Key "d" MUST be preserved
+            if delete_metadata.get('a', {}).get('d') != 'original_d':
+                error_msg = f'RFC 7396 VIOLATION: Nested deletion did not preserve "d". Got: {delete_metadata}'
+                self.test_results.append((test_name, False, error_msg))
+                return False
+
+            # Test 4: Deeply nested null deletion (RFC 7396 Case #15)
+            # Create new context for this test
+            deep_nested_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': deep_merge_thread,
+                    'source': 'agent',
+                    'text': 'Context for deeply nested null test',
+                    'metadata': {},  # Start empty
+                },
+            )
+
+            deep_nested_data = self._extract_content(deep_nested_result)
+            if not deep_nested_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to create deeply nested test context'))
+                return False
+
+            deep_context_id = deep_nested_data.get('context_id')
+
+            # RFC 7396 Case #15: {"a": {"bb": {"ccc": null}}} should result in {"a": {"bb": {}}}
+            patch_deep_null = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': deep_context_id,
+                    'metadata_patch': {'a': {'bb': {'ccc': None}}},
+                },
+            )
+
+            patch_deep_null_data = self._extract_content(patch_deep_null)
+            if not patch_deep_null_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed deeply nested null patch: {patch_deep_null_data}'))
+                return False
+
+            # Verify deeply nested structure
+            verify_deep_null = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [deep_context_id]},
+            )
+
+            verify_deep_null_data = self._extract_content(verify_deep_null)
+            if not verify_deep_null_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to verify deeply nested null'))
+                return False
+
+            deep_null_metadata = verify_deep_null_data['results'][0].get('metadata', {})
+
+            # RFC 7396 Case #15: Expected {"a": {"bb": {}}}
+            # The deeply nested null should create empty nested objects, not include null
+            if 'a' not in deep_null_metadata:
+                self.test_results.append(
+                    (test_name, False, f'RFC 7396 Case #15 VIOLATION: Missing top-level "a". Got: {deep_null_metadata}'),
+                )
+                return False
+
+            if 'bb' not in deep_null_metadata.get('a', {}):
+                self.test_results.append(
+                    (test_name, False, f'RFC 7396 Case #15 VIOLATION: Missing nested "bb". Got: {deep_null_metadata}'),
+                )
+                return False
+
+            # The key "ccc" should NOT exist (deleted by null)
+            if 'ccc' in deep_null_metadata.get('a', {}).get('bb', {}):
+                self.test_results.append(
+                    (test_name, False, f'RFC 7396 Case #15 VIOLATION: Key "ccc" should be deleted. Got: {deep_null_metadata}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'All RFC 7396 deep merge tests passed'))
             return True
 
         except Exception as e:
@@ -1172,6 +1610,7 @@ class MCPServerIntegrationTest:
             ('Get Context by IDs', self.test_get_context_by_ids),
             ('Delete Context', self.test_delete_context),
             ('Update Context', self.test_update_context),
+            ('Metadata Patch Deep Merge', self.test_metadata_patch_deep_merge),
             ('List Threads', self.test_list_threads),
             ('Get Statistics', self.test_get_statistics),
             ('Semantic Search', self.test_semantic_search_context),

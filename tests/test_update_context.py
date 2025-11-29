@@ -40,6 +40,7 @@ def mock_repositories():
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
+    repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
 
     # Mock tags repository
     repos.tags = Mock()
@@ -503,3 +504,286 @@ class TestUpdateContext:
             assert result['success'] is True
             assert result['context_id'] == 789
             assert 'text_content' in result['updated_fields']
+
+
+class TestMetadataPatchIntegration:
+    """Integration tests for metadata_patch parameter in update_context.
+
+    These tests verify the integration between the update_context tool
+    and the underlying patch_metadata repository method.
+    """
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_basic_integration(self, mock_context, mock_repositories):
+        """Test basic metadata_patch integration with repository."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=100,
+                text=None,
+                metadata=None,
+                metadata_patch={'status': 'updated'},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            assert 'metadata' in result['updated_fields']
+
+            # Verify patch_metadata was called with correct parameters
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=100,
+                patch={'status': 'updated'},
+            )
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_with_text_update(self, mock_context, mock_repositories):
+        """Test metadata_patch combined with text content update."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=200,
+                text='New content',
+                metadata=None,
+                metadata_patch={'priority': 10},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            assert 'text_content' in result['updated_fields']
+            assert 'metadata' in result['updated_fields']
+
+            # Verify both operations were called
+            mock_repositories.context.update_context_entry.assert_called_once()
+            mock_repositories.context.patch_metadata.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_mutual_exclusivity_error(self, mock_context, mock_repositories):
+        """Test error when both metadata and metadata_patch are provided."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=300,
+                    text=None,
+                    metadata={'full': 'replacement'},
+                    metadata_patch={'partial': 'update'},
+                    tags=None,
+                    images=None,
+                    ctx=mock_context,
+                )
+
+            error_msg = str(exc_info.value).lower()
+            assert 'metadata' in error_msg
+            assert 'metadata_patch' in error_msg
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_counts_as_valid_update(self, mock_context, mock_repositories):
+        """Test that metadata_patch alone is a valid update (no 'no fields provided' error)."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            # Should NOT raise 'At least one field must be provided' error
+            result = await update_context(
+                context_id=400,
+                text=None,
+                metadata=None,
+                metadata_patch={'only_field': 'value'},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_failure_handling(self, mock_context, mock_repositories):
+        """Test handling of patch_metadata repository failure."""
+        mock_repositories.context.patch_metadata.return_value = (False, [])
+
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            with pytest.raises(ToolError) as exc_info:
+                await update_context(
+                    context_id=500,
+                    text=None,
+                    metadata=None,
+                    metadata_patch={'field': 'value'},
+                    tags=None,
+                    images=None,
+                    ctx=mock_context,
+                )
+
+            assert 'failed' in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_with_tags(self, mock_context, mock_repositories):
+        """Test metadata_patch combined with tags update."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=600,
+                text=None,
+                metadata=None,
+                metadata_patch={'agent_name': 'test-agent'},
+                tags=['new-tag'],
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            assert 'metadata' in result['updated_fields']
+            assert 'tags' in result['updated_fields']
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_preserves_full_metadata_behavior(self, mock_context, mock_repositories):
+        """Test that full metadata replacement still works when metadata_patch is not used."""
+        metadata = {'full': 'replacement', 'all_fields': True}
+        mock_repositories.context.update_context_entry.return_value = (True, ['metadata'])
+
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=700,
+                text=None,
+                metadata=metadata,
+                metadata_patch=None,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            assert 'metadata' in result['updated_fields']
+
+            # Verify update_context_entry was called (not patch_metadata)
+            mock_repositories.context.update_context_entry.assert_called_once()
+            mock_repositories.context.patch_metadata.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_metadata_patch_empty_dict(self, mock_context, mock_repositories):
+        """Test metadata_patch with empty dict (should still be valid update)."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=800,
+                text=None,
+                metadata=None,
+                metadata_patch={},  # Empty patch - RFC 7396: no-op but updates timestamp
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=800,
+                patch={},
+            )
+
+
+class TestMetadataPatchRFC7396Semantics:
+    """Test RFC 7396 deep merge semantics for metadata_patch.
+
+    These tests verify correct behavior documentation for RFC 7396 compliant
+    operations. While using mocks, they document the expected patch data
+    that should be passed to achieve RFC 7396 compliance.
+
+    IMPORTANT: Actual RFC 7396 semantics are tested in test_real_server.py
+    with a real database. These tests verify the tool correctly delegates
+    to the repository layer.
+
+    RFC 7396 Specification: https://datatracker.ietf.org/doc/html/rfc7396
+    """
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case7_nested_merge_with_deletion(self, mock_context, mock_repositories):
+        """RFC 7396 Test Case #7: Nested object merge with deletion.
+
+        Verifies that nested patch with null value is correctly passed to repository.
+        The actual merge semantics are handled by the database layer.
+        """
+        nested_patch = {'a': {'b': 'd', 'c': None}}
+
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7007,
+                text=None,
+                metadata=None,
+                metadata_patch=nested_patch,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7007,
+                patch=nested_patch,
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case13_null_preservation(self, mock_context, mock_repositories):
+        """RFC 7396 Test Case #13: Existing null value preserved.
+
+        Verifies that adding new keys does not affect existing null values in target.
+        """
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7013,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': 1},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7013,
+                patch={'a': 1},
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case15_deeply_nested_null(self, mock_context, mock_repositories):
+        """RFC 7396 Test Case #15: Deeply nested null deletion.
+
+        Verifies that deeply nested null patch is correctly passed to repository.
+        """
+        deep_patch = {'a': {'bb': {'ccc': None}}}
+
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7015,
+                text=None,
+                metadata=None,
+                metadata_patch=deep_patch,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7015,
+                patch=deep_patch,
+            )
+
+    @pytest.mark.asyncio
+    async def test_deep_merge_preserves_sibling_nested_keys(self, mock_context, mock_repositories):
+        """Verify patch for deep merge with sibling key preservation.
+
+        When patching {"a": {"b": "updated"}}, sibling keys in the nested object
+        should be preserved. This test verifies the correct patch is passed.
+        """
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7100,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': {'b': 'updated'}},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7100,
+                patch={'a': {'b': 'updated'}},
+            )
