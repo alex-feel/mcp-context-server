@@ -56,13 +56,6 @@ uv run pytest -m integration
 # Skip slow/integration tests for quick feedback
 uv run pytest -m "not integration"
 
-# Run metadata filtering tests
-uv run pytest tests/test_metadata_filtering.py -v
-uv run pytest tests/test_metadata_error_handling.py -v
-
-# Run update_context tests
-uv run pytest tests/test_update_context.py -v
-
 # Run real server integration test
 uv run python run_integration_test.py
 
@@ -101,7 +94,7 @@ This server implements the [Model Context Protocol](https://modelcontextprotocol
 This is a FastMCP 2.0-based Model Context Protocol server that provides persistent context storage for LLM agents. The architecture consists of:
 
 1. **FastMCP Server Layer** (`app/server.py`):
-   - Exposes 8 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`
+   - Exposes 11 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`, `store_context_batch`, `update_context_batch`, `delete_context_batch`
    - Handles stdio transport for Claude Desktop/LangGraph integration
    - Manages async request processing with proper lifecycle management
    - Uses `RepositoryContainer` for all database operations (no direct SQL)
@@ -649,7 +642,8 @@ async def my_new_tool(
 2. Add repository methods if database access needed
 3. Use `Literal["user", "agent"]` for source parameters
 4. Add tests in `tests/test_server.py` or dedicated test file
-5. Update server.json if tool adds new environment variables
+5. Add real server integration tests in `tests/test_real_server.py`
+6. Update server.json if tool adds new environment variables
 
 ### Repository Pattern Implementation
 
@@ -673,6 +667,21 @@ The `update_context` tool has specific behavior:
 3. **Auto-managed Fields**: `content_type` recalculates based on images, `updated_at` auto-updates
 4. **Full Replacement**: Tags and images use replacement semantics (not merge)
 5. **Transaction Safety**: All updates wrapped in transactions for consistency
+
+### Batch Operations
+
+Three batch tools enable efficient bulk processing:
+1. **`store_context_batch`**: Store up to 100 entries in one call
+2. **`update_context_batch`**: Update up to 100 entries with `metadata_patch` support
+3. **`delete_context_batch`**: Delete by IDs, thread IDs, source, or age
+
+**Atomic Mode** (`atomic=true`, default):
+- All operations succeed or all fail (transaction rollback on error)
+- Returns partial results on failure
+
+**Non-Atomic Mode** (`atomic=false`):
+- Processes each entry independently
+- Returns individual success/failure for each entry
 
 ### Database Best Practices
 

@@ -413,6 +413,10 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
+- `metadata` (dict, optional): Simple metadata filters (key=value equality)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators
+
+**Metadata Filtering**: The `metadata` and `metadata_filters` parameters work identically to `search_context`. For comprehensive documentation on operators, nested paths, and best practices, see the [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
 **Returns**:
 ```json
@@ -461,12 +465,21 @@ If embedding generation fails, the context is still stored successfully (gracefu
    semantic_search_context(query="error handling", thread_id="current-task", top_k=5)
    ```
 
-4. **Time-bounded search**: Find similar content within a specific date range
+4. **Metadata-filtered search**: Combine semantic search with metadata filtering
+   ```
+   semantic_search_context(
+       query="performance optimization",
+       metadata={"status": "completed"},
+       metadata_filters=[{"key": "priority", "operator": "gte", "value": 7}]
+   )
+   ```
+
+5. **Time-bounded search**: Find similar content within a specific date range
    ```
    semantic_search_context(query="database optimization", start_date="2025-11-01", end_date="2025-11-30")
    ```
 
-5. **Recent context discovery**: Find semantically similar content from the past week
+6. **Recent context discovery**: Find semantically similar content from the past week
    ```
    semantic_search_context(query="deployment issues", start_date="2025-11-22")
    ```

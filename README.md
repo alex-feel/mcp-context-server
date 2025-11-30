@@ -518,57 +518,9 @@ Search context entries with powerful filtering including metadata queries and da
 - `include_images` (bool, optional): Include image data in response
 - `explain_query` (bool, optional): Include query execution statistics
 
-**Metadata Filtering:**
+**Metadata Filtering:** Supports simple key=value equality and advanced filtering with 15 operators. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
 
-*Simple filtering* (exact match):
-```python
-metadata={'status': 'active', 'priority': 5}
-```
-
-*Advanced filtering* with operators:
-```python
-metadata_filters=[
-    {'key': 'priority', 'operator': 'gt', 'value': 3},
-    {'key': 'status', 'operator': 'in', 'value': ['active', 'pending']},
-    {'key': 'agent_name', 'operator': 'starts_with', 'value': 'gpt'},
-    {'key': 'completed', 'operator': 'eq', 'value': False}
-]
-```
-
-**Supported Operators:**
-- `eq`: Equals (case-insensitive for strings by default)
-- `ne`: Not equals
-- `gt`, `gte`, `lt`, `lte`: Numeric comparisons
-- `in`, `not_in`: List membership
-- `exists`, `not_exists`: Field presence
-- `contains`, `starts_with`, `ends_with`: String operations
-- `is_null`, `is_not_null`: Null checks
-
-All string operators support `case_sensitive: true/false` option.
-
-For comprehensive documentation on metadata filtering including real-world use cases, operator examples, nested JSON paths, and performance optimization, see the [Metadata Filtering Guide](docs/metadata-filtering.md).
-
-**Date Filtering:**
-
-Filter entries by creation timestamp using ISO 8601 format:
-```python
-# Find entries from a specific day
-search_context(thread_id="project-123", start_date="2025-11-29", end_date="2025-11-29")
-
-# Find entries from a date range
-search_context(thread_id="project-123", start_date="2025-11-01", end_date="2025-11-30")
-
-# Find entries with precise timestamp
-search_context(thread_id="project-123", start_date="2025-11-29T10:00:00")
-```
-
-Supported ISO 8601 formats:
-- Date-only: `2025-11-29`
-- DateTime: `2025-11-29T10:00:00`
-- UTC (Z suffix): `2025-11-29T10:00:00Z`
-- Timezone offset: `2025-11-29T10:00:00+02:00`
-
-**Note:** Date-only `end_date` values automatically expand to end-of-day (`T23:59:59.999999`) for intuitive "entire day" behavior. Naive datetime (without timezone) is interpreted as UTC.
+**Date Filtering:** Supports ISO 8601 date filtering. See sections at the end of this document.
 
 **Returns:** List of matching context entries with optional query statistics
 
@@ -642,7 +594,7 @@ update_context(context_id=123, metadata_patch={"status": "completed"})
 update_context(context_id=123, metadata_patch={"reviewer": "alice", "draft": None})
 ```
 
-**Limitations (RFC 7396):** Null values cannot be stored (null means delete key - use full replacement if needed), arrays are replaced entirely (not merged). See [Metadata Filtering Guide](docs/metadata-filtering.md#partial-metadata-updates-metadata_patch) for details.
+**Limitations (RFC 7396):** Null values cannot be stored (null means delete key - use full replacement if needed), arrays are replaced entirely (not merged). See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md#partial-metadata-updates-metadata_patch) for details.
 
 **Field Update Rules:**
 - **Updatable fields**: text_content, metadata, tags, images
@@ -676,6 +628,10 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
+- `metadata` (dict, optional): Simple metadata filters (key=value equality)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators
+
+**Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
 
 **Returns:** Dictionary with:
 - Query string
@@ -700,5 +656,106 @@ semantic_search_context(
 ```
 
 For setup instructions, see the [Semantic Search Guide](docs/semantic-search.md).
+
+### Batch Operations
+
+The following tools enable efficient batch processing of context entries.
+
+#### store_context_batch
+
+Store multiple context entries in a single batch operation.
+
+**Parameters:**
+- `entries` (list, required): List of context entries (max 100). Each entry has:
+  - `thread_id` (str, required), `source` (str, required), `text` (str, required)
+  - `metadata` (dict, optional), `tags` (list, optional), `images` (list, optional)
+- `atomic` (bool, optional): If true, all succeed or all fail (default: true)
+
+**Returns:** Dictionary with success, total, succeeded, failed, results array, message
+
+#### update_context_batch
+
+Update multiple context entries in a single batch operation.
+
+**Parameters:**
+- `updates` (list, required): List of update operations (max 100). Each update has:
+  - `context_id` (int, required)
+  - `text` (str, optional), `metadata` (dict, optional), `metadata_patch` (dict, optional)
+  - `tags` (list, optional), `images` (list, optional)
+- `atomic` (bool, optional): If true, all succeed or all fail (default: true)
+
+**Note:** `metadata_patch` uses RFC 7396 JSON Merge Patch semantics. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md#partial-metadata-updates-metadata_patch) for details.
+
+**Returns:** Dictionary with success, total, succeeded, failed, results array, message
+
+#### delete_context_batch
+
+Delete multiple context entries by various criteria. **IRREVERSIBLE.**
+
+**Parameters:**
+- `context_ids` (list, optional): Specific context IDs to delete
+- `thread_ids` (list, optional): Delete all entries in these threads
+- `source` (str, optional): Filter by source ('user' or 'agent') - must combine with another criterion
+- `older_than_days` (int, optional): Delete entries older than N days
+
+At least one criterion must be provided. Cascading delete removes associated tags, images, and embeddings.
+
+**Returns:** Dictionary with success, deleted_count, criteria_used, message
+
+### Filtering Reference
+
+The following filtering options apply to both `search_context` and `semantic_search_context` tools.
+
+**Metadata Filtering:**
+
+*Simple filtering* (exact match):
+```python
+metadata={'status': 'active', 'priority': 5}
+```
+
+*Advanced filtering* with operators:
+```python
+metadata_filters=[
+    {'key': 'priority', 'operator': 'gt', 'value': 3},
+    {'key': 'status', 'operator': 'in', 'value': ['active', 'pending']},
+    {'key': 'agent_name', 'operator': 'starts_with', 'value': 'gpt'},
+    {'key': 'completed', 'operator': 'eq', 'value': False}
+]
+```
+
+**Supported Operators:**
+- `eq`: Equals (case-insensitive for strings by default)
+- `ne`: Not equals
+- `gt`, `gte`, `lt`, `lte`: Numeric comparisons
+- `in`, `not_in`: List membership
+- `exists`, `not_exists`: Field presence
+- `contains`, `starts_with`, `ends_with`: String operations
+- `is_null`, `is_not_null`: Null checks
+
+All string operators support `case_sensitive: true/false` option.
+
+For comprehensive documentation on metadata filtering including real-world use cases, operator examples, nested JSON paths, and performance optimization, see the [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
+
+**Date Filtering:**
+
+Filter entries by creation timestamp using ISO 8601 format:
+```python
+# Find entries from a specific day
+search_context(thread_id="project-123", start_date="2025-11-29", end_date="2025-11-29")
+
+# Find entries from a date range
+search_context(thread_id="project-123", start_date="2025-11-01", end_date="2025-11-30")
+
+# Find entries with precise timestamp
+search_context(thread_id="project-123", start_date="2025-11-29T10:00:00")
+```
+
+Supported ISO 8601 formats:
+- Date-only: `2025-11-29`
+- DateTime: `2025-11-29T10:00:00`
+- UTC (Z suffix): `2025-11-29T10:00:00Z`
+- Timezone offset: `2025-11-29T10:00:00+02:00`
+
+**Note:** Date-only `end_date` values automatically expand to end-of-day (`T23:59:59.999999`) for intuitive "entire day" behavior. Naive datetime (without timezone) is interpreted as UTC.
 
 <!-- mcp-name: io.github.alex-feel/mcp-context-server -->

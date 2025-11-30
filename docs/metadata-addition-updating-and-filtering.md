@@ -1,22 +1,24 @@
-# Metadata Filtering Guide
+# Metadata Guide
 
 ## Introduction
 
-Metadata filtering enables powerful, flexible querying of context entries using structured JSON data. Unlike simple tag-based organization, metadata filtering supports complex queries with 15 operators, nested JSON paths, and performance-optimized indexes for common fields.
-
-This feature allows you to:
-- Filter context by dynamic criteria (status, priority, agent, task)
-- Perform range queries on numeric values
-- Search with pattern matching (contains, starts with, ends with)
-- Query nested metadata structures
-- Combine multiple filters for precise results
+Metadata in the MCP Context Server provides a powerful way to enrich, organize, and query your context entries. This guide covers the complete lifecycle of metadata: **adding** it when storing context, **updating** it as your workflow evolves, and **filtering** by it when searching.
 
 **Key Capabilities:**
-- **15 Operators**: From simple equality to advanced pattern matching
-- **Flexible Metadata**: Any JSON-serializable structure
-- **Performance Optimized**: Strategic indexing for common fields
+- **Flexible Structure**: Store any JSON-serializable data (strings, numbers, booleans, arrays, nested objects)
+- **15 Operators**: From simple equality to advanced pattern matching and range queries
+- **Performance Optimized**: Strategic indexing for common fields (status, priority, agent_name, task_name, completed)
 - **Case Control**: Case-sensitive and case-insensitive string operations
+- **Partial Updates**: RFC 7396 JSON Merge Patch for selective metadata modifications
 - **Query Statistics**: Execution time and query plan analysis
+
+**Available in Multiple Tools:**
+- **`store_context`**: Add metadata when creating context entries
+- **`update_context`**: Modify metadata on existing entries (full replacement or partial patch)
+- **`search_context`**: Keyword and filter-based search with metadata filtering
+- **`semantic_search_context`**: Vector similarity search with metadata filtering (requires semantic search enabled)
+
+Both search tools support identical metadata filtering syntax and return consistent error responses.
 
 ## Metadata Structure
 
@@ -60,7 +62,277 @@ The following metadata fields are indexed for faster filtering:
 
 **Performance Note:** Using indexed fields in filters significantly improves query performance, especially with large datasets.
 
-## Filtering Methods
+## Adding Metadata (store_context)
+
+When storing context entries, you can attach metadata to provide structured information about the entry. This metadata can later be used for filtering and organization.
+
+### Basic Usage
+
+```python
+# Store context with metadata
+store_context(
+    thread_id="project-alpha",
+    source="agent",
+    text="Implement user authentication",
+    metadata={
+        "status": "active",
+        "priority": 8,
+        "assignee": "alice@example.com"
+    }
+)
+```
+
+### Using Indexed Fields
+
+For optimal query performance, use the indexed fields when possible:
+
+```python
+# Store task with indexed metadata fields
+store_context(
+    thread_id="project-alpha",
+    source="agent",
+    text="Implement user authentication",
+    metadata={
+        "status": "active",           # Indexed - fast filtering
+        "priority": 8,                # Indexed - range queries
+        "agent_name": "planner",      # Indexed - agent identification
+        "task_name": "auth-impl",     # Indexed - task tracking
+        "completed": False,           # Indexed - completion state
+        "assignee": "alice@example.com",  # Not indexed but still queryable
+        "due_date": "2025-10-20"          # Not indexed but still queryable
+    }
+)
+```
+
+### Complex Metadata Structures
+
+Metadata can include nested objects for more complex data:
+
+```python
+# Store context with nested metadata
+store_context(
+    thread_id="config-test",
+    source="agent",
+    text="Configuration loaded",
+    metadata={
+        "user": {
+            "id": 123,
+            "preferences": {
+                "theme": "dark",
+                "notifications": True
+            }
+        },
+        "settings": {
+            "timeout": 30,
+            "retries": 3
+        }
+    }
+)
+```
+
+### Metadata Use Cases by Domain
+
+**Task Management:**
+```python
+metadata={
+    "status": "active",
+    "priority": 8,
+    "assignee": "alice@example.com",
+    "due_date": "2025-10-20",
+    "task_name": "auth-implementation",
+    "completed": False,
+    "tags": ["backend", "security"]
+}
+```
+
+**Agent Coordination:**
+```python
+metadata={
+    "agent_name": "data-processor",
+    "task_name": "batch-processing",
+    "execution_time": 45.3,
+    "resource_usage": {
+        "cpu_percent": 65.2,
+        "memory_mb": 512
+    },
+    "records_processed": 1000,
+    "status": "completed"
+}
+```
+
+**Knowledge Base:**
+```python
+metadata={
+    "category": "machine-learning",
+    "subcategory": "transformers",
+    "relevance_score": 8.5,
+    "source_url": "https://arxiv.org/...",
+    "author": "research-agent",
+    "year": 2025,
+    "peer_reviewed": True
+}
+```
+
+**Debugging Context:**
+```python
+metadata={
+    "error_type": "TimeoutError",
+    "error_code": "DB_TIMEOUT",
+    "stack_trace": "File payment.py, line 42...",
+    "environment": "production",
+    "version": "v2.3.1",
+    "severity": "critical",
+    "timestamp": "2025-10-10T08:30:00Z"
+}
+```
+
+**Analytics and Events:**
+```python
+metadata={
+    "user_id": "user_12345",
+    "session_id": "sess_abc123",
+    "event_type": "checkout_completed",
+    "timestamp": "2025-10-10T10:15:30Z",
+    "revenue": 149.99,
+    "items_count": 3,
+    "platform": "web"
+}
+```
+
+## Updating Metadata (update_context)
+
+The `update_context` tool provides two ways to modify metadata on existing context entries:
+
+1. **Full Replacement** (`metadata` parameter): Replace the entire metadata object
+2. **Partial Update** (`metadata_patch` parameter): Modify specific fields while preserving others
+
+### When to Use Each Method
+
+| Scenario | Use | Parameter |
+|----------|-----|-----------|
+| Replace entire metadata object | Full replacement | `metadata` |
+| Update a single field | Partial update | `metadata_patch` |
+| Add new fields while preserving existing | Partial update | `metadata_patch` |
+| Delete specific fields | Partial update | `metadata_patch` |
+| Clear all metadata | Full replacement | `metadata={}` |
+
+**Mutual Exclusivity:** You cannot use both `metadata` and `metadata_patch` in the same call.
+
+### Full Replacement
+
+Use the `metadata` parameter to completely replace all metadata:
+
+```python
+# Replace all metadata
+update_context(
+    context_id=123,
+    metadata={
+        "status": "completed",
+        "priority": 10,
+        "reviewer": "bob"
+    }
+)
+# Result: Only these three fields exist (previous metadata is gone)
+```
+
+### Partial Updates (metadata_patch)
+
+The `metadata_patch` parameter implements RFC 7396 JSON Merge Patch semantics:
+
+- **New keys** in patch are ADDED to existing metadata
+- **Existing keys** are REPLACED with new values from patch
+- **Null values** DELETE keys from metadata
+
+#### Basic Operations
+
+```python
+# Original metadata: {"status": "pending", "priority": 5, "assignee": "alice"}
+
+# Add a new field
+update_context(context_id=123, metadata_patch={"category": "backend"})
+# Result: {"status": "pending", "priority": 5, "assignee": "alice", "category": "backend"}
+
+# Update existing field
+update_context(context_id=123, metadata_patch={"status": "completed"})
+# Result: {"status": "completed", "priority": 5, "assignee": "alice", "category": "backend"}
+
+# Delete a field using null
+update_context(context_id=123, metadata_patch={"assignee": None})
+# Result: {"status": "completed", "priority": 5, "category": "backend"}
+
+# Multiple operations in one call
+update_context(
+    context_id=123,
+    metadata_patch={
+        "status": "archived",      # Update existing
+        "archived_at": "2025-10",  # Add new
+        "category": None           # Delete
+    }
+)
+# Result: {"status": "archived", "priority": 5, "archived_at": "2025-10"}
+```
+
+#### Combined with Other Updates
+
+The `metadata_patch` can be combined with other update fields:
+
+```python
+# Update text and patch metadata in one operation
+update_context(
+    context_id=123,
+    text="Updated analysis results",
+    metadata_patch={"status": "reviewed", "reviewer": "bob"}
+)
+
+# Update tags and patch metadata
+update_context(
+    context_id=123,
+    tags=["completed", "verified"],
+    metadata_patch={"completed": True}
+)
+```
+
+### Limitations (RFC 7396)
+
+**1. Cannot Set Null Values**
+
+Using `null` in the patch always DELETES the key. If you need to store a null value, use full metadata replacement:
+
+```python
+# This DELETES the field, not sets it to null
+update_context(context_id=123, metadata_patch={"optional_field": None})
+# Result: field is removed
+
+# To store null, use full replacement
+current = get_context_by_ids(context_ids=[123])
+new_metadata = current[0]["metadata"]
+new_metadata["optional_field"] = None
+update_context(context_id=123, metadata=new_metadata)
+```
+
+**2. Arrays are Replaced Entirely**
+
+Array operations are replace-only - no element-wise add/remove:
+
+```python
+# Original: {"tags": ["a", "b", "c"]}
+
+# This replaces the entire array
+update_context(context_id=123, metadata_patch={"tags": ["x", "y"]})
+# Result: {"tags": ["x", "y"]}  (not ["a", "b", "c", "x", "y"])
+
+# To append, read current array first
+current = get_context_by_ids(context_ids=[123])
+tags = current[0]["metadata"]["tags"]
+tags.append("new_tag")
+update_context(context_id=123, metadata_patch={"tags": tags})
+```
+
+## Filtering by Metadata (search_context, semantic_search_context)
+
+Metadata filtering enables powerful, flexible querying of context entries using structured JSON data. Unlike simple tag-based organization, metadata filtering supports complex queries with 15 operators, nested JSON paths, and performance-optimized indexes for common fields.
+
+Both `search_context` and `semantic_search_context` support identical metadata filtering syntax.
 
 ### Simple Filtering (Exact Match)
 
@@ -120,6 +392,34 @@ search_context(
 - Pattern matching for strings
 - Field existence checks
 - Supports nested JSON paths
+
+### Using with Semantic Search
+
+The same metadata filtering syntax works with `semantic_search_context`:
+
+```python
+# Semantic search with metadata filtering
+semantic_search_context(
+    query="authentication implementation",
+    metadata={"status": "completed"},  # Simple filter
+    metadata_filters=[                 # Advanced filters
+        {"key": "priority", "operator": "gte", "value": 5},
+        {"key": "agent_name", "operator": "exists"}
+    ]
+)
+
+# Find similar contexts from a specific agent with high priority
+semantic_search_context(
+    query="database optimization",
+    thread_id="project-123",
+    metadata_filters=[
+        {"key": "agent_name", "operator": "eq", "value": "research-agent"},
+        {"key": "priority", "operator": "gt", "value": 7}
+    ]
+)
+```
+
+This combines the power of semantic similarity search with precise metadata filtering, enabling queries like "find similar content about authentication from completed, high-priority tasks."
 
 ### Combining Both Methods
 
@@ -216,13 +516,13 @@ Numeric comparison, inclusive.
 
 #### `in` - Value in List
 
-Check if value matches any item in the provided list.
+Check if value matches any item in the provided list. Supports both string and integer arrays.
 
 ```python
 # Active or pending tasks
 {"key": "status", "operator": "in", "value": ["active", "pending", "review"]}
 
-# Specific priority levels
+# Specific priority levels (integer arrays)
 {"key": "priority", "operator": "in", "value": [1, 5, 10]}
 
 # Case-insensitive by default
@@ -758,6 +1058,10 @@ Case sensitivity applies to all string operators:
 
 ## Error Handling
 
+### Unified Error Responses
+
+Both `search_context` and `semantic_search_context` return identical error response formats when metadata filter validation fails. This unified error handling ensures consistent client-side processing.
+
 ### Validation Errors
 
 Invalid filters return error responses with validation details:
@@ -984,115 +1288,6 @@ search_context(
     start_date="2025-11-01",
     end_date="2025-11-30"
 )
-```
-
-## Partial Metadata Updates (metadata_patch)
-
-The `update_context` tool supports partial metadata updates using the `metadata_patch` parameter, which implements RFC 7396 JSON Merge Patch semantics.
-
-### When to Use metadata_patch vs metadata
-
-| Scenario | Use | Parameter |
-|----------|-----|-----------|
-| Replace entire metadata object | Full replacement | `metadata` |
-| Update a single field | Partial update | `metadata_patch` |
-| Add new fields while preserving existing | Partial update | `metadata_patch` |
-| Delete specific fields | Partial update | `metadata_patch` |
-| Clear all metadata | Full replacement | `metadata={}` |
-
-**Mutual Exclusivity:** You cannot use both `metadata` and `metadata_patch` in the same call.
-
-### RFC 7396 JSON Merge Patch Semantics
-
-The `metadata_patch` parameter follows [RFC 7396](https://datatracker.ietf.org/doc/html/rfc7396) semantics:
-
-- **New keys** in patch are ADDED to existing metadata
-- **Existing keys** are REPLACED with new values from patch
-- **Null values** DELETE keys from metadata
-
-### Basic Operations
-
-```python
-# Original metadata: {"status": "pending", "priority": 5, "assignee": "alice"}
-
-# Add a new field
-update_context(context_id=123, metadata_patch={"category": "backend"})
-# Result: {"status": "pending", "priority": 5, "assignee": "alice", "category": "backend"}
-
-# Update existing field
-update_context(context_id=123, metadata_patch={"status": "completed"})
-# Result: {"status": "completed", "priority": 5, "assignee": "alice", "category": "backend"}
-
-# Delete a field using null
-update_context(context_id=123, metadata_patch={"assignee": None})
-# Result: {"status": "completed", "priority": 5, "category": "backend"}
-
-# Multiple operations in one call
-update_context(
-    context_id=123,
-    metadata_patch={
-        "status": "archived",      # Update existing
-        "archived_at": "2025-10",  # Add new
-        "category": None           # Delete
-    }
-)
-# Result: {"status": "archived", "priority": 5, "archived_at": "2025-10"}
-```
-
-### Combined with Other Updates
-
-The `metadata_patch` can be combined with other update fields:
-
-```python
-# Update text and patch metadata in one operation
-update_context(
-    context_id=123,
-    text="Updated analysis results",
-    metadata_patch={"status": "reviewed", "reviewer": "bob"}
-)
-
-# Update tags and patch metadata
-update_context(
-    context_id=123,
-    tags=["completed", "verified"],
-    metadata_patch={"completed": True}
-)
-```
-
-### Limitations (RFC 7396)
-
-**1. Cannot Set Null Values**
-
-Using `null` in the patch always DELETES the key. If you need to store a null value, use full metadata replacement:
-
-```python
-# This DELETES the field, not sets it to null
-update_context(context_id=123, metadata_patch={"optional_field": None})
-# Result: field is removed
-
-# To store null, use full replacement
-current = get_context_by_ids(context_ids=[123])
-new_metadata = current[0]["metadata"]
-new_metadata["optional_field"] = None
-update_context(context_id=123, metadata=new_metadata)
-```
-
-**2. Arrays are Replaced Entirely**
-
-Array operations are replace-only - no element-wise add/remove:
-
-```python
-# Original: {"tags": ["a", "b", "c"]}
-
-# This replaces the entire array
-update_context(context_id=123, metadata_patch={"tags": ["x", "y"]})
-# Result: {"tags": ["x", "y"]}  (not ["a", "b", "c", "x", "y"])
-
-# To append, read current array first
-current = get_context_by_ids(context_ids=[123])
-tags = current[0]["metadata"]["tags"]
-tags.append("new_tag")
-update_context(context_id=123, metadata_patch={"tags": tags})
 ```
 
 ## Integration Examples
