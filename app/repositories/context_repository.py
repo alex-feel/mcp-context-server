@@ -24,6 +24,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Explicit column list to avoid exposing internal database columns (e.g., text_search_vector)
+# This constant is used in all SELECT queries that return context entries to ensure
+# only the expected columns are returned, preventing internal PostgreSQL columns from
+# leaking into API responses.
+CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, created_at, updated_at'
+
 
 class ContextRepository(BaseRepository):
     """Repository for context entry operations.
@@ -205,7 +211,8 @@ class ContextRepository(BaseRepository):
                 cursor = conn.cursor()
 
                 # Build query with indexed fields first for optimization
-                query = 'SELECT * FROM context_entries WHERE 1=1'
+                # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
+                query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
                 params: list[Any] = []
 
                 # Thread filter (indexed)
@@ -345,7 +352,8 @@ class ContextRepository(BaseRepository):
             start_time = time_module.time()
 
             # Build query with indexed fields first for optimization
-            query = 'SELECT * FROM context_entries WHERE 1=1'
+            # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
+            query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
             params: list[Any] = []
 
             # Thread filter (indexed)
@@ -483,8 +491,9 @@ class ContextRepository(BaseRepository):
             def _fetch_sqlite(conn: sqlite3.Connection) -> list[Any]:
                 cursor = conn.cursor()
                 placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
+                # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
                 query = f'''
-                    SELECT * FROM context_entries
+                    SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
                     WHERE id IN ({placeholders})
                     ORDER BY created_at DESC
                 '''
@@ -496,8 +505,9 @@ class ContextRepository(BaseRepository):
         # PostgreSQL
         async def _fetch_postgresql(conn: asyncpg.Connection) -> list[Any]:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
+            # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'''
-                SELECT * FROM context_entries
+                SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
                 WHERE id IN ({placeholders})
                 ORDER BY created_at DESC
             '''

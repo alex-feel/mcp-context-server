@@ -1,0 +1,917 @@
+"""
+Repository for Full-Text Search (FTS) operations supporting both SQLite FTS5 and PostgreSQL tsvector.
+
+This module provides data access for full-text search functionality,
+handling search operations across both SQLite (FTS5) and PostgreSQL (tsvector) backends.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from typing import TYPE_CHECKING
+from typing import Any
+from typing import Literal
+from typing import cast
+
+from app.backends.base import StorageBackend
+from app.logger_config import config_logger
+from app.repositories.base import BaseRepository
+from app.settings import get_settings
+
+if TYPE_CHECKING:
+    import asyncpg
+
+# Get settings
+settings = get_settings()
+# Configure logging
+config_logger(settings.log_level)
+logger = logging.getLogger(__name__)
+
+
+class FtsValidationError(Exception):
+    """Exception raised when FTS query or filters fail validation.
+
+    This exception enables unified error handling between fts_search_context
+    and other search tools.
+    """
+
+    def __init__(self, message: str, validation_errors: list[str]) -> None:
+        """Initialize the exception.
+
+        Args:
+            message: Error message
+            validation_errors: List of validation error messages
+        """
+        super().__init__(message)
+        self.message = message
+        self.validation_errors = validation_errors
+
+
+class FtsRepository(BaseRepository):
+    """Repository for Full-Text Search operations supporting both FTS5 and tsvector.
+
+    This repository handles all database operations for full-text search,
+    using either SQLite FTS5 extension or PostgreSQL tsvector functionality
+    depending on the configured storage backend.
+
+    Supported backends:
+    - SQLite: Uses FTS5 with unicode61 tokenizer and BM25 ranking.
+      Note: unicode61 provides multilingual tokenization but NO stemming,
+      so "running" will NOT match "run". The language parameter is ignored.
+    - PostgreSQL: Uses tsvector with ts_rank and language-specific stemming
+      (supports 29 languages). Stemming means "running" WILL match "run".
+    """
+
+    def __init__(self, backend: StorageBackend) -> None:
+        """Initialize the FTS repository.
+
+        Args:
+            backend: Storage backend for all database operations
+        """
+        super().__init__(backend)
+
+    async def search(
+        self,
+        query: str,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'] = 'match',
+        limit: int = 50,
+        offset: int = 0,
+        thread_id: str | None = None,
+        source: Literal['user', 'agent'] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
+        highlight: bool = False,
+        language: str = 'english',
+    ) -> list[dict[str, Any]]:
+        """Execute full-text search with optional filters.
+
+        SQLite: Uses FTS5 MATCH with BM25 scoring
+        PostgreSQL: Uses tsvector with ts_rank scoring
+
+        Args:
+            query: Full-text search query string
+            mode: Search mode - 'match' (default), 'prefix' (wildcard), 'phrase' (exact), 'boolean' (AND/OR/NOT)
+            limit: Maximum number of results to return
+            offset: Number of results to skip (pagination)
+            thread_id: Optional filter by thread
+            source: Optional filter by source type
+            start_date: Filter by created_at >= date (ISO 8601 format)
+            end_date: Filter by created_at <= date (ISO 8601 format)
+            metadata: Simple metadata filters (key=value equality)
+            metadata_filters: Advanced metadata filters with operators
+            highlight: Whether to include highlighted snippets in results
+            language: Language for stemming (default: 'english').
+                PostgreSQL: Supports 29 languages with full stemming.
+                SQLite: This parameter is IGNORED - FTS5 uses unicode61 tokenizer
+                which provides multilingual tokenization but no stemming.
+
+        Returns:
+            List of search results with context entries and relevance scores
+        """
+        if self.backend.backend_type == 'sqlite':
+            # Log warning if non-English language is requested with SQLite backend
+            if language != 'english':
+                logger.warning(
+                    'SQLite FTS5 does not support language-specific stemming. '
+                    "The language parameter '%s' is ignored. "
+                    'SQLite uses unicode61 tokenizer which provides multilingual '
+                    'tokenization but no stemming (e.g., "running" will NOT match "run"). '
+                    'Use PostgreSQL backend for full language-specific stemming support.',
+                    language,
+                )
+            return await self._search_sqlite(
+                query=query,
+                mode=mode,
+                limit=limit,
+                offset=offset,
+                thread_id=thread_id,
+                source=source,
+                start_date=start_date,
+                end_date=end_date,
+                metadata=metadata,
+                metadata_filters=metadata_filters,
+                highlight=highlight,
+            )
+        # postgresql
+        return await self._search_postgresql(
+            query=query,
+            mode=mode,
+            limit=limit,
+            offset=offset,
+            thread_id=thread_id,
+            source=source,
+            start_date=start_date,
+            end_date=end_date,
+            metadata=metadata,
+            metadata_filters=metadata_filters,
+            highlight=highlight,
+            language=language,
+        )
+
+    async def _search_sqlite(
+        self,
+        query: str,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+        limit: int,
+        offset: int,
+        thread_id: str | None,
+        source: str | None,
+        start_date: str | None,
+        end_date: str | None,
+        metadata: dict[str, str | int | float | bool] | None,
+        metadata_filters: list[dict[str, Any]] | None,
+        highlight: bool,
+    ) -> list[dict[str, Any]]:
+        """SQLite FTS5 search implementation."""
+
+        def _search_sqlite_inner(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            # Transform query based on mode
+            fts_query = self._transform_query_sqlite(query, mode)
+
+            filter_conditions: list[str] = []
+            filter_params: list[Any] = []
+
+            if thread_id:
+                filter_conditions.append('ce.thread_id = ?')
+                filter_params.append(thread_id)
+
+            if source:
+                filter_conditions.append('ce.source = ?')
+                filter_params.append(source)
+
+            # Date range filtering - Use datetime() to normalize ISO 8601 input
+            if start_date:
+                filter_conditions.append('ce.created_at >= datetime(?)')
+                filter_params.append(start_date)
+
+            if end_date:
+                filter_conditions.append('ce.created_at <= datetime(?)')
+                filter_params.append(end_date)
+
+            # Metadata filtering using MetadataQueryBuilder
+            if metadata or metadata_filters:
+                from pydantic import ValidationError
+
+                from app.metadata_types import MetadataFilter
+                from app.query_builder import MetadataQueryBuilder
+
+                metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+
+                # Simple metadata filters (key=value equality)
+                if metadata:
+                    for key, value in metadata.items():
+                        try:
+                            metadata_builder.add_simple_filter(key, value)
+                        except ValueError as e:
+                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+
+                # Advanced metadata filters with operators
+                if metadata_filters:
+                    validation_errors: list[str] = []
+                    for filter_dict in metadata_filters:
+                        try:
+                            filter_spec = MetadataFilter(**filter_dict)
+                            metadata_builder.add_advanced_filter(filter_spec)
+                        except ValidationError as e:
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except ValueError as e:
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except Exception as e:
+                            error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                            logger.error(f'Unexpected error processing metadata filter: {e}')
+
+                    # Raise exception if validation fails
+                    if validation_errors:
+                        raise FtsValidationError(
+                            'Metadata filter validation failed',
+                            validation_errors,
+                        )
+
+                # Add metadata conditions to filter
+                metadata_clause, metadata_params = metadata_builder.build_where_clause()
+                if metadata_clause:
+                    # Replace 'metadata' with 'ce.metadata' for table alias
+                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
+                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_params.extend(metadata_params)
+
+            where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
+
+            # Build highlight expression if requested
+            if highlight:
+                highlight_expr = "highlight(context_entries_fts, 0, '<mark>', '</mark>') as highlighted"
+            else:
+                highlight_expr = 'NULL as highlighted'
+
+            # Build main query with FTS5 join
+            # bm25() returns negative scores where more negative = better match
+            # We negate it to get positive scores where higher = better match
+            sql_query = f'''
+                SELECT
+                    ce.id,
+                    ce.thread_id,
+                    ce.source,
+                    ce.content_type,
+                    ce.text_content,
+                    ce.metadata,
+                    ce.created_at,
+                    ce.updated_at,
+                    -bm25(context_entries_fts) as score,
+                    {highlight_expr}
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                {where_clause}
+                {'AND' if where_clause else 'WHERE'} fts.text_content MATCH ?
+                ORDER BY score DESC
+                LIMIT ? OFFSET ?
+            '''
+
+            # Combine params: filter_params + fts_query + limit + offset
+            params = [*filter_params, fts_query, limit, offset]
+
+            cursor = conn.execute(sql_query, params)
+            rows = cursor.fetchall()
+
+            return [dict(row) for row in rows]
+
+        return await self.backend.execute_read(_search_sqlite_inner)
+
+    async def _search_postgresql(
+        self,
+        query: str,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+        limit: int,
+        offset: int,
+        thread_id: str | None,
+        source: str | None,
+        start_date: str | None,
+        end_date: str | None,
+        metadata: dict[str, str | int | float | bool] | None,
+        metadata_filters: list[dict[str, Any]] | None,
+        highlight: bool,
+        language: str,
+    ) -> list[dict[str, Any]]:
+        """PostgreSQL tsvector search implementation."""
+
+        async def _search_postgresql_inner(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+            filter_conditions = ['1=1']  # Always true, makes building easier
+            filter_params: list[Any] = []
+            param_position = 1
+
+            if thread_id:
+                filter_conditions.append(f'ce.thread_id = {self._placeholder(param_position)}')
+                filter_params.append(thread_id)
+                param_position += 1
+
+            if source:
+                filter_conditions.append(f'ce.source = {self._placeholder(param_position)}')
+                filter_params.append(source)
+                param_position += 1
+
+            # Date range filtering
+            if start_date:
+                filter_conditions.append(f'ce.created_at >= {self._placeholder(param_position)}')
+                filter_params.append(self._parse_date_for_postgresql(start_date))
+                param_position += 1
+
+            if end_date:
+                filter_conditions.append(f'ce.created_at <= {self._placeholder(param_position)}')
+                filter_params.append(self._parse_date_for_postgresql(end_date))
+                param_position += 1
+
+            # Metadata filtering using MetadataQueryBuilder
+            if metadata or metadata_filters:
+                from pydantic import ValidationError
+
+                from app.metadata_types import MetadataFilter
+                from app.query_builder import MetadataQueryBuilder
+
+                metadata_builder = MetadataQueryBuilder(
+                    backend_type='postgresql',
+                    param_offset=len(filter_params),
+                )
+
+                # Simple metadata filters
+                if metadata:
+                    for key, value in metadata.items():
+                        try:
+                            metadata_builder.add_simple_filter(key, value)
+                        except ValueError as e:
+                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+
+                # Advanced metadata filters
+                if metadata_filters:
+                    validation_errors: list[str] = []
+                    for filter_dict in metadata_filters:
+                        try:
+                            filter_spec = MetadataFilter(**filter_dict)
+                            metadata_builder.add_advanced_filter(filter_spec)
+                        except ValidationError as e:
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except ValueError as e:
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except Exception as e:
+                            error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                            logger.error(f'Unexpected error processing metadata filter: {e}')
+
+                    if validation_errors:
+                        raise FtsValidationError(
+                            'Metadata filter validation failed',
+                            validation_errors,
+                        )
+
+                metadata_clause, metadata_params = metadata_builder.build_where_clause()
+                if metadata_clause:
+                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
+                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_params.extend(metadata_params)
+                    param_position += len(metadata_params)
+
+            where_clause = ' AND '.join(filter_conditions)
+
+            # Transform query based on mode for PostgreSQL
+            tsquery_func = self._get_tsquery_function(mode, language)
+
+            # Query parameter position
+            query_param_pos = param_position
+            param_position += 1
+
+            # Build highlight expression if requested
+            if highlight:
+                highlight_expr = f'''
+                    ts_headline(
+                        '{language}',
+                        ce.text_content,
+                        {tsquery_func}{self._placeholder(query_param_pos)}),
+                        'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=25'
+                    ) as highlighted
+                '''
+            else:
+                highlight_expr = 'NULL as highlighted'
+
+            # Build main query with tsvector matching
+            sql_query = f'''
+                SELECT
+                    ce.id,
+                    ce.thread_id,
+                    ce.source,
+                    ce.content_type,
+                    ce.text_content,
+                    ce.metadata,
+                    ce.created_at,
+                    ce.updated_at,
+                    ts_rank(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score,
+                    {highlight_expr}
+                FROM context_entries ce
+                WHERE {where_clause}
+                AND ce.text_search_vector @@ {tsquery_func}{self._placeholder(query_param_pos)})
+                ORDER BY score DESC
+                LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
+            '''
+
+            # Transform query based on mode (for prefix mode, adds :* suffix)
+            transformed_query = self._transform_query_postgresql(query, mode)
+
+            # Add transformed query, limit, offset to params
+            filter_params.extend([transformed_query, limit, offset])
+
+            rows = await conn.fetch(sql_query, *filter_params)
+
+            return [dict(row) for row in rows]
+
+        return await self.backend.execute_read(cast(Any, _search_postgresql_inner))
+
+    def _transform_query_sqlite(
+        self,
+        query: str,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+    ) -> str:
+        """Transform query string for SQLite FTS5 based on mode.
+
+        Args:
+            query: Original search query
+            mode: Search mode
+
+        Returns:
+            Transformed query for FTS5 MATCH
+        """
+        # Clean the query
+        query = query.strip()
+
+        if mode == 'phrase':
+            # Exact phrase matching - wrap in double quotes
+            return f'"{query}"'
+        if mode == 'prefix':
+            # Prefix matching - add * to each word
+            # Strip any existing * to prevent double wildcards (e.g., "implement*" -> "implement**")
+            words = query.split()
+            return ' '.join(f'{word.rstrip("*")}*' for word in words)
+        if mode == 'boolean':
+            # Boolean mode - pass through as-is (user provides AND/OR/NOT)
+            return query
+        # 'match' - default
+        # Standard matching - split into words for implicit AND
+        return query
+
+    def _transform_query_postgresql(
+        self,
+        query: str,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+    ) -> str:
+        """Transform query string for PostgreSQL tsquery based on mode.
+
+        For prefix mode, transforms "hello world" to "hello:* & world:*"
+        to work correctly with to_tsquery().
+
+        Args:
+            query: Original search query
+            mode: Search mode
+
+        Returns:
+            Transformed query for PostgreSQL tsquery
+        """
+        # Clean the query
+        query = query.strip()
+
+        if mode == 'prefix':
+            # Prefix matching for PostgreSQL - add :* to each word with & operator
+            # Strip any existing * or :* to prevent double wildcards
+            words = query.split()
+            transformed_words = []
+            for word in words:
+                # Strip trailing :* or * to normalize
+                clean_word = word.rstrip('*')
+                clean_word = clean_word.removesuffix(':')
+                transformed_words.append(f'{clean_word}:*')
+            return ' & '.join(transformed_words)
+        # For other modes, return query as-is (the tsquery function handles it)
+        return query
+
+    def _get_tsquery_function(
+        self,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+        language: str,
+    ) -> str:
+        """Get the appropriate PostgreSQL tsquery function for the search mode.
+
+        Args:
+            mode: Search mode
+            language: Language for text search
+
+        Returns:
+            SQL function call string for tsquery generation
+        """
+        if mode == 'phrase':
+            return f"phraseto_tsquery('{language}', "
+        if mode == 'prefix':
+            # For prefix, we use to_tsquery which supports :* for prefix
+            return f"to_tsquery('{language}', "
+        if mode == 'boolean':
+            # websearch supports Google-like syntax with OR, -, quotes
+            return f"websearch_to_tsquery('{language}', "
+        # 'match' - default
+        # plainto_tsquery handles natural language input
+        return f"plainto_tsquery('{language}', "
+
+    async def rebuild_index(self) -> dict[str, Any]:
+        """Rebuild the FTS index from scratch.
+
+        Useful after bulk imports or to fix index corruption.
+
+        Returns:
+            Statistics about the rebuild operation
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _rebuild_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
+                # Count entries before rebuild
+                cursor = conn.execute('SELECT COUNT(*) FROM context_entries')
+                entry_count = cursor.fetchone()[0]
+
+                # Rebuild FTS index
+                conn.execute("INSERT INTO context_entries_fts(context_entries_fts) VALUES('rebuild')")
+
+                return {
+                    'success': True,
+                    'entries_indexed': entry_count,
+                    'backend': 'sqlite',
+                }
+
+            return await self.backend.execute_write(_rebuild_sqlite)
+
+        # postgresql
+        async def _rebuild_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+            # Count entries
+            entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+
+            # Reindex the GIN index
+            await conn.execute('REINDEX INDEX idx_text_search_gin')
+
+            return {
+                'success': True,
+                'entries_indexed': entry_count,
+                'backend': 'postgresql',
+            }
+
+        return await self.backend.execute_write(cast(Any, _rebuild_postgresql))
+
+    async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:
+        """Get FTS index statistics.
+
+        Args:
+            thread_id: Optional filter by thread
+
+        Returns:
+            Dictionary with statistics (entry count, index info)
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _get_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
+                # Count indexed entries
+                if thread_id:
+                    cursor = conn.execute(
+                        '''
+                        SELECT COUNT(*) FROM context_entries_fts fts
+                        JOIN context_entries ce ON ce.id = fts.rowid
+                        WHERE ce.thread_id = ?
+                        ''',
+                        (thread_id,),
+                    )
+                else:
+                    cursor = conn.execute('SELECT COUNT(*) FROM context_entries_fts')
+
+                indexed_count = cursor.fetchone()[0]
+
+                # Get total entries
+                if thread_id:
+                    cursor = conn.execute(
+                        'SELECT COUNT(*) FROM context_entries WHERE thread_id = ?',
+                        (thread_id,),
+                    )
+                else:
+                    cursor = conn.execute('SELECT COUNT(*) FROM context_entries')
+
+                total_count = cursor.fetchone()[0]
+
+                return {
+                    'total_entries': total_count,
+                    'indexed_entries': indexed_count,
+                    'coverage_percentage': round((indexed_count / total_count * 100) if total_count > 0 else 0.0, 2),
+                    'backend': 'sqlite',
+                    'engine': 'fts5',
+                }
+
+            return await self.backend.execute_read(_get_stats_sqlite)
+
+        # postgresql
+        async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+            # Count entries with tsvector populated
+            if thread_id:
+                indexed_count = await conn.fetchval(
+                    '''
+                    SELECT COUNT(*) FROM context_entries
+                    WHERE thread_id = $1 AND text_search_vector IS NOT NULL
+                    ''',
+                    thread_id,
+                )
+                total_count = await conn.fetchval(
+                    'SELECT COUNT(*) FROM context_entries WHERE thread_id = $1',
+                    thread_id,
+                )
+            else:
+                indexed_count = await conn.fetchval(
+                    'SELECT COUNT(*) FROM context_entries WHERE text_search_vector IS NOT NULL',
+                )
+                total_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+
+            return {
+                'total_entries': total_count,
+                'indexed_entries': indexed_count,
+                'coverage_percentage': round((indexed_count / total_count * 100) if total_count > 0 else 0.0, 2),
+                'backend': 'postgresql',
+                'engine': 'tsvector',
+            }
+
+        return await self.backend.execute_read(cast(Any, _get_stats_postgresql))
+
+    async def is_available(self) -> bool:
+        """Check if FTS functionality is available.
+
+        Returns:
+            True if FTS is properly configured and available
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _check_sqlite(conn: sqlite3.Connection) -> bool:
+                try:
+                    # Check if FTS5 table exists
+                    cursor = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name='context_entries_fts'",
+                    )
+                    return cursor.fetchone() is not None
+                except Exception:
+                    return False
+
+            return await self.backend.execute_read(_check_sqlite)
+
+        # postgresql
+        async def _check_postgresql(conn: asyncpg.Connection) -> bool:
+            try:
+                # Check if text_search_vector column exists
+                result = await conn.fetchval(
+                    '''
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'context_entries' AND column_name = 'text_search_vector'
+                    )
+                    ''',
+                )
+                return bool(result)
+            except Exception:
+                return False
+
+        return await self.backend.execute_read(cast(Any, _check_postgresql))
+
+    async def get_current_tokenizer(self) -> str | None:
+        """Get the current FTS5 tokenizer from SQLite (SQLite only).
+
+        Parses the sqlite_master table to extract the tokenizer definition
+        from the FTS5 virtual table creation SQL.
+
+        Returns:
+            The tokenizer string (e.g., 'unicode61' or 'porter unicode61'),
+            or None if FTS5 table doesn't exist or backend is not SQLite.
+        """
+        if self.backend.backend_type != 'sqlite':
+            return None
+
+        def _get_tokenizer(conn: sqlite3.Connection) -> str | None:
+            cursor = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='context_entries_fts'",
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            # Parse the SQL to extract tokenizer
+            # Example SQL: "CREATE VIRTUAL TABLE context_entries_fts USING fts5(..., tokenize='porter unicode61')"
+            sql = row[0]
+            if 'tokenize=' not in sql.lower():
+                return 'unicode61'  # Default if not specified
+
+            # Extract tokenizer value using string parsing
+            # Find tokenize= and extract the quoted value
+            import re
+
+            # Pattern matches tokenize='...' or tokenize="..."
+            pattern = r"tokenize\s*=\s*['\"]([^'\"]+)['\"]"
+            match = re.search(pattern, sql, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+            return 'unicode61'  # Default fallback
+
+        return await self.backend.execute_read(_get_tokenizer)
+
+    async def get_current_language(self) -> str | None:
+        """Get the current FTS language from PostgreSQL tsvector column (PostgreSQL only).
+
+        Queries pg_attrdef to decompile the GENERATED ALWAYS AS expression
+        and extracts the language parameter from to_tsvector().
+
+        Returns:
+            The language string (e.g., 'english', 'german'),
+            or None if tsvector column doesn't exist or backend is not PostgreSQL.
+        """
+        if self.backend.backend_type != 'postgresql':
+            return None
+
+        async def _get_language(conn: asyncpg.Connection) -> str | None:
+            # Query to get the generation expression for text_search_vector column
+            result = await conn.fetchval(
+                '''
+                SELECT pg_get_expr(ad.adbin, ad.adrelid) AS generation_expression
+                FROM pg_attribute a
+                JOIN pg_attrdef ad ON a.attrelid = ad.adrelid AND a.attnum = ad.adnum
+                WHERE a.attrelid = 'context_entries'::regclass
+                  AND a.attname = 'text_search_vector'
+                  AND a.attgenerated = 's'
+                ''',
+            )
+            if not result:
+                return None
+
+            # Parse the expression to extract language
+            # Example: "to_tsvector('english'::regconfig, COALESCE(text_content, ''::text))"
+            import re
+
+            # Pattern matches to_tsvector('language'::regconfig, ...) or to_tsvector('language', ...)
+            pattern = r"to_tsvector\s*\(\s*'([^']+)'"
+            match = re.search(pattern, result, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+            return 'english'  # Default fallback
+
+        return await self.backend.execute_read(cast(Any, _get_language))
+
+    async def get_desired_tokenizer(self, language: str) -> str:
+        """Determine the desired SQLite FTS5 tokenizer based on language setting.
+
+        Based on the research: English benefits from Porter stemmer, other languages
+        should use unicode61 for proper multilingual tokenization.
+
+        Args:
+            language: The FTS_LANGUAGE setting value
+
+        Returns:
+            The tokenizer string to use ('porter unicode61' or 'unicode61')
+        """
+        # English (or not set) -> use Porter stemmer for English-language stemming
+        if language.lower() == 'english':
+            return 'porter unicode61'
+        # Other languages -> use unicode61 only (no stemming, but proper Unicode tokenization)
+        return 'unicode61'
+
+    async def migrate_tokenizer(self, new_tokenizer: str) -> dict[str, Any]:
+        """Migrate SQLite FTS5 to a new tokenizer (SQLite only).
+
+        This operation drops the existing FTS5 virtual table and recreates it
+        with the new tokenizer. The data is NOT lost because FTS5 uses external
+        content mode (content='context_entries').
+
+        Args:
+            new_tokenizer: The new tokenizer to use (e.g., 'porter unicode61' or 'unicode61')
+
+        Returns:
+            Dictionary with migration results
+
+        Raises:
+            RuntimeError: If migration fails or backend is not SQLite
+        """
+        if self.backend.backend_type != 'sqlite':
+            raise RuntimeError('migrate_tokenizer is only supported for SQLite backend')
+
+        old_tokenizer = await self.get_current_tokenizer()
+
+        def _migrate_tokenizer(conn: sqlite3.Connection) -> dict[str, Any]:
+            # Count entries for statistics
+            cursor = conn.execute('SELECT COUNT(*) FROM context_entries')
+            entry_count = cursor.fetchone()[0]
+
+            # Drop existing FTS5 table and triggers
+            conn.execute('DROP TRIGGER IF EXISTS context_fts_insert')
+            conn.execute('DROP TRIGGER IF EXISTS context_fts_delete')
+            conn.execute('DROP TRIGGER IF EXISTS context_fts_update')
+            conn.execute('DROP TABLE IF EXISTS context_entries_fts')
+
+            # Recreate FTS5 table with new tokenizer
+            create_sql = f'''
+                CREATE VIRTUAL TABLE context_entries_fts USING fts5(
+                    text_content,
+                    content='context_entries',
+                    content_rowid='id',
+                    tokenize='{new_tokenizer}'
+                )
+            '''
+            conn.execute(create_sql)
+
+            # Recreate triggers
+            conn.execute('''
+                CREATE TRIGGER context_fts_insert AFTER INSERT ON context_entries
+                BEGIN
+                    INSERT INTO context_entries_fts(rowid, text_content)
+                    VALUES (new.id, new.text_content);
+                END
+            ''')
+
+            conn.execute('''
+                CREATE TRIGGER context_fts_delete AFTER DELETE ON context_entries
+                BEGIN
+                    INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
+                    VALUES('delete', old.id, old.text_content);
+                END
+            ''')
+
+            conn.execute('''
+                CREATE TRIGGER context_fts_update AFTER UPDATE OF text_content ON context_entries
+                BEGIN
+                    INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
+                    VALUES('delete', old.id, old.text_content);
+                    INSERT INTO context_entries_fts(rowid, text_content)
+                    VALUES (new.id, new.text_content);
+                END
+            ''')
+
+            # Rebuild the FTS index from existing data
+            conn.execute("INSERT INTO context_entries_fts(context_entries_fts) VALUES('rebuild')")
+
+            return {
+                'success': True,
+                'backend': 'sqlite',
+                'old_tokenizer': old_tokenizer,
+                'new_tokenizer': new_tokenizer,
+                'entries_migrated': entry_count,
+            }
+
+        return await self.backend.execute_write(_migrate_tokenizer)
+
+    async def migrate_language(self, new_language: str) -> dict[str, Any]:
+        """Migrate PostgreSQL tsvector column to a new language (PostgreSQL only).
+
+        This operation drops the existing text_search_vector column (and its GIN index)
+        and recreates it with the new language. The GENERATED ALWAYS AS column is
+        automatically populated from text_content on recreation.
+
+        Args:
+            new_language: The new language for tsvector (e.g., 'english', 'german')
+
+        Returns:
+            Dictionary with migration results
+
+        Raises:
+            RuntimeError: If migration fails or backend is not PostgreSQL
+        """
+        if self.backend.backend_type != 'postgresql':
+            raise RuntimeError('migrate_language is only supported for PostgreSQL backend')
+
+        old_language = await self.get_current_language()
+
+        async def _migrate_language(conn: asyncpg.Connection) -> dict[str, Any]:
+            # Count entries for statistics
+            entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+
+            # Drop existing column (also drops dependent GIN index)
+            await conn.execute('ALTER TABLE context_entries DROP COLUMN IF EXISTS text_search_vector')
+
+            # Recreate column with new language
+            await conn.execute(f'''
+                ALTER TABLE context_entries
+                ADD COLUMN text_search_vector tsvector
+                GENERATED ALWAYS AS (to_tsvector('{new_language}', COALESCE(text_content, ''))) STORED
+            ''')
+
+            # Recreate GIN index
+            await conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_text_search_gin
+                ON context_entries USING GIN(text_search_vector)
+            ''')
+
+            return {
+                'success': True,
+                'backend': 'postgresql',
+                'old_language': old_language,
+                'new_language': new_language,
+                'entries_migrated': entry_count,
+            }
+
+        return await self.backend.execute_write(cast(Any, _migrate_language))

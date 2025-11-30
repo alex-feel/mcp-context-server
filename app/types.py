@@ -172,3 +172,49 @@ class BulkDeleteResponseDict(TypedDict):
     deleted_count: int
     criteria_used: list[str]
     message: str
+
+
+# FTS (Full-Text Search) TypedDicts
+
+
+class FtsSearchResultDict(TypedDict, total=False):
+    """Type definition for FTS search result entry."""
+
+    id: int
+    thread_id: str
+    source: str
+    content_type: str
+    text_content: str
+    metadata: MetadataDict | None
+    created_at: str
+    updated_at: str
+    tags: list[str]
+    score: float
+    highlighted: str | None
+
+
+class FtsSearchResponseDict(TypedDict):
+    """Type definition for fts_search_context response."""
+
+    query: str
+    mode: str
+    results: list[FtsSearchResultDict]
+    count: int
+    language: str
+
+
+class FtsMigrationInProgressDict(TypedDict):
+    """Type definition for FTS migration in progress response.
+
+    Returned by fts_search_context when the FTS index is being rebuilt
+    due to a language/tokenizer change. Provides informative feedback
+    to clients with estimated completion time.
+    """
+
+    migration_in_progress: bool
+    message: str
+    started_at: str  # ISO 8601 timestamp
+    estimated_remaining_seconds: int
+    old_language: str
+    new_language: str
+    suggestion: str

@@ -510,7 +510,7 @@ class TestSemanticSearchDateFiltering:
 
             # Import and get the actual function
             import app.server
-            semantic_search = app.server.semantic_search_context.fn
+            semantic_search = app.server.semantic_search_context
 
             result = await semantic_search(
                 query='test query',
@@ -546,7 +546,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.embedding_model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context.fn
+            semantic_search = app.server.semantic_search_context
 
             await semantic_search(
                 query='test query',
@@ -579,7 +579,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.embedding_model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context.fn
+            semantic_search = app.server.semantic_search_context
 
             await semantic_search(
                 query='test query',
@@ -604,7 +604,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.enable_semantic_search = True
 
             import app.server
-            semantic_search = app.server.semantic_search_context.fn
+            semantic_search = app.server.semantic_search_context
 
             with pytest.raises(ToolError) as exc_info:
                 await semantic_search(
@@ -625,7 +625,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.enable_semantic_search = True
 
             import app.server
-            semantic_search = app.server.semantic_search_context.fn
+            semantic_search = app.server.semantic_search_context
 
             with pytest.raises(ToolError) as exc_info:
                 await semantic_search(
@@ -656,7 +656,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.embedding_model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context.fn
+            semantic_search = app.server.semantic_search_context
 
             await semantic_search(
                 query='test query',
@@ -687,7 +687,7 @@ class TestSemanticSearchDateFiltering:
             mock_settings.embedding_model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context.fn
+            semantic_search = app.server.semantic_search_context
 
             await semantic_search(
                 query='test query',

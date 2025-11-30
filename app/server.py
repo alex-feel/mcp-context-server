@@ -13,6 +13,9 @@ import operator
 import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 from typing import Any
@@ -29,6 +32,7 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.logger_config import config_logger
 from app.repositories import RepositoryContainer
+from app.repositories.fts_repository import FtsRepository
 from app.settings import get_settings
 from app.types import BulkDeleteResponseDict
 from app.types import BulkStoreResponseDict
@@ -59,6 +63,60 @@ _repositories: RepositoryContainer | None = None
 
 # Global embedding service (only if semantic search enabled and available)
 _embedding_service: Any | None = None
+
+
+@dataclass
+class FtsMigrationStatus:
+    """Track FTS migration state for graceful degradation.
+
+    When FTS language/tokenizer settings change, migration must occur.
+    During migration, the fts_search_context tool remains available but
+    returns informative status instead of search results.
+    """
+
+    in_progress: bool = False
+    started_at: datetime | None = None
+    estimated_seconds: int | None = None
+    backend: str | None = None
+    old_language: str | None = None
+    new_language: str | None = None
+    records_count: int | None = None
+
+
+# Global FTS migration status (module-level for graceful degradation)
+_fts_migration_status: FtsMigrationStatus = FtsMigrationStatus()
+
+
+def _reset_fts_migration_status() -> None:
+    """Reset FTS migration status to default (not in progress)."""
+    global _fts_migration_status
+    _fts_migration_status = FtsMigrationStatus()
+
+
+def estimate_migration_time(records_count: int) -> int:
+    """Estimate FTS migration time based on record count.
+
+    Based on empirical testing:
+    - 1,000 records: ~1-2 seconds
+    - 10,000 records: ~5-15 seconds
+    - 100,000 records: ~30-120 seconds
+    - 1,000,000+ records: ~2-10 minutes
+
+    Args:
+        records_count: Number of records to migrate
+
+    Returns:
+        Estimated migration time in seconds (conservative estimate)
+    """
+    if records_count <= 1_000:
+        return 2
+    if records_count <= 10_000:
+        return 15
+    if records_count <= 100_000:
+        return 120
+    if records_count <= 1_000_000:
+        return 600  # 10 minutes
+    return 1200  # 20 minutes for very large datasets
 
 
 # Dependency check functions for semantic search
@@ -180,7 +238,8 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
         backend_type = temp_backend.backend_type
 
     # Select migration file based on backend type
-    migration_filename = 'add_semantic_search_postgresql.sql' if backend_type == 'postgresql' else 'add_semantic_search.sql'
+    migration_filename = ('add_semantic_search_postgresql.sql' if backend_type == 'postgresql'
+                          else 'add_semantic_search_sqlite.sql')
 
     migration_path = Path(__file__).parent / 'migrations' / migration_filename
 
@@ -466,6 +525,223 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
         raise RuntimeError(f'jsonb_merge_patch migration failed: {e}') from e
 
 
+async def apply_fts_migration(backend: StorageBackend | None = None, repos: RepositoryContainer | None = None) -> None:
+    """Apply full-text search migration if enabled, with language-aware tokenizer selection.
+
+    Args:
+        backend: Optional backend to use. If None, creates temporary backend.
+        repos: Optional repository container. If None, creates temporary one.
+
+    This function applies the FTS migration (FTS5 for SQLite, tsvector for PostgreSQL)
+    when ENABLE_FTS=true. For SQLite, it selects the appropriate tokenizer based on
+    FTS_LANGUAGE setting:
+    - english (or not set) -> 'porter unicode61' (English stemming)
+    - other languages -> 'unicode61' (multilingual, no stemming)
+
+    If the language/tokenizer setting changes, migration will be triggered automatically.
+    """
+    # Skip if FTS is not enabled
+    if not settings.enable_fts:
+        logger.debug('FTS disabled (ENABLE_FTS=false), skipping migration')
+        return
+
+    # Determine backend type and get manager
+    own_backend = False
+    if backend is not None:
+        manager = backend
+        backend_type = backend.backend_type
+    else:
+        manager = create_backend(backend_type=None, db_path=DB_PATH)
+        await manager.initialize()
+        backend_type = manager.backend_type
+        own_backend = True
+
+    # Create repository if not provided
+    fts_repo = repos.fts if repos else None
+    if fts_repo is None:
+        from app.repositories.fts_repository import FtsRepository
+
+        fts_repo = FtsRepository(manager)
+
+    try:
+        # Check if FTS is already initialized
+        fts_exists = await fts_repo.is_available()
+
+        if fts_exists:
+            # FTS exists - check if tokenizer/language matches current settings
+            await _check_and_migrate_fts_if_needed(fts_repo, backend_type)
+            if own_backend:
+                await manager.shutdown()
+            return
+
+        # FTS doesn't exist - apply initial migration
+        await _apply_initial_fts_migration(manager, backend_type)
+
+    except Exception as e:
+        # FTS migration failure should be logged but not fatal
+        logger.warning(f'FTS migration may have already been applied or failed: {e}')
+    finally:
+        if own_backend:
+            await manager.shutdown()
+
+
+async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type: str) -> None:
+    """Check if FTS tokenizer/language matches settings and migrate if needed.
+
+    Args:
+        fts_repo: FTS repository instance
+        backend_type: 'sqlite' or 'postgresql'
+    """
+    global _fts_migration_status
+
+    if backend_type == 'sqlite':
+        # Check current tokenizer
+        current_tokenizer = await fts_repo.get_current_tokenizer()
+        desired_tokenizer = await fts_repo.get_desired_tokenizer(settings.fts_language)
+
+        if current_tokenizer != desired_tokenizer:
+            logger.info(
+                f'FTS tokenizer mismatch: current="{current_tokenizer}", desired="{desired_tokenizer}". '
+                'Starting migration...',
+            )
+
+            # Get entry count for estimation
+            stats = await fts_repo.get_statistics()
+            records_count = stats.get('total_entries', 0)
+            estimated_time = estimate_migration_time(records_count)
+
+            # Set migration status for graceful degradation
+            _fts_migration_status = FtsMigrationStatus(
+                in_progress=True,
+                started_at=datetime.now(tz=UTC),
+                estimated_seconds=estimated_time,
+                backend='sqlite',
+                old_language=current_tokenizer,
+                new_language=desired_tokenizer,
+                records_count=records_count,
+            )
+
+            try:
+                # Perform migration
+                result = await fts_repo.migrate_tokenizer(desired_tokenizer)
+                logger.info(
+                    f'FTS tokenizer migration completed: {result["entries_migrated"]} entries '
+                    f'migrated from "{result["old_tokenizer"]}" to "{result["new_tokenizer"]}"',
+                )
+            finally:
+                # Reset migration status
+                _reset_fts_migration_status()
+        else:
+            logger.debug(f'FTS tokenizer matches settings: "{current_tokenizer}"')
+
+    else:  # postgresql
+        # Check current language
+        current_language = await fts_repo.get_current_language()
+        desired_language = settings.fts_language
+
+        if current_language and current_language != desired_language:
+            logger.info(
+                f'FTS language mismatch: current="{current_language}", desired="{desired_language}". '
+                'Starting migration...',
+            )
+
+            # Get entry count for estimation
+            stats = await fts_repo.get_statistics()
+            records_count = stats.get('total_entries', 0)
+            estimated_time = estimate_migration_time(records_count)
+
+            # Set migration status for graceful degradation
+            _fts_migration_status = FtsMigrationStatus(
+                in_progress=True,
+                started_at=datetime.now(tz=UTC),
+                estimated_seconds=estimated_time,
+                backend='postgresql',
+                old_language=current_language,
+                new_language=desired_language,
+                records_count=records_count,
+            )
+
+            try:
+                # Perform migration
+                result = await fts_repo.migrate_language(desired_language)
+                logger.info(
+                    f'FTS language migration completed: {result["entries_migrated"]} entries '
+                    f'migrated from "{result["old_language"]}" to "{result["new_language"]}"',
+                )
+            finally:
+                # Reset migration status
+                _reset_fts_migration_status()
+        else:
+            logger.debug(f'FTS language matches settings: "{current_language}"')
+
+
+async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: str) -> None:
+    """Apply initial FTS migration for a fresh database.
+
+    Args:
+        manager: Storage backend
+        backend_type: 'sqlite' or 'postgresql'
+    """
+    if backend_type == 'sqlite':
+        # Read SQLite migration template (consistent with PostgreSQL approach)
+        migration_path = Path(__file__).parent / 'migrations' / 'add_fts_sqlite.sql'
+        if not migration_path.exists():
+            logger.warning(f'FTS migration file not found: {migration_path}')
+            return
+
+        migration_sql = migration_path.read_text(encoding='utf-8')
+
+        # Determine tokenizer based on language setting
+        # - 'porter unicode61' for English (enables stemming: "running" matches "run")
+        # - 'unicode61' for other languages (multilingual support, no stemming)
+        tokenizer = 'porter unicode61' if settings.fts_language.lower() == 'english' else 'unicode61'
+        migration_sql = migration_sql.replace('{TOKENIZER}', tokenizer)
+
+        def _apply_fts_sqlite(conn: sqlite3.Connection) -> None:
+            conn.executescript(migration_sql)
+
+        await manager.execute_write(_apply_fts_sqlite)
+        logger.info(f'Applied FTS migration (SQLite FTS5) with tokenizer: {tokenizer}')
+
+    else:  # postgresql
+        # Read PostgreSQL migration template
+        migration_path = Path(__file__).parent / 'migrations' / 'add_fts_postgresql.sql'
+        if not migration_path.exists():
+            logger.warning(f'FTS migration file not found: {migration_path}')
+            return
+
+        migration_sql = migration_path.read_text(encoding='utf-8')
+        migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts_language)
+
+        async def _apply_fts_pg(conn: asyncpg.Connection) -> None:
+            statements: list[str] = []
+            current_stmt: list[str] = []
+            in_function = False
+
+            for line in migration_sql.split('\n'):
+                stripped = line.strip()
+                if stripped.startswith('--'):
+                    continue
+                if '$$' in stripped:
+                    in_function = not in_function
+                if stripped:
+                    current_stmt.append(line)
+                if stripped.endswith(';') and not in_function:
+                    statements.append('\n'.join(current_stmt))
+                    current_stmt = []
+
+            if current_stmt:
+                statements.append('\n'.join(current_stmt))
+
+            for stmt in statements:
+                stmt = stmt.strip()
+                if stmt and not stmt.startswith('--'):
+                    await conn.execute(stmt)
+
+        await manager.execute_write(cast(Any, _apply_fts_pg))
+        logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts_language}')
+
+
 # Lifespan context manager for FastMCP
 @asynccontextmanager
 async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
@@ -493,10 +769,12 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_semantic_search_migration(backend=_backend)
         # 3) Apply jsonb_merge_patch migration for PostgreSQL (required for metadata_patch)
         await apply_jsonb_merge_patch_migration(backend=_backend)
-        # 4) Initialize repositories with the backend
+        # 4) Apply FTS migration if enabled
+        await apply_fts_migration(backend=_backend)
+        # 5) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
-        # 5) Initialize semantic search if enabled
+        # 6) Initialize semantic search if enabled
         if settings.enable_semantic_search:
             semantic_available = await check_semantic_search_dependencies()
 
@@ -505,6 +783,8 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
                     from app.services.embedding_service import EmbeddingService
 
                     _embedding_service = EmbeddingService()
+                    # Register the semantic search tool dynamically
+                    mcp.tool()(semantic_search_context)
                     logger.info('[OK] Semantic search enabled and available')
                     logger.info('[OK] semantic_search_context registered and exposed')
                 except Exception as e:
@@ -522,6 +802,24 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             _embedding_service = None
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
+
+        # 7) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # The tool handles graceful degradation during migration
+        if settings.enable_fts:
+            # Always register the FTS tool when enabled
+            # The tool itself checks migration status and returns informative response
+            mcp.tool()(fts_search_context)
+            logger.info('[OK] fts_search_context registered and exposed')
+
+            # Check if FTS is available and log status
+            fts_available = await _repositories.fts.is_available()
+            if fts_available:
+                logger.info('[OK] Full-text search enabled and available')
+            else:
+                logger.warning('[!] FTS enabled but index may need initialization or migration')
+        else:
+            logger.info('Full-text search disabled (ENABLE_FTS=false)')
+            logger.info('[!] fts_search_context not registered (feature disabled)')
 
         logger.info(f'MCP Context Server initialized (backend: {_backend.backend_type})')
     except Exception as e:
@@ -1707,8 +2005,9 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
     - database_size_mb: Storage usage
     - connection_metrics: Backend health (pool size, active connections)
     - semantic_search: {enabled, available, model, dimensions, embedding_count, coverage_percentage}
+    - fts: {enabled, available, language, backend, engine, indexed_entries, coverage_percentage}
 
-    Use for: capacity planning, debugging performance issues, verifying semantic search status.
+    Use for: capacity planning, debugging performance issues, verifying search status.
 
     Args:
         ctx: FastMCP context object
@@ -1759,6 +2058,32 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
                 'available': False,
             }
 
+        # Add FTS metrics if available
+        if settings.enable_fts:
+            fts_available = await repos.fts.is_available()
+            if fts_available:
+                fts_stats = await repos.fts.get_statistics()
+                stats['fts'] = {
+                    'enabled': True,
+                    'available': True,
+                    'language': settings.fts_language,
+                    'backend': fts_stats['backend'],
+                    'engine': fts_stats['engine'],
+                    'indexed_entries': fts_stats['indexed_entries'],
+                    'coverage_percentage': fts_stats['coverage_percentage'],
+                }
+            else:
+                stats['fts'] = {
+                    'enabled': True,
+                    'available': False,
+                    'message': 'FTS migration not applied',
+                }
+        else:
+            stats['fts'] = {
+                'enabled': False,
+                'available': False,
+            }
+
         return stats
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
@@ -1767,7 +2092,6 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         raise ToolError(f'Failed to get statistics: {str(e)}') from e
 
 
-@mcp.tool()
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return (default: 20)')] = 20,
@@ -1820,8 +2144,6 @@ async def semantic_search_context(
 
     The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
     Typical interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
-
-    Requires: ENABLE_SEMANTIC_SEARCH=true and dependencies (ollama, numpy, sqlite-vec/pgvector).
 
     Args:
         query: Natural language search query
@@ -1919,6 +2241,216 @@ async def semantic_search_context(
     except Exception as e:
         logger.error(f'Error in semantic search: {e}')
         raise ToolError(f'Semantic search failed: {str(e)}') from e
+
+
+async def fts_search_context(
+    query: Annotated[str, Field(min_length=1, description='Full-text search query')],
+    mode: Annotated[
+        Literal['match', 'prefix', 'phrase', 'boolean'],
+        Field(
+            description="Search mode: 'match' (default, natural language), "
+            "'prefix' (wildcard with *), 'phrase' (exact phrase), "
+            "'boolean' (AND/OR/NOT operators)",
+        ),
+    ] = 'match',
+    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type')] = None,
+    start_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at >= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T10:00:00")',
+        ),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
+        ),
+    ] = None,
+    metadata: Annotated[
+        dict[str, str | int | float | bool] | None,
+        Field(description='Simple metadata filters (key=value equality)'),
+    ] = None,
+    metadata_filters: Annotated[
+        list[dict[str, Any]] | None,
+        Field(
+            description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
+            'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
+            'starts_with, ends_with, is_null, is_not_null',
+        ),
+    ] = None,
+    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (default: 50)')] = 50,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Full-text search with linguistic analysis (stemming, ranking, boolean queries).
+
+    Unlike keyword filtering (search_context) or semantic similarity (semantic_search_context),
+    FTS provides:
+    - Stemming: "running" matches "run", "runs", "runner"
+    - Stop word handling: common words like "the", "is" are ignored
+    - Boolean operators: AND, OR, NOT for precise queries
+    - BM25/ts_rank relevance scoring
+
+    Search modes:
+    - match: Natural language query (default) - words are stemmed and matched
+    - prefix: Wildcard search - "search*" matches "searching", "searched"
+    - phrase: Exact phrase matching - "exact phrase" must appear as-is
+    - boolean: Boolean operators - "python AND (async OR await) NOT blocking"
+
+    Filtering options (all combinable):
+    - thread_id/source: Basic entry filtering
+    - start_date/end_date: Date range filtering (ISO 8601)
+    - metadata: Simple key=value equality matching
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+
+    Returns: {
+        query: str,
+        mode: str,
+        results: [{id, thread_id, source, text_content, metadata, score, highlighted, tags, ...}],
+        count: int,
+        language: str
+    }
+
+    The `score` field is relevance score - HIGHER values mean BETTER match.
+
+    Args:
+        query: Full-text search query
+        mode: Search mode (match, prefix, phrase, boolean)
+        thread_id: Optional filter by thread
+        source: Optional filter by source type
+        start_date: Filter entries created on or after this date (ISO 8601)
+        end_date: Filter entries created on or before this date (ISO 8601)
+        metadata: Simple metadata filters (key=value equality)
+        metadata_filters: Advanced metadata filters with operators
+        limit: Maximum results to return (1-500)
+        offset: Pagination offset
+        highlight: Whether to include highlighted snippets
+        ctx: FastMCP context object
+
+    Returns:
+        dict: Search results with context entries, relevance scores, and highlighting.
+
+    Raises:
+        ToolError: If FTS is not available or search fails.
+    """
+    # Validate date parameters
+    start_date = validate_date_param(start_date, 'start_date')
+    end_date = validate_date_param(end_date, 'end_date')
+    validate_date_range(start_date, end_date)
+
+    # Check if FTS is enabled
+    if not settings.enable_fts:
+        raise ToolError(
+            'Full-text search is not available. '
+            'Set ENABLE_FTS=true to enable this feature.',
+        )
+
+    # Check if migration is in progress - return informative response for graceful degradation
+    if _fts_migration_status.in_progress:
+        if _fts_migration_status.started_at is not None and _fts_migration_status.estimated_seconds is not None:
+            elapsed = (datetime.now(tz=UTC) - _fts_migration_status.started_at).total_seconds()
+            remaining = max(0, _fts_migration_status.estimated_seconds - int(elapsed))
+        else:
+            remaining = 60  # Default estimate if no timing info available
+
+        old_lang = _fts_migration_status.old_language or 'unknown'
+        new_lang = _fts_migration_status.new_language or settings.fts_language
+
+        return {
+            'migration_in_progress': True,
+            'message': f'FTS index is being rebuilt with language/tokenizer "{new_lang}". '
+            'Search functionality will be available shortly.',
+            'started_at': _fts_migration_status.started_at.isoformat() if _fts_migration_status.started_at else '',
+            'estimated_remaining_seconds': remaining,
+            'old_language': old_lang,
+            'new_language': new_lang,
+            'suggestion': f'Please retry in {remaining + 5} seconds.',
+        }
+
+    try:
+        if ctx:
+            await ctx.info(f'Performing FTS search: "{query[:50]}..." (mode={mode})')
+
+        # Get repositories
+        repos = await _ensure_repositories()
+
+        # Check if FTS is properly initialized
+        if not await repos.fts.is_available():
+            raise ToolError(
+                'FTS index not found. The database may need migration. '
+                'Restart the server with ENABLE_FTS=true to apply migrations.',
+            )
+
+        # Import exception here to avoid circular imports
+        from app.repositories.fts_repository import FtsValidationError
+
+        try:
+            search_results = await repos.fts.search(
+                query=query,
+                mode=mode,
+                limit=limit,
+                offset=offset,
+                thread_id=thread_id,
+                source=source,
+                start_date=start_date,
+                end_date=end_date,
+                metadata=metadata,
+                metadata_filters=metadata_filters,
+                highlight=highlight,
+                language=settings.fts_language,
+            )
+        except FtsValidationError as e:
+            # Return error response (unified with search_context behavior)
+            return {
+                'query': query,
+                'mode': mode,
+                'results': [],
+                'count': 0,
+                'language': settings.fts_language,
+                'error': e.message,
+                'validation_errors': e.validation_errors,
+            }
+        except Exception as e:
+            logger.error(f'FTS search failed: {e}')
+            raise ToolError(f'FTS search failed: {str(e)}') from e
+
+        # Process results: parse metadata and enrich with tags
+        for result in search_results:
+            # Parse JSON metadata - database stores as JSON string
+            metadata_raw = result.get('metadata')
+            # Database can return string that needs parsing
+            # Using hasattr to check for string-like object avoids unreachable code warning
+            if metadata_raw is not None and hasattr(metadata_raw, 'strip'):  # String-like object from DB
+                try:
+                    result['metadata'] = json.loads(str(metadata_raw))
+                except (json.JSONDecodeError, ValueError, AttributeError):
+                    result['metadata'] = None
+
+            # Get normalized tags
+            context_id = result.get('id')
+            if context_id:
+                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                result['tags'] = tags_result
+            else:
+                result['tags'] = []
+
+        logger.info(f'FTS search found {len(search_results)} results for query: "{query[:50]}..."')
+
+        return {
+            'query': query,
+            'mode': mode,
+            'results': search_results,
+            'count': len(search_results),
+            'language': settings.fts_language,
+        }
+
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
+    except Exception as e:
+        logger.error(f'Error in FTS search: {e}')
+        raise ToolError(f'FTS search failed: {str(e)}') from e
 
 
 # Bulk Operation MCP Tools

@@ -134,6 +134,14 @@ class AppSettings(CommonSettings):
     embedding_model: str = Field(default='embeddinggemma:latest', alias='EMBEDDING_MODEL')
     embedding_dim: int = Field(default=768, alias='EMBEDDING_DIM', gt=0, le=4096)
 
+    # Full-text search settings
+    enable_fts: bool = Field(default=False, alias='ENABLE_FTS')
+    fts_language: str = Field(
+        default='english',
+        alias='FTS_LANGUAGE',
+        description='Language for FTS stemming (e.g., english, german, french)',
+    )
+
     @field_validator('embedding_dim')
     @classmethod
     def validate_embedding_dim(cls, v: int) -> int:
@@ -148,6 +156,38 @@ class AppSettings(CommonSettings):
                 f'Most Ollama embedding models use dimensions divisible by 64 (e.g., 128, 256, 384, 512, 768, 1024).',
             )
         return v
+
+    @field_validator('fts_language')
+    @classmethod
+    def validate_fts_language(cls, v: str) -> str:
+        """Validate FTS language is a known PostgreSQL text search configuration.
+
+        PostgreSQL FTS requires a valid text search configuration. Invalid values
+        cause runtime failures when applying migrations or executing queries.
+        This validator fails fast at startup to prevent runtime errors.
+
+        Returns:
+            str: The validated language name normalized to lowercase.
+
+        Raises:
+            ValueError: If the language is not a valid PostgreSQL text search configuration.
+        """
+        # PostgreSQL built-in text search configurations
+        # Full list: SELECT cfgname FROM pg_ts_config;
+        valid_languages = {
+            'simple', 'arabic', 'armenian', 'basque', 'catalan', 'danish', 'dutch',
+            'english', 'finnish', 'french', 'german', 'greek', 'hindi', 'hungarian',
+            'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian',
+            'portuguese', 'romanian', 'russian', 'serbian', 'spanish', 'swedish',
+            'tamil', 'turkish', 'yiddish',
+        }
+        v_lower = v.lower()
+        if v_lower not in valid_languages:
+            raise ValueError(
+                f"FTS_LANGUAGE='{v}' is not a valid PostgreSQL text search configuration. "
+                f'Valid options: {", ".join(sorted(valid_languages))}',
+            )
+        return v_lower
 
 
 @lru_cache
