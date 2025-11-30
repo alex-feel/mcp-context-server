@@ -1785,13 +1785,31 @@ async def semantic_search_context(
             description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
         ),
     ] = None,
+    metadata: Annotated[
+        dict[str, str | int | float | bool] | None,
+        Field(description='Simple metadata filters (key=value equality)'),
+    ] = None,
+    metadata_filters: Annotated[
+        list[dict[str, Any]] | None,
+        Field(
+            description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
+            'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
+            'starts_with, ends_with, is_null, is_not_null',
+        ),
+    ] = None,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Find semantically similar context using vector embeddings. Returns FULL text content.
+    """Find semantically similar context using vector embeddings with optional metadata filtering.
 
     Unlike keyword search (search_context), this finds entries with similar MEANING
     even without matching keywords. Use for: finding related concepts, similar discussions,
     thematic grouping.
+
+    Filtering options (all combinable):
+    - thread_id/source: Basic entry filtering
+    - start_date/end_date: Date range filtering (ISO 8601)
+    - metadata: Simple key=value equality matching
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
     Returns: {
       query: str,
@@ -1803,10 +1821,6 @@ async def semantic_search_context(
     The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
     Typical interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
 
-    Date filtering:
-    - start_date/end_date: Optional ISO 8601 date filters applied before similarity search
-    - Useful for finding similar content within a specific time period
-
     Requires: ENABLE_SEMANTIC_SEARCH=true and dependencies (ollama, numpy, sqlite-vec/pgvector).
 
     Args:
@@ -1816,6 +1830,8 @@ async def semantic_search_context(
         source: Optional filter to narrow results by source type
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
+        metadata: Simple metadata filters (key=value equality)
+        metadata_filters: Advanced metadata filters with operators
         ctx: FastMCP context object
 
     Returns:
@@ -1851,22 +1867,37 @@ async def semantic_search_context(
             logger.error(f'Failed to generate query embedding: {e}')
             raise ToolError(f'Failed to generate embedding for query: {str(e)}') from e
 
-        # Perform similarity search with optional date filtering
+        # Perform similarity search with optional filtering (date and metadata)
+        # Import exception here to avoid circular imports at module level
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+
         try:
-            results = await repos.embeddings.search(
+            search_results = await repos.embeddings.search(
                 query_embedding=query_embedding,
                 limit=top_k,
                 thread_id=thread_id,
                 source=source,
                 start_date=start_date,
                 end_date=end_date,
+                metadata=metadata,
+                metadata_filters=metadata_filters,
             )
+        except MetadataFilterValidationError as e:
+            # Return error response (unified with search_context behavior)
+            return {
+                'query': query,
+                'results': [],
+                'count': 0,
+                'model': settings.embedding_model,
+                'error': e.message,
+                'validation_errors': e.validation_errors,
+            }
         except Exception as e:
             logger.error(f'Semantic search failed: {e}')
             raise ToolError(f'Semantic search failed: {str(e)}') from e
 
         # Enrich results with tags
-        for result in results:
+        for result in search_results:
             context_id = result.get('id')
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
@@ -1874,12 +1905,12 @@ async def semantic_search_context(
             else:
                 result['tags'] = []
 
-        logger.info(f'Semantic search found {len(results)} results for query: "{query[:50]}..."')
+        logger.info(f'Semantic search found {len(search_results)} results for query: "{query[:50]}..."')
 
         return {
             'query': query,
-            'results': results,
-            'count': len(results),
+            'results': search_results,
+            'count': len(search_results),
             'model': settings.embedding_model,
         }
 
