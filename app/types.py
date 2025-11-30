@@ -88,3 +88,87 @@ class UpdateContextSuccessDict(TypedDict):
     context_id: int
     updated_fields: list[str]
     message: str
+
+
+# Bulk operation TypedDicts
+
+
+class BulkStoreItemDict(TypedDict, total=False):
+    """Type definition for a single item in bulk store request.
+
+    Required fields: thread_id, source, text
+    Optional fields: metadata, tags, images
+    """
+
+    thread_id: str
+    source: str
+    text: str
+    metadata: MetadataDict | None
+    tags: list[str] | None
+    images: list[dict[str, str]] | None
+
+
+class BulkStoreResultItemDict(TypedDict):
+    """Type definition for a single result in bulk store response."""
+
+    index: int
+    success: bool
+    context_id: int | None
+    error: str | None
+
+
+class BulkStoreResponseDict(TypedDict):
+    """Type definition for bulk store response."""
+
+    success: bool
+    total: int
+    succeeded: int
+    failed: int
+    results: list[BulkStoreResultItemDict]
+    message: str
+
+
+class BulkUpdateItemDict(TypedDict, total=False):
+    """Type definition for a single item in bulk update request.
+
+    Required field: context_id
+    Optional fields: text, metadata, metadata_patch, tags, images
+    Note: metadata and metadata_patch are mutually exclusive per entry.
+    """
+
+    context_id: int
+    text: str | None
+    metadata: MetadataDict | None
+    metadata_patch: MetadataDict | None
+    tags: list[str] | None
+    images: list[dict[str, str]] | None
+
+
+class BulkUpdateResultItemDict(TypedDict):
+    """Type definition for a single result in bulk update response."""
+
+    index: int
+    context_id: int
+    success: bool
+    updated_fields: list[str] | None
+    error: str | None
+
+
+class BulkUpdateResponseDict(TypedDict):
+    """Type definition for bulk update response."""
+
+    success: bool
+    total: int
+    succeeded: int
+    failed: int
+    results: list[BulkUpdateResultItemDict]
+    message: str
+
+
+class BulkDeleteResponseDict(TypedDict):
+    """Type definition for bulk delete response."""
+
+    success: bool
+    deleted_count: int
+    criteria_used: list[str]
+    message: str

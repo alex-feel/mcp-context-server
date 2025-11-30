@@ -936,3 +936,423 @@ class ContextRepository(BaseRepository):
                 entry['metadata'] = None
 
         return entry
+
+    async def store_contexts_batch(
+        self,
+        entries: list[dict[str, Any]],
+    ) -> list[tuple[int, int | None, str | None]]:
+        """Store multiple context entries in a single transaction.
+
+        Each entry is processed with deduplication logic: if an entry with
+        identical thread_id, source, and text_content exists, it is updated
+        rather than creating a duplicate.
+
+        Args:
+            entries: List of entry dictionaries with keys:
+                - thread_id: str
+                - source: str
+                - text_content: str
+                - metadata: str | None (JSON string)
+                - content_type: str ('text' or 'multimodal')
+
+        Returns:
+            List of tuples: (index, context_id or None, error or None)
+            On success: (0, 123, None)
+            On failure: (0, None, 'Error message')
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _store_batch_sqlite(conn: sqlite3.Connection) -> list[tuple[int, int | None, str | None]]:
+                cursor = conn.cursor()
+                results: list[tuple[int, int | None, str | None]] = []
+
+                for idx, entry in enumerate(entries):
+                    try:
+                        thread_id = entry['thread_id']
+                        source = entry['source']
+                        text_content = entry['text_content']
+                        metadata = entry.get('metadata')
+                        content_type = entry.get('content_type', 'text')
+
+                        # Check for deduplication - find latest entry with same thread_id, source, text_content
+                        cursor.execute(
+                            f'''
+                            SELECT id FROM context_entries
+                            WHERE thread_id = {self._placeholder(1)}
+                            AND source = {self._placeholder(2)}
+                            AND text_content = {self._placeholder(3)}
+                            ORDER BY id DESC
+                            LIMIT 1
+                            ''',
+                            (thread_id, source, text_content),
+                        )
+                        existing = cursor.fetchone()
+
+                        if existing:
+                            # Update existing entry
+                            existing_id = existing['id']
+                            cursor.execute(
+                                f'''
+                                UPDATE context_entries
+                                SET metadata = {self._placeholder(1)},
+                                    content_type = {self._placeholder(2)},
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = {self._placeholder(3)}
+                                ''',
+                                (metadata, content_type, existing_id),
+                            )
+                            results.append((idx, existing_id, None))
+                            logger.debug(f'Batch: updated existing context entry {existing_id}')
+                        else:
+                            # Insert new entry
+                            cursor.execute(
+                                f'''
+                                INSERT INTO context_entries
+                                (thread_id, source, content_type, text_content, metadata)
+                                VALUES ({self._placeholders(5)})
+                                ''',
+                                (thread_id, source, content_type, text_content, metadata),
+                            )
+                            new_id = cursor.lastrowid or 0
+                            results.append((idx, new_id, None))
+                            logger.debug(f'Batch: inserted new context entry {new_id}')
+
+                    except Exception as e:
+                        results.append((idx, None, str(e)))
+                        logger.warning(f'Batch store failed for entry {idx}: {e}')
+
+                return results
+
+            return await self.backend.execute_write(_store_batch_sqlite)
+
+        # PostgreSQL
+        async def _store_batch_postgresql(conn: asyncpg.Connection) -> list[tuple[int, int | None, str | None]]:
+            results: list[tuple[int, int | None, str | None]] = []
+
+            for idx, entry in enumerate(entries):
+                try:
+                    thread_id = entry['thread_id']
+                    source = entry['source']
+                    text_content = entry['text_content']
+                    metadata = entry.get('metadata')
+                    content_type = entry.get('content_type', 'text')
+
+                    # Check for deduplication
+                    existing = await conn.fetchrow(
+                        f'''
+                        SELECT id FROM context_entries
+                        WHERE thread_id = {self._placeholder(1)}
+                        AND source = {self._placeholder(2)}
+                        AND text_content = {self._placeholder(3)}
+                        ORDER BY id DESC
+                        LIMIT 1
+                        ''',
+                        thread_id,
+                        source,
+                        text_content,
+                    )
+
+                    if existing:
+                        # Update existing entry
+                        existing_id = existing['id']
+                        await conn.execute(
+                            f'''
+                            UPDATE context_entries
+                            SET metadata = {self._placeholder(1)},
+                                content_type = {self._placeholder(2)},
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = {self._placeholder(3)}
+                            ''',
+                            metadata,
+                            content_type,
+                            existing_id,
+                        )
+                        results.append((idx, existing_id, None))
+                        logger.debug(f'Batch: updated existing context entry {existing_id}')
+                    else:
+                        # Insert new entry
+                        new_id_result = await conn.fetchval(
+                            f'''
+                            INSERT INTO context_entries
+                            (thread_id, source, content_type, text_content, metadata)
+                            VALUES ({self._placeholders(5)})
+                            RETURNING id
+                            ''',
+                            thread_id,
+                            source,
+                            content_type,
+                            text_content,
+                            metadata,
+                        )
+                        new_id = cast(int, new_id_result)
+                        results.append((idx, new_id, None))
+                        logger.debug(f'Batch: inserted new context entry {new_id}')
+
+                except Exception as e:
+                    results.append((idx, None, str(e)))
+                    logger.warning(f'Batch store failed for entry {idx}: {e}')
+
+            return results
+
+        return await self.backend.execute_write(_store_batch_postgresql)
+
+    async def update_contexts_batch(
+        self,
+        updates: list[dict[str, Any]],
+    ) -> list[tuple[int, int, list[str] | None, str | None]]:
+        """Update multiple context entries in a single transaction.
+
+        Args:
+            updates: List of update dictionaries with keys:
+                - context_id: int (required)
+                - text_content: str | None (optional)
+                - metadata: str | None (JSON string, full replacement)
+                - content_type: str | None (optional)
+
+        Returns:
+            List of tuples: (index, context_id, updated_fields or None, error or None)
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _update_batch_sqlite(conn: sqlite3.Connection) -> list[tuple[int, int, list[str] | None, str | None]]:
+                cursor = conn.cursor()
+                results: list[tuple[int, int, list[str] | None, str | None]] = []
+
+                for idx, update in enumerate(updates):
+                    try:
+                        context_id = update['context_id']
+
+                        # Check if entry exists
+                        cursor.execute(
+                            f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
+                            (context_id,),
+                        )
+                        if not cursor.fetchone():
+                            results.append((idx, context_id, None, f'Context entry {context_id} not found'))
+                            continue
+
+                        # Build dynamic update
+                        update_parts: list[str] = []
+                        params: list[Any] = []
+                        updated_fields: list[str] = []
+
+                        if 'text_content' in update and update['text_content'] is not None:
+                            update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
+                            params.append(update['text_content'])
+                            updated_fields.append('text_content')
+
+                        if 'metadata' in update:
+                            update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
+                            params.append(update['metadata'])
+                            updated_fields.append('metadata')
+
+                        if 'content_type' in update and update['content_type'] is not None:
+                            update_parts.append(f'content_type = {self._placeholder(len(params) + 1)}')
+                            params.append(update['content_type'])
+                            updated_fields.append('content_type')
+
+                        if not update_parts:
+                            results.append((idx, context_id, None, 'No fields to update'))
+                            continue
+
+                        # Always update timestamp
+                        update_parts.append('updated_at = CURRENT_TIMESTAMP')
+
+                        id_placeholder = self._placeholder(len(params) + 1)
+                        query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {id_placeholder}"
+                        params.append(context_id)
+                        cursor.execute(query, tuple(params))
+
+                        if cursor.rowcount > 0:
+                            results.append((idx, context_id, updated_fields, None))
+                            logger.debug(f'Batch: updated context entry {context_id}, fields: {updated_fields}')
+                        else:
+                            results.append((idx, context_id, None, 'Update had no effect'))
+
+                    except Exception as e:
+                        results.append((idx, update.get('context_id', 0), None, str(e)))
+                        logger.warning(f'Batch update failed for entry {idx}: {e}')
+
+                return results
+
+            return await self.backend.execute_write(_update_batch_sqlite)
+
+        # PostgreSQL
+        async def _update_batch_postgresql(
+            conn: asyncpg.Connection,
+        ) -> list[tuple[int, int, list[str] | None, str | None]]:
+            results: list[tuple[int, int, list[str] | None, str | None]] = []
+
+            for idx, update in enumerate(updates):
+                try:
+                    context_id = update['context_id']
+
+                    # Check if entry exists
+                    row = await conn.fetchrow(
+                        f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
+                        context_id,
+                    )
+                    if not row:
+                        results.append((idx, context_id, None, f'Context entry {context_id} not found'))
+                        continue
+
+                    # Build dynamic update
+                    update_parts: list[str] = []
+                    params: list[Any] = []
+                    updated_fields: list[str] = []
+
+                    if 'text_content' in update and update['text_content'] is not None:
+                        update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
+                        params.append(update['text_content'])
+                        updated_fields.append('text_content')
+
+                    if 'metadata' in update:
+                        update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
+                        params.append(update['metadata'])
+                        updated_fields.append('metadata')
+
+                    if 'content_type' in update and update['content_type'] is not None:
+                        update_parts.append(f'content_type = {self._placeholder(len(params) + 1)}')
+                        params.append(update['content_type'])
+                        updated_fields.append('content_type')
+
+                    if not update_parts:
+                        results.append((idx, context_id, None, 'No fields to update'))
+                        continue
+
+                    # Always update timestamp
+                    update_parts.append('updated_at = CURRENT_TIMESTAMP')
+
+                    id_placeholder = self._placeholder(len(params) + 1)
+                    set_clause = ', '.join(update_parts)
+                    query = f'UPDATE context_entries SET {set_clause} WHERE id = {id_placeholder}'
+                    params.append(context_id)
+                    result = await conn.execute(query, *params)
+
+                    # asyncpg returns "UPDATE N" where N is the count
+                    rows_affected = int(result.split()[-1]) if result else 0
+                    if rows_affected > 0:
+                        results.append((idx, context_id, updated_fields, None))
+                        logger.debug(f'Batch: updated context entry {context_id}, fields: {updated_fields}')
+                    else:
+                        results.append((idx, context_id, None, 'Update had no effect'))
+
+                except Exception as e:
+                    results.append((idx, update.get('context_id', 0), None, str(e)))
+                    logger.warning(f'Batch update failed for entry {idx}: {e}')
+
+            return results
+
+        return await self.backend.execute_write(_update_batch_postgresql)
+
+    async def delete_contexts_batch(
+        self,
+        context_ids: list[int] | None = None,
+        thread_ids: list[str] | None = None,
+        source: str | None = None,
+        older_than_days: int | None = None,
+    ) -> tuple[int, list[str]]:
+        """Delete multiple context entries by various criteria.
+
+        At least one criterion must be provided. Criteria can be combined
+        for more targeted deletion. Cascading delete removes associated
+        tags, images, and embeddings.
+
+        Args:
+            context_ids: Specific context entry IDs to delete
+            thread_ids: Delete all entries in these threads
+            source: Filter by source ('user' or 'agent') - combine with other criteria
+            older_than_days: Delete entries older than N days
+
+        Returns:
+            Tuple of (deleted_count, list_of_criteria_used)
+        """
+        criteria_used: list[str] = []
+
+        if self.backend.backend_type == 'sqlite':
+
+            def _delete_batch_sqlite(conn: sqlite3.Connection) -> tuple[int, list[str]]:
+                cursor = conn.cursor()
+                conditions: list[str] = []
+                params: list[Any] = []
+
+                if context_ids:
+                    placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
+                    conditions.append(f'id IN ({placeholders})')
+                    params.extend(context_ids)
+                    criteria_used.append(f'context_ids: {len(context_ids)} IDs')
+
+                if thread_ids:
+                    placeholders = ','.join([
+                        self._placeholder(len(params) + i + 1) for i in range(len(thread_ids))
+                    ])
+                    conditions.append(f'thread_id IN ({placeholders})')
+                    params.extend(thread_ids)
+                    criteria_used.append(f'thread_ids: {len(thread_ids)} threads')
+
+                if source:
+                    conditions.append(f'source = {self._placeholder(len(params) + 1)}')
+                    params.append(source)
+                    criteria_used.append(f'source: {source}')
+
+                if older_than_days is not None:
+                    conditions.append(
+                        f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
+                    )
+                    params.append(f'-{older_than_days} days')
+                    criteria_used.append(f'older_than_days: {older_than_days}')
+
+                if not conditions:
+                    return 0, criteria_used
+
+                where_clause = ' AND '.join(conditions)
+                query = f'DELETE FROM context_entries WHERE {where_clause}'
+                cursor.execute(query, tuple(params))
+
+                deleted_count = cursor.rowcount
+                logger.info(f'Batch delete: removed {deleted_count} entries using criteria: {criteria_used}')
+                return deleted_count, criteria_used
+
+            return await self.backend.execute_write(_delete_batch_sqlite)
+
+        # PostgreSQL
+        async def _delete_batch_postgresql(conn: asyncpg.Connection) -> tuple[int, list[str]]:
+            conditions: list[str] = []
+            params: list[Any] = []
+
+            if context_ids:
+                placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
+                conditions.append(f'id IN ({placeholders})')
+                params.extend(context_ids)
+                criteria_used.append(f'context_ids: {len(context_ids)} IDs')
+
+            if thread_ids:
+                placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(thread_ids))])
+                conditions.append(f'thread_id IN ({placeholders})')
+                params.extend(thread_ids)
+                criteria_used.append(f'thread_ids: {len(thread_ids)} threads')
+
+            if source:
+                conditions.append(f'source = {self._placeholder(len(params) + 1)}')
+                params.append(source)
+                criteria_used.append(f'source: {source}')
+
+            if older_than_days is not None:
+                conditions.append(
+                    f"created_at < (NOW() - INTERVAL '{older_than_days} days')",
+                )
+                criteria_used.append(f'older_than_days: {older_than_days}')
+
+            if not conditions:
+                return 0, criteria_used
+
+            where_clause = ' AND '.join(conditions)
+            query = f'DELETE FROM context_entries WHERE {where_clause}'
+            result = await conn.execute(query, *params)
+
+            # asyncpg returns "DELETE N" where N is the count
+            deleted_count = int(result.split()[-1]) if result else 0
+            logger.info(f'Batch delete: removed {deleted_count} entries using criteria: {criteria_used}')
+            return deleted_count, criteria_used
+
+        return await self.backend.execute_write(_delete_batch_postgresql)
