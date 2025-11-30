@@ -30,6 +30,25 @@ config_logger(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
+class MetadataFilterValidationError(Exception):
+    """Exception raised when metadata filters fail validation.
+
+    This exception enables unified error handling between search_context
+    and semantic_search_context tools.
+    """
+
+    def __init__(self, message: str, validation_errors: list[str]) -> None:
+        """Initialize the exception.
+
+        Args:
+            message: Error message
+            validation_errors: List of validation error messages
+        """
+        super().__init__(message)
+        self.message = message
+        self.validation_errors = validation_errors
+
+
 class EmbeddingRepository(BaseRepository):
     """Repository for vector embeddings supporting both sqlite-vec and pgvector.
 
@@ -120,8 +139,10 @@ class EmbeddingRepository(BaseRepository):
         source: Literal['user', 'agent'] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        """KNN search with optional filters including date range.
+        """KNN search with optional filters including date range and metadata.
 
         SQLite: Uses CTE-based pre-filtering with vec_distance_l2() function
         PostgreSQL: Uses direct JOIN with <-> operator for L2 distance
@@ -133,6 +154,8 @@ class EmbeddingRepository(BaseRepository):
             source: Optional filter by source type
             start_date: Filter by created_at >= date (ISO 8601 format)
             end_date: Filter by created_at <= date (ISO 8601 format)
+            metadata: Simple metadata filters (key=value equality)
+            metadata_filters: Advanced metadata filters with operators
 
         Returns:
             List of search results with context and similarity scores
@@ -151,31 +174,74 @@ class EmbeddingRepository(BaseRepository):
 
                 filter_conditions = []
                 filter_params: list[Any] = []
-                param_position = 1
 
                 if thread_id:
-                    filter_conditions.append(f'thread_id = {self._placeholder(param_position)}')
+                    filter_conditions.append('thread_id = ?')
                     filter_params.append(thread_id)
-                    param_position += 1
 
                 if source:
-                    filter_conditions.append(f'source = {self._placeholder(param_position)}')
+                    filter_conditions.append('source = ?')
                     filter_params.append(source)
-                    param_position += 1
 
                 # Date range filtering - Use datetime() to normalize ISO 8601 input
                 # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
                 # to SQLite's space-separated format 'YYYY-MM-DD HH:MM:SS' for proper comparison.
                 # Without datetime(), TEXT comparison fails because 'T' > ' ' in ASCII ordering.
                 if start_date:
-                    filter_conditions.append(f'created_at >= datetime({self._placeholder(param_position)})')
+                    filter_conditions.append('created_at >= datetime(?)')
                     filter_params.append(start_date)
-                    param_position += 1
 
                 if end_date:
-                    filter_conditions.append(f'created_at <= datetime({self._placeholder(param_position)})')
+                    filter_conditions.append('created_at <= datetime(?)')
                     filter_params.append(end_date)
-                    param_position += 1
+
+                # Metadata filtering using MetadataQueryBuilder
+                if metadata or metadata_filters:
+                    from pydantic import ValidationError
+
+                    from app.metadata_types import MetadataFilter
+                    from app.query_builder import MetadataQueryBuilder
+
+                    metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+
+                    # Simple metadata filters (key=value equality)
+                    if metadata:
+                        for key, value in metadata.items():
+                            try:
+                                metadata_builder.add_simple_filter(key, value)
+                            except ValueError as e:
+                                logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+
+                    # Advanced metadata filters with operators
+                    if metadata_filters:
+                        validation_errors: list[str] = []
+                        for filter_dict in metadata_filters:
+                            try:
+                                filter_spec = MetadataFilter(**filter_dict)
+                                metadata_builder.add_advanced_filter(filter_spec)
+                            except ValidationError as e:
+                                error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                                validation_errors.append(error_msg)
+                            except ValueError as e:
+                                error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                                validation_errors.append(error_msg)
+                            except Exception as e:
+                                error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
+                                validation_errors.append(error_msg)
+                                logger.error(f'Unexpected error processing metadata filter: {e}')
+
+                        # Raise exception if validation fails (unified with search_context behavior)
+                        if validation_errors:
+                            raise MetadataFilterValidationError(
+                                'Metadata filter validation failed',
+                                validation_errors,
+                            )
+
+                    # Add metadata conditions to filter
+                    metadata_clause, metadata_params = metadata_builder.build_where_clause()
+                    if metadata_clause:
+                        filter_conditions.append(metadata_clause)
+                        filter_params.extend(metadata_params)
 
                 where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
@@ -194,12 +260,12 @@ class EmbeddingRepository(BaseRepository):
                         ce.metadata,
                         ce.created_at,
                         ce.updated_at,
-                        vec_distance_l2({self._placeholder(param_position)}, ve.embedding) as distance
+                        vec_distance_l2(?, ve.embedding) as distance
                     FROM filtered_contexts fc
                     JOIN context_entries ce ON ce.id = fc.id
                     JOIN vec_context_embeddings ve ON ve.rowid = fc.id
                     ORDER BY distance
-                    LIMIT {self._placeholder(param_position + 1)}
+                    LIMIT ?
                 '''
 
                 params = filter_params + [query_blob, limit]
@@ -238,6 +304,62 @@ class EmbeddingRepository(BaseRepository):
                 filter_conditions.append(f'ce.created_at <= {self._placeholder(param_position)}')
                 filter_params.append(self._parse_date_for_postgresql(end_date))
                 param_position += 1
+
+            # Metadata filtering using MetadataQueryBuilder
+            if metadata or metadata_filters:
+                from pydantic import ValidationError
+
+                from app.metadata_types import MetadataFilter
+                from app.query_builder import MetadataQueryBuilder
+
+                # param_offset is the current number of params minus 1 because MetadataQueryBuilder
+                # uses 1-based indexing and we need to continue from the current position
+                metadata_builder = MetadataQueryBuilder(
+                    backend_type='postgresql',
+                    param_offset=len(filter_params),
+                )
+
+                # Simple metadata filters (key=value equality)
+                if metadata:
+                    for key, value in metadata.items():
+                        try:
+                            metadata_builder.add_simple_filter(key, value)
+                        except ValueError as e:
+                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+
+                # Advanced metadata filters with operators
+                if metadata_filters:
+                    validation_errors: list[str] = []
+                    for filter_dict in metadata_filters:
+                        try:
+                            filter_spec = MetadataFilter(**filter_dict)
+                            metadata_builder.add_advanced_filter(filter_spec)
+                        except ValidationError as e:
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except ValueError as e:
+                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                        except Exception as e:
+                            error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
+                            validation_errors.append(error_msg)
+                            logger.error(f'Unexpected error processing metadata filter: {e}')
+
+                    # Raise exception if validation fails (unified with search_context behavior)
+                    if validation_errors:
+                        raise MetadataFilterValidationError(
+                            'Metadata filter validation failed',
+                            validation_errors,
+                        )
+
+                # Add metadata conditions to filter with 'ce.' table alias prefix
+                metadata_clause, metadata_params = metadata_builder.build_where_clause()
+                if metadata_clause:
+                    # Prefix metadata conditions with 'ce.' table alias for the context_entries table
+                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
+                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_params.extend(metadata_params)
+                    param_position += len(metadata_params)
 
             where_clause = ' AND '.join(filter_conditions)
 

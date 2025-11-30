@@ -314,7 +314,16 @@ class MetadataQueryBuilder:
         values: list[str | int | float | bool],
         case_sensitive: bool,
     ) -> None:
-        """Add an IN condition for list membership."""
+        """Add an IN condition for list membership.
+
+        All values are converted to strings and compared as TEXT because:
+        - SQLite's json_extract() returns typed values (INTEGER for numbers)
+        - SQLite's IN clause doesn't auto-convert types like equality does
+        - PostgreSQL's ->> operator returns TEXT values
+        - Type mismatch causes silent failures on SQLite and explicit errors on PostgreSQL
+
+        Solution: Cast json_extract result to TEXT on SQLite and convert all parameters to strings.
+        """
         if not values:
             self.conditions.append('0 = 1')
             return
@@ -324,22 +333,26 @@ class MetadataQueryBuilder:
         if self.backend_type == 'sqlite':
             # Generate placeholders BEFORE extending parameters
             placeholders = ', '.join(['?' for _ in values])
+            # Cast json_extract to TEXT to ensure consistent comparison with string parameters
+            # json_extract returns INTEGER for JSON numbers, which doesn't match TEXT in IN clause
             if not case_sensitive and any(isinstance(v, str) for v in values):
-                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) IN ({placeholders})")
-                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+                self.conditions.append(f"LOWER(CAST(json_extract(metadata, '{json_path}') AS TEXT)) IN ({placeholders})")
+                self.parameters.extend([str(v).lower() for v in values])
             else:
-                self.conditions.append(f"json_extract(metadata, '{json_path}') IN ({placeholders})")
-                self.parameters.extend([self._normalize_value(v) for v in values])
+                self.conditions.append(f"CAST(json_extract(metadata, '{json_path}') AS TEXT) IN ({placeholders})")
+                # Convert all values to strings for consistent TEXT comparison
+                self.parameters.extend([str(v) for v in values])
         else:  # postgresql
             # Generate placeholders with proper numbering BEFORE extending parameters
             start_pos = self.param_offset + len(self.parameters) + 1
             cast_placeholders = ', '.join([f'${start_pos + i}::TEXT' for i in range(len(values))])
             if not case_sensitive and any(isinstance(v, str) for v in values):
                 self.conditions.append(f"LOWER(metadata->>'{key_path}') IN ({cast_placeholders})")
-                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+                self.parameters.extend([str(v).lower() for v in values])
             else:
                 self.conditions.append(f"metadata->>'{key_path}' IN ({cast_placeholders})")
-                self.parameters.extend([self._normalize_value(v) for v in values])
+                # Convert all values to strings for asyncpg TEXT parameter binding
+                self.parameters.extend([str(v) for v in values])
 
     def _add_not_in_condition(
         self,
@@ -347,7 +360,16 @@ class MetadataQueryBuilder:
         values: list[str | int | float | bool],
         case_sensitive: bool,
     ) -> None:
-        """Add a NOT IN condition."""
+        """Add a NOT IN condition.
+
+        All values are converted to strings and compared as TEXT because:
+        - SQLite's json_extract() returns typed values (INTEGER for numbers)
+        - SQLite's IN clause doesn't auto-convert types like equality does
+        - PostgreSQL's ->> operator returns TEXT values
+        - Type mismatch causes silent failures on SQLite and explicit errors on PostgreSQL
+
+        Solution: Cast json_extract result to TEXT on SQLite and convert all parameters to strings.
+        """
         if not values:
             self.conditions.append('1 = 1')
             return
@@ -356,21 +378,25 @@ class MetadataQueryBuilder:
 
         if self.backend_type == 'sqlite':
             placeholders = ', '.join(['?' for _ in values])
+            # Cast json_extract to TEXT to ensure consistent comparison with string parameters
+            # json_extract returns INTEGER for JSON numbers, which doesn't match TEXT in NOT IN clause
             if not case_sensitive and any(isinstance(v, str) for v in values):
-                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) NOT IN ({placeholders})")
-                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+                self.conditions.append(f"LOWER(CAST(json_extract(metadata, '{json_path}') AS TEXT)) NOT IN ({placeholders})")
+                self.parameters.extend([str(v).lower() for v in values])
             else:
-                self.conditions.append(f"json_extract(metadata, '{json_path}') NOT IN ({placeholders})")
-                self.parameters.extend([self._normalize_value(v) for v in values])
+                self.conditions.append(f"CAST(json_extract(metadata, '{json_path}') AS TEXT) NOT IN ({placeholders})")
+                # Convert all values to strings for consistent TEXT comparison
+                self.parameters.extend([str(v) for v in values])
         else:  # postgresql
             start_pos = self.param_offset + len(self.parameters) + 1
             cast_placeholders = ', '.join([f'${start_pos + i}::TEXT' for i in range(len(values))])
             if not case_sensitive and any(isinstance(v, str) for v in values):
                 self.conditions.append(f"LOWER(metadata->>'{key_path}') NOT IN ({cast_placeholders})")
-                self.parameters.extend([str(v).lower() if isinstance(v, str) else self._normalize_value(v) for v in values])
+                self.parameters.extend([str(v).lower() for v in values])
             else:
                 self.conditions.append(f"metadata->>'{key_path}' NOT IN ({cast_placeholders})")
-                self.parameters.extend([self._normalize_value(v) for v in values])
+                # Convert all values to strings for asyncpg TEXT parameter binding
+                self.parameters.extend([str(v) for v in values])
 
     def _add_exists_condition(self, json_path: str) -> None:
         """Add a condition to check if a key exists."""
