@@ -2187,6 +2187,246 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_semantic_search_context_with_metadata_filters(self) -> bool:
+        """Test semantic search with metadata filtering (conditional on availability).
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'semantic_search_context_with_metadata_filters'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if semantic search is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            is_enabled = semantic_info.get('enabled', False)
+            is_available = semantic_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for metadata filter tests
+            metadata_thread = f'{self.test_thread_id}_semantic_metadata'
+
+            # Store test contexts with different metadata
+            test_entries = [
+                {'text': 'High priority backend task for API development', 'metadata': {'priority': 9, 'category': 'backend'}},
+                {'text': 'Low priority frontend task for UI updates', 'metadata': {'priority': 3, 'category': 'frontend'}},
+                {'text': 'High priority database optimization task', 'metadata': {'priority': 8, 'category': 'backend'}},
+                {'text': 'Medium priority testing task', 'metadata': {'priority': 5, 'category': 'testing'}},
+            ]
+
+            for entry in test_entries:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': metadata_thread,
+                        'source': 'agent',
+                        'text': entry['text'],
+                        'metadata': entry['metadata'],
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: Semantic search with simple metadata filter (category=backend)
+            metadata_search_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'development tasks',
+                    'thread_id': metadata_thread,
+                    'metadata': {'category': 'backend'},
+                    'top_k': 10,
+                },
+            )
+
+            metadata_search_data = self._extract_content(metadata_search_result)
+
+            if 'results' not in metadata_search_data:
+                self.test_results.append((test_name, False, f'Metadata filter search failed: {metadata_search_data}'))
+                return False
+
+            # Should return only backend entries (2 entries)
+            metadata_results = metadata_search_data.get('results', [])
+            if len(metadata_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 backend entries, got {len(metadata_results)}'),
+                )
+                return False
+
+            # Test 2: Semantic search with advanced metadata filter (priority > 5)
+            advanced_search_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'tasks',
+                    'thread_id': metadata_thread,
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 5}],
+                    'top_k': 10,
+                },
+            )
+
+            advanced_search_data = self._extract_content(advanced_search_result)
+
+            if 'results' not in advanced_search_data:
+                self.test_results.append((test_name, False, f'Advanced filter search failed: {advanced_search_data}'))
+                return False
+
+            # Should return entries with priority > 5 (priority 8 and 9)
+            advanced_results = advanced_search_data.get('results', [])
+            if len(advanced_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 high priority entries, got {len(advanced_results)}'),
+                )
+                return False
+
+            # Test 3: Combined metadata + other filters
+            combined_search_result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'backend',
+                    'thread_id': metadata_thread,
+                    'source': 'agent',
+                    'metadata': {'category': 'backend'},
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 8}],
+                    'top_k': 10,
+                },
+            )
+
+            combined_search_data = self._extract_content(combined_search_result)
+
+            if 'results' not in combined_search_data:
+                self.test_results.append((test_name, False, f'Combined filter search failed: {combined_search_data}'))
+                return False
+
+            # Should return only high priority backend entries (priority >= 8 and category=backend)
+            combined_results = combined_search_data.get('results', [])
+            if len(combined_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 combined filter entries, got {len(combined_results)}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Semantic search with metadata filtering working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_search_context_invalid_filter_returns_error(self) -> bool:
+        """Test that search_context returns explicit error for invalid metadata filter.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_context_invalid_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Test with invalid operator
+            result = await self.client.call_tool(
+                'search_context',
+                {'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}]},
+            )
+
+            result_data = self._extract_content(result)
+
+            # Should return error response
+            if 'error' not in result_data:
+                self.test_results.append((test_name, False, f'Expected error response, got: {result_data}'))
+                return False
+
+            if result_data['error'] != 'Metadata filter validation failed':
+                self.test_results.append((test_name, False, f"Wrong error message: {result_data['error']}"))
+                return False
+
+            if 'validation_errors' not in result_data:
+                self.test_results.append((test_name, False, 'Missing validation_errors in response'))
+                return False
+
+            self.test_results.append((test_name, True, 'Invalid filter returns error as expected'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_semantic_search_invalid_filter_returns_error(self) -> bool:
+        """Test that semantic_search_context returns explicit error for invalid metadata filter.
+
+        This test verifies unified error handling between search_context and semantic_search_context.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'semantic_search_invalid_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if semantic search is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            is_enabled = semantic_info.get('enabled', False)
+            is_available = semantic_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Test with invalid operator
+            result = await self.client.call_tool(
+                'semantic_search_context',
+                {
+                    'query': 'test query',
+                    'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}],
+                },
+            )
+
+            result_data = self._extract_content(result)
+
+            # Should return error response (unified with search_context behavior)
+            if 'error' not in result_data:
+                self.test_results.append((test_name, False, f'Expected error response, got: {result_data}'))
+                return False
+
+            if result_data['error'] != 'Metadata filter validation failed':
+                self.test_results.append((test_name, False, f"Wrong error message: {result_data['error']}"))
+                return False
+
+            if 'validation_errors' not in result_data:
+                self.test_results.append((test_name, False, 'Missing validation_errors in response'))
+                return False
+
+            # Verify response structure includes expected fields
+            if result_data.get('count') != 0:
+                self.test_results.append((test_name, False, 'Expected count=0 on error'))
+                return False
+
+            if result_data.get('results') != []:
+                self.test_results.append((test_name, False, 'Expected empty results on error'))
+                return False
+
+            self.test_results.append((test_name, True, 'Invalid filter returns error (unified with search_context)'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -2260,6 +2500,9 @@ class MCPServerIntegrationTest:
             ('Delete Context Batch', self.test_delete_context_batch),
             ('Semantic Search', self.test_semantic_search_context),
             ('Semantic Search Date Filtering', self.test_semantic_search_context_with_date_filtering),
+            ('Semantic Search Metadata Filtering', self.test_semantic_search_context_with_metadata_filters),
+            ('Search Context Invalid Filter Error', self.test_search_context_invalid_filter_returns_error),
+            ('Semantic Search Invalid Filter Error', self.test_semantic_search_invalid_filter_returns_error),
         ]
 
         print('\nRunning tests...\n')

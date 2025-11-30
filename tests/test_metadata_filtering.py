@@ -99,6 +99,61 @@ class TestMetadataQueryBuilder:
         assert len(params) == 3
         assert 'active' in params
 
+    def test_operator_in_with_integers(self) -> None:
+        """Test IN operator with integer array values.
+
+        Regression test: Integer arrays caused silent failures on SQLite
+        (type mismatch with json_extract TEXT result) and explicit errors
+        on PostgreSQL (asyncpg type mismatch with TEXT cast).
+        """
+        builder = MetadataQueryBuilder()
+        filter_spec = MetadataFilter(
+            key='priority',
+            operator=MetadataOperator.IN,
+            value=[5, 9],
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'IN (' in where_clause
+        assert len(params) == 2
+        # All values should be converted to strings for TEXT comparison
+        assert all(isinstance(p, str) for p in params)
+        assert '5' in params
+        assert '9' in params
+
+    def test_operator_in_with_floats(self) -> None:
+        """Test IN operator with float array values."""
+        builder = MetadataQueryBuilder()
+        filter_spec = MetadataFilter(
+            key='score',
+            operator=MetadataOperator.IN,
+            value=[math.pi, math.e, 1.41],
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'IN (' in where_clause
+        assert len(params) == 3
+        # All values should be converted to strings
+        assert all(isinstance(p, str) for p in params)
+
+    def test_operator_in_with_mixed_types(self) -> None:
+        """Test IN operator with mixed string and integer array values."""
+        builder = MetadataQueryBuilder()
+        filter_spec = MetadataFilter(
+            key='value',
+            operator=MetadataOperator.IN,
+            value=['active', 5, 'pending', 10],
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'IN (' in where_clause
+        assert len(params) == 4
+        # All values should be converted to strings
+        assert all(isinstance(p, str) for p in params)
+
     def test_operator_not_in(self) -> None:
         """Test NOT IN operator."""
         builder = MetadataQueryBuilder()
@@ -112,6 +167,46 @@ class TestMetadataQueryBuilder:
         where_clause, params = builder.build_where_clause()
         assert 'NOT IN (' in where_clause
         assert len(params) == 2
+
+    def test_operator_not_in_with_integers(self) -> None:
+        """Test NOT IN operator with integer array values.
+
+        Regression test: Integer arrays caused silent failures on SQLite
+        (type mismatch with json_extract TEXT result) and explicit errors
+        on PostgreSQL (asyncpg type mismatch with TEXT cast).
+        """
+        builder = MetadataQueryBuilder()
+        filter_spec = MetadataFilter(
+            key='priority',
+            operator=MetadataOperator.NOT_IN,
+            value=[1, 2, 3],
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'NOT IN (' in where_clause
+        assert len(params) == 3
+        # All values should be converted to strings for TEXT comparison
+        assert all(isinstance(p, str) for p in params)
+        assert '1' in params
+        assert '2' in params
+        assert '3' in params
+
+    def test_operator_not_in_with_mixed_types(self) -> None:
+        """Test NOT IN operator with mixed string and integer array values."""
+        builder = MetadataQueryBuilder()
+        filter_spec = MetadataFilter(
+            key='status',
+            operator=MetadataOperator.NOT_IN,
+            value=['archived', 100, 'deleted', 200],
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'NOT IN (' in where_clause
+        assert len(params) == 4
+        # All values should be converted to strings
+        assert all(isinstance(p, str) for p in params)
 
     def test_operator_exists(self) -> None:
         """Test EXISTS operator."""
@@ -371,6 +466,62 @@ class TestMetadataFilteringIntegration:
         assert all(s in ['active', 'pending'] for s in statuses)
 
     @pytest.mark.asyncio
+    async def test_advanced_in_operator_with_integer_array(self) -> None:
+        """Test IN operator with integer array values.
+
+        Regression test: Integer arrays caused silent failures on SQLite
+        (type mismatch with json_extract TEXT result) and explicit errors
+        on PostgreSQL (asyncpg type mismatch with TEXT cast).
+        """
+        await self._setup_test_data()
+
+        # Test IN with integer array [5, 10]
+        result = await search_context.fn(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {
+                    'key': 'priority',
+                    'operator': 'in',
+                    'value': [5, 10],  # Integer array
+                },
+            ],
+            ctx=None,
+        )
+
+        assert 'entries' in result
+        # Should find entries with priority 5 and 10
+        assert len(result['entries']) == 2
+        priorities = [e['metadata']['priority'] for e in result['entries']]
+        assert all(p in [5, 10] for p in priorities)
+
+    @pytest.mark.asyncio
+    async def test_advanced_not_in_operator_with_integer_array(self) -> None:
+        """Test NOT IN operator with integer array values.
+
+        Regression test: Integer arrays caused failures in NOT IN operator.
+        """
+        await self._setup_test_data()
+
+        # Test NOT IN with integer array - should exclude entries with priority 1, 3, 5
+        result = await search_context.fn(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {
+                    'key': 'priority',
+                    'operator': 'not_in',
+                    'value': [1, 3, 5],  # Integer array
+                },
+            ],
+            ctx=None,
+        )
+
+        assert 'entries' in result
+        # Should find entries with priority 8 and 10 (excluding 1, 3, 5)
+        assert len(result['entries']) == 2
+        priorities = [e['metadata']['priority'] for e in result['entries']]
+        assert all(p not in [1, 3, 5] for p in priorities)
+
+    @pytest.mark.asyncio
     async def test_advanced_exists_operator(self) -> None:
         """Test EXISTS operator."""
         await self._setup_test_data()
@@ -572,6 +723,56 @@ async def test_all_operators(
 
     assert 'entries' in result
     assert len(result['entries']) == expected_count
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures('initialized_server')
+class TestMetadataFilterErrorHandling:
+    """Test error handling for invalid metadata filters."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_operator_returns_validation_error(self) -> None:
+        """Test that invalid operator returns explicit validation error."""
+        result = await search_context.fn(
+            metadata_filters=[{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}],
+            ctx=None,
+        )
+
+        assert 'error' in result
+        assert result['error'] == 'Metadata filter validation failed'
+        assert 'validation_errors' in result
+        assert len(result['validation_errors']) == 1
+        error_msg = result['validation_errors'][0].lower()
+        assert 'invalid_operator' in error_msg or 'invalid' in error_msg
+
+    @pytest.mark.asyncio
+    async def test_multiple_invalid_filters_returns_all_errors(self) -> None:
+        """Test that multiple invalid filters return all validation errors."""
+        result = await search_context.fn(
+            metadata_filters=[
+                {'key': 'status', 'operator': 'invalid_op1', 'value': 'test'},
+                {'key': 'priority', 'operator': 'invalid_op2', 'value': 123},
+            ],
+            ctx=None,
+        )
+
+        assert 'error' in result
+        assert result['error'] == 'Metadata filter validation failed'
+        assert 'validation_errors' in result
+        assert len(result['validation_errors']) == 2
+
+    @pytest.mark.asyncio
+    async def test_invalid_key_with_sql_injection_returns_error(self) -> None:
+        """Test that invalid keys (SQL injection attempts) return validation error."""
+        result = await search_context.fn(
+            metadata_filters=[{'key': 'DROP TABLE;--', 'operator': 'eq', 'value': 'test'}],
+            ctx=None,
+        )
+
+        assert 'error' in result
+        assert result['error'] == 'Metadata filter validation failed'
+        assert 'validation_errors' in result
+        assert len(result['validation_errors']) == 1
 
 
 @pytest.mark.integration
