@@ -194,6 +194,7 @@ The codebase uses a comprehensive multi-layered testing approach:
 - **Production supports both backends**: While tests use SQLite, production code fully supports both SQLite and PostgreSQL
 - **No PostgreSQL required for testing**: Developers can run the full test suite without installing PostgreSQL
 - **Backend-agnostic implementation**: Repository code works identically with both backends
+- **Real server tests required**: When writing unit tests, always add corresponding real server integration tests in `tests/test_real_server.py` to verify tool behavior via the actual MCP protocol
 
 #### Test Database Protection:
 - **Automatic Isolation**: All tests use `prevent_default_db_pollution` fixture (session-scoped, autouse)
