@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/alex-feel/mcp-context-server/compare/v0.7.0...v0.8.0) (2025-11-30)
+
+
+### Features
+
+* add bulk operations for batch context management ([7516a93](https://github.com/alex-feel/mcp-context-server/commit/7516a935cef9fbe7bed5d7bc55dbf0001b41b830))
+* add metadata filtering to semantic_search_context ([50346d6](https://github.com/alex-feel/mcp-context-server/commit/50346d64dccc067925e405b9ebbfa24dee94f459))
+
+
+### Bug Fixes
+
+* handle integer arrays in in/not_in metadata operators ([23076df](https://github.com/alex-feel/mcp-context-server/commit/23076df01b778464a1c4189e698d0782aacdfc28))
+
 ## [0.7.0](https://github.com/alex-feel/mcp-context-server/compare/v0.6.0...v0.7.0) (2025-11-29)
 
 
