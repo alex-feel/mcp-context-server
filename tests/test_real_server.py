@@ -1695,6 +1695,382 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_store_context_batch(self) -> bool:
+        """Test bulk store context operations.
+
+        Tests atomic and non-atomic modes for batch storing multiple entries.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_context_batch'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Create a separate thread for bulk store tests
+            bulk_store_thread = f'{self.test_thread_id}_bulk_store'
+
+            # Test 1: Store multiple entries successfully (atomic=True)
+            entries = [
+                {
+                    'thread_id': bulk_store_thread,
+                    'source': 'user',
+                    'text': 'First bulk entry',
+                    'metadata': {'priority': 1, 'type': 'test'},
+                    'tags': ['bulk', 'first'],
+                },
+                {
+                    'thread_id': bulk_store_thread,
+                    'source': 'agent',
+                    'text': 'Second bulk entry',
+                    'metadata': {'priority': 2, 'type': 'test'},
+                    'tags': ['bulk', 'second'],
+                },
+                {
+                    'thread_id': bulk_store_thread,
+                    'source': 'user',
+                    'text': 'Third bulk entry',
+                    'tags': ['bulk', 'third'],
+                },
+            ]
+
+            result = await self.client.call_tool(
+                'store_context_batch',
+                {'entries': entries, 'atomic': True},
+            )
+
+            result_data = self._extract_content(result)
+
+            if not result_data.get('success'):
+                self.test_results.append((test_name, False, f'Atomic batch store failed: {result_data}'))
+                return False
+
+            if result_data.get('total') != 3 or result_data.get('succeeded') != 3:
+                self.test_results.append(
+                    (test_name, False, f"Expected 3 stored, got {result_data.get('succeeded')}/{result_data.get('total')}"),
+                )
+                return False
+
+            # Verify all entries have context_ids
+            results = result_data.get('results', [])
+            if len(results) != 3 or not all(r.get('context_id') for r in results):
+                self.test_results.append((test_name, False, 'Missing context_ids in results'))
+                return False
+
+            # Test 2: Verify entries stored correctly via search
+            search_result = await self.client.call_tool(
+                'search_context',
+                {'thread_id': bulk_store_thread},
+            )
+
+            search_data = self._extract_content(search_result)
+
+            if len(search_data.get('results', [])) != 3:
+                self.test_results.append(
+                    (test_name, False, f"Expected 3 entries, found {len(search_data.get('results', []))}"),
+                )
+                return False
+
+            # Test 3: Non-atomic mode (atomic=False)
+            non_atomic_thread = f'{self.test_thread_id}_bulk_nonatomic'
+            non_atomic_entries = [
+                {
+                    'thread_id': non_atomic_thread,
+                    'source': 'agent',
+                    'text': 'Non-atomic entry 1',
+                },
+                {
+                    'thread_id': non_atomic_thread,
+                    'source': 'user',
+                    'text': 'Non-atomic entry 2',
+                    'metadata': {'processed': True},
+                },
+            ]
+
+            non_atomic_result = await self.client.call_tool(
+                'store_context_batch',
+                {'entries': non_atomic_entries, 'atomic': False},
+            )
+
+            non_atomic_data = self._extract_content(non_atomic_result)
+
+            if not non_atomic_data.get('success') or non_atomic_data.get('succeeded') != 2:
+                self.test_results.append((test_name, False, f'Non-atomic batch store failed: {non_atomic_data}'))
+                return False
+
+            stored_count = result_data.get('succeeded', 0) + non_atomic_data.get('succeeded', 0)
+            self.test_results.append((test_name, True, f'Stored {stored_count} entries in batch'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_update_context_batch(self) -> bool:
+        """Test bulk update context operations.
+
+        Tests batch updating multiple entries with various field combinations.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'update_context_batch'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Create a separate thread for bulk update tests
+            bulk_update_thread = f'{self.test_thread_id}_bulk_update'
+
+            # First, create entries to update
+            setup_entries = [
+                {
+                    'thread_id': bulk_update_thread,
+                    'source': 'user',
+                    'text': 'Original text 1',
+                    'metadata': {'status': 'draft', 'version': 1},
+                    'tags': ['original'],
+                },
+                {
+                    'thread_id': bulk_update_thread,
+                    'source': 'agent',
+                    'text': 'Original text 2',
+                    'metadata': {'status': 'pending', 'version': 1},
+                    'tags': ['original'],
+                },
+                {
+                    'thread_id': bulk_update_thread,
+                    'source': 'user',
+                    'text': 'Original text 3',
+                    'tags': ['original'],
+                },
+            ]
+
+            setup_result = await self.client.call_tool(
+                'store_context_batch',
+                {'entries': setup_entries, 'atomic': True},
+            )
+
+            setup_data = self._extract_content(setup_result)
+
+            if not setup_data.get('success') or setup_data.get('succeeded') != 3:
+                self.test_results.append((test_name, False, f'Failed to setup test entries: {setup_data}'))
+                return False
+
+            # Get the context IDs
+            context_ids = [r['context_id'] for r in setup_data['results']]
+
+            # Test 1: Batch update text for multiple entries
+            updates = [
+                {'context_id': context_ids[0], 'text': 'Updated text 1'},
+                {'context_id': context_ids[1], 'text': 'Updated text 2'},
+                {'context_id': context_ids[2], 'text': 'Updated text 3'},
+            ]
+
+            update_result = await self.client.call_tool(
+                'update_context_batch',
+                {'updates': updates, 'atomic': True},
+            )
+
+            update_data = self._extract_content(update_result)
+
+            if not update_data.get('success') or update_data.get('succeeded') != 3:
+                self.test_results.append((test_name, False, f'Batch text update failed: {update_data}'))
+                return False
+
+            # Verify updated_fields contains text_content
+            for item in update_data.get('results', []):
+                if 'text_content' not in item.get('updated_fields', []):
+                    self.test_results.append((test_name, False, 'text_content not in updated_fields'))
+                    return False
+
+            # Test 2: Batch update metadata
+            metadata_updates = [
+                {
+                    'context_id': context_ids[0],
+                    'metadata': {'status': 'completed', 'version': 2},
+                },
+                {
+                    'context_id': context_ids[1],
+                    'metadata_patch': {'version': 2, 'reviewed': True},
+                },
+            ]
+
+            metadata_result = await self.client.call_tool(
+                'update_context_batch',
+                {'updates': metadata_updates, 'atomic': True},
+            )
+
+            metadata_data = self._extract_content(metadata_result)
+
+            if not metadata_data.get('success') or metadata_data.get('succeeded') != 2:
+                self.test_results.append((test_name, False, f'Batch metadata update failed: {metadata_data}'))
+                return False
+
+            # Test 3: Verify updates via get_context_by_ids
+            verify_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': context_ids},
+            )
+
+            verify_data = self._extract_content(verify_result)
+
+            if not verify_data.get('success') or len(verify_data.get('results', [])) != 3:
+                self.test_results.append((test_name, False, 'Failed to verify updates'))
+                return False
+
+            # Check that text was updated
+            for entry in verify_data['results']:
+                if not entry.get('text_content', '').startswith('Updated text'):
+                    self.test_results.append((test_name, False, 'Text not updated correctly'))
+                    return False
+
+            self.test_results.append((test_name, True, f'Updated {update_data.get("succeeded", 0)} entries in batch'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_delete_context_batch(self) -> bool:
+        """Test bulk delete context operations.
+
+        Tests deletion by various criteria: context_ids, thread_ids, and combined filters.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'delete_context_batch'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Create separate threads for bulk delete tests
+            delete_by_ids_thread = f'{self.test_thread_id}_bulk_del_ids'
+            delete_by_thread_thread = f'{self.test_thread_id}_bulk_del_thread'
+            delete_combined_thread = f'{self.test_thread_id}_bulk_del_combined'
+
+            # Setup: Create entries in different threads for deletion tests
+            setup_entries = [
+                # Entries for delete by IDs test
+                {'thread_id': delete_by_ids_thread, 'source': 'user', 'text': 'Delete by ID 1'},
+                {'thread_id': delete_by_ids_thread, 'source': 'agent', 'text': 'Delete by ID 2'},
+                # Entries for delete by thread test
+                {'thread_id': delete_by_thread_thread, 'source': 'user', 'text': 'Delete by thread 1'},
+                {'thread_id': delete_by_thread_thread, 'source': 'agent', 'text': 'Delete by thread 2'},
+                {'thread_id': delete_by_thread_thread, 'source': 'user', 'text': 'Delete by thread 3'},
+                # Entries for combined criteria test
+                {'thread_id': delete_combined_thread, 'source': 'user', 'text': 'Combined user 1'},
+                {'thread_id': delete_combined_thread, 'source': 'user', 'text': 'Combined user 2'},
+                {'thread_id': delete_combined_thread, 'source': 'agent', 'text': 'Combined agent 1'},
+            ]
+
+            setup_result = await self.client.call_tool(
+                'store_context_batch',
+                {'entries': setup_entries, 'atomic': True},
+            )
+
+            setup_data = self._extract_content(setup_result)
+
+            if not setup_data.get('success') or setup_data.get('succeeded') != 8:
+                self.test_results.append((test_name, False, f'Failed to setup delete test entries: {setup_data}'))
+                return False
+
+            # Get context IDs for the first two entries (delete by IDs test)
+            ids_to_delete = [setup_data['results'][0]['context_id'], setup_data['results'][1]['context_id']]
+
+            # Test 1: Delete by context_ids
+            delete_by_ids_result = await self.client.call_tool(
+                'delete_context_batch',
+                {'context_ids': ids_to_delete},
+            )
+
+            delete_by_ids_data = self._extract_content(delete_by_ids_result)
+
+            if not delete_by_ids_data.get('success') or delete_by_ids_data.get('deleted_count') != 2:
+                self.test_results.append(
+                    (test_name, False, f"Delete by IDs failed: expected 2, got {delete_by_ids_data.get('deleted_count')}"),
+                )
+                return False
+
+            # Verify criteria_used contains context_ids
+            if 'context_ids' not in str(delete_by_ids_data.get('criteria_used', [])):
+                self.test_results.append((test_name, False, 'context_ids not in criteria_used'))
+                return False
+
+            # Verify entries are deleted
+            verify_deleted = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': ids_to_delete},
+            )
+
+            verify_deleted_data = self._extract_content(verify_deleted)
+
+            if len(verify_deleted_data.get('results', [])) > 0:
+                self.test_results.append((test_name, False, 'Entries not deleted by IDs'))
+                return False
+
+            # Test 2: Delete by thread_ids
+            delete_by_thread_result = await self.client.call_tool(
+                'delete_context_batch',
+                {'thread_ids': [delete_by_thread_thread]},
+            )
+
+            delete_by_thread_data = self._extract_content(delete_by_thread_result)
+
+            if not delete_by_thread_data.get('success') or delete_by_thread_data.get('deleted_count') != 3:
+                deleted = delete_by_thread_data.get('deleted_count')
+                self.test_results.append(
+                    (test_name, False, f'Delete by thread failed: expected 3, got {deleted}'),
+                )
+                return False
+
+            # Verify thread is empty
+            verify_thread = await self.client.call_tool(
+                'search_context',
+                {'thread_id': delete_by_thread_thread},
+            )
+
+            verify_thread_data = self._extract_content(verify_thread)
+
+            if len(verify_thread_data.get('results', [])) > 0:
+                self.test_results.append((test_name, False, 'Thread entries not deleted'))
+                return False
+
+            # Test 3: Delete by combined criteria (thread + source)
+            delete_combined_result = await self.client.call_tool(
+                'delete_context_batch',
+                {'thread_ids': [delete_combined_thread], 'source': 'user'},
+            )
+
+            delete_combined_data = self._extract_content(delete_combined_result)
+
+            if not delete_combined_data.get('success') or delete_combined_data.get('deleted_count') != 2:
+                self.test_results.append(
+                    (test_name, False, f"Combined delete failed: expected 2, got {delete_combined_data.get('deleted_count')}"),
+                )
+                return False
+
+            # Verify only agent entry remains
+            verify_combined = await self.client.call_tool(
+                'search_context',
+                {'thread_id': delete_combined_thread},
+            )
+
+            verify_combined_data = self._extract_content(verify_combined)
+
+            remaining = verify_combined_data.get('results', [])
+            if len(remaining) != 1 or remaining[0].get('source') != 'agent':
+                self.test_results.append((test_name, False, 'Combined criteria did not filter correctly'))
+                return False
+
+            total_deleted = (
+                delete_by_ids_data.get('deleted_count', 0)
+                + delete_by_thread_data.get('deleted_count', 0)
+                + delete_combined_data.get('deleted_count', 0)
+            )
+            self.test_results.append((test_name, True, f'Deleted {total_deleted} entries with various criteria'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_semantic_search_context(self) -> bool:
         """Test semantic search functionality (conditional on availability).
 
@@ -1879,6 +2255,9 @@ class MCPServerIntegrationTest:
             ('Metadata Patch Deep Merge', self.test_metadata_patch_deep_merge),
             ('List Threads', self.test_list_threads),
             ('Get Statistics', self.test_get_statistics),
+            ('Store Context Batch', self.test_store_context_batch),
+            ('Update Context Batch', self.test_update_context_batch),
+            ('Delete Context Batch', self.test_delete_context_batch),
             ('Semantic Search', self.test_semantic_search_context),
             ('Semantic Search Date Filtering', self.test_semantic_search_context_with_date_filtering),
         ]
