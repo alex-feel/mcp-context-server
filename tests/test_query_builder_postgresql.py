@@ -324,8 +324,16 @@ class TestMetadataQueryBuilderPostgresql:
         # Should have 2 params (status=active and priority>5, EXISTS has no param)
         assert len(params) == 2
 
-    def test_boolean_value_postgresql(self) -> None:
-        """Test boolean value handling for PostgreSQL."""
+    def test_boolean_true_value_postgresql(self) -> None:
+        """Test boolean True value handling for PostgreSQL.
+
+        PostgreSQL JSONB ->> operator extracts boolean values as TEXT strings
+        ('true' or 'false'), not as numeric values. The query builder must:
+        1. Check isinstance(value, bool) BEFORE isinstance(value, (int, float))
+           because bool is a subclass of int in Python
+        2. Use TEXT comparison (not NUMERIC cast) for boolean values
+        3. Normalize True to 'true' string for parameter binding
+        """
         builder = MetadataQueryBuilder(backend_type='postgresql')
         filter_spec = MetadataFilter(
             key='is_active',
@@ -336,9 +344,88 @@ class TestMetadataQueryBuilderPostgresql:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert '=' in where_clause
-        # Boolean should be passed through
-        assert params == [True]
+        # Should use TEXT comparison, not NUMERIC cast
+        assert '::TEXT' in where_clause
+        assert '::NUMERIC' not in where_clause
+        # Boolean True should be normalized to 'true' string for PostgreSQL
+        assert params == ['true']
+
+    def test_boolean_false_value_postgresql(self) -> None:
+        """Test boolean False value handling for PostgreSQL.
+
+        Same as True, but verifies False is normalized to 'false' string.
+        """
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='is_active',
+            operator=MetadataOperator.EQ,
+            value=False,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        # Should use TEXT comparison, not NUMERIC cast
+        assert '::TEXT' in where_clause
+        assert '::NUMERIC' not in where_clause
+        # Boolean False should be normalized to 'false' string for PostgreSQL
+        assert params == ['false']
+
+    def test_boolean_not_equal_postgresql(self) -> None:
+        """Test boolean not-equal operator for PostgreSQL.
+
+        Verifies that NE operator with boolean values also uses TEXT comparison.
+        """
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='is_completed',
+            operator=MetadataOperator.NE,
+            value=True,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        # Should use != with TEXT comparison
+        assert '!=' in where_clause
+        assert '::TEXT' in where_clause
+        assert '::NUMERIC' not in where_clause
+        assert params == ['true']
+
+    def test_boolean_simple_filter_postgresql(self) -> None:
+        """Test boolean value in simple filter for PostgreSQL.
+
+        Simple filters (add_simple_filter) should also handle booleans correctly.
+        """
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_simple_filter('completed', True)
+
+        where_clause, params = builder.build_where_clause()
+        # Should use TEXT comparison, not NUMERIC cast
+        assert '::TEXT' in where_clause
+        assert '::NUMERIC' not in where_clause
+        assert params == ['true']
+
+    def test_boolean_nested_path_postgresql(self) -> None:
+        """Test boolean value with nested JSON path for PostgreSQL.
+
+        Verifies boolean handling works correctly with nested paths (#>> operator).
+        """
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='user.settings.notifications_enabled',
+            operator=MetadataOperator.EQ,
+            value=True,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        # Should use #>> for nested path with TEXT comparison
+        assert '#>>' in where_clause
+        assert '::TEXT' in where_clause
+        assert '::NUMERIC' not in where_clause
+        assert params == ['true']
 
     def test_numeric_value_postgresql(self) -> None:
         """Test numeric value handling for PostgreSQL."""
@@ -411,3 +498,83 @@ class TestQueryBuilderBackendDetection:
         pg_builder.add_simple_filter('status', 'active')
         pg_clause, _ = pg_builder.build_where_clause()
         assert '$1' in pg_clause
+
+
+class TestSqliteBooleanBackwardCompatibility:
+    """Test SQLite boolean handling to ensure backward compatibility.
+
+    SQLite stores JSON booleans as integers (0/1), which differs from PostgreSQL's
+    TEXT storage ('true'/'false'). These tests verify that the boolean fix for
+    PostgreSQL did not break SQLite functionality.
+    """
+
+    def test_boolean_true_value_sqlite(self) -> None:
+        """Test boolean True value handling for SQLite.
+
+        SQLite stores JSON booleans as integers (1 for true, 0 for false).
+        """
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='is_active',
+            operator=MetadataOperator.EQ,
+            value=True,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        # Should use json_extract for SQLite
+        assert 'json_extract' in where_clause
+        # Boolean True should be normalized to integer 1 for SQLite
+        assert params == [1]
+
+    def test_boolean_false_value_sqlite(self) -> None:
+        """Test boolean False value handling for SQLite."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='is_active',
+            operator=MetadataOperator.EQ,
+            value=False,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'json_extract' in where_clause
+        # Boolean False should be normalized to integer 0 for SQLite
+        assert params == [0]
+
+    def test_boolean_not_equal_sqlite(self) -> None:
+        """Test boolean not-equal operator for SQLite."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='is_completed',
+            operator=MetadataOperator.NE,
+            value=True,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert '!=' in where_clause
+        assert 'json_extract' in where_clause
+        assert params == [1]
+
+    def test_boolean_simple_filter_sqlite(self) -> None:
+        """Test boolean value in simple filter for SQLite."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_simple_filter('completed', True)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'json_extract' in where_clause
+        # Boolean should be normalized to integer for SQLite
+        assert params == [1]
+
+    def test_boolean_false_simple_filter_sqlite(self) -> None:
+        """Test boolean False in simple filter for SQLite."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_simple_filter('completed', False)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'json_extract' in where_clause
+        assert params == [0]
