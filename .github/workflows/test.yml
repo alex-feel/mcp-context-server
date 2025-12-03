@@ -56,6 +56,7 @@ jobs:
           ENABLE_SEMANTIC_SEARCH: 'true'
           EMBEDDING_MODEL: 'all-minilm'
           EMBEDDING_DIM: '384'
+          ENABLE_FTS: 'true'
         run: uv run pytest -v --cov=app --cov-report=term-missing --cov-report=xml --cov-report=html --junit-xml=test-results.xml tests/
 
       - name: Upload test results
