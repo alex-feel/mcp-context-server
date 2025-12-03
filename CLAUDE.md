@@ -94,7 +94,7 @@ This server implements the [Model Context Protocol](https://modelcontextprotocol
 This is a FastMCP 2.0-based Model Context Protocol server that provides persistent context storage for LLM agents. The architecture consists of:
 
 1. **FastMCP Server Layer** (`app/server.py`):
-   - Exposes 11 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`, `store_context_batch`, `update_context_batch`, `delete_context_batch`
+   - Exposes 12 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`, `fts_search_context`, `store_context_batch`, `update_context_batch`, `delete_context_batch`
    - Handles stdio transport for Claude Desktop/LangGraph integration
    - Manages async request processing with proper lifecycle management
    - Uses `RepositoryContainer` for all database operations (no direct SQL)
@@ -115,6 +115,7 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - **ImageRepository**: Manages multimodal image attachments
    - **StatisticsRepository**: Provides thread statistics and database metrics
    - **EmbeddingRepository**: Manages vector embeddings for semantic search
+   - **FtsRepository**: Handles full-text search operations (FTS5 for SQLite, tsvector for PostgreSQL)
    - Each repository uses `StorageBackend` protocol for database operations
    - Repositories are database-agnostic - work with any backend implementation
 
@@ -297,6 +298,34 @@ The `semantic_search_context` tool is an optional feature that enables vector si
 - **Manual Migration** (if needed): Execute migration SQL directly against database
 - **Note**: All migrations are version-controlled and tracked in `app/migrations/`. The server automatically detects and applies pending migrations on startup.
 
+### Full-Text Search (FTS) Implementation
+
+The `fts_search_context` tool is an optional feature that enables linguistic search with stemming, ranking, and boolean queries:
+
+**Architecture**:
+- **FTS Repository** (`app/repositories/fts_repository.py`): Handles search operations and query building
+- **Backend-Specific Implementation**:
+  - **SQLite**: Uses FTS5 with BM25 ranking. Porter stemmer (English) or unicode61 tokenizer (multilingual, no stemming).
+  - **PostgreSQL**: Uses tsvector/tsquery with ts_rank ranking. Supports 29 languages with full stemming.
+
+**Search Modes**:
+- `match`: Standard word matching with stemming (default)
+- `prefix`: Prefix matching for autocomplete-style search
+- `phrase`: Exact phrase matching preserving word order
+- `boolean`: Boolean operators (AND, OR, NOT) for complex queries
+
+**Key Differences from Other Search Tools**:
+- `search_context`: Exact keyword filtering on text content
+- `semantic_search_context`: Vector similarity search for meaning-based retrieval
+- `fts_search_context`: Linguistic search with stemming, ranking, and highlighted snippets
+
+**Migration System**:
+- **Location**: `app/migrations/` directory
+- **Backend-Specific Migrations**:
+  - `add_fts.sql` - SQLite migration (creates FTS5 virtual table with triggers)
+  - `add_fts_postgresql.sql` - PostgreSQL migration (adds tsvector column with GIN index)
+- **Language Change**: Changing `FTS_LANGUAGE` requires migration (FTS table rebuild)
+
 ## Package Configuration
 
 The project uses `uv` as the package manager with `tool.uv.package = true` in pyproject.toml. Key configuration details:
@@ -406,6 +435,10 @@ Configuration via `.env` file or environment:
 - `DB_PATH`: Custom database location for SQLite (default: ~/.mcp/context_storage.db)
 - `MAX_IMAGE_SIZE_MB`: Individual image size limit (default: 10)
 - `MAX_TOTAL_SIZE_MB`: Total request size limit (default: 100)
+
+**Full-Text Search Settings:**
+- `ENABLE_FTS`: Enable full-text search functionality (default: false)
+- `FTS_LANGUAGE`: Language for stemming and text search (default: english). PostgreSQL supports 29 languages with full stemming. SQLite uses Porter stemmer (English) or unicode61 tokenizer (no stemming).
 
 **Semantic Search Settings:**
 - `ENABLE_SEMANTIC_SEARCH`: Enable semantic search functionality (default: false)
@@ -590,6 +623,7 @@ uv run python -c "from app.server import init_database, _backend; init_database(
 4. **MCP Connection Issues**: Verify server is running and check `.mcp.json` config
 5. **Windows Path Issues**: Use `Path` objects or raw strings (r"path\to\file") in Python code
 6. **Semantic Search Not Available**: Ensure `ENABLE_SEMANTIC_SEARCH=true` and install optional dependencies with `uv sync --extra semantic-search`
+7. **Full-Text Search Not Available**: Ensure `ENABLE_FTS=true`. The feature works without additional dependencies. Check logs for migration status on startup.
 
 ## Code Quality Standards
 
