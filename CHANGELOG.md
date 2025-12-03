@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/alex-feel/mcp-context-server/compare/v0.8.0...v0.9.0) (2025-12-03)
+
+
+### Features
+
+* add full-text search with FTS5 and PostgreSQL tsvector ([34ef13f](https://github.com/alex-feel/mcp-context-server/commit/34ef13f5c39f82dae84d41784dfc1d055dd63fa4))
+
+
+### Bug Fixes
+
+* handle boolean metadata filtering for PostgreSQL JSONB ([1ff407e](https://github.com/alex-feel/mcp-context-server/commit/1ff407e6891e3aec579aef2c531ac33f3e2b2452))
+
 ## [0.8.0](https://github.com/alex-feel/mcp-context-server/compare/v0.7.0...v0.8.0) (2025-11-30)
 
 
