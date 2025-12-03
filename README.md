@@ -12,6 +12,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 15 powerful operators
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
+- **Full-Text Search**: Optional linguistic search with stemming, ranking, and boolean queries (FTS5/tsvector)
 - **Semantic Search**: Optional vector similarity search for meaning-based retrieval
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
 - **High Performance**: WAL mode (SQLite) / MVCC (PostgreSQL), strategic indexing, and async operations
@@ -115,6 +116,10 @@ For more details on environment variable expansion, see: https://docs.claude.com
 - **DB_PATH**: Database file location (SQLite only) - defaults to ~/.mcp/context_storage.db
 - **MAX_IMAGE_SIZE_MB**: Maximum size per image in MB - defaults to 10
 - **MAX_TOTAL_SIZE_MB**: Maximum total request size in MB - defaults to 100
+
+**Full-Text Search Settings:**
+- **ENABLE_FTS**: Enable full-text search functionality (true/false) - defaults to false
+- **FTS_LANGUAGE**: Language for stemming and text search - defaults to `english`. PostgreSQL supports 29 languages with full stemming. SQLite uses `english` for Porter stemmer or any other value for unicode61 tokenizer (no stemming).
 
 **Semantic Search Settings:**
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
@@ -657,6 +662,57 @@ semantic_search_context(
 
 For setup instructions, see the [Semantic Search Guide](docs/semantic-search.md).
 
+#### fts_search_context
+
+Perform full-text search with linguistic processing, relevance ranking, and highlighted snippets.
+
+Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The implementation varies by backend:
+- **SQLite**: Uses FTS5 with BM25 ranking. Porter stemmer (English) or unicode61 tokenizer (multilingual).
+- **PostgreSQL**: Uses tsvector/tsquery with ts_rank ranking. Supports 29 languages with full stemming.
+
+**Parameters:**
+- `query` (str, required): Search query
+- `mode` (str, optional): Search mode - `match` (default), `prefix`, `phrase`, or `boolean`
+- `thread_id` (str, optional): Filter results to specific thread
+- `source` (str, optional): Filter by source type ('user' or 'agent')
+- `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
+- `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
+- `metadata` (dict, optional): Simple metadata filters (key=value equality)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `limit` (int, optional): Maximum results (default: 50, max: 500)
+- `offset` (int, optional): Pagination offset
+
+**Search Modes:**
+- `match`: Standard word matching with stemming (default)
+- `prefix`: Prefix matching for autocomplete-style search
+- `phrase`: Exact phrase matching preserving word order
+- `boolean`: Boolean operators (AND, OR, NOT) for complex queries
+
+**Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
+
+**Returns:** Dictionary with:
+- Query string and search mode
+- List of matching entries with relevance scores and highlighted snippets
+- Result count
+- FTS availability status
+
+**Example:**
+```python
+# Search with prefix matching
+fts_search_context(
+    query="auth",
+    mode="prefix",
+    thread_id="project-123"
+)
+
+# Boolean search with metadata filter
+fts_search_context(
+    query="authentication AND security",
+    mode="boolean",
+    metadata_filters=[{"key": "status", "operator": "eq", "value": "active"}]
+)
+```
+
 ### Batch Operations
 
 The following tools enable efficient batch processing of context entries.
@@ -704,7 +760,7 @@ At least one criterion must be provided. Cascading delete removes associated tag
 
 ### Filtering Reference
 
-The following filtering options apply to both `search_context` and `semantic_search_context` tools.
+The following filtering options apply to `search_context`, `semantic_search_context`, and `fts_search_context` tools.
 
 **Metadata Filtering:**
 

@@ -17,8 +17,9 @@ Metadata in the MCP Context Server provides a powerful way to enrich, organize, 
 - **`update_context`**: Modify metadata on existing entries (full replacement or partial patch)
 - **`search_context`**: Keyword and filter-based search with metadata filtering
 - **`semantic_search_context`**: Vector similarity search with metadata filtering (requires semantic search enabled)
+- **`fts_search_context`**: Full-text search with metadata filtering (requires FTS enabled)
 
-Both search tools support identical metadata filtering syntax and return consistent error responses.
+All search tools support identical metadata filtering syntax and return consistent error responses.
 
 ## Metadata Structure
 
