@@ -9,6 +9,7 @@ into focused repository classes
 from app.backends.base import StorageBackend
 from app.repositories.context_repository import ContextRepository
 from app.repositories.embedding_repository import EmbeddingRepository
+from app.repositories.fts_repository import FtsRepository
 from app.repositories.image_repository import ImageRepository
 from app.repositories.statistics_repository import StatisticsRepository
 from app.repositories.tag_repository import TagRepository
@@ -32,11 +33,13 @@ class RepositoryContainer:
         self.images = ImageRepository(backend)
         self.statistics = StatisticsRepository(backend)
         self.embeddings = EmbeddingRepository(backend)
+        self.fts = FtsRepository(backend)
 
 
 __all__ = [
     'ContextRepository',
     'EmbeddingRepository',
+    'FtsRepository',
     'ImageRepository',
     'StatisticsRepository',
     'TagRepository',

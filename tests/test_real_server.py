@@ -2427,6 +2427,1033 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_fts_search_context(self) -> bool:
+        """Test full-text search functionality (conditional on availability).
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_search_context'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for FTS tests
+            fts_thread = f'{self.test_thread_id}_fts'
+
+            # Store test contexts for full-text search
+            test_contexts = [
+                'Python programming language tutorial for beginners',
+                'Advanced machine learning with Python frameworks',
+                'JavaScript and TypeScript web development guide',
+                'Database indexing and query optimization techniques',
+            ]
+
+            for text in test_contexts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': fts_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Test 1: Basic match mode search for 'Python'
+            match_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'python',
+                    'mode': 'match',
+                    'thread_id': fts_thread,
+                    'limit': 10,
+                },
+            )
+
+            match_data = self._extract_content(match_result)
+
+            # Check for results
+            if 'results' not in match_data:
+                self.test_results.append((test_name, False, f'Match mode search failed: {match_data}'))
+                return False
+
+            match_results = match_data.get('results', [])
+            if len(match_results) != 2:  # Should find 2 Python entries
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 Python results, got {len(match_results)}'),
+                )
+                return False
+
+            # Verify results have scores
+            if not all('score' in r for r in match_results):
+                self.test_results.append((test_name, False, 'Missing scores in results'))
+                return False
+
+            # Test 2: Prefix mode search for 'prog*'
+            prefix_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'prog',
+                    'mode': 'prefix',
+                    'thread_id': fts_thread,
+                    'limit': 10,
+                },
+            )
+
+            prefix_data = self._extract_content(prefix_result)
+
+            if 'results' not in prefix_data:
+                self.test_results.append((test_name, False, f'Prefix mode search failed: {prefix_data}'))
+                return False
+
+            prefix_results = prefix_data.get('results', [])
+            if len(prefix_results) < 1:  # Should find at least 1 entry with 'programming'
+                self.test_results.append(
+                    (test_name, False, f'Expected results for prefix "prog*", got {len(prefix_results)}'),
+                )
+                return False
+
+            # Test 3: Phrase mode search
+            phrase_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'machine learning',
+                    'mode': 'phrase',
+                    'thread_id': fts_thread,
+                    'limit': 10,
+                },
+            )
+
+            phrase_data = self._extract_content(phrase_result)
+
+            if 'results' not in phrase_data:
+                self.test_results.append((test_name, False, f'Phrase mode search failed: {phrase_data}'))
+                return False
+
+            phrase_results = phrase_data.get('results', [])
+            if len(phrase_results) != 1:  # Should find exactly 1 entry with 'machine learning'
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 phrase result, got {len(phrase_results)}'),
+                )
+                return False
+
+            # Test 4: Search with source filter
+            source_filter_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'python',
+                    'mode': 'match',
+                    'thread_id': fts_thread,
+                    'source': 'agent',
+                    'limit': 10,
+                },
+            )
+
+            source_data = self._extract_content(source_filter_result)
+
+            if 'results' not in source_data:
+                self.test_results.append((test_name, False, f'Source filter search failed: {source_data}'))
+                return False
+
+            # All our test entries are from 'agent', should still find 2
+            source_results = source_data.get('results', [])
+            if len(source_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 agent results, got {len(source_results)}'),
+                )
+                return False
+
+            # Test 5: Verify response structure includes required fields
+            if match_data.get('mode') != 'match':
+                self.test_results.append((test_name, False, 'Response missing mode field'))
+                return False
+
+            if 'count' not in match_data:
+                self.test_results.append((test_name, False, 'Response missing count field'))
+                return False
+
+            if 'language' not in match_data:
+                self.test_results.append((test_name, False, 'Response missing language field'))
+                return False
+
+            self.test_results.append((test_name, True, 'FTS search modes and filters working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_search_invalid_filter_returns_error(self) -> bool:
+        """Test that fts_search_context returns explicit error for invalid metadata filter.
+
+        This test verifies unified error handling between fts_search_context and other search tools.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_search_invalid_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Test with invalid operator
+            result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'test query',
+                    'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}],
+                },
+            )
+
+            result_data = self._extract_content(result)
+
+            # Should return error response (unified with search_context behavior)
+            if 'error' not in result_data:
+                self.test_results.append((test_name, False, f'Expected error response, got: {result_data}'))
+                return False
+
+            if result_data['error'] != 'Metadata filter validation failed':
+                self.test_results.append((test_name, False, f"Wrong error message: {result_data['error']}"))
+                return False
+
+            if 'validation_errors' not in result_data:
+                self.test_results.append((test_name, False, 'Missing validation_errors in response'))
+                return False
+
+            # Verify response structure includes expected fields
+            if result_data.get('count') != 0:
+                self.test_results.append((test_name, False, 'Expected count=0 on error'))
+                return False
+
+            if result_data.get('results') != []:
+                self.test_results.append((test_name, False, 'Expected empty results on error'))
+                return False
+
+            self.test_results.append((test_name, True, 'Invalid filter returns error (unified with search_context)'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_boolean_mode(self) -> bool:
+        """Test FTS boolean mode with AND/OR/NOT operators.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_boolean_mode'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for boolean mode tests
+            bool_thread = f'{self.test_thread_id}_fts_boolean'
+
+            # Store test contexts for boolean search
+            test_contexts = [
+                {'text': 'Python is great for data science and machine learning', 'source': 'agent'},
+                {'text': 'JavaScript and TypeScript are popular for web development', 'source': 'agent'},
+                {'text': 'Python and JavaScript can both handle backend development', 'source': 'user'},
+                {'text': 'Rust is known for memory safety without garbage collection', 'source': 'agent'},
+            ]
+
+            for ctx in test_contexts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': bool_thread,
+                        'source': ctx['source'],
+                        'text': ctx['text'],
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Test 1: OR operator - should find entries with Python OR JavaScript
+            or_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'Python OR JavaScript',
+                    'mode': 'boolean',
+                    'thread_id': bool_thread,
+                    'limit': 10,
+                },
+            )
+
+            or_data = self._extract_content(or_result)
+
+            if 'results' not in or_data:
+                self.test_results.append((test_name, False, f'OR search failed: {or_data}'))
+                return False
+
+            or_results = or_data.get('results', [])
+            # Should find at least 3 entries (2 with Python, 2 with JavaScript, 1 with both)
+            if len(or_results) < 3:
+                self.test_results.append(
+                    (test_name, False, f'Expected at least 3 results for OR query, got {len(or_results)}'),
+                )
+                return False
+
+            # Test 2: AND operator - should find entries with both Python AND data
+            and_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'Python AND data',
+                    'mode': 'boolean',
+                    'thread_id': bool_thread,
+                    'limit': 10,
+                },
+            )
+
+            and_data = self._extract_content(and_result)
+
+            if 'results' not in and_data:
+                self.test_results.append((test_name, False, f'AND search failed: {and_data}'))
+                return False
+
+            and_results = and_data.get('results', [])
+            # Should find exactly 1 entry with both Python AND data
+            if len(and_results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result for AND query, got {len(and_results)}'),
+                )
+                return False
+
+            # Verify response mode field
+            if or_data.get('mode') != 'boolean':
+                self.test_results.append((test_name, False, 'Response mode field incorrect'))
+                return False
+
+            self.test_results.append((test_name, True, 'Boolean mode OR/AND operators working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_date_range_filter(self) -> bool:
+        """Test FTS date range filtering with start_date and end_date.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_date_range_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for date filter tests
+            date_thread = f'{self.test_thread_id}_fts_date'
+
+            # Store test contexts
+            test_texts = [
+                'Database optimization techniques for large datasets',
+                'Query performance tuning and indexing strategies',
+            ]
+
+            for text in test_texts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': date_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Get dates in ISO format for filtering using UTC timezone
+            from datetime import UTC
+            from datetime import datetime
+            from datetime import timedelta
+
+            now = datetime.now(tz=UTC)
+            yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+            tomorrow = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+
+            # Test 1: Search with start_date (should include today's entries)
+            start_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'database',
+                    'mode': 'match',
+                    'thread_id': date_thread,
+                    'start_date': yesterday,
+                    'limit': 10,
+                },
+            )
+
+            start_data = self._extract_content(start_result)
+
+            if 'results' not in start_data:
+                self.test_results.append((test_name, False, f'Start date filter search failed: {start_data}'))
+                return False
+
+            start_results = start_data.get('results', [])
+            if len(start_results) < 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected at least 1 result with start_date filter, got {len(start_results)}'),
+                )
+                return False
+
+            # Test 2: Search with both start_date and end_date
+            range_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'database',
+                    'mode': 'match',
+                    'thread_id': date_thread,
+                    'start_date': yesterday,
+                    'end_date': tomorrow,
+                    'limit': 10,
+                },
+            )
+
+            range_data = self._extract_content(range_result)
+
+            if 'results' not in range_data:
+                self.test_results.append((test_name, False, f'Date range filter search failed: {range_data}'))
+                return False
+
+            range_results = range_data.get('results', [])
+            if len(range_results) < 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected at least 1 result with date range filter, got {len(range_results)}'),
+                )
+                return False
+
+            # Test 3: Search with future start_date (should return no results)
+            future_start = (datetime.now(tz=UTC) + timedelta(days=10)).strftime('%Y-%m-%d')
+            future_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'database',
+                    'mode': 'match',
+                    'thread_id': date_thread,
+                    'start_date': future_start,
+                    'limit': 10,
+                },
+            )
+
+            future_data = self._extract_content(future_result)
+
+            if 'results' not in future_data:
+                self.test_results.append((test_name, False, f'Future date filter search failed: {future_data}'))
+                return False
+
+            future_results = future_data.get('results', [])
+            if len(future_results) != 0:
+                self.test_results.append(
+                    (test_name, False, f'Expected 0 results for future start_date, got {len(future_results)}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Date range filtering working (start_date, end_date)'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_metadata_filter(self) -> bool:
+        """Test FTS simple metadata equality filtering.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_metadata_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for metadata filter tests
+            meta_thread = f'{self.test_thread_id}_fts_meta'
+
+            # Store test contexts with different metadata
+            test_entries = [
+                {
+                    'text': 'API design patterns for RESTful services',
+                    'metadata': {'category': 'backend', 'priority': 1},
+                },
+                {
+                    'text': 'Frontend component design with React',
+                    'metadata': {'category': 'frontend', 'priority': 2},
+                },
+                {
+                    'text': 'Backend database design principles',
+                    'metadata': {'category': 'backend', 'priority': 3},
+                },
+            ]
+
+            for entry in test_entries:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': meta_thread,
+                        'source': 'agent',
+                        'text': entry['text'],
+                        'metadata': entry['metadata'],
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Test 1: Filter by category='backend'
+            backend_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'design',
+                    'mode': 'match',
+                    'thread_id': meta_thread,
+                    'metadata': {'category': 'backend'},
+                    'limit': 10,
+                },
+            )
+
+            backend_data = self._extract_content(backend_result)
+
+            if 'results' not in backend_data:
+                self.test_results.append((test_name, False, f'Metadata filter search failed: {backend_data}'))
+                return False
+
+            backend_results = backend_data.get('results', [])
+            # Should find 2 entries with category='backend'
+            if len(backend_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 backend results, got {len(backend_results)}'),
+                )
+                return False
+
+            # Verify all results have the correct metadata
+            for r in backend_results:
+                meta = r.get('metadata', {})
+                if meta.get('category') != 'backend':
+                    self.test_results.append(
+                        (test_name, False, f"Result has wrong category: {meta.get('category')}"),
+                    )
+                    return False
+
+            # Test 2: Filter by category='frontend'
+            frontend_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'design',
+                    'mode': 'match',
+                    'thread_id': meta_thread,
+                    'metadata': {'category': 'frontend'},
+                    'limit': 10,
+                },
+            )
+
+            frontend_data = self._extract_content(frontend_result)
+
+            if 'results' not in frontend_data:
+                self.test_results.append((test_name, False, f'Frontend filter search failed: {frontend_data}'))
+                return False
+
+            frontend_results = frontend_data.get('results', [])
+            # Should find exactly 1 entry with category='frontend'
+            if len(frontend_results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 frontend result, got {len(frontend_results)}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Simple metadata filtering working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_advanced_metadata_filters(self) -> bool:
+        """Test FTS advanced metadata filters with operators (gt, lt, contains, etc.).
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_advanced_metadata_filters'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for advanced metadata filter tests
+            adv_thread = f'{self.test_thread_id}_fts_adv_meta'
+
+            # Store test contexts with priority metadata for numeric comparison
+            test_entries = [
+                {
+                    'text': 'Critical security vulnerability fix',
+                    'metadata': {'priority': 1, 'status': 'resolved'},
+                },
+                {
+                    'text': 'Performance optimization for security module',
+                    'metadata': {'priority': 5, 'status': 'pending'},
+                },
+                {
+                    'text': 'Security audit documentation update',
+                    'metadata': {'priority': 10, 'status': 'completed'},
+                },
+            ]
+
+            for entry in test_entries:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': adv_thread,
+                        'source': 'agent',
+                        'text': entry['text'],
+                        'metadata': entry['metadata'],
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Test 1: Filter with 'gt' (greater than) operator - priority > 3
+            gt_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'security',
+                    'mode': 'match',
+                    'thread_id': adv_thread,
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 3}],
+                    'limit': 10,
+                },
+            )
+
+            gt_data = self._extract_content(gt_result)
+
+            if 'results' not in gt_data:
+                self.test_results.append((test_name, False, f'gt operator search failed: {gt_data}'))
+                return False
+
+            gt_results = gt_data.get('results', [])
+            # Should find 2 entries with priority > 3 (priority 5 and 10)
+            if len(gt_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 results for priority > 3, got {len(gt_results)}'),
+                )
+                return False
+
+            # Verify all results have priority > 3
+            for r in gt_results:
+                meta = r.get('metadata', {})
+                if meta.get('priority', 0) <= 3:
+                    self.test_results.append(
+                        (test_name, False, f"Result has priority <= 3: {meta.get('priority')}"),
+                    )
+                    return False
+
+            # Test 2: Filter with 'lt' (less than) operator - priority < 5
+            lt_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'security',
+                    'mode': 'match',
+                    'thread_id': adv_thread,
+                    'metadata_filters': [{'key': 'priority', 'operator': 'lt', 'value': 5}],
+                    'limit': 10,
+                },
+            )
+
+            lt_data = self._extract_content(lt_result)
+
+            if 'results' not in lt_data:
+                self.test_results.append((test_name, False, f'lt operator search failed: {lt_data}'))
+                return False
+
+            lt_results = lt_data.get('results', [])
+            # Should find 1 entry with priority < 5 (priority 1)
+            if len(lt_results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result for priority < 5, got {len(lt_results)}'),
+                )
+                return False
+
+            # Test 3: Filter with 'eq' (equals) operator - status = 'pending'
+            eq_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'security',
+                    'mode': 'match',
+                    'thread_id': adv_thread,
+                    'metadata_filters': [{'key': 'status', 'operator': 'eq', 'value': 'pending'}],
+                    'limit': 10,
+                },
+            )
+
+            eq_data = self._extract_content(eq_result)
+
+            if 'results' not in eq_data:
+                self.test_results.append((test_name, False, f'eq operator search failed: {eq_data}'))
+                return False
+
+            eq_results = eq_data.get('results', [])
+            # Should find 1 entry with status='pending'
+            if len(eq_results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result for status=pending, got {len(eq_results)}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Advanced metadata filters (gt, lt, eq) working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_pagination_offset(self) -> bool:
+        """Test FTS pagination with offset parameter.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_pagination_offset'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for pagination tests
+            page_thread = f'{self.test_thread_id}_fts_page'
+
+            # Store multiple test contexts for pagination
+            test_texts = [
+                'Testing pagination feature one',
+                'Testing pagination feature two',
+                'Testing pagination feature three',
+                'Testing pagination feature four',
+                'Testing pagination feature five',
+            ]
+
+            for text in test_texts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': page_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Test 1: Get first page (offset=0, limit=2)
+            page1_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'pagination',
+                    'mode': 'match',
+                    'thread_id': page_thread,
+                    'offset': 0,
+                    'limit': 2,
+                },
+            )
+
+            page1_data = self._extract_content(page1_result)
+
+            if 'results' not in page1_data:
+                self.test_results.append((test_name, False, f'First page search failed: {page1_data}'))
+                return False
+
+            page1_results = page1_data.get('results', [])
+            if len(page1_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 results on first page, got {len(page1_results)}'),
+                )
+                return False
+
+            # Get IDs from first page
+            page1_ids = {r.get('id') for r in page1_results}
+
+            # Test 2: Get second page (offset=2, limit=2)
+            page2_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'pagination',
+                    'mode': 'match',
+                    'thread_id': page_thread,
+                    'offset': 2,
+                    'limit': 2,
+                },
+            )
+
+            page2_data = self._extract_content(page2_result)
+
+            if 'results' not in page2_data:
+                self.test_results.append((test_name, False, f'Second page search failed: {page2_data}'))
+                return False
+
+            page2_results = page2_data.get('results', [])
+            if len(page2_results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 results on second page, got {len(page2_results)}'),
+                )
+                return False
+
+            # Get IDs from second page
+            page2_ids = {r.get('id') for r in page2_results}
+
+            # Verify no overlap between pages
+            if page1_ids & page2_ids:
+                self.test_results.append(
+                    (test_name, False, f'Pages overlap: {page1_ids & page2_ids}'),
+                )
+                return False
+
+            # Test 3: Get third page (offset=4, limit=2) - should get 1 result
+            page3_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'pagination',
+                    'mode': 'match',
+                    'thread_id': page_thread,
+                    'offset': 4,
+                    'limit': 2,
+                },
+            )
+
+            page3_data = self._extract_content(page3_result)
+
+            if 'results' not in page3_data:
+                self.test_results.append((test_name, False, f'Third page search failed: {page3_data}'))
+                return False
+
+            page3_results = page3_data.get('results', [])
+            if len(page3_results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result on third page, got {len(page3_results)}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Pagination with offset working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_highlight_snippets(self) -> bool:
+        """Test FTS highlight parameter returns highlighted text with markers.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_highlight_snippets'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if FTS is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+
+            # Skip gracefully if not enabled or available
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            # Create a separate thread for highlight tests
+            hl_thread = f'{self.test_thread_id}_fts_highlight'
+
+            # Store test context with specific searchable terms
+            test_text = 'Advanced algorithms for sorting and searching in databases'
+            result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': hl_thread,
+                    'source': 'agent',
+                    'text': test_text,
+                },
+            )
+            result_data = self._extract_content(result)
+            if not result_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                return False
+
+            # Test 1: Search without highlight (default)
+            no_hl_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'algorithms',
+                    'mode': 'match',
+                    'thread_id': hl_thread,
+                    'limit': 10,
+                },
+            )
+
+            no_hl_data = self._extract_content(no_hl_result)
+
+            if 'results' not in no_hl_data:
+                self.test_results.append((test_name, False, f'No-highlight search failed: {no_hl_data}'))
+                return False
+
+            no_hl_results = no_hl_data.get('results', [])
+            if len(no_hl_results) < 1:
+                self.test_results.append((test_name, False, 'No results found'))
+                return False
+
+            # Verify 'highlighted' value is None when highlight=False (default)
+            # The field is always present in results but should be None when not requested
+            if no_hl_results[0].get('highlighted') is not None:
+                self.test_results.append((test_name, False, 'Highlighted value should be None when highlight=False'))
+                return False
+
+            # Test 2: Search with highlight=True
+            hl_result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'algorithms',
+                    'mode': 'match',
+                    'thread_id': hl_thread,
+                    'highlight': True,
+                    'limit': 10,
+                },
+            )
+
+            hl_data = self._extract_content(hl_result)
+
+            if 'results' not in hl_data:
+                self.test_results.append((test_name, False, f'Highlight search failed: {hl_data}'))
+                return False
+
+            hl_results = hl_data.get('results', [])
+            if len(hl_results) < 1:
+                self.test_results.append((test_name, False, 'No results found with highlight=True'))
+                return False
+
+            # Verify 'highlighted' value is not None when highlight=True
+            if hl_results[0].get('highlighted') is None:
+                self.test_results.append((test_name, False, 'Highlighted value should not be None when highlight=True'))
+                return False
+
+            highlighted_text = hl_results[0].get('highlighted', '')
+
+            # Verify <mark> tags are present in highlighted text
+            if '<mark>' not in highlighted_text or '</mark>' not in highlighted_text:
+                self.test_results.append(
+                    (test_name, False, f'Highlighted text missing <mark> tags: {highlighted_text}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Highlight snippets with <mark> tags working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -2503,6 +3530,14 @@ class MCPServerIntegrationTest:
             ('Semantic Search Metadata Filtering', self.test_semantic_search_context_with_metadata_filters),
             ('Search Context Invalid Filter Error', self.test_search_context_invalid_filter_returns_error),
             ('Semantic Search Invalid Filter Error', self.test_semantic_search_invalid_filter_returns_error),
+            ('FTS Search', self.test_fts_search_context),
+            ('FTS Search Invalid Filter Error', self.test_fts_search_invalid_filter_returns_error),
+            ('FTS Boolean Mode', self.test_fts_boolean_mode),
+            ('FTS Date Range Filter', self.test_fts_date_range_filter),
+            ('FTS Metadata Filter', self.test_fts_metadata_filter),
+            ('FTS Advanced Metadata Filters', self.test_fts_advanced_metadata_filters),
+            ('FTS Pagination Offset', self.test_fts_pagination_offset),
+            ('FTS Highlight Snippets', self.test_fts_highlight_snippets),
         ]
 
         print('\nRunning tests...\n')

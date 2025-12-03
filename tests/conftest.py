@@ -625,7 +625,7 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
     await backend.execute_write(_init_schema)
 
     # Apply semantic search migration with correct dimension
-    migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search.sql'
+    migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search_sqlite.sql'
     migration_sql = migration_path.read_text(encoding='utf-8')
     # Replace the template with actual dimension
     migration_sql = migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding_dim))

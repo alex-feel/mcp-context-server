@@ -71,7 +71,11 @@ class MetadataQueryBuilder:
                 # Nested path: convert 'user.preferences.theme' to array notation '{user,preferences,theme}'
                 path_parts = key_path.split('.')
                 array_path = '{' + ','.join(path_parts) + '}'
-                if isinstance(value, (int, float)):
+                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
+                if isinstance(value, bool):
+                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
+                elif isinstance(value, (int, float)):
                     # Numeric comparison
                     self.conditions.append(f"(metadata#>>'{array_path}')::NUMERIC = {placeholder}")
                 else:
@@ -79,7 +83,11 @@ class MetadataQueryBuilder:
                     self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
             else:
                 # Single-level path
-                if isinstance(value, (int, float)):
+                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
+                if isinstance(value, bool):
+                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
+                elif isinstance(value, (int, float)):
                     # Numeric comparison: cast JSON field to numeric
                     self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC = {placeholder}")
                 else:
@@ -197,18 +205,25 @@ class MetadataQueryBuilder:
             key = f'$.{key}'
         return key
 
-    @staticmethod
-    def _normalize_value(value: str | float | bool | None) -> str | int | float | None:
-        """Normalize value for SQL comparison.
+    def _normalize_value(self, value: str | float | bool | None) -> str | int | float | None:
+        """Normalize value for SQL comparison based on backend type.
 
         Args:
             value: Value to normalize
 
         Returns:
             Normalized value for SQL parameter binding
+
+        Note:
+            Boolean handling differs by backend:
+            - SQLite: Booleans stored as integers (0/1) in JSON
+            - PostgreSQL: JSONB ->> extracts booleans as TEXT ('true'/'false')
         """
-        # Convert Python booleans to SQLite integers (0/1)
         if isinstance(value, bool):
+            if self.backend_type == 'postgresql':
+                # PostgreSQL JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                return 'true' if value else 'false'
+            # SQLite stores JSON booleans as integers (0/1)
             return 1 if value else 0
         # Handle None/null
         if value is None:
@@ -236,14 +251,22 @@ class MetadataQueryBuilder:
             if '.' in key_path:
                 path_parts = key_path.split('.')
                 array_path = '{' + ','.join(path_parts) + '}'
-                if isinstance(value, (int, float)):
+                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
+                if isinstance(value, bool):
+                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
+                elif isinstance(value, (int, float)):
                     self.conditions.append(f"(metadata#>>'{array_path}')::NUMERIC = {placeholder}")
                 elif isinstance(value, str) and not case_sensitive:
                     self.conditions.append(f"LOWER(metadata#>>'{array_path}') = LOWER({placeholder}::TEXT)")
                 else:
                     self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
             else:
-                if isinstance(value, (int, float)):
+                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
+                if isinstance(value, bool):
+                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
+                elif isinstance(value, (int, float)):
                     # Numeric comparison: cast JSON field to numeric
                     self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC = {placeholder}")
                 elif isinstance(value, str) and not case_sensitive:
@@ -269,7 +292,11 @@ class MetadataQueryBuilder:
             else:
                 self.conditions.append(f"json_extract(metadata, '{json_path}') != {placeholder}")
         else:  # postgresql
-            if isinstance(value, (int, float)):
+            # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
+            if isinstance(value, bool):
+                # JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                self.conditions.append(f"metadata->>'{key_path}' != {placeholder}::TEXT")
+            elif isinstance(value, (int, float)):
                 # Numeric comparison
                 self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC != {placeholder}")
             elif isinstance(value, str) and not case_sensitive:

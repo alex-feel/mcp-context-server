@@ -345,6 +345,20 @@
           "format": "number",
           "isSecret": false,
           "name": "EMBEDDING_DIM"
+        },
+        {
+          "description": "Enable full-text search functionality",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_FTS"
+        },
+        {
+          "description": "Language for FTS stemming (e.g., english, german, french)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FTS_LANGUAGE"
         }
       ]
     }

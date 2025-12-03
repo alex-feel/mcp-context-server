@@ -25,12 +25,14 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     os.environ['DB_PATH'] = str(test_db)
     os.environ['MCP_TEST_MODE'] = '1'
     os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
+    os.environ['ENABLE_FTS'] = 'true'
 
     # Only pass through embedding configuration if explicitly set (e.g., by CI)
     # CI sets EMBEDDING_MODEL=all-minilm (46MB) and EMBEDDING_DIM=384 for fast tests
     # When not set, app/settings.py uses defaults: embeddinggemma:latest (768 dim)
     print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
     print('[TEST SERVER] ENABLE_SEMANTIC_SEARCH=true', file=sys.stderr)
+    print('[TEST SERVER] ENABLE_FTS=true', file=sys.stderr)
 
     if 'EMBEDDING_MODEL' in os.environ:
         print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]} (from environment)', file=sys.stderr)
