@@ -412,6 +412,7 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 - `offset` (int, optional): Pagination offset (default: 0)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)

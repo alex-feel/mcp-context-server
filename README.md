@@ -637,6 +637,7 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 - `offset` (int, optional): Pagination offset (default: 0)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
@@ -685,6 +686,7 @@ Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The
 - `offset` (int, optional): Pagination offset (default: 0)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
@@ -692,6 +694,7 @@ Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `highlight` (bool, optional): Include highlighted snippets in results (default: false)
 - `include_images` (bool, optional): Include image data in results (default: false)
+- `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Search Modes:**
 - `match`: Standard word matching with stemming (default)
@@ -739,6 +742,7 @@ Note: This tool is only available when hybrid search is enabled via `ENABLE_HYBR
 - `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from HYBRID_RRF_K env var)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
@@ -838,7 +842,7 @@ At least one criterion must be provided. Cascading delete removes associated tag
 
 ### Filtering Reference
 
-The following filtering options apply to `search_context`, `semantic_search_context`, and `fts_search_context` tools.
+The following filtering options apply to `search_context`, `semantic_search_context`, `fts_search_context`, and `hybrid_search_context` tools.
 
 **Metadata Filtering:**
 
