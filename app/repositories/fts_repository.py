@@ -92,7 +92,8 @@ class FtsRepository(BaseRepository):
         metadata_filters: list[dict[str, Any]] | None = None,
         highlight: bool = False,
         language: str = 'english',
-    ) -> list[dict[str, Any]]:
+        explain_query: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Execute full-text search with optional filters.
 
         SQLite: Uses FTS5 MATCH with BM25 scoring
@@ -116,9 +117,10 @@ class FtsRepository(BaseRepository):
                 PostgreSQL: Supports 29 languages with full stemming.
                 SQLite: This parameter is IGNORED - FTS5 uses unicode61 tokenizer
                 which provides multilingual tokenization but no stemming.
+            explain_query: If True, include query execution plan in stats
 
         Returns:
-            List of search results with context entries and relevance scores
+            Tuple of (search results list, statistics dictionary)
         """
         if self.backend.backend_type == 'sqlite':
             # Log warning if non-English language is requested with SQLite backend
@@ -145,6 +147,7 @@ class FtsRepository(BaseRepository):
                 metadata=metadata,
                 metadata_filters=metadata_filters,
                 highlight=highlight,
+                explain_query=explain_query,
             )
         # postgresql
         return await self._search_postgresql(
@@ -162,6 +165,7 @@ class FtsRepository(BaseRepository):
             metadata_filters=metadata_filters,
             highlight=highlight,
             language=language,
+            explain_query=explain_query,
         )
 
     async def _search_sqlite(
@@ -179,10 +183,17 @@ class FtsRepository(BaseRepository):
         metadata: dict[str, str | int | float | bool] | None,
         metadata_filters: list[dict[str, Any]] | None,
         highlight: bool,
-    ) -> list[dict[str, Any]]:
+        explain_query: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """SQLite FTS5 search implementation."""
+        import time as time_module
 
-        def _search_sqlite_inner(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        # Track metadata filter count for stats
+        metadata_filter_count = 0
+
+        def _search_sqlite_inner(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            nonlocal metadata_filter_count
+            start_time = time_module.time()
             # Transform query based on mode
             fts_query = self._transform_query_sqlite(query, mode)
 
@@ -274,6 +285,9 @@ class FtsRepository(BaseRepository):
                     filter_conditions.append(metadata_clause_with_alias)
                     filter_params.extend(metadata_params)
 
+                # Track metadata filter count for stats
+                metadata_filter_count = metadata_builder.get_filter_count()
+
             where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
             # Build highlight expression if requested
@@ -311,7 +325,46 @@ class FtsRepository(BaseRepository):
             cursor = conn.execute(sql_query, params)
             rows = cursor.fetchall()
 
-            return [dict(row) for row in rows]
+            results = [dict(row) for row in rows]
+
+            # Calculate execution time
+            execution_time_ms = (time_module.time() - start_time) * 1000
+
+            # Count filters applied
+            filter_count = sum([
+                1 if thread_id else 0,
+                1 if source else 0,
+                1 if content_type else 0,
+                1 if tags else 0,
+                1 if start_date else 0,
+                1 if end_date else 0,
+            ])
+            # Add metadata filter count
+            filter_count += metadata_filter_count
+
+            # Build statistics
+            stats: dict[str, Any] = {
+                'execution_time_ms': round(execution_time_ms, 2),
+                'filters_applied': filter_count,
+                'rows_returned': len(results),
+            }
+
+            # Get query plan if requested
+            if explain_query:
+                explain_cursor = conn.execute(f'EXPLAIN QUERY PLAN {sql_query}', params)
+                plan_rows = explain_cursor.fetchall()
+                plan_data: list[str] = []
+                for row in plan_rows:
+                    row_dict = dict(row)
+                    id_val = row_dict.get('id', '?')
+                    parent_val = row_dict.get('parent', '?')
+                    notused_val = row_dict.get('notused', '?')
+                    detail_val = row_dict.get('detail', '?')
+                    formatted = f'id:{id_val} parent:{parent_val} notused:{notused_val} detail:{detail_val}'
+                    plan_data.append(formatted)
+                stats['query_plan'] = '\n'.join(plan_data)
+
+            return results, stats
 
         return await self.backend.execute_read(_search_sqlite_inner)
 
@@ -331,10 +384,17 @@ class FtsRepository(BaseRepository):
         metadata_filters: list[dict[str, Any]] | None,
         highlight: bool,
         language: str,
-    ) -> list[dict[str, Any]]:
+        explain_query: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """PostgreSQL tsvector search implementation."""
+        import time as time_module
 
-        async def _search_postgresql_inner(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+        # Track metadata filter count for stats
+        metadata_filter_count = 0
+
+        async def _search_postgresql_inner(conn: asyncpg.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            nonlocal metadata_filter_count
+            start_time = time_module.time()
             filter_conditions = ['1=1']  # Always true, makes building easier
             filter_params: list[Any] = []
             param_position = 1
@@ -433,6 +493,9 @@ class FtsRepository(BaseRepository):
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
 
+                # Track metadata filter count for stats
+                metadata_filter_count = metadata_builder.get_filter_count()
+
             where_clause = ' AND '.join(filter_conditions)
 
             # Transform query based on mode for PostgreSQL
@@ -483,7 +546,37 @@ class FtsRepository(BaseRepository):
 
             rows = await conn.fetch(sql_query, *filter_params)
 
-            return [dict(row) for row in rows]
+            results = [dict(row) for row in rows]
+
+            # Calculate execution time
+            execution_time_ms = (time_module.time() - start_time) * 1000
+
+            # Count filters applied
+            filter_count = sum([
+                1 if thread_id else 0,
+                1 if source else 0,
+                1 if content_type else 0,
+                1 if tags else 0,
+                1 if start_date else 0,
+                1 if end_date else 0,
+            ])
+            # Add metadata filter count
+            filter_count += metadata_filter_count
+
+            # Build statistics
+            stats: dict[str, Any] = {
+                'execution_time_ms': round(execution_time_ms, 2),
+                'filters_applied': filter_count,
+                'rows_returned': len(results),
+            }
+
+            # Get query plan if requested
+            if explain_query:
+                explain_result = await conn.fetch(f'EXPLAIN {sql_query}', *filter_params)
+                plan_data: list[str] = [record['QUERY PLAN'] for record in explain_result]
+                stats['query_plan'] = '\n'.join(plan_data)
+
+            return results, stats
 
         return await self.backend.execute_read(cast(Any, _search_postgresql_inner))
 

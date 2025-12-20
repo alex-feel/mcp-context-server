@@ -2326,6 +2326,7 @@ async def fts_search_context(
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
+    explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Full-text search with linguistic analysis (stemming, ranking, boolean queries).
@@ -2376,6 +2377,7 @@ async def fts_search_context(
         offset: Pagination offset
         highlight: Whether to include highlighted snippets
         include_images: Whether to include image data for multimodal entries
+        explain_query: Include query execution statistics
         ctx: FastMCP context object
 
     Returns:
@@ -2436,7 +2438,7 @@ async def fts_search_context(
         from app.repositories.fts_repository import FtsValidationError
 
         try:
-            search_results = await repos.fts.search(
+            search_results, stats = await repos.fts.search(
                 query=query,
                 mode=mode,
                 limit=limit,
@@ -2451,10 +2453,11 @@ async def fts_search_context(
                 metadata_filters=metadata_filters,
                 highlight=highlight,
                 language=settings.fts_language,
+                explain_query=explain_query,
             )
         except FtsValidationError as e:
             # Return error response (unified with search_context behavior)
-            return {
+            error_response: dict[str, Any] = {
                 'query': query,
                 'mode': mode,
                 'results': [],
@@ -2463,6 +2466,13 @@ async def fts_search_context(
                 'error': e.message,
                 'validation_errors': e.validation_errors,
             }
+            if explain_query:
+                error_response['stats'] = {
+                    'execution_time_ms': 0.0,
+                    'filters_applied': 0,
+                    'rows_returned': 0,
+                }
+            return error_response
         except Exception as e:
             logger.error(f'FTS search failed: {e}')
             raise ToolError(f'FTS search failed: {str(e)}') from e
@@ -2493,13 +2503,16 @@ async def fts_search_context(
 
         logger.info(f'FTS search found {len(search_results)} results for query: "{query[:50]}..."')
 
-        return {
+        response: dict[str, Any] = {
             'query': query,
             'mode': mode,
             'results': search_results,
             'count': len(search_results),
             'language': settings.fts_language,
         }
+        if explain_query:
+            response['stats'] = stats
+        return response
 
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
@@ -2697,7 +2710,7 @@ async def hybrid_search_context(
                 from app.repositories.fts_repository import FtsValidationError
 
                 try:
-                    results = await repos.fts.search(
+                    results, _ = await repos.fts.search(
                         query=query,
                         mode='match',
                         limit=over_fetch_limit,
@@ -2712,6 +2725,7 @@ async def hybrid_search_context(
                         metadata_filters=metadata_filters,
                         highlight=False,
                         language=settings.fts_language,
+                        explain_query=False,
                     )
                     fts_results = results
                 except FtsValidationError as e:
