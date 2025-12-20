@@ -167,7 +167,7 @@ When hybrid search is enabled and at least one underlying search method is avail
 - `search_modes` (list, optional): Which search modes to use - `['fts', 'semantic']` (default: both)
 - `fusion_method` (str, optional): Fusion algorithm - currently only `'rrf'` supported
 - `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from settings)
-- `thread_id` (str, optional): Filter results to specific thread
+- `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `tags` (list, optional): Filter by any of these tags (OR logic)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
@@ -176,6 +176,7 @@ When hybrid search is enabled and at least one underlying search method is avail
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `include_images` (bool, optional): Include image data in results (default: false)
+- `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Metadata Filtering**: The `metadata` and `metadata_filters` parameters work identically to `search_context`. For comprehensive documentation on operators, nested paths, and best practices, see the [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
@@ -208,9 +209,61 @@ When hybrid search is enabled and at least one underlying search method is avail
   "fusion_method": "rrf",
   "search_modes_used": ["fts", "semantic"],
   "fts_count": 12,
-  "semantic_count": 10
+  "semantic_count": 10,
+  "stats": {
+    "execution_time_ms": 125.5,
+    "fts_stats": {
+      "execution_time_ms": 15.2,
+      "filters_applied": 2,
+      "rows_returned": 12
+    },
+    "semantic_stats": {
+      "execution_time_ms": 85.3,
+      "embedding_generation_ms": 45.1,
+      "filters_applied": 2,
+      "rows_returned": 10
+    },
+    "fusion_stats": {
+      "rrf_k": 60,
+      "total_unique_documents": 15,
+      "documents_in_both": 7,
+      "documents_fts_only": 5,
+      "documents_semantic_only": 3
+    }
+  }
 }
 ```
+
+**Note:** The `stats` field is only included when `explain_query=True`.
+
+### Understanding the Stats Field
+
+When `explain_query=True`, the response includes a `stats` object with detailed execution statistics:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `execution_time_ms` | float | Total hybrid search execution time |
+| `fts_stats` | object or null | FTS search statistics (null if FTS not used) |
+| `semantic_stats` | object or null | Semantic search statistics (null if semantic not used) |
+| `fusion_stats` | object | RRF fusion statistics |
+
+**FTS Stats:**
+- `execution_time_ms`: FTS search execution time
+- `filters_applied`: Number of metadata/date filters applied
+- `rows_returned`: Number of FTS results before fusion
+
+**Semantic Stats:**
+- `execution_time_ms`: Semantic search execution time
+- `embedding_generation_ms`: Time spent generating query embedding via Ollama
+- `filters_applied`: Number of metadata/date filters applied
+- `rows_returned`: Number of semantic results before fusion
+
+**Fusion Stats:**
+- `rrf_k`: RRF smoothing constant used
+- `total_unique_documents`: Total unique documents after fusion
+- `documents_in_both`: Documents found by both FTS and semantic search (high confidence)
+- `documents_fts_only`: Documents found only by FTS
+- `documents_semantic_only`: Documents found only by semantic search
 
 ### Understanding the Scores Field
 

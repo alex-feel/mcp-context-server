@@ -130,7 +130,7 @@ When FTS is enabled, a new MCP tool becomes available.
 - `mode` (str, optional): Search mode - `match` (default), `prefix`, `phrase`, or `boolean`
 - `limit` (int, optional): Maximum results to return (1-100, default: 5)
 - `offset` (int, optional): Pagination offset (default: 0)
-- `thread_id` (str, optional): Filter results to specific thread
+- `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `tags` (list, optional): Filter by any of these tags (OR logic)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')

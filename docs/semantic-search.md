@@ -408,9 +408,9 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 
 **Parameters**:
 - `query` (str, required): Natural language search query
-- `limit` (int, optional): Number of top-K nearest neighbors to return (1-100, default: 5)
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
 - `offset` (int, optional): Pagination offset (default: 0)
-- `thread_id` (str, optional): Filter results to specific thread
+- `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `tags` (list, optional): Filter by any of these tags (OR logic)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
