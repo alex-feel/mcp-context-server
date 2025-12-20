@@ -2118,7 +2118,7 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
-    top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return (default: 20)')] = 20,
+    limit: Annotated[int, Field(ge=1, le=100, description='Number of top-K nearest neighbors to return (default: 20)')] = 20,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
     start_date: Annotated[
@@ -2171,7 +2171,7 @@ async def semantic_search_context(
 
     Args:
         query: Natural language search query
-        top_k: Number of results to return (1-100)
+        limit: Number of top-K nearest neighbors to return (1-100)
         thread_id: Optional filter to narrow results by thread
         source: Optional filter to narrow results by source type
         start_date: Filter entries created on or after this date (ISO 8601)
@@ -2220,7 +2220,7 @@ async def semantic_search_context(
         try:
             search_results = await repos.embeddings.search(
                 query_embedding=query_embedding,
-                limit=top_k,
+                limit=limit,
                 thread_id=thread_id,
                 source=source,
                 start_date=start_date,

@@ -408,7 +408,7 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 
 **Parameters**:
 - `query` (str, required): Natural language search query
-- `top_k` (int, optional): Number of results to return (1-100, default: 20)
+- `limit` (int, optional): Number of top-K nearest neighbors to return (1-100, default: 20)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
@@ -452,7 +452,7 @@ If embedding generation fails, the context is still stored successfully (gracefu
 
 1. **Cross-thread discovery**: Find related work from other sessions
    ```
-   semantic_search_context(query="authentication implementation", top_k=10)
+   semantic_search_context(query="authentication implementation", limit=10)
    ```
 
 2. **Agent collaboration**: Find what other agents learned
@@ -462,7 +462,7 @@ If embedding generation fails, the context is still stored successfully (gracefu
 
 3. **Filtered search**: Combine semantic and structured filters
    ```
-   semantic_search_context(query="error handling", thread_id="current-task", top_k=5)
+   semantic_search_context(query="error handling", thread_id="current-task", limit=5)
    ```
 
 4. **Metadata-filtered search**: Combine semantic search with metadata filtering
@@ -547,7 +547,7 @@ Run through this checklist to verify your semantic search installation:
 
 9. **Test functionality**:
     ```
-    semantic_search_context(query="test", top_k=5)
+    semantic_search_context(query="test", limit=5)
     ```
 
 ## Troubleshooting

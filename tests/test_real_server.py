@@ -1625,7 +1625,7 @@ class MCPServerIntegrationTest:
                     'thread_id': semantic_date_thread,
                     'start_date': today,
                     'end_date': tomorrow,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             valid_range_data = self._extract_content(valid_range_result)
@@ -1642,7 +1642,7 @@ class MCPServerIntegrationTest:
                     'query': 'machine learning',
                     'thread_id': semantic_date_thread,
                     'start_date': future_date,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             future_start_data = self._extract_content(future_start_result)
@@ -1659,7 +1659,7 @@ class MCPServerIntegrationTest:
                     'query': 'database indexing',
                     'thread_id': semantic_date_thread,
                     'end_date': past_date,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             past_end_data = self._extract_content(past_end_result)
@@ -1678,7 +1678,7 @@ class MCPServerIntegrationTest:
                     'source': 'agent',
                     'start_date': today,
                     'end_date': tomorrow,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             combined_data = self._extract_content(combined_result)
@@ -2127,7 +2127,7 @@ class MCPServerIntegrationTest:
                 'semantic_search_context',
                 {
                     'query': 'artificial intelligence and deep learning',
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
 
@@ -2151,7 +2151,7 @@ class MCPServerIntegrationTest:
                 {
                     'query': 'programming languages',
                     'thread_id': semantic_thread,
-                    'top_k': 3,
+                    'limit': 3,
                 },
             )
 
@@ -2167,7 +2167,7 @@ class MCPServerIntegrationTest:
                 {
                     'query': 'data science',
                     'source': 'agent',
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
 
@@ -2247,7 +2247,7 @@ class MCPServerIntegrationTest:
                     'query': 'development tasks',
                     'thread_id': metadata_thread,
                     'metadata': {'category': 'backend'},
-                    'top_k': 10,
+                    'limit': 10,
                 },
             )
 
@@ -2272,7 +2272,7 @@ class MCPServerIntegrationTest:
                     'query': 'tasks',
                     'thread_id': metadata_thread,
                     'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 5}],
-                    'top_k': 10,
+                    'limit': 10,
                 },
             )
 
@@ -2299,7 +2299,7 @@ class MCPServerIntegrationTest:
                     'source': 'agent',
                     'metadata': {'category': 'backend'},
                     'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 8}],
-                    'top_k': 10,
+                    'limit': 10,
                 },
             )
 

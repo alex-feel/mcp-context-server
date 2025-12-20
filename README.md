@@ -633,7 +633,7 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 
 **Parameters:**
 - `query` (str, required): Natural language search query
-- `top_k` (int, optional): Number of results to return (1-100) - defaults to 20
+- `limit` (int, optional): Number of top-K nearest neighbors to return (1-100) - defaults to 20
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)

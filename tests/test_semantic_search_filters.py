@@ -42,7 +42,7 @@ class TestSemanticSearchFilters:
     ) -> None:
         """Regression test: thread_id filter returns correct number of results.
 
-        This test verifies the fix for the bug where requesting top_k=3 with
+        This test verifies the fix for the bug where requesting limit=3 with
         thread_id filter returned only 1 result when 2 should be returned.
 
         The bug occurred because sqlite-vec's k parameter limited results
