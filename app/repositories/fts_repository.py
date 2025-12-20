@@ -84,6 +84,7 @@ class FtsRepository(BaseRepository):
         offset: int = 0,
         thread_id: str | None = None,
         source: Literal['user', 'agent'] | None = None,
+        content_type: Literal['text', 'multimodal'] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
         metadata: dict[str, str | int | float | bool] | None = None,
@@ -103,6 +104,7 @@ class FtsRepository(BaseRepository):
             offset: Number of results to skip (pagination)
             thread_id: Optional filter by thread
             source: Optional filter by source type
+            content_type: Filter by content type (text or multimodal)
             start_date: Filter by created_at >= date (ISO 8601 format)
             end_date: Filter by created_at <= date (ISO 8601 format)
             metadata: Simple metadata filters (key=value equality)
@@ -134,6 +136,7 @@ class FtsRepository(BaseRepository):
                 offset=offset,
                 thread_id=thread_id,
                 source=source,
+                content_type=content_type,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
@@ -148,6 +151,7 @@ class FtsRepository(BaseRepository):
             offset=offset,
             thread_id=thread_id,
             source=source,
+            content_type=content_type,
             start_date=start_date,
             end_date=end_date,
             metadata=metadata,
@@ -164,6 +168,7 @@ class FtsRepository(BaseRepository):
         offset: int,
         thread_id: str | None,
         source: str | None,
+        content_type: str | None,
         start_date: str | None,
         end_date: str | None,
         metadata: dict[str, str | int | float | bool] | None,
@@ -186,6 +191,10 @@ class FtsRepository(BaseRepository):
             if source:
                 filter_conditions.append('ce.source = ?')
                 filter_params.append(source)
+
+            if content_type:
+                filter_conditions.append('ce.content_type = ?')
+                filter_params.append(content_type)
 
             # Date range filtering - Use datetime() to normalize ISO 8601 input
             if start_date:
@@ -295,6 +304,7 @@ class FtsRepository(BaseRepository):
         offset: int,
         thread_id: str | None,
         source: str | None,
+        content_type: str | None,
         start_date: str | None,
         end_date: str | None,
         metadata: dict[str, str | int | float | bool] | None,
@@ -317,6 +327,11 @@ class FtsRepository(BaseRepository):
             if source:
                 filter_conditions.append(f'ce.source = {self._placeholder(param_position)}')
                 filter_params.append(source)
+                param_position += 1
+
+            if content_type:
+                filter_conditions.append(f'ce.content_type = {self._placeholder(param_position)}')
+                filter_params.append(content_type)
                 param_position += 1
 
             # Date range filtering

@@ -135,8 +135,10 @@ class EmbeddingRepository(BaseRepository):
         self,
         query_embedding: list[float],
         limit: int = 20,
+        offset: int = 0,
         thread_id: str | None = None,
         source: Literal['user', 'agent'] | None = None,
+        content_type: Literal['text', 'multimodal'] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
         metadata: dict[str, str | int | float | bool] | None = None,
@@ -150,8 +152,10 @@ class EmbeddingRepository(BaseRepository):
         Args:
             query_embedding: Query vector for similarity search
             limit: Maximum number of results to return
+            offset: Number of results to skip (pagination)
             thread_id: Optional filter by thread
             source: Optional filter by source type
+            content_type: Filter by content type (text or multimodal)
             start_date: Filter by created_at >= date (ISO 8601 format)
             end_date: Filter by created_at <= date (ISO 8601 format)
             metadata: Simple metadata filters (key=value equality)
@@ -182,6 +186,10 @@ class EmbeddingRepository(BaseRepository):
                 if source:
                     filter_conditions.append('source = ?')
                     filter_params.append(source)
+
+                if content_type:
+                    filter_conditions.append('content_type = ?')
+                    filter_params.append(content_type)
 
                 # Date range filtering - Use datetime() to normalize ISO 8601 input
                 # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
@@ -265,10 +273,10 @@ class EmbeddingRepository(BaseRepository):
                     JOIN context_entries ce ON ce.id = fc.id
                     JOIN vec_context_embeddings ve ON ve.rowid = fc.id
                     ORDER BY distance
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                 '''
 
-                params = filter_params + [query_blob, limit]
+                params = filter_params + [query_blob, limit, offset]
 
                 cursor = conn.execute(query, params)
                 rows = cursor.fetchall()
@@ -291,6 +299,11 @@ class EmbeddingRepository(BaseRepository):
             if source:
                 filter_conditions.append(f'ce.source = {self._placeholder(param_position)}')
                 filter_params.append(source)
+                param_position += 1
+
+            if content_type:
+                filter_conditions.append(f'ce.content_type = {self._placeholder(param_position)}')
+                filter_params.append(content_type)
                 param_position += 1
 
             # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
@@ -379,10 +392,10 @@ class EmbeddingRepository(BaseRepository):
                     JOIN vec_context_embeddings ve ON ve.context_id = ce.id
                     WHERE {where_clause}
                     ORDER BY ve.embedding <-> {self._placeholder(1)}
-                    LIMIT {self._placeholder(param_position)}
+                    LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 '''
 
-            filter_params.append(limit)
+            filter_params.extend([limit, offset])
 
             rows = await conn.fetch(query, *filter_params)
 

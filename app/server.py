@@ -2119,8 +2119,10 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, le=100, description='Top-K nearest neighbors to return (1-100, default: 5)')] = 5,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
+    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2145,6 +2147,7 @@ async def semantic_search_context(
             'starts_with, ends_with, is_null, is_not_null',
         ),
     ] = None,
+    include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Find semantically similar context using vector embeddings with optional metadata filtering.
@@ -2155,6 +2158,7 @@ async def semantic_search_context(
 
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
+    - content_type: Filter by text or multimodal entries
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2172,12 +2176,15 @@ async def semantic_search_context(
     Args:
         query: Natural language search query
         limit: Top-K nearest neighbors to return (1-100, default: 5)
+        offset: Pagination offset (default: 0)
         thread_id: Optional filter to narrow results by thread
         source: Optional filter to narrow results by source type
+        content_type: Filter by content type (text or multimodal)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
+        include_images: Whether to include image data for multimodal entries
         ctx: FastMCP context object
 
     Returns:
@@ -2221,8 +2228,10 @@ async def semantic_search_context(
             search_results = await repos.embeddings.search(
                 query_embedding=query_embedding,
                 limit=limit,
+                offset=offset,
                 thread_id=thread_id,
                 source=source,
+                content_type=content_type,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
@@ -2242,12 +2251,16 @@ async def semantic_search_context(
             logger.error(f'Semantic search failed: {e}')
             raise ToolError(f'Semantic search failed: {str(e)}') from e
 
-        # Enrich results with tags
+        # Enrich results with tags and optionally images
         for result in search_results:
             context_id = result.get('id')
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
                 result['tags'] = tags_result
+                # Fetch images if requested and applicable
+                if include_images and result.get('content_type') == 'multimodal':
+                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    result['images'] = images_result
             else:
                 result['tags'] = []
 
@@ -2280,6 +2293,7 @@ async def fts_search_context(
     ] = 'match',
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type')] = None,
+    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2306,6 +2320,7 @@ async def fts_search_context(
     ] = None,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
+    include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Full-text search with linguistic analysis (stemming, ranking, boolean queries).
@@ -2325,6 +2340,7 @@ async def fts_search_context(
 
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
+    - content_type: Filter by text or multimodal entries
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2344,6 +2360,7 @@ async def fts_search_context(
         mode: Search mode (match, prefix, phrase, boolean)
         thread_id: Optional filter by thread
         source: Optional filter by source type
+        content_type: Filter by content type (text or multimodal)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
@@ -2351,6 +2368,7 @@ async def fts_search_context(
         limit: Maximum results to return (1-100, default: 5)
         offset: Pagination offset
         highlight: Whether to include highlighted snippets
+        include_images: Whether to include image data for multimodal entries
         ctx: FastMCP context object
 
     Returns:
@@ -2418,6 +2436,7 @@ async def fts_search_context(
                 offset=offset,
                 thread_id=thread_id,
                 source=source,
+                content_type=content_type,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
@@ -2457,6 +2476,10 @@ async def fts_search_context(
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
                 result['tags'] = tags_result
+                # Fetch images if requested and applicable
+                if include_images and result.get('content_type') == 'multimodal':
+                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    result['images'] = images_result
             else:
                 result['tags'] = []
 
@@ -2480,6 +2503,7 @@ async def fts_search_context(
 async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     search_modes: Annotated[
         list[Literal['fts', 'semantic']] | None,
         Field(
@@ -2502,6 +2526,7 @@ async def hybrid_search_context(
     ] = None,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
+    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2526,6 +2551,7 @@ async def hybrid_search_context(
             'starts_with, ends_with, is_null, is_not_null',
         ),
     ] = None,
+    include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
@@ -2542,6 +2568,7 @@ async def hybrid_search_context(
 
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
+    - content_type: Filter by text or multimodal entries
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2561,16 +2588,19 @@ async def hybrid_search_context(
 
     Args:
         query: Natural language search query
+        limit: Maximum results to return (1-100, default: 5)
+        offset: Pagination offset (default: 0)
         search_modes: Which search modes to use (default: both)
         fusion_method: Fusion algorithm (currently only 'rrf')
         rrf_k: RRF smoothing constant (default from settings)
         thread_id: Optional filter by thread
         source: Optional filter by source type
+        content_type: Filter by content type (text or multimodal)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
-        limit: Maximum results to return (1-100, default: 5)
+        include_images: Whether to include image data for multimodal entries
         ctx: FastMCP context object
 
     Returns:
@@ -2663,6 +2693,7 @@ async def hybrid_search_context(
                         offset=0,
                         thread_id=thread_id,
                         source=source,
+                        content_type=content_type,
                         start_date=start_date,
                         end_date=end_date,
                         metadata=metadata,
@@ -2698,8 +2729,10 @@ async def hybrid_search_context(
                     results = await repos.embeddings.search(
                         query_embedding=query_embedding,
                         limit=over_fetch_limit,
+                        offset=0,
                         thread_id=thread_id,
                         source=source,
+                        content_type=content_type,
                         start_date=start_date,
                         end_date=end_date,
                         metadata=metadata,
@@ -2745,20 +2778,28 @@ async def hybrid_search_context(
                     result['metadata'] = None
 
         # Fuse results using RRF
+        # Over-fetch to handle offset, then apply offset after fusion
         fused_results = reciprocal_rank_fusion(
             fts_results=fts_results,
             semantic_results=semantic_results,
             k=effective_rrf_k,
-            limit=limit,
+            limit=limit + offset,  # Over-fetch to handle offset
         )
 
-        # Enrich results with tags (cast to Any for mutation compatibility)
+        # Apply offset after fusion
+        fused_results = fused_results[offset:]
+
+        # Enrich results with tags and optionally images (cast to Any for mutation compatibility)
         fused_results_any: list[dict[str, Any]] = cast(list[dict[str, Any]], fused_results)
         for result in fused_results_any:
             context_id = result.get('id')
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
                 result['tags'] = tags_result
+                # Fetch images if requested and applicable
+                if include_images and result.get('content_type') == 'multimodal':
+                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    result['images'] = images_result
             else:
                 result['tags'] = []
 
