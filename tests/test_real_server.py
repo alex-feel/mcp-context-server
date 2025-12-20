@@ -3454,6 +3454,181 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_hybrid_search_context(self) -> bool:
+        """Test hybrid search combining FTS and semantic search with RRF fusion.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'hybrid_search_context'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if ENABLE_HYBRID_SEARCH environment variable is set
+            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+                self.test_results.append(
+                    (test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'),
+                )
+                return True
+
+            # Check if hybrid search is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            # Check both FTS and semantic search availability
+            fts_info = stats_data.get('fts', {})
+            semantic_info = stats_data.get('semantic_search', {})
+
+            fts_enabled = fts_info.get('enabled', False)
+            fts_available = fts_info.get('available', False)
+            semantic_enabled = semantic_info.get('enabled', False)
+            semantic_available = semantic_info.get('available', False)
+
+            # Hybrid search requires at least one of FTS or semantic to be available
+            has_fts = fts_enabled and fts_available
+            has_semantic = semantic_enabled and semantic_available
+
+            # Skip gracefully if neither search type is available
+            if not has_fts and not has_semantic:
+                self.test_results.append(
+                    (
+                        test_name,
+                        True,
+                        f'Skipped (fts={has_fts}, semantic={has_semantic})',
+                    ),
+                )
+                return True
+
+            # Create a separate thread for hybrid search tests
+            hybrid_thread = f'{self.test_thread_id}_hybrid'
+
+            # Store test contexts with diverse content
+            test_contexts = [
+                'Python machine learning algorithms for data science applications',
+                'Advanced database indexing and query optimization techniques',
+                'Neural networks and deep learning frameworks in Python',
+                'JavaScript frontend development with modern frameworks',
+            ]
+
+            for text in test_contexts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': hybrid_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Test 1: Basic hybrid search with default settings
+            hybrid_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'python machine learning',
+                    'thread_id': hybrid_thread,
+                    'limit': 10,
+                },
+            )
+
+            hybrid_data = self._extract_content(hybrid_result)
+
+            # Check for results
+            if 'results' not in hybrid_data:
+                self.test_results.append((test_name, False, f'Hybrid search failed: {hybrid_data}'))
+                return False
+
+            # Verify response structure
+            if 'fusion_method' not in hybrid_data:
+                self.test_results.append((test_name, False, 'Response missing fusion_method field'))
+                return False
+
+            if 'search_modes_used' not in hybrid_data:
+                self.test_results.append((test_name, False, 'Response missing search_modes_used field'))
+                return False
+
+            if 'fts_count' not in hybrid_data or 'semantic_count' not in hybrid_data:
+                self.test_results.append((test_name, False, 'Response missing source counts'))
+                return False
+
+            hybrid_results = hybrid_data.get('results', [])
+            if len(hybrid_results) < 1:
+                self.test_results.append((test_name, False, 'No results from hybrid search'))
+                return False
+
+            # Test 2: Verify results have RRF scores structure
+            first_result = hybrid_results[0]
+            if 'scores' not in first_result:
+                self.test_results.append((test_name, False, 'Result missing scores field'))
+                return False
+
+            scores = first_result.get('scores', {})
+            if 'rrf' not in scores:
+                self.test_results.append((test_name, False, 'Scores missing rrf field'))
+                return False
+
+            # Test 3: Test with specific search modes
+            fts_only_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'database indexing',
+                    'search_modes': ['fts'],
+                    'thread_id': hybrid_thread,
+                    'limit': 10,
+                },
+            )
+
+            fts_only_data = self._extract_content(fts_only_result)
+
+            # If FTS is available, verify search_modes_used reflects the request
+            if has_fts:
+                search_modes_used = fts_only_data.get('search_modes_used', [])
+                if 'fts' not in search_modes_used:
+                    self.test_results.append((test_name, False, 'FTS mode not used when requested'))
+                    return False
+
+            # Test 4: Test source filtering
+            source_filter_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'python',
+                    'thread_id': hybrid_thread,
+                    'source': 'agent',
+                    'limit': 10,
+                },
+            )
+
+            source_data = self._extract_content(source_filter_result)
+            if 'results' not in source_data:
+                self.test_results.append((test_name, False, f'Source filter search failed: {source_data}'))
+                return False
+
+            # All our test entries are from 'agent', should find results
+            source_results = source_data.get('results', [])
+            # Verify all results have source='agent'
+            for r in source_results:
+                if r.get('source') != 'agent':
+                    self.test_results.append(
+                        (test_name, False, f"Expected source='agent', got '{r.get('source')}'"),
+                    )
+                    return False
+
+            # Test 5: Verify fusion method in response
+            if hybrid_data.get('fusion_method') != 'rrf':
+                self.test_results.append(
+                    (test_name, False, f"Expected fusion_method='rrf', got '{hybrid_data.get('fusion_method')}'"),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Hybrid search with RRF fusion working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -3538,6 +3713,7 @@ class MCPServerIntegrationTest:
             ('FTS Advanced Metadata Filters', self.test_fts_advanced_metadata_filters),
             ('FTS Pagination Offset', self.test_fts_pagination_offset),
             ('FTS Highlight Snippets', self.test_fts_highlight_snippets),
+            ('Hybrid Search', self.test_hybrid_search_context),
         ]
 
         print('\nRunning tests...\n')

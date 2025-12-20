@@ -218,3 +218,50 @@ class FtsMigrationInProgressDict(TypedDict):
     old_language: str
     new_language: str
     suggestion: str
+
+
+# Hybrid Search TypedDicts
+
+
+class HybridScoresDict(TypedDict, total=False):
+    """Type definition for hybrid search scores breakdown.
+
+    Contains scores from individual search methods and the combined RRF score.
+    """
+
+    rrf: float  # Combined RRF score
+    fts_rank: int | None  # Rank in FTS results (1-based), None if not in FTS results
+    semantic_rank: int | None  # Rank in semantic results (1-based), None if not in semantic results
+    fts_score: float | None  # Original FTS score (BM25/ts_rank)
+    semantic_distance: float | None  # Original semantic distance (L2)
+
+
+class HybridSearchResultDict(TypedDict, total=False):
+    """Type definition for hybrid search result entry.
+
+    Combines fields from both FTS and semantic search results with
+    hybrid-specific scoring information.
+    """
+
+    id: int
+    thread_id: str
+    source: str
+    content_type: str
+    text_content: str
+    metadata: MetadataDict | None
+    created_at: str
+    updated_at: str
+    tags: list[str]
+    scores: HybridScoresDict  # Hybrid scoring breakdown
+
+
+class HybridSearchResponseDict(TypedDict):
+    """Type definition for hybrid_search_context response."""
+
+    query: str
+    results: list[HybridSearchResultDict]
+    count: int
+    fusion_method: str  # 'rrf'
+    search_modes_used: list[str]  # Actual modes executed, e.g., ['fts', 'semantic']
+    fts_count: int  # Number of results from FTS
+    semantic_count: int  # Number of results from semantic search

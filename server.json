@@ -359,6 +359,20 @@
           "format": "string",
           "isSecret": false,
           "name": "FTS_LANGUAGE"
+        },
+        {
+          "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_HYBRID_SEARCH"
+        },
+        {
+          "description": "RRF smoothing constant for hybrid search (default 60)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_RRF_K"
         }
       ]
     }

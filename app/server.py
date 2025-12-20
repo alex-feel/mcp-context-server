@@ -5,6 +5,7 @@ This server provides persistent multimodal context storage capabilities for LLM 
 enabling shared memory across different conversation threads with support for text and images.
 """
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -2451,6 +2452,314 @@ async def fts_search_context(
     except Exception as e:
         logger.error(f'Error in FTS search: {e}')
         raise ToolError(f'FTS search failed: {str(e)}') from e
+
+
+@mcp.tool()
+async def hybrid_search_context(
+    query: Annotated[str, Field(min_length=1, description='Natural language search query')],
+    search_modes: Annotated[
+        list[Literal['fts', 'semantic']] | None,
+        Field(
+            description="Search modes to use: 'fts' (full-text), 'semantic' (vector similarity), "
+            "or both ['fts', 'semantic'] (default). Modes are executed in parallel.",
+        ),
+    ] = None,
+    fusion_method: Annotated[
+        Literal['rrf'],
+        Field(description="Fusion algorithm: 'rrf' (Reciprocal Rank Fusion, default)"),
+    ] = 'rrf',
+    rrf_k: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=1000,
+            description='RRF smoothing constant (default from HYBRID_RRF_K env var, typically 60). '
+            'Higher values give more weight to lower-ranked documents.',
+        ),
+    ] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
+    start_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at >= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T10:00:00")',
+        ),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
+        ),
+    ] = None,
+    metadata: Annotated[
+        dict[str, str | int | float | bool] | None,
+        Field(description='Simple metadata filters (key=value equality)'),
+    ] = None,
+    metadata_filters: Annotated[
+        list[dict[str, Any]] | None,
+        Field(
+            description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
+            'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
+            'starts_with, ends_with, is_null, is_not_null',
+        ),
+    ] = None,
+    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (default: 50)')] = 50,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
+
+    Executes both full-text search and semantic search in parallel, then fuses results
+    using RRF algorithm. Documents appearing in both result sets score higher.
+
+    RRF Formula: score(d) = sum(1 / (k + rank_i(d))) for each search method i
+
+    Graceful degradation:
+    - If only FTS is available, returns FTS results only
+    - If only semantic search is available, returns semantic results only
+    - If neither is available, raises ToolError
+
+    Filtering options (all combinable):
+    - thread_id/source: Basic entry filtering
+    - start_date/end_date: Date range filtering (ISO 8601)
+    - metadata: Simple key=value equality matching
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+
+    Returns: {
+        query: str,
+        results: [{id, thread_id, source, text_content, metadata, scores, tags, ...}],
+        count: int,
+        fusion_method: 'rrf',
+        search_modes_used: ['fts', 'semantic'],  # Actual modes executed
+        fts_count: int,
+        semantic_count: int
+    }
+
+    The `scores` field contains: rrf (combined), fts_rank, semantic_rank,
+    fts_score, semantic_distance.
+
+    Args:
+        query: Natural language search query
+        search_modes: Which search modes to use (default: both)
+        fusion_method: Fusion algorithm (currently only 'rrf')
+        rrf_k: RRF smoothing constant (default from settings)
+        thread_id: Optional filter by thread
+        source: Optional filter by source type
+        start_date: Filter entries created on or after this date (ISO 8601)
+        end_date: Filter entries created on or before this date (ISO 8601)
+        metadata: Simple metadata filters (key=value equality)
+        metadata_filters: Advanced metadata filters with operators
+        limit: Maximum results to return (1-500)
+        ctx: FastMCP context object
+
+    Returns:
+        dict: Combined search results with RRF scores and source breakdown.
+
+    Raises:
+        ToolError: If hybrid search is not available or both search modes fail.
+    """
+    # Validate date parameters
+    start_date = validate_date_param(start_date, 'start_date')
+    end_date = validate_date_param(end_date, 'end_date')
+    validate_date_range(start_date, end_date)
+
+    # Check if hybrid search is enabled
+    if not settings.enable_hybrid_search:
+        raise ToolError(
+            'Hybrid search is not available. '
+            'Set ENABLE_HYBRID_SEARCH=true to enable this feature. '
+            'Also ensure ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
+        )
+
+    # Use default search modes if not specified
+    if search_modes is None:
+        search_modes = ['fts', 'semantic']
+
+    # Use settings default if rrf_k not specified
+    effective_rrf_k = rrf_k if rrf_k is not None else settings.hybrid_rrf_k
+
+    # Determine available search modes
+    fts_available = settings.enable_fts
+    semantic_available = settings.enable_semantic_search and _embedding_service is not None
+
+    # Filter requested modes to available ones
+    available_modes: list[str] = []
+    if 'fts' in search_modes and fts_available:
+        available_modes.append('fts')
+    if 'semantic' in search_modes and semantic_available:
+        available_modes.append('semantic')
+
+    if not available_modes:
+        unavailable_reasons = []
+        if 'fts' in search_modes and not fts_available:
+            unavailable_reasons.append('FTS requires ENABLE_FTS=true')
+        if 'semantic' in search_modes and not semantic_available:
+            unavailable_reasons.append('Semantic search requires ENABLE_SEMANTIC_SEARCH=true and Ollama')
+        raise ToolError(
+            f'No search modes available. Requested: {search_modes}. '
+            f'Issues: {"; ".join(unavailable_reasons)}',
+        )
+
+    try:
+        if ctx:
+            await ctx.info(f'Performing hybrid search: "{query[:50]}..." (modes={available_modes})')
+
+        # Import fusion module
+        from app.fusion import reciprocal_rank_fusion
+
+        # Get repositories
+        repos = await _ensure_repositories()
+
+        # Over-fetch for better fusion quality
+        over_fetch_limit = limit * 2
+
+        # Execute searches in parallel
+        fts_results: list[dict[str, Any]] = []
+        semantic_results: list[dict[str, Any]] = []
+        fts_error: str | None = None
+        semantic_error: str | None = None
+
+        async def run_fts_search() -> None:
+            nonlocal fts_results, fts_error
+            try:
+                # Check if FTS migration is in progress
+                if _fts_migration_status.in_progress:
+                    fts_error = 'FTS migration in progress'
+                    return
+
+                # Check if FTS is properly initialized
+                if not await repos.fts.is_available():
+                    fts_error = 'FTS index not available'
+                    return
+
+                from app.repositories.fts_repository import FtsValidationError
+
+                try:
+                    results = await repos.fts.search(
+                        query=query,
+                        mode='match',
+                        limit=over_fetch_limit,
+                        offset=0,
+                        thread_id=thread_id,
+                        source=source,
+                        start_date=start_date,
+                        end_date=end_date,
+                        metadata=metadata,
+                        metadata_filters=metadata_filters,
+                        highlight=False,
+                        language=settings.fts_language,
+                    )
+                    fts_results = results
+                except FtsValidationError as e:
+                    fts_error = str(e.message)
+                except Exception as e:
+                    fts_error = str(e)
+            except Exception as e:
+                fts_error = str(e)
+
+        async def run_semantic_search() -> None:
+            nonlocal semantic_results, semantic_error
+            try:
+                if _embedding_service is None:
+                    semantic_error = 'Embedding service not available'
+                    return
+
+                # Generate embedding for query
+                try:
+                    query_embedding = await _embedding_service.generate_embedding(query)
+                except Exception as e:
+                    semantic_error = f'Failed to generate embedding: {e}'
+                    return
+
+                from app.repositories.embedding_repository import MetadataFilterValidationError
+
+                try:
+                    results = await repos.embeddings.search(
+                        query_embedding=query_embedding,
+                        limit=over_fetch_limit,
+                        thread_id=thread_id,
+                        source=source,
+                        start_date=start_date,
+                        end_date=end_date,
+                        metadata=metadata,
+                        metadata_filters=metadata_filters,
+                    )
+                    semantic_results = results
+                except MetadataFilterValidationError as e:
+                    semantic_error = str(e.message)
+                except Exception as e:
+                    semantic_error = str(e)
+            except Exception as e:
+                semantic_error = str(e)
+
+        # Run searches in parallel
+        tasks = []
+        if 'fts' in available_modes:
+            tasks.append(run_fts_search())
+        if 'semantic' in available_modes:
+            tasks.append(run_semantic_search())
+
+        await asyncio.gather(*tasks)
+
+        # Check if both searches failed
+        if fts_error and semantic_error:
+            raise ToolError(
+                f'All search modes failed. FTS: {fts_error}. Semantic: {semantic_error}',
+            )
+
+        # Determine which modes actually returned results
+        modes_used: list[str] = []
+        if fts_results:
+            modes_used.append('fts')
+        if semantic_results:
+            modes_used.append('semantic')
+
+        # Parse FTS metadata (returned as JSON strings from DB)
+        for result in fts_results:
+            metadata_raw = result.get('metadata')
+            if metadata_raw is not None and hasattr(metadata_raw, 'strip'):
+                try:
+                    result['metadata'] = json.loads(str(metadata_raw))
+                except (json.JSONDecodeError, ValueError, AttributeError):
+                    result['metadata'] = None
+
+        # Fuse results using RRF
+        fused_results = reciprocal_rank_fusion(
+            fts_results=fts_results,
+            semantic_results=semantic_results,
+            k=effective_rrf_k,
+            limit=limit,
+        )
+
+        # Enrich results with tags (cast to Any for mutation compatibility)
+        fused_results_any: list[dict[str, Any]] = cast(list[dict[str, Any]], fused_results)
+        for result in fused_results_any:
+            context_id = result.get('id')
+            if context_id:
+                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                result['tags'] = tags_result
+            else:
+                result['tags'] = []
+
+        logger.info(
+            f'Hybrid search found {len(fused_results_any)} results for query: "{query[:50]}..." '
+            f'(fts={len(fts_results)}, semantic={len(semantic_results)}, modes={modes_used})',
+        )
+
+        return {
+            'query': query,
+            'results': fused_results_any,
+            'count': len(fused_results_any),
+            'fusion_method': fusion_method,
+            'search_modes_used': modes_used,
+            'fts_count': len(fts_results),
+            'semantic_count': len(semantic_results),
+        }
+
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
+    except Exception as e:
+        logger.error(f'Error in hybrid search: {e}')
+        raise ToolError(f'Hybrid search failed: {str(e)}') from e
 
 
 # Bulk Operation MCP Tools
