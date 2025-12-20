@@ -14,6 +14,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
 - **Full-Text Search**: Optional linguistic search with stemming, ranking, and boolean queries (FTS5/tsvector)
 - **Semantic Search**: Optional vector similarity search for meaning-based retrieval
+- **Hybrid Search**: Optional combined FTS + semantic search using Reciprocal Rank Fusion (RRF)
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
 - **High Performance**: WAL mode (SQLite) / MVCC (PostgreSQL), strategic indexing, and async operations
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client
@@ -120,6 +121,10 @@ For more details on environment variable expansion, see: https://docs.claude.com
 **Full-Text Search Settings:**
 - **ENABLE_FTS**: Enable full-text search functionality (true/false) - defaults to false
 - **FTS_LANGUAGE**: Language for stemming and text search - defaults to `english`. PostgreSQL supports 29 languages with full stemming. SQLite uses `english` for Porter stemmer or any other value for unicode61 tokenizer (no stemming).
+
+**Hybrid Search Settings:**
+- **ENABLE_HYBRID_SEARCH**: Enable hybrid search combining FTS and semantic search with RRF fusion (true/false) - defaults to false
+- **HYBRID_RRF_K**: RRF smoothing constant (1-1000) - defaults to 60. Higher values give more uniform treatment across ranks.
 
 **Semantic Search Settings:**
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
@@ -712,6 +717,70 @@ fts_search_context(
     metadata_filters=[{"key": "status", "operator": "eq", "value": "active"}]
 )
 ```
+
+#### hybrid_search_context
+
+Perform hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
+
+Note: This tool is only available when hybrid search is enabled via `ENABLE_HYBRID_SEARCH=true` and at least one of FTS (`ENABLE_FTS=true`) or semantic search (`ENABLE_SEMANTIC_SEARCH=true`) is enabled. The RRF algorithm combines results from available search methods, boosting documents that appear in both.
+
+**Parameters:**
+- `query` (str, required): Natural language search query
+- `search_modes` (list, optional): Search modes to use - `['fts', 'semantic']` (default: both)
+- `fusion_method` (str, optional): Fusion algorithm - `'rrf'` (default)
+- `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from HYBRID_RRF_K env var)
+- `thread_id` (str, optional): Filter results to specific thread
+- `source` (str, optional): Filter by source type ('user' or 'agent')
+- `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
+- `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
+- `metadata` (dict, optional): Simple metadata filters (key=value equality)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `limit` (int, optional): Maximum results (default: 50, max: 500)
+
+**Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
+
+**Returns:** Dictionary with:
+- Query string and fusion method
+- List of matching entries with combined RRF scores and individual search rankings
+- Result count and counts from each search method
+- List of search modes actually used
+
+**Scores Breakdown:**
+Each result includes a `scores` object with:
+- `rrf`: Combined RRF score (higher = better)
+- `fts_rank`: Position in FTS results (1-based), null if not in FTS results
+- `semantic_rank`: Position in semantic results (1-based), null if not in semantic results
+- `fts_score`: Original FTS relevance score (BM25/ts_rank)
+- `semantic_distance`: Original semantic distance (L2, lower = more similar)
+
+**Graceful Degradation:**
+- If only FTS is available, returns FTS results only
+- If only semantic search is available, returns semantic results only
+- If neither is available, raises an error
+
+**Example:**
+```python
+# Full hybrid search
+hybrid_search_context(
+    query="authentication implementation",
+    thread_id="project-123"
+)
+
+# Hybrid with metadata filtering
+hybrid_search_context(
+    query="performance optimization",
+    metadata={"status": "completed"},
+    metadata_filters=[{"key": "priority", "operator": "gte", "value": 7}]
+)
+
+# Single mode through hybrid API (for consistent interface)
+hybrid_search_context(
+    query="exact phrase",
+    search_modes=["fts"]
+)
+```
+
+For detailed configuration and troubleshooting, see the [Hybrid Search Guide](docs/hybrid-search.md).
 
 ### Batch Operations
 

@@ -474,3 +474,4 @@ Both operations automatically rebuild the index from existing data.
 
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - meaning-based search with embeddings
+- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion

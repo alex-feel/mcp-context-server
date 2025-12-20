@@ -719,3 +719,9 @@ ollama list
 
 - **SQLite Extensions on macOS**: [til.simonwillison.net/sqlite/sqlite-extensions-python-macos](https://til.simonwillison.net/sqlite/sqlite-extensions-python-macos)
 - **sqlite-vec Python Integration**: [alexgarcia.xyz/sqlite-vec/python.html](https://alexgarcia.xyz/sqlite-vec/python.html)
+
+### Related Guides
+
+- **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - linguistic search with stemming and ranking
+- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion
+- **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators
