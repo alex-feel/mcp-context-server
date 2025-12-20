@@ -4666,6 +4666,10 @@ class MCPServerIntegrationTest:
                 return False
 
             page3_results = page3_data.get('results', [])
+            if len(page3_results) != 1:
+                self.test_results.append((test_name, False, f'Expected 1 result for page 3, got {len(page3_results)}'))
+                return False
+
             page3_ids = [r.get('id') for r in page3_results]
 
             # Verify no overlap with previous pages
@@ -4751,9 +4755,22 @@ class MCPServerIntegrationTest:
                 'search_context',
                 {'thread_id': explain_thread, 'explain_query': False, 'limit': 10},
             )
-            # With explain_query=False, stats should still be present but may be minimal
-            # Just verify the search works (result is extracted but not validated in detail)
-            _ = self._extract_content(no_explain_result)
+            # With explain_query=False, stats should be present but NOT include query_plan
+            no_explain_data = self._extract_content(no_explain_result)
+
+            # Stats should still exist (basic stats are always returned)
+            if 'stats' not in no_explain_data:
+                self.test_results.append((test_name, False, 'search_context: Missing stats with explain_query=False'))
+                return False
+
+            no_explain_stats = no_explain_data.get('stats', {})
+
+            # When explain_query=False, query_plan should NOT be included
+            if 'query_plan' in no_explain_stats:
+                self.test_results.append(
+                    (test_name, False, 'search_context: query_plan should not be included when explain_query=False'),
+                )
+                return False
 
             # Test 3: fts_search with explain_query=True (if available)
             if has_fts:

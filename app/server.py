@@ -2701,7 +2701,8 @@ async def hybrid_search_context(
         repos = await _ensure_repositories()
 
         # Over-fetch for better fusion quality
-        over_fetch_limit = limit * 2
+        # Must account for offset to ensure all entries are fetched for proper pagination
+        over_fetch_limit = (limit + offset) * 2
 
         # Execute searches in parallel
         fts_results: list[dict[str, Any]] = []
