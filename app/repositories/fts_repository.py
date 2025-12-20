@@ -8,6 +8,7 @@ handling search operations across both SQLite (FTS5) and PostgreSQL (tsvector) b
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from typing import TYPE_CHECKING
 from typing import Any
@@ -18,6 +19,10 @@ from app.backends.base import StorageBackend
 from app.logger_config import config_logger
 from app.repositories.base import BaseRepository
 from app.settings import get_settings
+
+# Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
+# Matches word characters connected by one or more hyphens
+HYPHENATED_WORD_PATTERN = re.compile(r'\b(\w+(?:-\w+)+)\b')
 
 if TYPE_CHECKING:
     import asyncpg
@@ -430,6 +435,61 @@ class FtsRepository(BaseRepository):
 
         return await self.backend.execute_read(cast(Any, _search_postgresql_inner))
 
+    def _escape_double_quotes(self, text: str) -> str:
+        """Escape double quotes for FTS5 phrase literals.
+
+        FTS5 requires double quotes to be escaped by doubling them.
+
+        Args:
+            text: Text that may contain double quotes
+
+        Returns:
+            Text with double quotes escaped as ""
+        """
+        return text.replace('"', '""')
+
+    def _quote_hyphenated_words_sqlite(self, query: str) -> str:
+        """Wrap hyphenated words in double quotes for FTS5.
+
+        Transforms queries like "full-text search" to '"full-text" search'
+        so that FTS5 treats hyphens as part of words, not as NOT operator.
+
+        Args:
+            query: Original search query
+
+        Returns:
+            Query with hyphenated words wrapped in double quotes
+        """
+
+        def replace_hyphenated(match: re.Match[str]) -> str:
+            word = match.group(1)
+            escaped = self._escape_double_quotes(word)
+            return f'"{escaped}"'
+
+        return HYPHENATED_WORD_PATTERN.sub(replace_hyphenated, query)
+
+    def _handle_hyphenated_prefix_postgresql(self, word: str) -> str:
+        """Handle hyphenated words for PostgreSQL prefix mode.
+
+        Splits hyphenated words into AND-ed prefix terms.
+        "full-text" -> "full:* & text:*"
+
+        Args:
+            word: Single word that may contain hyphens
+
+        Returns:
+            PostgreSQL prefix query fragment
+        """
+        # Strip existing wildcards
+        clean_word = word.rstrip('*').removesuffix(':')
+
+        if '-' in clean_word:
+            # Split and create AND-ed prefix terms
+            parts = clean_word.split('-')
+            return ' & '.join(f'{part}:*' for part in parts if part)
+
+        return f'{clean_word}:*'
+
     def _transform_query_sqlite(
         self,
         query: str,
@@ -449,18 +509,33 @@ class FtsRepository(BaseRepository):
 
         if mode == 'phrase':
             # Exact phrase matching - wrap in double quotes
-            return f'"{query}"'
+            # Escape any existing double quotes first
+            escaped = self._escape_double_quotes(query)
+            return f'"{escaped}"'
+
         if mode == 'prefix':
-            # Prefix matching - add * to each word
-            # Strip any existing * to prevent double wildcards (e.g., "implement*" -> "implement**")
-            words = query.split()
-            return ' '.join(f'{word.rstrip("*")}*' for word in words)
+            # Prefix matching - handle hyphenated words specially
+            # First quote hyphenated words, then add wildcards
+            quoted = self._quote_hyphenated_words_sqlite(query)
+            words = quoted.split()
+            result_words = []
+            for word in words:
+                if word.startswith('"') and word.endswith('"'):
+                    # Hyphenated word already quoted, add wildcard after
+                    result_words.append(f'{word}*')
+                else:
+                    # Regular word, add wildcard
+                    result_words.append(f'{word.rstrip("*")}*')
+            return ' '.join(result_words)
+
         if mode == 'boolean':
             # Boolean mode - pass through as-is (user provides AND/OR/NOT)
+            # User is responsible for quoting hyphenated words
             return query
+
         # 'match' - default
-        # Standard matching - split into words for implicit AND
-        return query
+        # Quote hyphenated words to prevent NOT operator interpretation
+        return self._quote_hyphenated_words_sqlite(query)
 
     def _transform_query_postgresql(
         self,
@@ -483,17 +558,15 @@ class FtsRepository(BaseRepository):
         query = query.strip()
 
         if mode == 'prefix':
-            # Prefix matching for PostgreSQL - add :* to each word with & operator
-            # Strip any existing * or :* to prevent double wildcards
+            # Prefix matching - handle hyphenated words by splitting
             words = query.split()
-            transformed_words = []
-            for word in words:
-                # Strip trailing :* or * to normalize
-                clean_word = word.rstrip('*')
-                clean_word = clean_word.removesuffix(':')
-                transformed_words.append(f'{clean_word}:*')
-            return ' & '.join(transformed_words)
-        # For other modes, return query as-is (the tsquery function handles it)
+            prefix_terms = [self._handle_hyphenated_prefix_postgresql(word) for word in words]
+            return ' & '.join(prefix_terms)
+
+        # For other modes, return query as-is
+        # - match: plainto_tsquery discards punctuation (safe)
+        # - phrase: phraseto_tsquery discards punctuation (safe)
+        # - boolean: websearch_to_tsquery treats - as NOT (by design)
         return query
 
     def _get_tsquery_function(
