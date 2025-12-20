@@ -523,7 +523,7 @@ Search context entries with powerful filtering including metadata queries and da
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
-- `limit` (int, optional): Maximum results (default: 50, max: 500)
+- `limit` (int, optional): Maximum results to return (1-100, default: 30)
 - `offset` (int, optional): Pagination offset
 - `include_images` (bool, optional): Include image data in response
 - `explain_query` (bool, optional): Include query execution statistics
@@ -633,7 +633,7 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 
 **Parameters:**
 - `query` (str, required): Natural language search query
-- `limit` (int, optional): Number of top-K nearest neighbors to return (1-100) - defaults to 20
+- `limit` (int, optional): Number of top-K nearest neighbors to return (1-100, default: 5)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
@@ -684,7 +684,7 @@ Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
-- `limit` (int, optional): Maximum results (default: 50, max: 500)
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
 - `offset` (int, optional): Pagination offset
 
 **Search Modes:**
@@ -735,7 +735,7 @@ Note: This tool is only available when hybrid search is enabled via `ENABLE_HYBR
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
-- `limit` (int, optional): Maximum results (default: 50, max: 500)
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
 
 **Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
 

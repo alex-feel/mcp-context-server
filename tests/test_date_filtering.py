@@ -204,6 +204,7 @@ class TestSearchContextDateFiltering:
             result = await search_context(
                 thread_id='date-test-1',
                 start_date=future_date,
+            limit=50,
             )
 
         assert len(result['entries']) == 0
@@ -227,6 +228,7 @@ class TestSearchContextDateFiltering:
             result = await search_context(
                 thread_id='date-test-2',
                 end_date=past_date,
+            limit=50,
             )
 
         assert len(result['entries']) == 0
@@ -263,6 +265,7 @@ class TestSearchContextDateFiltering:
                 thread_id='date-test-3',
                 start_date=today,
                 end_date=tomorrow,
+            limit=50,
             )
 
         assert len(result['entries']) == 1
@@ -278,6 +281,7 @@ class TestSearchContextDateFiltering:
             await search_context(
                 thread_id='any-thread',
                 start_date='invalid-date',
+            limit=50,
             )
         assert 'Invalid start_date format' in str(exc_info.value)
 
@@ -289,6 +293,7 @@ class TestSearchContextDateFiltering:
                 thread_id='any-thread',
                 start_date='2025-12-01',
                 end_date='2025-11-01',
+            limit=50,
             )
         assert 'Invalid date range' in str(exc_info.value)
 
@@ -306,6 +311,7 @@ class TestSearchContextDateFiltering:
                 thread_id='date-test-6',
                 start_date=start,
                 end_date=end,
+            limit=50,
             )
 
         call_args = self.mock_repos.context.search_contexts.call_args
@@ -320,6 +326,7 @@ class TestSearchContextDateFiltering:
         with patch('app.server._ensure_repositories', return_value=self.mock_repos):
             await search_context(
                 thread_id='date-test-7',
+            limit=50,
             )
 
         call_args = self.mock_repos.context.search_contexts.call_args
@@ -364,6 +371,7 @@ class TestSearchContextDateIntegration:
         result = await search_context(
             thread_id='end-date-ux-fix-test',
             end_date=today,
+        limit=50,
         )
 
         # Entry should be found because end_date is expanded to end-of-day
@@ -389,6 +397,7 @@ class TestSearchContextDateIntegration:
             thread_id='date-integration-1',
             start_date=today,
             end_date=tomorrow,
+        limit=50,
         )
 
         assert len(result['entries']) == 1
@@ -409,6 +418,7 @@ class TestSearchContextDateIntegration:
         result = await search_context(
             thread_id='date-integration-2',
             start_date=future_date,
+        limit=50,
         )
 
         assert len(result['entries']) == 0
@@ -429,6 +439,7 @@ class TestSearchContextDateIntegration:
         result = await search_context(
             thread_id='date-integration-3',
             end_date=past_date,
+        limit=50,
         )
 
         assert len(result['entries']) == 0
@@ -457,6 +468,7 @@ class TestSearchContextDateIntegration:
             source='user',
             start_date=today,
             end_date=tomorrow,
+        limit=50,
         )
 
         assert len(result['entries']) == 1
@@ -515,6 +527,7 @@ class TestSemanticSearchDateFiltering:
             result = await semantic_search(
                 query='test query',
                 start_date=today,
+            limit=20,
             )
 
         # Verify search was called with start_date
@@ -551,6 +564,7 @@ class TestSemanticSearchDateFiltering:
             await semantic_search(
                 query='test query',
                 end_date=today,
+            limit=20,
             )
 
         # Verify end_date was expanded to end-of-day
@@ -585,6 +599,7 @@ class TestSemanticSearchDateFiltering:
                 query='test query',
                 start_date=today,
                 end_date=tomorrow,
+            limit=20,
             )
 
         # Verify both dates were passed correctly
@@ -610,6 +625,7 @@ class TestSemanticSearchDateFiltering:
                 await semantic_search(
                     query='test query',
                     start_date='invalid-date',
+                limit=20,
                 )
             assert 'Invalid start_date format' in str(exc_info.value)
 
@@ -632,6 +648,7 @@ class TestSemanticSearchDateFiltering:
                     query='test query',
                     start_date='2025-12-01',
                     end_date='2025-11-01',
+                limit=20,
                 )
             assert 'Invalid date range' in str(exc_info.value)
 
@@ -662,6 +679,7 @@ class TestSemanticSearchDateFiltering:
                 query='test query',
                 start_date=start,
                 end_date=end,
+            limit=20,
             )
 
         # Verify datetime format is preserved (not expanded)
@@ -691,6 +709,7 @@ class TestSemanticSearchDateFiltering:
 
             await semantic_search(
                 query='test query',
+            limit=20,
             )
 
         # Verify None dates were passed
@@ -844,6 +863,7 @@ class TestSQLiteDatetimeNormalization:
         search_result = await search_context(
             thread_id='sqlite-iso8601-t-test',
             start_date=today_t,
+        limit=50,
         )
 
         assert len(search_result['entries']) == 1
@@ -870,6 +890,7 @@ class TestSQLiteDatetimeNormalization:
         search_result = await search_context(
             thread_id='sqlite-iso8601-z-test',
             start_date=today_z,
+        limit=50,
         )
 
         assert len(search_result['entries']) == 1
@@ -898,6 +919,7 @@ class TestSQLiteDatetimeNormalization:
         search_result = await search_context(
             thread_id='sqlite-iso8601-tz-positive-test',
             start_date=today_tz,
+        limit=50,
         )
 
         # Entry should be found (datetime() normalizes +02:00 to UTC, which is 2 hours earlier)
@@ -928,6 +950,7 @@ class TestSQLiteDatetimeNormalization:
         search_result = await search_context(
             thread_id='sqlite-iso8601-tz-negative-test',
             start_date=yesterday_tz,
+        limit=50,
         )
 
         # Entry should be found (datetime() normalizes -05:00 to UTC, which is 5 hours later)
@@ -956,6 +979,7 @@ class TestSQLiteDatetimeNormalization:
         search_result = await search_context(
             thread_id='sqlite-date-only-test',
             start_date=today,
+        limit=50,
         )
 
         assert len(search_result['entries']) == 1
@@ -984,6 +1008,7 @@ class TestSQLiteDatetimeNormalization:
             thread_id='sqlite-end-date-t-test',
             start_date=today_t_start,
             end_date=tomorrow_t_end,
+        limit=50,
         )
 
         assert len(search_result['entries']) == 1
@@ -1012,6 +1037,7 @@ class TestSQLiteDatetimeNormalization:
             thread_id='sqlite-mixed-format-test',
             start_date=today_date_only,
             end_date=tomorrow_t,
+        limit=50,
         )
 
         assert len(search_result['entries']) == 1

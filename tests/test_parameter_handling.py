@@ -52,7 +52,7 @@ class TestParameterHandling:
         assert 'context_id' in result
 
         # Verify tags were stored correctly
-        search_result = await search_context(thread_id='param_test_tags')
+        search_result = await search_context(limit=50, thread_id='param_test_tags')
         assert len(search_result['entries']) == 1
         assert set(search_result['entries'][0]['tags']) == set(tags_list)
 
@@ -69,7 +69,7 @@ class TestParameterHandling:
         assert result['success'] is True
 
         # Verify no tags stored
-        search_result = await search_context(thread_id='param_test_no_tags')
+        search_result = await search_context(limit=50, thread_id='param_test_no_tags')
         assert search_result['entries'][0]['tags'] == []
 
     @pytest.mark.asyncio
@@ -243,13 +243,13 @@ class TestParameterHandling:
         )
 
         # Search with tags as list
-        results = await search_context(tags=['python', 'javascript'])
+        results = await search_context(limit=50, tags=['python', 'javascript'])
 
         # Should find entries with either python or javascript tags
         assert len(results['entries']) >= 3  # All three entries match
 
         # Test with single tag in list
-        results = await search_context(tags=['testing'])
+        results = await search_context(limit=50, tags=['testing'])
         found = [r for r in results['entries'] if r['thread_id'] == 'search_tags_test' and 'testing' in r['tags']]
         assert len(found) == 1
 
@@ -265,7 +265,7 @@ class TestParameterHandling:
         )
 
         # Search without tags filter (tags=None)
-        results = await search_context(thread_id='search_no_tags_test', tags=None)
+        results = await search_context(limit=50, thread_id='search_no_tags_test', tags=None)
 
         assert len(results['entries']) == 1
         assert results['entries'][0]['thread_id'] == 'search_no_tags_test'
@@ -282,7 +282,7 @@ class TestParameterHandling:
         )
 
         # Search with empty tags list should return all entries (no filter applied)
-        results = await search_context(thread_id='search_empty_tags_test', tags=[])
+        results = await search_context(limit=50, thread_id='search_empty_tags_test', tags=[])
 
         assert len(results['entries']) == 1
 
@@ -359,7 +359,7 @@ class TestParameterHandling:
         assert delete_result['deleted_count'] == 3
 
         # Verify only the kept entry remains
-        remaining = await search_context(thread_id='delete_ids_test')
+        remaining = await search_context(limit=50, thread_id='delete_ids_test')
         assert len(remaining['entries']) == 1
         assert remaining['entries'][0]['id'] == keep_result['context_id']
 
@@ -410,14 +410,14 @@ class TestParameterValidation:
 
     @pytest.mark.asyncio
     async def test_limit_validation(self) -> None:
-        """Test that Pydantic Field(ge=1, le=500) enforces limit range.
+        """Test that Pydantic Field(ge=1, le=100) enforces limit range.
 
         Note: Pydantic validates at FastMCP level. This test verifies valid limits work.
         """
         # Valid limits work fine
         result = await search_context(limit=1)
         assert 'entries' in result
-        result = await search_context(limit=500)
+        result = await search_context(limit=100)
         assert 'entries' in result
 
     @pytest.mark.asyncio
@@ -427,9 +427,9 @@ class TestParameterValidation:
         Note: Pydantic validates at FastMCP level. This test verifies valid offsets work.
         """
         # Valid offsets work fine
-        result = await search_context(offset=0)
+        result = await search_context(limit=50, offset=0)
         assert 'entries' in result
-        result = await search_context(offset=100)
+        result = await search_context(limit=50, offset=100)
         assert 'entries' in result
 
 
@@ -452,7 +452,7 @@ class TestParameterTypeCoercion:
         assert result['success'] is True
 
         # Verify tags were normalized to lowercase
-        search_result = await search_context(thread_id='tags_normalization_test')
+        search_result = await search_context(limit=50, thread_id='tags_normalization_test')
         normalized_tags = ['python', 'testing', 'mixed-case']
         assert set(search_result['entries'][0]['tags']) == set(normalized_tags)
 
@@ -508,7 +508,7 @@ class TestEdgeCasesForParameters:
         assert result['success'] is True
 
         # Verify Unicode tags work in search
-        search_results = await search_context(tags=['中文标签'])
+        search_results = await search_context(limit=50, tags=['中文标签'])
         found = [r for r in search_results['entries'] if r['thread_id'] == 'unicode_tags_test']
         assert len(found) == 1
 
@@ -528,7 +528,7 @@ class TestEdgeCasesForParameters:
         assert result['success'] is True
 
         # Verify all tags were stored
-        search_result = await search_context(thread_id='large_tags_test')
+        search_result = await search_context(limit=50, thread_id='large_tags_test')
         assert len(search_result['entries'][0]['tags']) == 100
 
     @pytest.mark.asyncio
@@ -576,7 +576,7 @@ class TestEdgeCasesForParameters:
         assert result['success'] is True
 
         # Verify duplicates were removed
-        search_result = await search_context(thread_id='duplicate_tags_test')
+        search_result = await search_context(limit=50, thread_id='duplicate_tags_test')
         unique_tags = set(search_result['entries'][0]['tags'])
         assert unique_tags == {'python', 'test'}
 
@@ -628,12 +628,12 @@ class TestForwardSlashAndSpecialCharacterTags:
         assert 'context_id' in result
 
         # Verify tags were stored correctly with forward slashes preserved
-        search_result = await search_context(thread_id='forward_slash_test')
+        search_result = await search_context(limit=50, thread_id='forward_slash_test')
         assert len(search_result['entries']) == 1
         assert set(search_result['entries'][0]['tags']) == set(forward_slash_tags)
 
         # Test searching by forward slash tags
-        search_by_tag = await search_context(tags=['app/file'])
+        search_by_tag = await search_context(limit=50, tags=['app/file'])
         found = [r for r in search_by_tag['entries'] if r['thread_id'] == 'forward_slash_test']
         assert len(found) == 1
 
@@ -660,7 +660,7 @@ class TestForwardSlashAndSpecialCharacterTags:
         assert result['success'] is True
 
         # Verify all path tags were stored
-        search_result = await search_context(thread_id='path_tags_test')
+        search_result = await search_context(limit=50, thread_id='path_tags_test')
         assert len(search_result['entries']) == 1
         assert len(search_result['entries'][0]['tags']) == len(path_tags)
 
@@ -696,7 +696,7 @@ class TestForwardSlashAndSpecialCharacterTags:
         assert result['success'] is True
 
         # Verify all special character tags were stored (normalized to lowercase)
-        search_result = await search_context(thread_id='special_chars_test')
+        search_result = await search_context(limit=50, thread_id='special_chars_test')
         assert len(search_result['entries']) == 1
         assert len(search_result['entries'][0]['tags']) == len(special_tags)
         # Check that lowercase normalization happened
@@ -730,7 +730,7 @@ class TestForwardSlashAndSpecialCharacterTags:
         assert result['success'] is True
 
         # Verify only valid tags were stored
-        search_result = await search_context(thread_id='empty_tags_test')
+        search_result = await search_context(limit=50, thread_id='empty_tags_test')
         assert len(search_result['entries']) == 1
         assert set(search_result['entries'][0]['tags']) == {'valid_tag', 'another_valid_tag'}
 
@@ -756,7 +756,7 @@ class TestForwardSlashAndSpecialCharacterTags:
         assert result['success'] is True
 
         # Verify normalization to lowercase while preserving special chars
-        search_result = await search_context(thread_id='normalization_special_test')
+        search_result = await search_context(limit=50, thread_id='normalization_special_test')
         expected_tags = [
             'feature/new-ui',
             'config/database',
@@ -790,13 +790,13 @@ class TestForwardSlashAndSpecialCharacterTags:
         )
 
         # Search by forward slash tag
-        results = await search_context(tags=['src/python/main.py'])
+        results = await search_context(limit=50, tags=['src/python/main.py'])
         found = [r for r in results['entries'] if r['thread_id'] == 'search_slash_test']
         assert len(found) == 1
         assert found[0]['text_content'] == 'Python file'
 
         # Search by multiple forward slash tags (OR logic)
-        results = await search_context(tags=['config/settings.yaml', 'tests/unit/test_main.py'])
+        results = await search_context(limit=50, tags=['config/settings.yaml', 'tests/unit/test_main.py'])
         found = [r for r in results['entries'] if r['thread_id'] == 'search_slash_test']
         assert len(found) == 2
         texts = {r['text_content'] for r in found}
@@ -847,7 +847,7 @@ class TestForwardSlashAndSpecialCharacterTags:
         assert result['success'] is True
 
         # Verify all edge cases were stored
-        search_result = await search_context(thread_id='extreme_slash_test')
+        search_result = await search_context(limit=50, thread_id='extreme_slash_test')
         assert len(search_result['entries']) == 1
         assert len(search_result['entries'][0]['tags']) == len(edge_case_tags)
 
@@ -887,6 +887,7 @@ class TestParameterInteractions:
 
         # Search with multiple filters including tags
         results = await search_context(
+            limit=50,
             thread_id='interaction_test',
             source='user',
             tags=['python', 'javascript'],

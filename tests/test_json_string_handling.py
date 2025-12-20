@@ -180,6 +180,7 @@ class TestSearchContextWithJSONStrings:
 
             # Simulate Claude Code sending tags as JSON string
             result = await search_context(
+                limit=50,
                 thread_id='test-thread',
                 tags='["python", "testing"]',  # JSON string
             )
@@ -202,6 +203,7 @@ class TestSearchContextWithJSONStrings:
 
             # Native Python list (from other clients)
             result = await search_context(
+                limit=50,
                 thread_id='test-thread',
                 tags=['python', 'testing'],  # Native list
             )

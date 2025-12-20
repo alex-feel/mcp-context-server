@@ -408,7 +408,7 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 
 **Parameters**:
 - `query` (str, required): Natural language search query
-- `limit` (int, optional): Number of top-K nearest neighbors to return (1-100, default: 20)
+- `limit` (int, optional): Number of top-K nearest neighbors to return (1-100, default: 5)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)

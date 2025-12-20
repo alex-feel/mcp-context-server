@@ -55,6 +55,7 @@ class TestSearchContextErrorPaths:
 
         # Invalid operator should be handled
         result = await search_context.fn(
+            limit=50,
             thread_id='invalid_op_thread',
             metadata_filters=[{'key': 'test', 'operator': 'invalid_op', 'value': 1}],
         )
@@ -74,6 +75,7 @@ class TestSearchContextErrorPaths:
 
         # Filter missing required fields
         result = await search_context.fn(
+            limit=50,
             thread_id='malformed_filter_thread',
             metadata_filters=[{'key': 'test'}],  # Missing operator and value
         )
@@ -269,6 +271,7 @@ class TestRepoFailureSimulation:
         # This tests the error handling path
         # We can't easily mock the internal repos, but we can test edge cases
         result = await search_context.fn(
+            limit=50,
             thread_id='nonexistent_thread_xyz_123',
             source='user',
         )
@@ -325,6 +328,7 @@ class TestContextServerWithContext:
         )
 
         result = await search_context.fn(
+            limit=50,
             thread_id='search_ctx_thread',
             ctx=None,
         )

@@ -1408,6 +1408,7 @@ async def store_context(
 
 @mcp.tool()
 async def search_context(
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 30)')] = 30,
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (indexed)')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (indexed)')] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
@@ -1436,7 +1437,6 @@ async def search_context(
             description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
         ),
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (max 500)')] = 50,
     offset: Annotated[int, Field(ge=0, description='Pagination offset')] = 0,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
@@ -1466,7 +1466,7 @@ async def search_context(
         metadata_filters: Advanced metadata filters with operators
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
-        limit: Maximum results (max 500)
+        limit: Maximum results to return (1-100, default: 30)
         offset: Pagination offset
         include_images: Whether to include image data
         explain_query: Include query execution statistics
@@ -2118,7 +2118,7 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
-    limit: Annotated[int, Field(ge=1, le=100, description='Number of top-K nearest neighbors to return (default: 20)')] = 20,
+    limit: Annotated[int, Field(ge=1, le=100, description='Top-K nearest neighbors to return (1-100, default: 5)')] = 5,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
     start_date: Annotated[
@@ -2171,7 +2171,7 @@ async def semantic_search_context(
 
     Args:
         query: Natural language search query
-        limit: Number of top-K nearest neighbors to return (1-100)
+        limit: Top-K nearest neighbors to return (1-100, default: 5)
         thread_id: Optional filter to narrow results by thread
         source: Optional filter to narrow results by source type
         start_date: Filter entries created on or after this date (ISO 8601)
@@ -2269,6 +2269,7 @@ async def semantic_search_context(
 
 async def fts_search_context(
     query: Annotated[str, Field(min_length=1, description='Full-text search query')],
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
     mode: Annotated[
         Literal['match', 'prefix', 'phrase', 'boolean'],
         Field(
@@ -2303,7 +2304,6 @@ async def fts_search_context(
             'starts_with, ends_with, is_null, is_not_null',
         ),
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (default: 50)')] = 50,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
     ctx: Context | None = None,
@@ -2348,7 +2348,7 @@ async def fts_search_context(
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
-        limit: Maximum results to return (1-500)
+        limit: Maximum results to return (1-100, default: 5)
         offset: Pagination offset
         highlight: Whether to include highlighted snippets
         ctx: FastMCP context object
@@ -2479,6 +2479,7 @@ async def fts_search_context(
 
 async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
     search_modes: Annotated[
         list[Literal['fts', 'semantic']] | None,
         Field(
@@ -2525,7 +2526,6 @@ async def hybrid_search_context(
             'starts_with, ends_with, is_null, is_not_null',
         ),
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (default: 50)')] = 50,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
@@ -2570,7 +2570,7 @@ async def hybrid_search_context(
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
-        limit: Maximum results to return (1-500)
+        limit: Maximum results to return (1-100, default: 5)
         ctx: FastMCP context object
 
     Returns:

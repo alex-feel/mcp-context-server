@@ -285,7 +285,7 @@ class MCPServerIntegrationTest:
             # Test search by thread
             thread_results = await self.client.call_tool(
                 'search_context',
-                {'thread_id': self.test_thread_id},
+                {'limit': 50, 'thread_id': self.test_thread_id},
             )
 
             thread_data = self._extract_content(thread_results)
@@ -298,7 +298,7 @@ class MCPServerIntegrationTest:
             # Test search by source
             source_results = await self.client.call_tool(
                 'search_context',
-                {'source': 'user'},
+                {'limit': 50, 'source': 'user'},
             )
 
             source_data = self._extract_content(source_results)
@@ -311,7 +311,7 @@ class MCPServerIntegrationTest:
             # Test search by tags
             tag_results = await self.client.call_tool(
                 'search_context',
-                {'tags': ['searchable']},
+                {'limit': 50, 'tags': ['searchable']},
             )
 
             tag_data = self._extract_content(tag_results)
@@ -407,7 +407,7 @@ class MCPServerIntegrationTest:
             # Test 1: Simple metadata filtering
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata': {'status': 'active'},
                 },
@@ -421,7 +421,7 @@ class MCPServerIntegrationTest:
             # Test 2: Advanced metadata filtering with gte operator
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 5}],
                 },
@@ -435,7 +435,7 @@ class MCPServerIntegrationTest:
             # Test 3: Combined metadata filters
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata': {'status': 'active'},
                     'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 7}],
@@ -450,7 +450,7 @@ class MCPServerIntegrationTest:
             # Test 4: Exists operator
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata_filters': [{'key': 'completed', 'operator': 'exists', 'value': None}],
                 },
@@ -464,7 +464,7 @@ class MCPServerIntegrationTest:
             # Test 5: In operator
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata_filters': [{'key': 'agent_name', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
                 },
@@ -662,7 +662,7 @@ class MCPServerIntegrationTest:
             # Verify thread deletion
             check_thread = await self.client.call_tool(
                 'search_context',
-                {'thread_id': delete_thread},
+                {'limit': 50, 'thread_id': delete_thread},
             )
 
             check_thread_data = self._extract_content(check_thread)
@@ -1472,7 +1472,7 @@ class MCPServerIntegrationTest:
             # Test 1: Search with valid date range (today to tomorrow) - should find entry
             valid_range_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'start_date': today,
                     'end_date': tomorrow,
@@ -1488,7 +1488,7 @@ class MCPServerIntegrationTest:
             # Test 2: Search with future start_date - should NOT find entry
             future_start_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'start_date': future_date,
                 },
@@ -1503,7 +1503,7 @@ class MCPServerIntegrationTest:
             # Test 3: Search with past end_date - should NOT find entry
             past_end_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'end_date': past_date,
                 },
@@ -1519,7 +1519,7 @@ class MCPServerIntegrationTest:
             # This verifies the UX fix where date-only end_date is expanded to end-of-day
             today_end_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'end_date': today,
                 },
@@ -1534,7 +1534,7 @@ class MCPServerIntegrationTest:
             # Test 5: Combined filters (date + source)
             combined_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'source': 'user',
                     'start_date': yesterday,
@@ -1759,7 +1759,7 @@ class MCPServerIntegrationTest:
             # Test 2: Verify entries stored correctly via search
             search_result = await self.client.call_tool(
                 'search_context',
-                {'thread_id': bulk_store_thread},
+                {'limit': 50, 'thread_id': bulk_store_thread},
             )
 
             search_data = self._extract_content(search_result)
@@ -2023,7 +2023,7 @@ class MCPServerIntegrationTest:
             # Verify thread is empty
             verify_thread = await self.client.call_tool(
                 'search_context',
-                {'thread_id': delete_by_thread_thread},
+                {'limit': 50, 'thread_id': delete_by_thread_thread},
             )
 
             verify_thread_data = self._extract_content(verify_thread)
@@ -2049,7 +2049,7 @@ class MCPServerIntegrationTest:
             # Verify only agent entry remains
             verify_combined = await self.client.call_tool(
                 'search_context',
-                {'thread_id': delete_combined_thread},
+                {'limit': 50, 'thread_id': delete_combined_thread},
             )
 
             verify_combined_data = self._extract_content(verify_combined)
@@ -2336,7 +2336,7 @@ class MCPServerIntegrationTest:
             # Test with invalid operator
             result = await self.client.call_tool(
                 'search_context',
-                {'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}]},
+                {'limit': 50, 'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}]},
             )
 
             result_data = self._extract_content(result)

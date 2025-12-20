@@ -15,6 +15,7 @@ class TestMetadataErrorHandling:
         """Test that invalid operators return proper error responses."""
         # Try to use an invalid operator
         result = await search_context.fn(
+            limit=50,
             thread_id='test',
             metadata_filters=[
                 {'key': 'status', 'operator': 'invalid_operator', 'value': 'active'},
@@ -37,6 +38,7 @@ class TestMetadataErrorHandling:
         """Test that empty IN operator lists return proper error responses."""
         # Try to use an empty list with IN operator
         result = await search_context.fn(
+            limit=50,
             thread_id='test',
             metadata_filters=[
                 {'key': 'status', 'operator': 'in', 'value': []},
@@ -59,6 +61,7 @@ class TestMetadataErrorHandling:
         """Test that multiple invalid filters collect all errors."""
         # Try multiple invalid filters
         result = await search_context.fn(
+            limit=50,
             thread_id='test',
             metadata_filters=[
                 {'key': 'status', 'operator': 'invalid_op', 'value': 'active'},
@@ -81,6 +84,7 @@ class TestMetadataErrorHandling:
         """Test that valid filters still work correctly after error handling changes."""
         # Use valid filters
         result = await search_context.fn(
+            limit=50,
             thread_id='test',
             metadata_filters=[
                 {'key': 'status', 'operator': 'eq', 'value': 'active'},
@@ -113,6 +117,7 @@ class TestMetadataErrorHandling:
 
         # Search with case-insensitive (default)
         result1 = await search_context.fn(
+            limit=50,
             thread_id='test_case',
             metadata_filters=[
                 {'key': 'name', 'operator': 'eq', 'value': 'testcase', 'case_sensitive': False},
@@ -124,6 +129,7 @@ class TestMetadataErrorHandling:
 
         # Search with case-sensitive
         result2 = await search_context.fn(
+            limit=50,
             thread_id='test_case',
             metadata_filters=[
                 {'key': 'name', 'operator': 'eq', 'value': 'testcase', 'case_sensitive': True},
@@ -135,6 +141,7 @@ class TestMetadataErrorHandling:
 
         # Search with correct case
         result3 = await search_context.fn(
+            limit=50,
             thread_id='test_case',
             metadata_filters=[
                 {'key': 'name', 'operator': 'eq', 'value': 'TestCase', 'case_sensitive': True},

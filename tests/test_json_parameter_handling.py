@@ -214,6 +214,7 @@ class TestSearchContextParameterHandling:
 
             # Send tags as JSON string
             result = await search_context.fn(
+                limit=50,
                 thread_id='test-thread',
                 tags='["tag1", "tag2"]',  # JSON string
             )
@@ -237,6 +238,7 @@ class TestSearchContextParameterHandling:
 
             # Send tags as native list
             result = await search_context.fn(
+                limit=50,
                 thread_id='test-thread',
                 tags=['tag1', 'tag2'],  # Native list
             )

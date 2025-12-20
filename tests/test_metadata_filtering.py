@@ -402,6 +402,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active'},
             ctx=None,
@@ -418,6 +419,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active', 'priority': 5},
             ctx=None,
@@ -433,6 +435,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
             ctx=None,
@@ -449,6 +452,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[
                 {
@@ -477,6 +481,7 @@ class TestMetadataFilteringIntegration:
 
         # Test IN with integer array [5, 10]
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[
                 {
@@ -504,6 +509,7 @@ class TestMetadataFilteringIntegration:
 
         # Test NOT IN with integer array - should exclude entries with priority 1, 3, 5
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[
                 {
@@ -527,6 +533,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[{'key': 'agent_name', 'operator': 'exists'}],
             ctx=None,
@@ -543,6 +550,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[
                 {
@@ -564,6 +572,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             source='agent',
             metadata={'status': 'active'},
@@ -584,6 +593,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active'},
             explain_query=True,
@@ -606,6 +616,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'nonexistent'},
             ctx=None,
@@ -620,6 +631,7 @@ class TestMetadataFilteringIntegration:
         await self._setup_test_data()
 
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata_filters=[{'key': 'status', 'operator': 'not_exists'}],
             ctx=None,
@@ -639,6 +651,7 @@ class TestMetadataFilteringIntegration:
         # Simple filter performance test
         start_time = time.time()
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active'},
             ctx=None,
@@ -651,6 +664,7 @@ class TestMetadataFilteringIntegration:
         # Complex filter performance test
         start_time = time.time()
         result = await search_context.fn(
+            limit=50,
             thread_id=self.test_thread_id,
             metadata={'status': 'active'},
             metadata_filters=[
@@ -716,6 +730,7 @@ async def test_all_operators(
 
     # Apply filter
     result = await search_context.fn(
+        limit=50,
         thread_id='test_operators',
         metadata_filters=[{'key': key, 'operator': operator.value, 'value': value}],
         ctx=None,
@@ -734,6 +749,7 @@ class TestMetadataFilterErrorHandling:
     async def test_invalid_operator_returns_validation_error(self) -> None:
         """Test that invalid operator returns explicit validation error."""
         result = await search_context.fn(
+            limit=50,
             metadata_filters=[{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}],
             ctx=None,
         )
@@ -749,6 +765,7 @@ class TestMetadataFilterErrorHandling:
     async def test_multiple_invalid_filters_returns_all_errors(self) -> None:
         """Test that multiple invalid filters return all validation errors."""
         result = await search_context.fn(
+            limit=50,
             metadata_filters=[
                 {'key': 'status', 'operator': 'invalid_op1', 'value': 'test'},
                 {'key': 'priority', 'operator': 'invalid_op2', 'value': 123},
@@ -765,6 +782,7 @@ class TestMetadataFilterErrorHandling:
     async def test_invalid_key_with_sql_injection_returns_error(self) -> None:
         """Test that invalid keys (SQL injection attempts) return validation error."""
         result = await search_context.fn(
+            limit=50,
             metadata_filters=[{'key': 'DROP TABLE;--', 'operator': 'eq', 'value': 'test'}],
             ctx=None,
         )
@@ -809,7 +827,7 @@ class TestNestedJSONMetadata:
         assert 'context_id' in result
 
         # Retrieve and verify the metadata is preserved
-        search_result = await search_context.fn(thread_id='test_nested_json', ctx=None)
+        search_result = await search_context.fn(limit=50, thread_id='test_nested_json', ctx=None)
         assert len(search_result['entries']) == 1
 
         stored_metadata = search_result['entries'][0]['metadata']
@@ -843,7 +861,7 @@ class TestNestedJSONMetadata:
         assert result['success'] is True
 
         # Retrieve and verify arrays are preserved
-        search_result = await search_context.fn(thread_id='test_arrays', ctx=None)
+        search_result = await search_context.fn(limit=50, thread_id='test_arrays', ctx=None)
         stored_metadata = search_result['entries'][0]['metadata']
 
         assert stored_metadata['tags'] == ['urgent', 'backend', 'production']
@@ -873,6 +891,7 @@ class TestNestedJSONMetadata:
 
         # Query using nested path
         result = await search_context.fn(
+            limit=50,
             thread_id='test_nested_paths',
             metadata={'user.preferences.theme': 'dark'},
             ctx=None,
@@ -921,7 +940,7 @@ class TestNestedJSONMetadata:
         assert result['success'] is True
 
         # Verify structure is preserved
-        search_result = await search_context.fn(thread_id='test_complex', ctx=None)
+        search_result = await search_context.fn(limit=50, thread_id='test_complex', ctx=None)
         stored_metadata = search_result['entries'][0]['metadata']
 
         # Verify deep nesting
@@ -962,7 +981,9 @@ class TestNestedJSONMetadata:
         assert result['success'] is True
 
         # Query using both flat and nested paths
-        search_result = await search_context.fn(thread_id='test_mixed', metadata={'simple_string': 'value'}, ctx=None)
+        search_result = await search_context.fn(
+            limit=50, thread_id='test_mixed', metadata={'simple_string': 'value'}, ctx=None,
+        )
         assert len(search_result['entries']) == 1
 
         # Verify all types are preserved

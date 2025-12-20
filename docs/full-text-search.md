@@ -135,7 +135,7 @@ When FTS is enabled, a new MCP tool becomes available.
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `highlight` (bool, optional): Include highlighted snippets in results (default: false)
-- `limit` (int, optional): Maximum results (1-500, default: 50)
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
 - `offset` (int, optional): Pagination offset (default: 0)
 
 **Metadata Filtering**: The `metadata` and `metadata_filters` parameters work identically to `search_context`. For comprehensive documentation on operators, nested paths, and best practices, see the [Metadata Guide](metadata-addition-updating-and-filtering.md).

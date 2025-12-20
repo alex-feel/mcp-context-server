@@ -106,7 +106,7 @@ Key points:
         assert agent_review['success'] is True
 
         # Verify the complete conversation
-        conversation = await search_context(thread_id=thread_id)
+        conversation = await search_context(limit=50, thread_id=thread_id)
         assert isinstance(conversation, dict)
         assert len(conversation['entries']) == 4
 
@@ -123,7 +123,7 @@ Key points:
         assert 'multimodal' in content_types
 
         # Search for code review entries
-        reviews = await search_context(tags=['code-review'])
+        reviews = await search_context(limit=50, tags=['code-review'])
         assert isinstance(reviews, dict)
         assert len(reviews['entries']) == 2
 
@@ -191,7 +191,7 @@ Key points:
         assert collab_thread['source_types'] == 2  # user and agent
 
         # Analyze agent contributions
-        agent_entries = await search_context(thread_id=thread_id, source='agent')
+        agent_entries = await search_context(limit=50, thread_id=thread_id, source='agent')
         assert isinstance(agent_entries, dict)
         assert len(agent_entries['entries']) == 4
 
@@ -244,7 +244,7 @@ Key points:
         assert 'API Documentation' in referenced_docs[0]['text_content']
 
         # Search across documentation
-        docs = await search_context(tags=['documentation'])
+        docs = await search_context(limit=50, tags=['documentation'])
         assert isinstance(docs, dict)
         assert len(docs['entries']) >= 1
 
@@ -282,7 +282,7 @@ class TestConcurrentOperations:
             assert result['success'] is True
 
         # Verify all entries exist
-        all_entries = await search_context(thread_id=thread_id)
+        all_entries = await search_context(limit=50, thread_id=thread_id)
         assert isinstance(all_entries, dict)
         assert len(all_entries['entries']) == 20
 
@@ -305,8 +305,8 @@ class TestConcurrentOperations:
         # Concurrent read operations
         async def read_operations():
             return await asyncio.gather(
-                search_context(thread_id=thread_id),
-                search_context(source='user'),
+                search_context(limit=50, thread_id=thread_id),
+                search_context(limit=50, source='user'),
                 get_context_by_ids(context_ids=context_ids[:5]),
                 get_context_by_ids(context_ids=context_ids[5:]),
                 list_threads(),
@@ -338,7 +338,7 @@ class TestConcurrentOperations:
                 store_context(thread_id=f'{base_thread}_1', source='user', text='Write 1'),
                 store_context(thread_id=f'{base_thread}_2', source='agent', text='Write 2'),
                 # Read operations
-                search_context(thread_id=base_thread),
+                search_context(limit=50, thread_id=base_thread),
                 list_threads(),
                 # Delete operation
                 delete_context(context_ids=[initial['context_id']]),
@@ -419,7 +419,7 @@ class TestDataIntegrity:
         await delete_context(thread_id=thread_id)
 
         # Verify complete deletion
-        remaining = await search_context(thread_id=thread_id)
+        remaining = await search_context(limit=50, thread_id=thread_id)
         assert isinstance(remaining, dict)
         assert remaining['entries'] == []
 
@@ -498,7 +498,7 @@ class TestPerformanceAndScaling:
         assert threads['total_threads'] >= 50
 
         # Search across all threads
-        all_entries = await search_context(tags=['multi-thread-test'], limit=500)
+        all_entries = await search_context(tags=['multi-thread-test'], limit=100)
         assert len(all_entries['entries']) >= 100
 
         # Get statistics
@@ -530,7 +530,7 @@ class TestErrorRecovery:
         assert results[2]['success'] is True
 
         # Verify only valid entries were stored
-        all_entries = await search_context()
+        all_entries = await search_context(limit=50)
         thread_ids = {e['thread_id'] for e in all_entries['entries']}
         assert 'valid1' in thread_ids
         assert 'valid2' not in thread_ids  # Should not exist
@@ -559,7 +559,7 @@ class TestErrorRecovery:
         assert success_result['success'] is True
 
         # Verify data integrity
-        entries = await search_context(thread_id='test')
+        entries = await search_context(limit=50, thread_id='test')
         assert len(entries['entries']) == 1
         assert entries['entries'][0]['text_content'] == 'This should work'
 
@@ -595,6 +595,7 @@ class TestComplexQueries:
 
         # Complex query 1: Python backend entries from agents in project_a
         results = await search_context(
+            limit=50,
             thread_id='project_a',
             source='agent',
             tags=['python', 'backend'],
@@ -604,7 +605,7 @@ class TestComplexQueries:
         assert len(results) >= 1
 
         # Complex query 2: All Python entries (ML or backend)
-        python_results = await search_context(tags=['python'])
+        python_results = await search_context(limit=50, tags=['python'])
         assert len(python_results['entries']) >= 12  # At least 2 python tag sets * 3 threads * 2 sources
 
         # Complex query 3: User entries in project_b with pagination
@@ -693,8 +694,8 @@ class TestMaintenanceOperations:
         )
 
         # Search by normalized tag
-        python_results = await search_context(tags=['python'])
-        testing_results = await search_context(tags=['testing'])
+        python_results = await search_context(limit=50, tags=['python'])
+        testing_results = await search_context(limit=50, tags=['testing'])
 
         assert len(python_results['entries']) == 1
         assert len(testing_results['entries']) == 1

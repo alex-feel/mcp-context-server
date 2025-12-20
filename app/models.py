@@ -135,7 +135,7 @@ class SearchFilters(BaseModel):
     start_date: datetime | None = Field(default=None)
     end_date: datetime | None = Field(default=None)
     content_type: ContentType | None = Field(default=None)
-    limit: Annotated[int, Field(default=50, le=500, ge=1)]
+    limit: Annotated[int, Field(default=50, le=100, ge=1)]
     offset: Annotated[int, Field(default=0, ge=0)]
     include_images: bool = Field(default=False, description='Include image data in response')
 

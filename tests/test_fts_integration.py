@@ -761,7 +761,7 @@ class TestFtsGracefulDegradation:
             from app.server import fts_search_context
 
             # Call the tool function directly
-            result = await fts_search_context(query='test query')
+            result = await fts_search_context(query='test query', limit=50)
 
             # Verify response structure for migration in progress
             assert result['migration_in_progress'] is True
@@ -808,7 +808,7 @@ class TestFtsGracefulDegradation:
 
             from app.server import fts_search_context
 
-            result = await fts_search_context(query='test query')
+            result = await fts_search_context(query='test query', limit=50)
 
             # Should have approximately 90 seconds remaining (120 - 30)
             remaining = result['estimated_remaining_seconds']
@@ -843,7 +843,7 @@ class TestFtsGracefulDegradation:
 
             from app.server import fts_search_context
 
-            result = await fts_search_context(query='test query')
+            result = await fts_search_context(query='test query', limit=50)
 
             # Verify suggestion includes retry time
             assert 'retry' in result['suggestion'].lower()

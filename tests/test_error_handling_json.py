@@ -255,7 +255,7 @@ class TestSearchContextErrors:
 
     @pytest.mark.asyncio
     async def test_invalid_limit(self, mock_server_dependencies):
-        """Test that Pydantic Field(ge=1, le=500) handles limit validation.
+        """Test that Pydantic Field(ge=1, le=100) handles limit validation.
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
@@ -266,7 +266,7 @@ class TestSearchContextErrors:
         result = await search_context(limit=1)
         assert 'entries' in result
 
-        result = await search_context(limit=500)
+        result = await search_context(limit=100)
         assert 'entries' in result
 
     @pytest.mark.asyncio
@@ -279,10 +279,10 @@ class TestSearchContextErrors:
         mock_server_dependencies.context.search_contexts.return_value = ([], {})
 
         # Valid offsets work fine
-        result = await search_context(offset=0)
+        result = await search_context(limit=50, offset=0)
         assert 'entries' in result
 
-        result = await search_context(offset=100)
+        result = await search_context(limit=50, offset=100)
         assert 'entries' in result
 
     @pytest.mark.asyncio
@@ -291,7 +291,7 @@ class TestSearchContextErrors:
         mock_server_dependencies.context.search_contexts.side_effect = Exception('Search failed')
 
         with pytest.raises(ToolError, match='Failed to search context: Search failed'):
-            await search_context(thread_id='test-thread')
+            await search_context(thread_id='test-thread', limit=50)
 
 
 class TestGetContextByIdsErrors:
@@ -386,14 +386,14 @@ class TestFieldValidation:
 
     @pytest.mark.asyncio
     async def test_limit_range(self, mock_server_dependencies):
-        """Test that Pydantic Field(ge=1, le=500) enforces limit range."""
+        """Test that Pydantic Field(ge=1, le=100) enforces limit range."""
         # Set up mock to return valid response (rows, stats_dict)
         mock_server_dependencies.context.search_contexts.return_value = ([], {})
 
         # Valid limits work
         result = await search_context(limit=1)
         assert 'entries' in result
-        result = await search_context(limit=500)
+        result = await search_context(limit=100)
         assert 'entries' in result
 
     @pytest.mark.asyncio
@@ -403,9 +403,9 @@ class TestFieldValidation:
         mock_server_dependencies.context.search_contexts.return_value = ([], {})
 
         # Valid offsets work
-        result = await search_context(offset=0)
+        result = await search_context(limit=50, offset=0)
         assert 'entries' in result
-        result = await search_context(offset=100)
+        result = await search_context(limit=50, offset=100)
         assert 'entries' in result
 
 

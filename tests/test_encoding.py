@@ -229,6 +229,7 @@ class TestUTF8Encoding:
             result = await search_context(
                 thread_id='test-thread',
                 metadata={'language': 'русский'},
+                limit=50,
             )
 
         assert 'entries' in result
