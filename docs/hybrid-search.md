@@ -162,16 +162,19 @@ When hybrid search is enabled and at least one underlying search method is avail
 **Parameters:**
 
 - `query` (str, required): Natural language search query
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
+- `offset` (int, optional): Pagination offset (default: 0)
 - `search_modes` (list, optional): Which search modes to use - `['fts', 'semantic']` (default: both)
 - `fusion_method` (str, optional): Fusion algorithm - currently only `'rrf'` supported
 - `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from settings)
 - `thread_id` (str, optional): Filter results to specific thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
-- `limit` (int, optional): Maximum results to return (1-100, default: 5)
+- `include_images` (bool, optional): Include image data in results (default: false)
 
 **Metadata Filtering**: The `metadata` and `metadata_filters` parameters work identically to `search_context`. For comprehensive documentation on operators, nested paths, and best practices, see the [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
