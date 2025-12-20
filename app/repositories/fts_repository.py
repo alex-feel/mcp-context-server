@@ -85,6 +85,7 @@ class FtsRepository(BaseRepository):
         thread_id: str | None = None,
         source: Literal['user', 'agent'] | None = None,
         content_type: Literal['text', 'multimodal'] | None = None,
+        tags: list[str] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
         metadata: dict[str, str | int | float | bool] | None = None,
@@ -105,6 +106,7 @@ class FtsRepository(BaseRepository):
             thread_id: Optional filter by thread
             source: Optional filter by source type
             content_type: Filter by content type (text or multimodal)
+            tags: Filter by any of these tags (OR logic)
             start_date: Filter by created_at >= date (ISO 8601 format)
             end_date: Filter by created_at <= date (ISO 8601 format)
             metadata: Simple metadata filters (key=value equality)
@@ -137,6 +139,7 @@ class FtsRepository(BaseRepository):
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
+                tags=tags,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
@@ -152,6 +155,7 @@ class FtsRepository(BaseRepository):
             thread_id=thread_id,
             source=source,
             content_type=content_type,
+            tags=tags,
             start_date=start_date,
             end_date=end_date,
             metadata=metadata,
@@ -169,6 +173,7 @@ class FtsRepository(BaseRepository):
         thread_id: str | None,
         source: str | None,
         content_type: str | None,
+        tags: list[str] | None,
         start_date: str | None,
         end_date: str | None,
         metadata: dict[str, str | int | float | bool] | None,
@@ -195,6 +200,20 @@ class FtsRepository(BaseRepository):
             if content_type:
                 filter_conditions.append('ce.content_type = ?')
                 filter_params.append(content_type)
+
+            # Tag filter (uses subquery with indexed tag table)
+            if tags:
+                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                if normalized_tags:
+                    tag_placeholders = ','.join(['?' for _ in normalized_tags])
+                    filter_conditions.append(f'''
+                        ce.id IN (
+                            SELECT DISTINCT context_entry_id
+                            FROM tags
+                            WHERE tag IN ({tag_placeholders})
+                        )
+                    ''')
+                    filter_params.extend(normalized_tags)
 
             # Date range filtering - Use datetime() to normalize ISO 8601 input
             if start_date:
@@ -305,6 +324,7 @@ class FtsRepository(BaseRepository):
         thread_id: str | None,
         source: str | None,
         content_type: str | None,
+        tags: list[str] | None,
         start_date: str | None,
         end_date: str | None,
         metadata: dict[str, str | int | float | bool] | None,
@@ -333,6 +353,23 @@ class FtsRepository(BaseRepository):
                 filter_conditions.append(f'ce.content_type = {self._placeholder(param_position)}')
                 filter_params.append(content_type)
                 param_position += 1
+
+            # Tag filter (uses subquery with indexed tag table)
+            if tags:
+                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                if normalized_tags:
+                    tag_placeholders = ','.join([
+                        self._placeholder(param_position + i) for i in range(len(normalized_tags))
+                    ])
+                    filter_conditions.append(f'''
+                        ce.id IN (
+                            SELECT DISTINCT context_entry_id
+                            FROM tags
+                            WHERE tag IN ({tag_placeholders})
+                        )
+                    ''')
+                    filter_params.extend(normalized_tags)
+                    param_position += len(normalized_tags)
 
             # Date range filtering
             if start_date:

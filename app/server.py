@@ -2123,6 +2123,7 @@ async def semantic_search_context(
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2159,6 +2160,7 @@ async def semantic_search_context(
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
     - content_type: Filter by text or multimodal entries
+    - tags: OR logic (matches ANY of provided tags)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2180,6 +2182,7 @@ async def semantic_search_context(
         thread_id: Optional filter to narrow results by thread
         source: Optional filter to narrow results by source type
         content_type: Filter by content type (text or multimodal)
+        tags: Filter by any of these tags (OR logic)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
@@ -2232,6 +2235,7 @@ async def semantic_search_context(
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
+                tags=tags,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
@@ -2294,6 +2298,7 @@ async def fts_search_context(
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2341,6 +2346,7 @@ async def fts_search_context(
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
     - content_type: Filter by text or multimodal entries
+    - tags: OR logic (matches ANY of provided tags)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2361,6 +2367,7 @@ async def fts_search_context(
         thread_id: Optional filter by thread
         source: Optional filter by source type
         content_type: Filter by content type (text or multimodal)
+        tags: Filter by any of these tags (OR logic)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
@@ -2437,6 +2444,7 @@ async def fts_search_context(
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
+                tags=tags,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
@@ -2527,6 +2535,7 @@ async def hybrid_search_context(
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2569,6 +2578,7 @@ async def hybrid_search_context(
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
     - content_type: Filter by text or multimodal entries
+    - tags: OR logic (matches ANY of provided tags)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2596,6 +2606,7 @@ async def hybrid_search_context(
         thread_id: Optional filter by thread
         source: Optional filter by source type
         content_type: Filter by content type (text or multimodal)
+        tags: Filter by any of these tags (OR logic)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
@@ -2694,6 +2705,7 @@ async def hybrid_search_context(
                         thread_id=thread_id,
                         source=source,
                         content_type=content_type,
+                        tags=tags,
                         start_date=start_date,
                         end_date=end_date,
                         metadata=metadata,
@@ -2733,6 +2745,7 @@ async def hybrid_search_context(
                         thread_id=thread_id,
                         source=source,
                         content_type=content_type,
+                        tags=tags,
                         start_date=start_date,
                         end_date=end_date,
                         metadata=metadata,
