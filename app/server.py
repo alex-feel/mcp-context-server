@@ -822,6 +822,29 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
+        # 8) Register Hybrid Search tool if enabled AND at least one search mode is available
+        if settings.enable_hybrid_search:
+            semantic_available_for_hybrid = settings.enable_semantic_search and _embedding_service is not None
+            fts_available_for_hybrid = settings.enable_fts
+
+            if semantic_available_for_hybrid or fts_available_for_hybrid:
+                mcp.tool()(hybrid_search_context)
+                modes_available = []
+                if fts_available_for_hybrid:
+                    modes_available.append('fts')
+                if semantic_available_for_hybrid:
+                    modes_available.append('semantic')
+                logger.info(f'[OK] hybrid_search_context registered (modes available: {modes_available})')
+            else:
+                logger.warning(
+                    '[!] Hybrid search enabled but no search modes available - feature disabled. '
+                    'Enable ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
+                )
+                logger.info('[!] hybrid_search_context not registered (no search modes available)')
+        else:
+            logger.info('Hybrid search disabled (ENABLE_HYBRID_SEARCH=false)')
+            logger.info('[!] hybrid_search_context not registered (feature disabled)')
+
         logger.info(f'MCP Context Server initialized (backend: {_backend.backend_type})')
     except Exception as e:
         logger.error(f'Failed to initialize server: {e}')
@@ -2454,7 +2477,6 @@ async def fts_search_context(
         raise ToolError(f'FTS search failed: {str(e)}') from e
 
 
-@mcp.tool()
 async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     search_modes: Annotated[
