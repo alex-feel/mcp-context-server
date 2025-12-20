@@ -1437,7 +1437,7 @@ async def search_context(
             description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
         ),
     ] = None,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset')] = 0,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
@@ -1467,7 +1467,7 @@ async def search_context(
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         limit: Maximum results to return (1-100, default: 30)
-        offset: Pagination offset
+        offset: Pagination offset (default: 0)
         include_images: Whether to include image data
         explain_query: Include query execution statistics
         ctx: FastMCP context object
@@ -2118,10 +2118,10 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
-    limit: Annotated[int, Field(ge=1, le=100, description='Top-K nearest neighbors to return (1-100, default: 5)')] = 5,
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
-    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
-    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
@@ -2177,10 +2177,10 @@ async def semantic_search_context(
 
     Args:
         query: Natural language search query
-        limit: Top-K nearest neighbors to return (1-100, default: 5)
+        limit: Maximum results to return (1-100, default: 5)
         offset: Pagination offset (default: 0)
-        thread_id: Optional filter to narrow results by thread
-        source: Optional filter to narrow results by source type
+        thread_id: Optional filter by thread
+        source: Optional filter by source type
         content_type: Filter by content type (text or multimodal)
         tags: Filter by any of these tags (OR logic)
         start_date: Filter entries created on or after this date (ISO 8601)
@@ -2296,8 +2296,8 @@ async def fts_search_context(
             "'boolean' (AND/OR/NOT operators)",
         ),
     ] = 'match',
-    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
-    source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type')] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
@@ -2375,7 +2375,7 @@ async def fts_search_context(
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
         limit: Maximum results to return (1-100, default: 5)
-        offset: Pagination offset
+        offset: Pagination offset (default: 0)
         highlight: Whether to include highlighted snippets
         include_images: Whether to include image data for multimodal entries
         explain_query: Include query execution statistics
