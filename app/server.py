@@ -2228,7 +2228,8 @@ async def semantic_search_context(
         from app.repositories.embedding_repository import MetadataFilterValidationError
 
         try:
-            search_results = await repos.embeddings.search(
+            # Unpack tuple; discard stats (not used in semantic_search_context)
+            search_results, _ = await repos.embeddings.search(
                 query_embedding=query_embedding,
                 limit=limit,
                 offset=offset,
@@ -2574,6 +2575,7 @@ async def hybrid_search_context(
         ),
     ] = None,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
+    explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
@@ -2603,11 +2605,18 @@ async def hybrid_search_context(
         fusion_method: 'rrf',
         search_modes_used: ['fts', 'semantic'],  # Actual modes executed
         fts_count: int,
-        semantic_count: int
+        semantic_count: int,
+        stats: {...}  # Only when explain_query=True
     }
 
     The `scores` field contains: rrf (combined), fts_rank, semantic_rank,
     fts_score, semantic_distance.
+
+    When explain_query=True, the `stats` field contains:
+    - execution_time_ms: Total hybrid search time
+    - fts_stats: {execution_time_ms, filters_applied, rows_returned} or None
+    - semantic_stats: {execution_time_ms, embedding_generation_ms, filters_applied, rows_returned} or None
+    - fusion_stats: {rrf_k, total_unique_documents, documents_in_both, documents_fts_only, documents_semantic_only}
 
     Args:
         query: Natural language search query
@@ -2625,6 +2634,7 @@ async def hybrid_search_context(
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
         include_images: Whether to include image data for multimodal entries
+        explain_query: Include query execution statistics
         ctx: FastMCP context object
 
     Returns:
@@ -2676,10 +2686,15 @@ async def hybrid_search_context(
         )
 
     try:
+        import time as time_module
+
+        total_start_time = time_module.time()
+
         if ctx:
             await ctx.info(f'Performing hybrid search: "{query[:50]}..." (modes={available_modes})')
 
         # Import fusion module
+        from app.fusion import count_unique_results
         from app.fusion import reciprocal_rank_fusion
 
         # Get repositories
@@ -2694,8 +2709,12 @@ async def hybrid_search_context(
         fts_error: str | None = None
         semantic_error: str | None = None
 
+        # Stats collection for explain_query
+        fts_stats: dict[str, Any] | None = None
+        semantic_stats: dict[str, Any] | None = None
+
         async def run_fts_search() -> None:
-            nonlocal fts_results, fts_error
+            nonlocal fts_results, fts_error, fts_stats
             try:
                 # Check if FTS migration is in progress
                 if _fts_migration_status.in_progress:
@@ -2710,7 +2729,7 @@ async def hybrid_search_context(
                 from app.repositories.fts_repository import FtsValidationError
 
                 try:
-                    results, _ = await repos.fts.search(
+                    results, stats = await repos.fts.search(
                         query=query,
                         mode='match',
                         limit=over_fetch_limit,
@@ -2725,9 +2744,11 @@ async def hybrid_search_context(
                         metadata_filters=metadata_filters,
                         highlight=False,
                         language=settings.fts_language,
-                        explain_query=False,
+                        explain_query=explain_query,
                     )
                     fts_results = results
+                    if explain_query:
+                        fts_stats = stats
                 except FtsValidationError as e:
                     fts_error = str(e.message)
                 except Exception as e:
@@ -2736,11 +2757,14 @@ async def hybrid_search_context(
                 fts_error = str(e)
 
         async def run_semantic_search() -> None:
-            nonlocal semantic_results, semantic_error
+            nonlocal semantic_results, semantic_error, semantic_stats
             try:
                 if _embedding_service is None:
                     semantic_error = 'Embedding service not available'
                     return
+
+                # Track embedding generation time for explain_query
+                embedding_start_time = time_module.time() if explain_query else 0.0
 
                 # Generate embedding for query
                 try:
@@ -2749,10 +2773,15 @@ async def hybrid_search_context(
                     semantic_error = f'Failed to generate embedding: {e}'
                     return
 
+                embedding_generation_ms = (
+                    (time_module.time() - embedding_start_time) * 1000 if explain_query else 0.0
+                )
+
                 from app.repositories.embedding_repository import MetadataFilterValidationError
 
                 try:
-                    results = await repos.embeddings.search(
+                    # Unpack tuple; stats will be captured for explain_query
+                    results, search_stats = await repos.embeddings.search(
                         query_embedding=query_embedding,
                         limit=over_fetch_limit,
                         offset=0,
@@ -2766,6 +2795,15 @@ async def hybrid_search_context(
                         metadata_filters=metadata_filters,
                     )
                     semantic_results = results
+
+                    # Build semantic stats with embedding generation time
+                    if explain_query:
+                        semantic_stats = {
+                            'execution_time_ms': round(search_stats.get('execution_time_ms', 0.0), 2),
+                            'embedding_generation_ms': round(embedding_generation_ms, 2),
+                            'filters_applied': search_stats.get('filters_applied', 0),
+                            'rows_returned': search_stats.get('rows_returned', 0),
+                        }
                 except MetadataFilterValidationError as e:
                     semantic_error = str(e.message)
                 except Exception as e:
@@ -2835,7 +2873,8 @@ async def hybrid_search_context(
             f'(fts={len(fts_results)}, semantic={len(semantic_results)}, modes={modes_used})',
         )
 
-        return {
+        # Build response
+        response: dict[str, Any] = {
             'query': query,
             'results': fused_results_any,
             'count': len(fused_results_any),
@@ -2844,6 +2883,30 @@ async def hybrid_search_context(
             'fts_count': len(fts_results),
             'semantic_count': len(semantic_results),
         }
+
+        # Add stats if explain_query is enabled
+        if explain_query:
+            # Calculate fusion stats
+            fts_only, semantic_only, overlap = count_unique_results(fts_results, semantic_results)
+            fusion_stats: dict[str, Any] = {
+                'rrf_k': effective_rrf_k,
+                'total_unique_documents': fts_only + semantic_only + overlap,
+                'documents_in_both': overlap,
+                'documents_fts_only': fts_only,
+                'documents_semantic_only': semantic_only,
+            }
+
+            # Calculate total execution time
+            total_execution_time_ms = (time_module.time() - total_start_time) * 1000
+
+            response['stats'] = {
+                'execution_time_ms': round(total_execution_time_ms, 2),
+                'fts_stats': fts_stats,
+                'semantic_stats': semantic_stats,
+                'fusion_stats': fusion_stats,
+            }
+
+        return response
 
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle

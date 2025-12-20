@@ -83,7 +83,7 @@ class TestSemanticSearchFilters:
 
         # Perform search with thread filter
         query_embedding = [0.1] * embedding_dim
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=query_embedding,
             limit=3,
             thread_id='test-thread',
@@ -133,7 +133,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with source filter
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             source='user',
@@ -183,7 +183,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with both filters
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='test-thread',
@@ -224,7 +224,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search without filters
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=3,
         )
@@ -258,7 +258,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with non-existent thread
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='thread-b',  # Does not exist
@@ -293,7 +293,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 10 but only 2 exist
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='small-thread',
@@ -338,7 +338,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with start_date in the past - should find all entries
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             start_date=yesterday,
@@ -347,7 +347,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with start_date in the future - should find no entries
         future_date = (datetime.now(UTC) + timedelta(days=30)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             start_date=future_date,
@@ -385,7 +385,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with end_date in the future - should find all entries
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.2] * embedding_dim,
             limit=10,
             end_date=tomorrow,
@@ -394,7 +394,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with end_date in the past - should find no entries
         past_date = (datetime.now(UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.2] * embedding_dim,
             limit=10,
             end_date=past_date,
@@ -433,7 +433,7 @@ class TestSemanticSearchDateFiltering:
         # Search with valid date range (yesterday to tomorrow) - should find all
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.15] * embedding_dim,
             limit=10,
             start_date=yesterday,
@@ -444,7 +444,7 @@ class TestSemanticSearchDateFiltering:
         # Search with date range in the past - should find none
         far_past = (datetime.now(UTC) - timedelta(days=60)).strftime('%Y-%m-%d')
         past = (datetime.now(UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.15] * embedding_dim,
             limit=10,
             start_date=far_past,
@@ -494,7 +494,7 @@ class TestSemanticSearchDateFiltering:
         # Search with date filter and thread_id - should find 2 entries from target thread
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-date-thread',
@@ -547,7 +547,7 @@ class TestSemanticSearchDateFiltering:
         # Search with date filter and source - should find 2 user entries
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source='user',
@@ -584,7 +584,7 @@ class TestSemanticSearchDateFiltering:
             await embedding_repo.store(context_id, [0.25 * (i + 1)] * embedding_dim)
 
         # Search with None dates - should find all entries
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.25] * embedding_dim,
             limit=10,
             start_date=None,
@@ -637,7 +637,7 @@ class TestSemanticSearchPerformance:
 
         # Measure search time
         start_time = time.perf_counter()
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-thread',
@@ -677,7 +677,7 @@ class TestSemanticSearchPerformance:
 
         # Measure search time
         start_time = time.perf_counter()
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=20,
             thread_id='medium-thread',
@@ -729,7 +729,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(ctx_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search for single thread
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='single-thread',
@@ -764,7 +764,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 5 from only-thread
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='only-thread',
@@ -800,7 +800,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with thread_id=None
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id=None,
@@ -837,7 +837,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with source=None
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source=None,
@@ -892,7 +892,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with simple metadata filter for status=completed
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'completed'},
@@ -932,7 +932,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * priority] * embedding_dim)
 
         # Search with metadata_filters for priority > 5
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
@@ -974,7 +974,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for task_name containing 'refactor'
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'task_name', 'operator': 'contains', 'value': 'refactor'}],
@@ -1024,7 +1024,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search for entries where 'important' key exists
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'important', 'operator': 'exists'}],
@@ -1086,7 +1086,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with combined filters: thread_id + source + metadata
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='combined-filter-thread',
@@ -1174,7 +1174,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for non-existent status
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'archived'},  # No entries have this status
@@ -1212,7 +1212,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries in backend or frontend categories
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'category', 'operator': 'in', 'value': ['backend', 'frontend']}],
@@ -1258,7 +1258,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries with priority IN [5, 9] - INTEGER array
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'in', 'value': [5, 9]}],
@@ -1302,7 +1302,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries with priority NOT IN [1, 2, 3] - INTEGER array
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'not_in', 'value': [1, 2, 3]}],
@@ -1342,7 +1342,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with None metadata and metadata_filters
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata=None,

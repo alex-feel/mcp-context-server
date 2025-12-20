@@ -498,8 +498,8 @@ class TestSemanticSearchDateFiltering:
         mock_embedding_service = MagicMock()
         mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
 
-        # Mock search results
-        self.mock_repos.embeddings.search = AsyncMock(return_value=[
+        # Mock search results (now returns tuple with stats)
+        self.mock_repos.embeddings.search = AsyncMock(return_value=([
             {
                 'id': 1,
                 'thread_id': 'test-thread',
@@ -507,7 +507,7 @@ class TestSemanticSearchDateFiltering:
                 'text_content': 'Test entry',
                 'distance': 0.5,
             },
-        ])
+        ], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 1}))
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
 
         today = datetime.now(UTC).strftime('%Y-%m-%d')
@@ -544,7 +544,9 @@ class TestSemanticSearchDateFiltering:
         mock_embedding_service = MagicMock()
         mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
 
-        self.mock_repos.embeddings.search = AsyncMock(return_value=[])
+        self.mock_repos.embeddings.search = AsyncMock(
+            return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
+        )
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
 
         today = datetime.now(UTC).strftime('%Y-%m-%d')
@@ -577,7 +579,9 @@ class TestSemanticSearchDateFiltering:
         mock_embedding_service = MagicMock()
         mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
 
-        self.mock_repos.embeddings.search = AsyncMock(return_value=[])
+        self.mock_repos.embeddings.search = AsyncMock(
+            return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
+        )
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
 
         today = datetime.now(UTC).strftime('%Y-%m-%d')
@@ -658,7 +662,9 @@ class TestSemanticSearchDateFiltering:
         mock_embedding_service = MagicMock()
         mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
 
-        self.mock_repos.embeddings.search = AsyncMock(return_value=[])
+        self.mock_repos.embeddings.search = AsyncMock(
+            return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
+        )
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
 
         start = '2025-11-29T10:00:00'
@@ -693,7 +699,9 @@ class TestSemanticSearchDateFiltering:
         mock_embedding_service = MagicMock()
         mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
 
-        self.mock_repos.embeddings.search = AsyncMock(return_value=[])
+        self.mock_repos.embeddings.search = AsyncMock(
+            return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
+        )
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
 
         with (
