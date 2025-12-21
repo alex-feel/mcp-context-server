@@ -347,6 +347,7 @@ class FtsRepository(BaseRepository):
                 'execution_time_ms': round(execution_time_ms, 2),
                 'filters_applied': filter_count,
                 'rows_returned': len(results),
+                'backend': 'sqlite',
             }
 
             # Get query plan if requested
@@ -568,6 +569,7 @@ class FtsRepository(BaseRepository):
                 'execution_time_ms': round(execution_time_ms, 2),
                 'filters_applied': filter_count,
                 'rows_returned': len(results),
+                'backend': 'postgresql',
             }
 
             # Get query plan if requested

@@ -2065,6 +2065,7 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
                 stats['semantic_search'] = {
                     'enabled': True,
                     'available': True,
+                    'backend': embedding_stats['backend'],
                     'model': settings.embedding_model,
                     'dimensions': settings.embedding_dim,
                     'embedding_count': embedding_stats['total_embeddings'],
@@ -2804,6 +2805,7 @@ async def hybrid_search_context(
                             'embedding_generation_ms': round(embedding_generation_ms, 2),
                             'filters_applied': search_stats.get('filters_applied', 0),
                             'rows_returned': search_stats.get('rows_returned', 0),
+                            'backend': search_stats.get('backend', 'unknown'),
                         }
                 except MetadataFilterValidationError as e:
                     semantic_error = str(e.message)

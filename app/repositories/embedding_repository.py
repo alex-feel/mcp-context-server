@@ -323,6 +323,7 @@ class EmbeddingRepository(BaseRepository):
                     'execution_time_ms': round(execution_time_ms, 2),
                     'filters_applied': filter_count,
                     'rows_returned': len(results),
+                    'backend': 'sqlite',
                 }
 
                 return results, stats
@@ -486,6 +487,7 @@ class EmbeddingRepository(BaseRepository):
                 'execution_time_ms': round(execution_time_ms, 2),
                 'filters_applied': filter_count,
                 'rows_returned': len(results),
+                'backend': 'postgresql',
             }
 
             return results, stats
@@ -636,6 +638,7 @@ class EmbeddingRepository(BaseRepository):
                     'total_embeddings': embedding_count,
                     'total_entries': total_entries,
                     'coverage_percentage': round(coverage_percentage, 2),
+                    'backend': 'sqlite',
                 }
 
             return await self.backend.execute_read(_get_stats_sqlite)
@@ -665,6 +668,7 @@ class EmbeddingRepository(BaseRepository):
                 'total_embeddings': embedding_count,
                 'total_entries': total_entries,
                 'coverage_percentage': round(coverage_percentage, 2),
+                'backend': 'postgresql',
             }
 
         return await self.backend.execute_read(_get_stats_postgresql)

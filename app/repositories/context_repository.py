@@ -322,6 +322,7 @@ class ContextRepository(BaseRepository):
                     'execution_time_ms': round(execution_time_ms, 2),
                     'filters_applied': metadata_builder.get_filter_count(),
                     'rows_returned': len(rows),
+                    'backend': 'sqlite',
                 }
 
                 # Get query plan if requested
@@ -459,6 +460,7 @@ class ContextRepository(BaseRepository):
                 'execution_time_ms': round(execution_time_ms, 2),
                 'filters_applied': metadata_builder.get_filter_count(),
                 'rows_returned': len(rows),
+                'backend': 'postgresql',
             }
 
             # Get query plan if requested (PostgreSQL EXPLAIN format)

@@ -281,6 +281,7 @@ class HybridFtsStatsDict(TypedDict, total=False):
     filters_applied: int
     rows_returned: int
     query_plan: str | None
+    backend: str
 
 
 class HybridSemanticStatsDict(TypedDict):
@@ -294,6 +295,7 @@ class HybridSemanticStatsDict(TypedDict):
     embedding_generation_ms: float
     filters_applied: int
     rows_returned: int
+    backend: str
 
 
 class HybridFusionStatsDict(TypedDict):
