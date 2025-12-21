@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.11.0](https://github.com/alex-feel/mcp-context-server/compare/v0.10.0...v0.11.0) (2025-12-21)
+
+
+### Features
+
+* add bulk operations for batch context management ([7516a93](https://github.com/alex-feel/mcp-context-server/commit/7516a935cef9fbe7bed5d7bc55dbf0001b41b830))
+* add explain_query parameter to fts_search_context ([7334e9f](https://github.com/alex-feel/mcp-context-server/commit/7334e9fef5ac88f7806cc5ed9754a219fe703d5c))
+* add explain_query parameter to hybrid_search_context ([b32129d](https://github.com/alex-feel/mcp-context-server/commit/b32129d6a8b60a45575aefc69a5536044ab2cd09))
+* add full-text search with FTS5 and PostgreSQL tsvector ([34ef13f](https://github.com/alex-feel/mcp-context-server/commit/34ef13f5c39f82dae84d41784dfc1d055dd63fa4))
+* add hybrid search with RRF fusion ([8c6ea15](https://github.com/alex-feel/mcp-context-server/commit/8c6ea15ae7867880183a9ac93e855e586069838f))
+* add metadata filtering to semantic_search_context ([50346d6](https://github.com/alex-feel/mcp-context-server/commit/50346d64dccc067925e405b9ebbfa24dee94f459))
+* add metadata_patch parameter for partial metadata updates ([42f7a5f](https://github.com/alex-feel/mcp-context-server/commit/42f7a5fc33cd0b544db97b5de71406bbe78c8beb))
+* add offset, content_type, include_images to search tools ([bb22012](https://github.com/alex-feel/mcp-context-server/commit/bb2201257c20e4c645cc3f70863d8e8de133f55e))
+* add PostgreSQL backend with pgvector semantic search ([03ad9b0](https://github.com/alex-feel/mcp-context-server/commit/03ad9b023ead730805bc448cf3d3ee7a7ea0f58f))
+* add semantic search with EmbeddingGemma and sqlite-vec ([2e0d3db](https://github.com/alex-feel/mcp-context-server/commit/2e0d3db3616da98e8da418f7391c452a722aa3fa))
+* add storage backend abstraction for multi-database support ([4e7744a](https://github.com/alex-feel/mcp-context-server/commit/4e7744a6924be6c1f4cd0448b54d944e7c6d6848))
+* add tags parameter to semantic, FTS, and hybrid search ([bcf1332](https://github.com/alex-feel/mcp-context-server/commit/bcf1332f5015fae69be640e062f45fd60534fffd))
+* add uniform backend display to all statistics output ([0d7c988](https://github.com/alex-feel/mcp-context-server/commit/0d7c988a25693bdced56cc89cb6235dda5f5d2f0))
+* enable configurable embedding dimensions for Ollama models ([2d68963](https://github.com/alex-feel/mcp-context-server/commit/2d68963de47d10c54442c8454e855792f388deae))
+* rename top_k to limit in semantic_search_context ([2c27c14](https://github.com/alex-feel/mcp-context-server/commit/2c27c1418e0055fdf835055c1efb87b37d3e4b0a))
+* standardize limit parameter across all search tools ([d85d07d](https://github.com/alex-feel/mcp-context-server/commit/d85d07de4aada18d4c90375f4e17589692dc4d82))
+* support date filtering in search_context and semantic_search_context ([e433f5e](https://github.com/alex-feel/mcp-context-server/commit/e433f5e195b8bd3278f55ef4685d7be0844b3c2b))
+
+
+### Bug Fixes
+
+* allow nested JSON structures in metadata ([7f624ee](https://github.com/alex-feel/mcp-context-server/commit/7f624ee82dd3ad6292f583bf04e0cd815d6e1ecf))
+* correct semantic search filtering with CTE-based pre-filtering ([66161a3](https://github.com/alex-feel/mcp-context-server/commit/66161a357b1a06e51058939135611063a4c1123f))
+* eliminate duplicate tool registration and improve naming ([d46cb7c](https://github.com/alex-feel/mcp-context-server/commit/d46cb7c3b524a3609b9f78801a01c09f27429f79))
+* eliminate redundant backend initializations during startup ([dcd14d7](https://github.com/alex-feel/mcp-context-server/commit/dcd14d73c2ab3b8854edb7e269aac5f58577470a))
+* enforce Pydantic validation and resolve test reliability issues ([6137efc](https://github.com/alex-feel/mcp-context-server/commit/6137efc83af36cf162a941836ede78811d68530b))
+* ensure consistent validation patterns across all MCP tools ([7137aca](https://github.com/alex-feel/mcp-context-server/commit/7137acade3f6d1b7af1f98461ddab8cd80bb1e4e))
+* handle boolean metadata filtering for PostgreSQL JSONB ([1ff407e](https://github.com/alex-feel/mcp-context-server/commit/1ff407e6891e3aec579aef2c531ac33f3e2b2452))
+* handle hyphenated words in FTS queries ([b2f9ccb](https://github.com/alex-feel/mcp-context-server/commit/b2f9ccbf94ff1fa5ca875843504edff593de0d2c))
+* handle integer arrays in in/not_in metadata operators ([23076df](https://github.com/alex-feel/mcp-context-server/commit/23076df01b778464a1c4189e698d0782aacdfc28))
+* hybrid search pagination and test quality improvements ([2da98fe](https://github.com/alex-feel/mcp-context-server/commit/2da98fe5a31d594832916ef6a968245d821fb6a1))
+* load sqlite-vec extension before semantic search migration ([3069460](https://github.com/alex-feel/mcp-context-server/commit/306946028d2a6a6ae86a1d6d8368036ebb19d2c9))
+* make startup checks backend-specific ([3ee1149](https://github.com/alex-feel/mcp-context-server/commit/3ee1149638acdc8869ef8755aadbcb5f14dc9e04))
+* move validation to Pydantic models ([1e2e480](https://github.com/alex-feel/mcp-context-server/commit/1e2e4803e94dc7d3e7f0c9965dfcfc3f727af17c))
+* register hybrid_search_context tool dynamically ([0ee0d22](https://github.com/alex-feel/mcp-context-server/commit/0ee0d22f9d1743eb51f5516facad6dcd74a7abae))
+* resolve all pre-commit issues and test failures ([0a2142d](https://github.com/alex-feel/mcp-context-server/commit/0a2142dc8a3d16b967693038982825af277ae82b))
+* resolve asyncio primitives event loop binding issue ([705fd9d](https://github.com/alex-feel/mcp-context-server/commit/705fd9d37af693298d482b787f7feb46b79beafe))
+* resolve integration test hang with persistent backend ([35219db](https://github.com/alex-feel/mcp-context-server/commit/35219dbc79dc2d8bc823d00032773ccc02e2c345))
+* resolve Supabase and PostgreSQL issues ([3d5c450](https://github.com/alex-feel/mcp-context-server/commit/3d5c450b19311fbf2e25cc73339b5b9f2dcb2d4e))
+* resolve type checking errors for optional dependencies ([be47f9d](https://github.com/alex-feel/mcp-context-server/commit/be47f9d7f33b5634f68e922a05e60154af881091))
+
 ## [0.10.0](https://github.com/alex-feel/mcp-context-server/compare/v0.9.0...v0.10.0) (2025-12-21)
 
 
