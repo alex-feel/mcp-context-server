@@ -206,25 +206,42 @@ class TestServerJsonSchemaValidation:
     def test_server_json_schema_matches_schema_id(
         self,
         server_json_content: dict[str, Any],
-        mcp_schema: dict[str, Any],
     ) -> None:
         """
-        Verify $schema in server.json matches $id in the MCP schema.
+        Verify $schema URL is valid and self-consistent.
 
-        JSON Schema validators do NOT enforce that the $schema field in a document
-        matches the $id field in the schema. This is a fundamental limitation of
-        JSON Schema validation - $schema is used to determine which draft to use,
-        but validators don't validate its actual value. However, MCP Registry
-        requires these to match for proper schema identification.
+        Fetches the schema from the URL specified in server.json's $schema field,
+        then verifies that the fetched schema's $id matches the URL we used.
+        This ensures:
+        1. The $schema URL actually exists and is fetchable
+        2. The schema is self-consistent ($id matches its hosting URL)
+        3. No hardcoded versions required - test is future-proof
         """
-        schema_value = server_json_content.get('$schema')
-        schema_id = mcp_schema.get('$id')
+        schema_url = server_json_content.get('$schema')
+        if not schema_url:
+            pytest.fail('server.json missing $schema field')
 
-        if schema_value != schema_id:
+        try:
+            # Fetch from the URL in server.json, NOT from GitHub
+            actual_schema = fetch_schema_from_url(schema_url)
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
             pytest.fail(
-                f'$schema in server.json does not match $id in MCP schema.\n'
-                f'  server.json $schema: {schema_value}\n'
-                f'  MCP schema $id: {schema_id}',
+                f'Cannot fetch schema from $schema URL.\n'
+                f'  URL: {schema_url}\n'
+                f'  Error: {e}\n\n'
+                f'The URL may be deprecated or invalid.\n'
+                f'Check MCP Registry changelog for current schema URL:\n'
+                f'https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/server-json/CHANGELOG.md',
+            )
+
+        schema_id = actual_schema.get('$id')
+
+        if schema_url != schema_id:
+            pytest.fail(
+                f'$schema in server.json does not match $id in fetched schema.\n'
+                f'  server.json $schema: {schema_url}\n'
+                f'  Fetched schema $id: {schema_id}\n\n'
+                f'This indicates a schema hosting issue or incorrect URL.',
             )
 
     def test_server_json_repository_source_is_valid(
