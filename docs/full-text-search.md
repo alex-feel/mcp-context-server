@@ -72,6 +72,8 @@ Add to your `.mcp.json` file:
       "type": "stdio",
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "mcp-context-server"
       ],
       "env": {
@@ -128,15 +130,19 @@ When FTS is enabled, a new MCP tool becomes available.
 **Parameters**:
 - `query` (str, required): Search query string
 - `mode` (str, optional): Search mode - `match` (default), `prefix`, `phrase`, or `boolean`
-- `thread_id` (str, optional): Filter results to specific thread
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
+- `offset` (int, optional): Pagination offset (default: 0)
+- `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `highlight` (bool, optional): Include highlighted snippets in results (default: false)
-- `limit` (int, optional): Maximum results (1-500, default: 50)
-- `offset` (int, optional): Pagination offset (default: 0)
+- `include_images` (bool, optional): Include image data in results (default: false)
+- `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Metadata Filtering**: The `metadata` and `metadata_filters` parameters work identically to `search_context`. For comprehensive documentation on operators, nested paths, and best practices, see the [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
@@ -161,9 +167,17 @@ When FTS is enabled, a new MCP tool becomes available.
     }
   ],
   "count": 1,
-  "language": "english"
+  "language": "english",
+  "stats": {
+    "execution_time_ms": 12.34,
+    "filters_applied": 2,
+    "rows_returned": 1,
+    "query_plan": "..."
+  }
 }
 ```
+
+**Note:** The `stats` field is only included when `explain_query=True`.
 
 **Score**: Higher values indicate better relevance (BM25 for SQLite, ts_rank for PostgreSQL).
 
@@ -474,3 +488,4 @@ Both operations automatically rebuild the index from existing data.
 
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - meaning-based search with embeddings
+- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion

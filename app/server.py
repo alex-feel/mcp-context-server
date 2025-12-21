@@ -5,6 +5,7 @@ This server provides persistent multimodal context storage capabilities for LLM 
 enabling shared memory across different conversation threads with support for text and images.
 """
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -120,14 +121,17 @@ def estimate_migration_time(records_count: int) -> int:
 
 
 # Dependency check functions for semantic search
-async def check_semantic_search_dependencies() -> bool:
+async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bool:
     """Check all semantic search dependencies.
 
     Performs comprehensive checks for:
-    - Python packages (ollama, numpy, sqlite_vec)
+    - Python packages: ollama, numpy, sqlite_vec (SQLite) or pgvector (PostgreSQL)
     - Ollama service availability
     - EmbeddingGemma model availability
-    - sqlite-vec extension loading
+    - sqlite-vec extension loading (SQLite only)
+
+    Args:
+        backend_type: Either 'sqlite' or 'postgresql'
 
     Returns:
         True if all dependencies are available, False otherwise
@@ -155,14 +159,33 @@ async def check_semantic_search_dependencies() -> bool:
         logger.warning(f'[X] numpy package not available: {e}')
         return False
 
-    # Check sqlite_vec package
-    try:
-        import sqlite_vec
+    # Check sqlite_vec package (SQLite only)
+    if backend_type == 'sqlite':
+        try:
+            import importlib.util as sqlite_vec_util
 
-        logger.debug('[OK] sqlite_vec package available')
-    except ImportError as e:
-        logger.warning(f'[X] sqlite_vec package not available: {e}')
-        return False
+            if sqlite_vec_util.find_spec('sqlite_vec') is None:
+                logger.warning('[X] sqlite_vec package not available')
+                return False
+            logger.debug('[OK] sqlite_vec package available')
+        except ImportError as e:
+            logger.warning(f'[X] sqlite_vec package not available: {e}')
+            return False
+
+    # Check pgvector package (PostgreSQL only)
+    if backend_type == 'postgresql':
+        try:
+            import importlib.util as pgvector_util
+
+            if pgvector_util.find_spec('pgvector') is None:
+                logger.warning('[X] pgvector package not available')
+                logger.warning('  Install with: uv sync --extra semantic-search')
+                return False
+            logger.debug('[OK] pgvector package available')
+        except ImportError as e:
+            logger.warning(f'[X] pgvector package not available: {e}')
+            logger.warning('  Install with: uv sync --extra semantic-search')
+            return False
 
     # Check Ollama service
     try:
@@ -189,19 +212,22 @@ async def check_semantic_search_dependencies() -> bool:
         logger.warning(f'  Run: ollama pull {settings.embedding_model}')
         return False
 
-    # Check sqlite-vec extension loading
-    try:
-        import sqlite3
+    # Check sqlite-vec extension loading (SQLite only)
+    if backend_type == 'sqlite':
+        try:
+            import sqlite3
 
-        test_conn = sqlite3.connect(':memory:')
-        test_conn.enable_load_extension(True)
-        sqlite_vec.load(test_conn)
-        test_conn.enable_load_extension(False)
-        test_conn.close()
-        logger.debug('[OK] sqlite-vec extension loads successfully')
-    except Exception as e:
-        logger.warning(f'[X] sqlite-vec extension failed to load: {e}')
-        return False
+            import sqlite_vec as sqlite_vec_ext
+
+            test_conn = sqlite3.connect(':memory:')
+            test_conn.enable_load_extension(True)
+            sqlite_vec_ext.load(test_conn)
+            test_conn.enable_load_extension(False)
+            test_conn.close()
+            logger.debug('[OK] sqlite-vec extension loads successfully')
+        except Exception as e:
+            logger.warning(f'[X] sqlite-vec extension failed to load: {e}')
+            return False
 
     logger.info('[OK] All semantic search dependencies available')
     return True
@@ -412,6 +438,26 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         logger.info('Semantic search migration: tables already exist, skipping')
 
 
+async def _check_jsonb_merge_patch_exists(conn: asyncpg.Connection) -> bool:
+    """Check if jsonb_merge_patch function already exists in PostgreSQL.
+
+    Args:
+        conn: PostgreSQL connection
+
+    Returns:
+        True if the function exists, False otherwise
+    """
+    result = await conn.fetchval('''
+        SELECT EXISTS (
+            SELECT 1 FROM pg_proc p
+            JOIN pg_namespace n ON p.pronamespace = n.oid
+            WHERE n.nspname = 'public'
+              AND p.proname = 'jsonb_merge_patch'
+        )
+    ''')
+    return bool(result)
+
+
 async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = None) -> None:
     """Apply jsonb_merge_patch function migration for PostgreSQL.
 
@@ -451,6 +497,8 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
         migration_sql = migration_path.read_text(encoding='utf-8')
 
         if backend is not None:
+            # Check if function already exists before applying
+            function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
             async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
                 # Parse SQL statements, handling dollar-quoted function bodies
@@ -484,12 +532,18 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                         await conn.execute(stmt)
 
             await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
-            logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+
+            if function_exists:
+                logger.debug('jsonb_merge_patch function already exists, verified')
+            else:
+                logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
         else:
             # Backward compatibility: create temporary backend
             temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
             await temp_manager.initialize()
             try:
+                # Check if function already exists before applying
+                function_exists = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
                 async def _apply_jsonb_merge_patch_temp(conn: asyncpg.Connection) -> None:
                     statements = []
@@ -517,7 +571,11 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                             await conn.execute(stmt)
 
                 await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
-                logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+
+                if function_exists:
+                    logger.debug('jsonb_merge_patch function already exists, verified')
+                else:
+                    logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
             finally:
                 await temp_manager.shutdown()
     except Exception as e:
@@ -776,7 +834,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
         # 6) Initialize semantic search if enabled
         if settings.enable_semantic_search:
-            semantic_available = await check_semantic_search_dependencies()
+            semantic_available = await check_semantic_search_dependencies(_backend.backend_type)
 
             if semantic_available:
                 try:
@@ -820,6 +878,29 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         else:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
+
+        # 8) Register Hybrid Search tool if enabled AND at least one search mode is available
+        if settings.enable_hybrid_search:
+            semantic_available_for_hybrid = settings.enable_semantic_search and _embedding_service is not None
+            fts_available_for_hybrid = settings.enable_fts
+
+            if semantic_available_for_hybrid or fts_available_for_hybrid:
+                mcp.tool()(hybrid_search_context)
+                modes_available = []
+                if fts_available_for_hybrid:
+                    modes_available.append('fts')
+                if semantic_available_for_hybrid:
+                    modes_available.append('semantic')
+                logger.info(f'[OK] hybrid_search_context registered (modes available: {modes_available})')
+            else:
+                logger.warning(
+                    '[!] Hybrid search enabled but no search modes available - feature disabled. '
+                    'Enable ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
+                )
+                logger.info('[!] hybrid_search_context not registered (no search modes available)')
+        else:
+            logger.info('Hybrid search disabled (ENABLE_HYBRID_SEARCH=false)')
+            logger.info('[!] hybrid_search_context not registered (feature disabled)')
 
         logger.info(f'MCP Context Server initialized (backend: {_backend.backend_type})')
     except Exception as e:
@@ -1384,6 +1465,7 @@ async def store_context(
 
 @mcp.tool()
 async def search_context(
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 30)')] = 30,
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (indexed)')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (indexed)')] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
@@ -1412,8 +1494,7 @@ async def search_context(
             description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
         ),
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (max 500)')] = 50,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset')] = 0,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
@@ -1442,8 +1523,8 @@ async def search_context(
         metadata_filters: Advanced metadata filters with operators
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
-        limit: Maximum results (max 500)
-        offset: Pagination offset
+        limit: Maximum results to return (1-100, default: 30)
+        offset: Pagination offset (default: 0)
         include_images: Whether to include image data
         explain_query: Include query execution statistics
         ctx: FastMCP context object
@@ -2041,6 +2122,7 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
                 stats['semantic_search'] = {
                     'enabled': True,
                     'available': True,
+                    'backend': embedding_stats['backend'],
                     'model': settings.embedding_model,
                     'dimensions': settings.embedding_dim,
                     'embedding_count': embedding_stats['total_embeddings'],
@@ -2094,9 +2176,12 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
-    top_k: Annotated[int, Field(ge=1, le=100, description='Number of results to return (default: 20)')] = 20,
-    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter to narrow results')] = None,
-    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter to narrow results')] = None,
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
+    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2121,6 +2206,7 @@ async def semantic_search_context(
             'starts_with, ends_with, is_null, is_not_null',
         ),
     ] = None,
+    include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Find semantically similar context using vector embeddings with optional metadata filtering.
@@ -2131,6 +2217,8 @@ async def semantic_search_context(
 
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
+    - content_type: Filter by text or multimodal entries
+    - tags: OR logic (matches ANY of provided tags)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2147,13 +2235,17 @@ async def semantic_search_context(
 
     Args:
         query: Natural language search query
-        top_k: Number of results to return (1-100)
-        thread_id: Optional filter to narrow results by thread
-        source: Optional filter to narrow results by source type
+        limit: Maximum results to return (1-100, default: 5)
+        offset: Pagination offset (default: 0)
+        thread_id: Optional filter by thread
+        source: Optional filter by source type
+        content_type: Filter by content type (text or multimodal)
+        tags: Filter by any of these tags (OR logic)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
+        include_images: Whether to include image data for multimodal entries
         ctx: FastMCP context object
 
     Returns:
@@ -2194,11 +2286,15 @@ async def semantic_search_context(
         from app.repositories.embedding_repository import MetadataFilterValidationError
 
         try:
-            search_results = await repos.embeddings.search(
+            # Unpack tuple; discard stats (not used in semantic_search_context)
+            search_results, _ = await repos.embeddings.search(
                 query_embedding=query_embedding,
-                limit=top_k,
+                limit=limit,
+                offset=offset,
                 thread_id=thread_id,
                 source=source,
+                content_type=content_type,
+                tags=tags,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
@@ -2218,12 +2314,16 @@ async def semantic_search_context(
             logger.error(f'Semantic search failed: {e}')
             raise ToolError(f'Semantic search failed: {str(e)}') from e
 
-        # Enrich results with tags
+        # Enrich results with tags and optionally images
         for result in search_results:
             context_id = result.get('id')
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
                 result['tags'] = tags_result
+                # Fetch images if requested and applicable
+                if include_images and result.get('content_type') == 'multimodal':
+                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    result['images'] = images_result
             else:
                 result['tags'] = []
 
@@ -2245,6 +2345,7 @@ async def semantic_search_context(
 
 async def fts_search_context(
     query: Annotated[str, Field(min_length=1, description='Full-text search query')],
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
     mode: Annotated[
         Literal['match', 'prefix', 'phrase', 'boolean'],
         Field(
@@ -2253,8 +2354,10 @@ async def fts_search_context(
             "'boolean' (AND/OR/NOT operators)",
         ),
     ] = 'match',
-    thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread')] = None,
-    source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type')] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
+    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -2279,9 +2382,10 @@ async def fts_search_context(
             'starts_with, ends_with, is_null, is_not_null',
         ),
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=500, description='Maximum results (default: 50)')] = 50,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
+    include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
+    explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Full-text search with linguistic analysis (stemming, ranking, boolean queries).
@@ -2301,6 +2405,8 @@ async def fts_search_context(
 
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
+    - content_type: Filter by text or multimodal entries
+    - tags: OR logic (matches ANY of provided tags)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
@@ -2320,13 +2426,17 @@ async def fts_search_context(
         mode: Search mode (match, prefix, phrase, boolean)
         thread_id: Optional filter by thread
         source: Optional filter by source type
+        content_type: Filter by content type (text or multimodal)
+        tags: Filter by any of these tags (OR logic)
         start_date: Filter entries created on or after this date (ISO 8601)
         end_date: Filter entries created on or before this date (ISO 8601)
         metadata: Simple metadata filters (key=value equality)
         metadata_filters: Advanced metadata filters with operators
-        limit: Maximum results to return (1-500)
-        offset: Pagination offset
+        limit: Maximum results to return (1-100, default: 5)
+        offset: Pagination offset (default: 0)
         highlight: Whether to include highlighted snippets
+        include_images: Whether to include image data for multimodal entries
+        explain_query: Include query execution statistics
         ctx: FastMCP context object
 
     Returns:
@@ -2387,23 +2497,26 @@ async def fts_search_context(
         from app.repositories.fts_repository import FtsValidationError
 
         try:
-            search_results = await repos.fts.search(
+            search_results, stats = await repos.fts.search(
                 query=query,
                 mode=mode,
                 limit=limit,
                 offset=offset,
                 thread_id=thread_id,
                 source=source,
+                content_type=content_type,
+                tags=tags,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
                 metadata_filters=metadata_filters,
                 highlight=highlight,
                 language=settings.fts_language,
+                explain_query=explain_query,
             )
         except FtsValidationError as e:
             # Return error response (unified with search_context behavior)
-            return {
+            error_response: dict[str, Any] = {
                 'query': query,
                 'mode': mode,
                 'results': [],
@@ -2412,6 +2525,13 @@ async def fts_search_context(
                 'error': e.message,
                 'validation_errors': e.validation_errors,
             }
+            if explain_query:
+                error_response['stats'] = {
+                    'execution_time_ms': 0.0,
+                    'filters_applied': 0,
+                    'rows_returned': 0,
+                }
+            return error_response
         except Exception as e:
             logger.error(f'FTS search failed: {e}')
             raise ToolError(f'FTS search failed: {str(e)}') from e
@@ -2433,24 +2553,426 @@ async def fts_search_context(
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
                 result['tags'] = tags_result
+                # Fetch images if requested and applicable
+                if include_images and result.get('content_type') == 'multimodal':
+                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    result['images'] = images_result
             else:
                 result['tags'] = []
 
         logger.info(f'FTS search found {len(search_results)} results for query: "{query[:50]}..."')
 
-        return {
+        response: dict[str, Any] = {
             'query': query,
             'mode': mode,
             'results': search_results,
             'count': len(search_results),
             'language': settings.fts_language,
         }
+        if explain_query:
+            response['stats'] = stats
+        return response
 
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error in FTS search: {e}')
         raise ToolError(f'FTS search failed: {str(e)}') from e
+
+
+async def hybrid_search_context(
+    query: Annotated[str, Field(min_length=1, description='Natural language search query')],
+    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    search_modes: Annotated[
+        list[Literal['fts', 'semantic']] | None,
+        Field(
+            description="Search modes to use: 'fts' (full-text), 'semantic' (vector similarity), "
+            "or both ['fts', 'semantic'] (default). Modes are executed in parallel.",
+        ),
+    ] = None,
+    fusion_method: Annotated[
+        Literal['rrf'],
+        Field(description="Fusion algorithm: 'rrf' (Reciprocal Rank Fusion, default)"),
+    ] = 'rrf',
+    rrf_k: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=1000,
+            description='RRF smoothing constant (default from HYBRID_RRF_K env var, typically 60). '
+            'Higher values give more weight to lower-ranked documents.',
+        ),
+    ] = None,
+    thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
+    source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
+    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
+    start_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at >= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T10:00:00")',
+        ),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        Field(
+            description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
+        ),
+    ] = None,
+    metadata: Annotated[
+        dict[str, str | int | float | bool] | None,
+        Field(description='Simple metadata filters (key=value equality)'),
+    ] = None,
+    metadata_filters: Annotated[
+        list[dict[str, Any]] | None,
+        Field(
+            description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
+            'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
+            'starts_with, ends_with, is_null, is_not_null',
+        ),
+    ] = None,
+    include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
+    explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
+
+    Executes both full-text search and semantic search in parallel, then fuses results
+    using RRF algorithm. Documents appearing in both result sets score higher.
+
+    RRF Formula: score(d) = sum(1 / (k + rank_i(d))) for each search method i
+
+    Graceful degradation:
+    - If only FTS is available, returns FTS results only
+    - If only semantic search is available, returns semantic results only
+    - If neither is available, raises ToolError
+
+    Filtering options (all combinable):
+    - thread_id/source: Basic entry filtering
+    - content_type: Filter by text or multimodal entries
+    - tags: OR logic (matches ANY of provided tags)
+    - start_date/end_date: Date range filtering (ISO 8601)
+    - metadata: Simple key=value equality matching
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+
+    Returns: {
+        query: str,
+        results: [{id, thread_id, source, text_content, metadata, scores, tags, ...}],
+        count: int,
+        fusion_method: 'rrf',
+        search_modes_used: ['fts', 'semantic'],  # Actual modes executed
+        fts_count: int,
+        semantic_count: int,
+        stats: {...}  # Only when explain_query=True
+    }
+
+    The `scores` field contains: rrf (combined), fts_rank, semantic_rank,
+    fts_score, semantic_distance.
+
+    When explain_query=True, the `stats` field contains:
+    - execution_time_ms: Total hybrid search time
+    - fts_stats: {execution_time_ms, filters_applied, rows_returned} or None
+    - semantic_stats: {execution_time_ms, embedding_generation_ms, filters_applied, rows_returned} or None
+    - fusion_stats: {rrf_k, total_unique_documents, documents_in_both, documents_fts_only, documents_semantic_only}
+
+    Args:
+        query: Natural language search query
+        limit: Maximum results to return (1-100, default: 5)
+        offset: Pagination offset (default: 0)
+        search_modes: Which search modes to use (default: both)
+        fusion_method: Fusion algorithm (currently only 'rrf')
+        rrf_k: RRF smoothing constant (default from settings)
+        thread_id: Optional filter by thread
+        source: Optional filter by source type
+        content_type: Filter by content type (text or multimodal)
+        tags: Filter by any of these tags (OR logic)
+        start_date: Filter entries created on or after this date (ISO 8601)
+        end_date: Filter entries created on or before this date (ISO 8601)
+        metadata: Simple metadata filters (key=value equality)
+        metadata_filters: Advanced metadata filters with operators
+        include_images: Whether to include image data for multimodal entries
+        explain_query: Include query execution statistics
+        ctx: FastMCP context object
+
+    Returns:
+        dict: Combined search results with RRF scores and source breakdown.
+
+    Raises:
+        ToolError: If hybrid search is not available or both search modes fail.
+    """
+    # Validate date parameters
+    start_date = validate_date_param(start_date, 'start_date')
+    end_date = validate_date_param(end_date, 'end_date')
+    validate_date_range(start_date, end_date)
+
+    # Check if hybrid search is enabled
+    if not settings.enable_hybrid_search:
+        raise ToolError(
+            'Hybrid search is not available. '
+            'Set ENABLE_HYBRID_SEARCH=true to enable this feature. '
+            'Also ensure ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
+        )
+
+    # Use default search modes if not specified
+    if search_modes is None:
+        search_modes = ['fts', 'semantic']
+
+    # Use settings default if rrf_k not specified
+    effective_rrf_k = rrf_k if rrf_k is not None else settings.hybrid_rrf_k
+
+    # Determine available search modes
+    fts_available = settings.enable_fts
+    semantic_available = settings.enable_semantic_search and _embedding_service is not None
+
+    # Filter requested modes to available ones
+    available_modes: list[str] = []
+    if 'fts' in search_modes and fts_available:
+        available_modes.append('fts')
+    if 'semantic' in search_modes and semantic_available:
+        available_modes.append('semantic')
+
+    if not available_modes:
+        unavailable_reasons = []
+        if 'fts' in search_modes and not fts_available:
+            unavailable_reasons.append('FTS requires ENABLE_FTS=true')
+        if 'semantic' in search_modes and not semantic_available:
+            unavailable_reasons.append('Semantic search requires ENABLE_SEMANTIC_SEARCH=true and Ollama')
+        raise ToolError(
+            f'No search modes available. Requested: {search_modes}. '
+            f'Issues: {"; ".join(unavailable_reasons)}',
+        )
+
+    try:
+        import time as time_module
+
+        total_start_time = time_module.time()
+
+        if ctx:
+            await ctx.info(f'Performing hybrid search: "{query[:50]}..." (modes={available_modes})')
+
+        # Import fusion module
+        from app.fusion import count_unique_results
+        from app.fusion import reciprocal_rank_fusion
+
+        # Get repositories
+        repos = await _ensure_repositories()
+
+        # Over-fetch for better fusion quality
+        # Must account for offset to ensure all entries are fetched for proper pagination
+        over_fetch_limit = (limit + offset) * 2
+
+        # Execute searches in parallel
+        fts_results: list[dict[str, Any]] = []
+        semantic_results: list[dict[str, Any]] = []
+        fts_error: str | None = None
+        semantic_error: str | None = None
+
+        # Stats collection for explain_query
+        fts_stats: dict[str, Any] | None = None
+        semantic_stats: dict[str, Any] | None = None
+
+        async def run_fts_search() -> None:
+            nonlocal fts_results, fts_error, fts_stats
+            try:
+                # Check if FTS migration is in progress
+                if _fts_migration_status.in_progress:
+                    fts_error = 'FTS migration in progress'
+                    return
+
+                # Check if FTS is properly initialized
+                if not await repos.fts.is_available():
+                    fts_error = 'FTS index not available'
+                    return
+
+                from app.repositories.fts_repository import FtsValidationError
+
+                try:
+                    results, stats = await repos.fts.search(
+                        query=query,
+                        mode='match',
+                        limit=over_fetch_limit,
+                        offset=0,
+                        thread_id=thread_id,
+                        source=source,
+                        content_type=content_type,
+                        tags=tags,
+                        start_date=start_date,
+                        end_date=end_date,
+                        metadata=metadata,
+                        metadata_filters=metadata_filters,
+                        highlight=False,
+                        language=settings.fts_language,
+                        explain_query=explain_query,
+                    )
+                    fts_results = results
+                    if explain_query:
+                        fts_stats = stats
+                except FtsValidationError as e:
+                    fts_error = str(e.message)
+                except Exception as e:
+                    fts_error = str(e)
+            except Exception as e:
+                fts_error = str(e)
+
+        async def run_semantic_search() -> None:
+            nonlocal semantic_results, semantic_error, semantic_stats
+            try:
+                if _embedding_service is None:
+                    semantic_error = 'Embedding service not available'
+                    return
+
+                # Track embedding generation time for explain_query
+                embedding_start_time = time_module.time() if explain_query else 0.0
+
+                # Generate embedding for query
+                try:
+                    query_embedding = await _embedding_service.generate_embedding(query)
+                except Exception as e:
+                    semantic_error = f'Failed to generate embedding: {e}'
+                    return
+
+                embedding_generation_ms = (
+                    (time_module.time() - embedding_start_time) * 1000 if explain_query else 0.0
+                )
+
+                from app.repositories.embedding_repository import MetadataFilterValidationError
+
+                try:
+                    # Unpack tuple; stats will be captured for explain_query
+                    results, search_stats = await repos.embeddings.search(
+                        query_embedding=query_embedding,
+                        limit=over_fetch_limit,
+                        offset=0,
+                        thread_id=thread_id,
+                        source=source,
+                        content_type=content_type,
+                        tags=tags,
+                        start_date=start_date,
+                        end_date=end_date,
+                        metadata=metadata,
+                        metadata_filters=metadata_filters,
+                    )
+                    semantic_results = results
+
+                    # Build semantic stats with embedding generation time
+                    if explain_query:
+                        semantic_stats = {
+                            'execution_time_ms': round(search_stats.get('execution_time_ms', 0.0), 2),
+                            'embedding_generation_ms': round(embedding_generation_ms, 2),
+                            'filters_applied': search_stats.get('filters_applied', 0),
+                            'rows_returned': search_stats.get('rows_returned', 0),
+                            'backend': search_stats.get('backend', 'unknown'),
+                        }
+                except MetadataFilterValidationError as e:
+                    semantic_error = str(e.message)
+                except Exception as e:
+                    semantic_error = str(e)
+            except Exception as e:
+                semantic_error = str(e)
+
+        # Run searches in parallel
+        tasks = []
+        if 'fts' in available_modes:
+            tasks.append(run_fts_search())
+        if 'semantic' in available_modes:
+            tasks.append(run_semantic_search())
+
+        await asyncio.gather(*tasks)
+
+        # Check if both searches failed
+        if fts_error and semantic_error:
+            raise ToolError(
+                f'All search modes failed. FTS: {fts_error}. Semantic: {semantic_error}',
+            )
+
+        # Determine which modes actually returned results
+        modes_used: list[str] = []
+        if fts_results:
+            modes_used.append('fts')
+        if semantic_results:
+            modes_used.append('semantic')
+
+        # Parse FTS metadata (returned as JSON strings from DB)
+        for result in fts_results:
+            metadata_raw = result.get('metadata')
+            if metadata_raw is not None and hasattr(metadata_raw, 'strip'):
+                try:
+                    result['metadata'] = json.loads(str(metadata_raw))
+                except (json.JSONDecodeError, ValueError, AttributeError):
+                    result['metadata'] = None
+
+        # Fuse results using RRF
+        # Over-fetch to handle offset, then apply offset after fusion
+        fused_results = reciprocal_rank_fusion(
+            fts_results=fts_results,
+            semantic_results=semantic_results,
+            k=effective_rrf_k,
+            limit=limit + offset,  # Over-fetch to handle offset
+        )
+
+        # Apply offset after fusion
+        fused_results = fused_results[offset:]
+
+        # Enrich results with tags and optionally images (cast to Any for mutation compatibility)
+        fused_results_any: list[dict[str, Any]] = cast(list[dict[str, Any]], fused_results)
+        for result in fused_results_any:
+            context_id = result.get('id')
+            if context_id:
+                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                result['tags'] = tags_result
+                # Fetch images if requested and applicable
+                if include_images and result.get('content_type') == 'multimodal':
+                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    result['images'] = images_result
+            else:
+                result['tags'] = []
+
+        logger.info(
+            f'Hybrid search found {len(fused_results_any)} results for query: "{query[:50]}..." '
+            f'(fts={len(fts_results)}, semantic={len(semantic_results)}, modes={modes_used})',
+        )
+
+        # Build response
+        response: dict[str, Any] = {
+            'query': query,
+            'results': fused_results_any,
+            'count': len(fused_results_any),
+            'fusion_method': fusion_method,
+            'search_modes_used': modes_used,
+            'fts_count': len(fts_results),
+            'semantic_count': len(semantic_results),
+        }
+
+        # Add stats if explain_query is enabled
+        if explain_query:
+            # Calculate fusion stats
+            fts_only, semantic_only, overlap = count_unique_results(fts_results, semantic_results)
+            fusion_stats: dict[str, Any] = {
+                'rrf_k': effective_rrf_k,
+                'total_unique_documents': fts_only + semantic_only + overlap,
+                'documents_in_both': overlap,
+                'documents_fts_only': fts_only,
+                'documents_semantic_only': semantic_only,
+            }
+
+            # Calculate total execution time
+            total_execution_time_ms = (time_module.time() - total_start_time) * 1000
+
+            response['stats'] = {
+                'execution_time_ms': round(total_execution_time_ms, 2),
+                'fts_stats': fts_stats,
+                'semantic_stats': semantic_stats,
+                'fusion_stats': fusion_stats,
+            }
+
+        return response
+
+    except ToolError:
+        raise  # Re-raise ToolError as-is for FastMCP to handle
+    except Exception as e:
+        logger.error(f'Error in hybrid search: {e}')
+        raise ToolError(f'Hybrid search failed: {str(e)}') from e
 
 
 # Bulk Operation MCP Tools

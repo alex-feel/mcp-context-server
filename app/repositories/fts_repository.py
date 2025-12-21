@@ -8,6 +8,7 @@ handling search operations across both SQLite (FTS5) and PostgreSQL (tsvector) b
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from typing import TYPE_CHECKING
 from typing import Any
@@ -18,6 +19,10 @@ from app.backends.base import StorageBackend
 from app.logger_config import config_logger
 from app.repositories.base import BaseRepository
 from app.settings import get_settings
+
+# Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
+# Matches word characters connected by one or more hyphens
+HYPHENATED_WORD_PATTERN = re.compile(r'\b(\w+(?:-\w+)+)\b')
 
 if TYPE_CHECKING:
     import asyncpg
@@ -79,13 +84,16 @@ class FtsRepository(BaseRepository):
         offset: int = 0,
         thread_id: str | None = None,
         source: Literal['user', 'agent'] | None = None,
+        content_type: Literal['text', 'multimodal'] | None = None,
+        tags: list[str] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
         metadata: dict[str, str | int | float | bool] | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
         highlight: bool = False,
         language: str = 'english',
-    ) -> list[dict[str, Any]]:
+        explain_query: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Execute full-text search with optional filters.
 
         SQLite: Uses FTS5 MATCH with BM25 scoring
@@ -98,6 +106,8 @@ class FtsRepository(BaseRepository):
             offset: Number of results to skip (pagination)
             thread_id: Optional filter by thread
             source: Optional filter by source type
+            content_type: Filter by content type (text or multimodal)
+            tags: Filter by any of these tags (OR logic)
             start_date: Filter by created_at >= date (ISO 8601 format)
             end_date: Filter by created_at <= date (ISO 8601 format)
             metadata: Simple metadata filters (key=value equality)
@@ -107,9 +117,10 @@ class FtsRepository(BaseRepository):
                 PostgreSQL: Supports 29 languages with full stemming.
                 SQLite: This parameter is IGNORED - FTS5 uses unicode61 tokenizer
                 which provides multilingual tokenization but no stemming.
+            explain_query: If True, include query execution plan in stats
 
         Returns:
-            List of search results with context entries and relevance scores
+            Tuple of (search results list, statistics dictionary)
         """
         if self.backend.backend_type == 'sqlite':
             # Log warning if non-English language is requested with SQLite backend
@@ -129,11 +140,14 @@ class FtsRepository(BaseRepository):
                 offset=offset,
                 thread_id=thread_id,
                 source=source,
+                content_type=content_type,
+                tags=tags,
                 start_date=start_date,
                 end_date=end_date,
                 metadata=metadata,
                 metadata_filters=metadata_filters,
                 highlight=highlight,
+                explain_query=explain_query,
             )
         # postgresql
         return await self._search_postgresql(
@@ -143,12 +157,15 @@ class FtsRepository(BaseRepository):
             offset=offset,
             thread_id=thread_id,
             source=source,
+            content_type=content_type,
+            tags=tags,
             start_date=start_date,
             end_date=end_date,
             metadata=metadata,
             metadata_filters=metadata_filters,
             highlight=highlight,
             language=language,
+            explain_query=explain_query,
         )
 
     async def _search_sqlite(
@@ -159,15 +176,24 @@ class FtsRepository(BaseRepository):
         offset: int,
         thread_id: str | None,
         source: str | None,
+        content_type: str | None,
+        tags: list[str] | None,
         start_date: str | None,
         end_date: str | None,
         metadata: dict[str, str | int | float | bool] | None,
         metadata_filters: list[dict[str, Any]] | None,
         highlight: bool,
-    ) -> list[dict[str, Any]]:
+        explain_query: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """SQLite FTS5 search implementation."""
+        import time as time_module
 
-        def _search_sqlite_inner(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        # Track metadata filter count for stats
+        metadata_filter_count = 0
+
+        def _search_sqlite_inner(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            nonlocal metadata_filter_count
+            start_time = time_module.time()
             # Transform query based on mode
             fts_query = self._transform_query_sqlite(query, mode)
 
@@ -181,6 +207,24 @@ class FtsRepository(BaseRepository):
             if source:
                 filter_conditions.append('ce.source = ?')
                 filter_params.append(source)
+
+            if content_type:
+                filter_conditions.append('ce.content_type = ?')
+                filter_params.append(content_type)
+
+            # Tag filter (uses subquery with indexed tag table)
+            if tags:
+                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                if normalized_tags:
+                    tag_placeholders = ','.join(['?' for _ in normalized_tags])
+                    filter_conditions.append(f'''
+                        ce.id IN (
+                            SELECT DISTINCT context_entry_id
+                            FROM tags
+                            WHERE tag IN ({tag_placeholders})
+                        )
+                    ''')
+                    filter_params.extend(normalized_tags)
 
             # Date range filtering - Use datetime() to normalize ISO 8601 input
             if start_date:
@@ -241,6 +285,9 @@ class FtsRepository(BaseRepository):
                     filter_conditions.append(metadata_clause_with_alias)
                     filter_params.extend(metadata_params)
 
+                # Track metadata filter count for stats
+                metadata_filter_count = metadata_builder.get_filter_count()
+
             where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
             # Build highlight expression if requested
@@ -278,7 +325,47 @@ class FtsRepository(BaseRepository):
             cursor = conn.execute(sql_query, params)
             rows = cursor.fetchall()
 
-            return [dict(row) for row in rows]
+            results = [dict(row) for row in rows]
+
+            # Calculate execution time
+            execution_time_ms = (time_module.time() - start_time) * 1000
+
+            # Count filters applied
+            filter_count = sum([
+                1 if thread_id else 0,
+                1 if source else 0,
+                1 if content_type else 0,
+                1 if tags else 0,
+                1 if start_date else 0,
+                1 if end_date else 0,
+            ])
+            # Add metadata filter count
+            filter_count += metadata_filter_count
+
+            # Build statistics
+            stats: dict[str, Any] = {
+                'execution_time_ms': round(execution_time_ms, 2),
+                'filters_applied': filter_count,
+                'rows_returned': len(results),
+                'backend': 'sqlite',
+            }
+
+            # Get query plan if requested
+            if explain_query:
+                explain_cursor = conn.execute(f'EXPLAIN QUERY PLAN {sql_query}', params)
+                plan_rows = explain_cursor.fetchall()
+                plan_data: list[str] = []
+                for row in plan_rows:
+                    row_dict = dict(row)
+                    id_val = row_dict.get('id', '?')
+                    parent_val = row_dict.get('parent', '?')
+                    notused_val = row_dict.get('notused', '?')
+                    detail_val = row_dict.get('detail', '?')
+                    formatted = f'id:{id_val} parent:{parent_val} notused:{notused_val} detail:{detail_val}'
+                    plan_data.append(formatted)
+                stats['query_plan'] = '\n'.join(plan_data)
+
+            return results, stats
 
         return await self.backend.execute_read(_search_sqlite_inner)
 
@@ -290,16 +377,25 @@ class FtsRepository(BaseRepository):
         offset: int,
         thread_id: str | None,
         source: str | None,
+        content_type: str | None,
+        tags: list[str] | None,
         start_date: str | None,
         end_date: str | None,
         metadata: dict[str, str | int | float | bool] | None,
         metadata_filters: list[dict[str, Any]] | None,
         highlight: bool,
         language: str,
-    ) -> list[dict[str, Any]]:
+        explain_query: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """PostgreSQL tsvector search implementation."""
+        import time as time_module
 
-        async def _search_postgresql_inner(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+        # Track metadata filter count for stats
+        metadata_filter_count = 0
+
+        async def _search_postgresql_inner(conn: asyncpg.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            nonlocal metadata_filter_count
+            start_time = time_module.time()
             filter_conditions = ['1=1']  # Always true, makes building easier
             filter_params: list[Any] = []
             param_position = 1
@@ -313,6 +409,28 @@ class FtsRepository(BaseRepository):
                 filter_conditions.append(f'ce.source = {self._placeholder(param_position)}')
                 filter_params.append(source)
                 param_position += 1
+
+            if content_type:
+                filter_conditions.append(f'ce.content_type = {self._placeholder(param_position)}')
+                filter_params.append(content_type)
+                param_position += 1
+
+            # Tag filter (uses subquery with indexed tag table)
+            if tags:
+                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                if normalized_tags:
+                    tag_placeholders = ','.join([
+                        self._placeholder(param_position + i) for i in range(len(normalized_tags))
+                    ])
+                    filter_conditions.append(f'''
+                        ce.id IN (
+                            SELECT DISTINCT context_entry_id
+                            FROM tags
+                            WHERE tag IN ({tag_placeholders})
+                        )
+                    ''')
+                    filter_params.extend(normalized_tags)
+                    param_position += len(normalized_tags)
 
             # Date range filtering
             if start_date:
@@ -376,6 +494,9 @@ class FtsRepository(BaseRepository):
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
 
+                # Track metadata filter count for stats
+                metadata_filter_count = metadata_builder.get_filter_count()
+
             where_clause = ' AND '.join(filter_conditions)
 
             # Transform query based on mode for PostgreSQL
@@ -426,9 +547,95 @@ class FtsRepository(BaseRepository):
 
             rows = await conn.fetch(sql_query, *filter_params)
 
-            return [dict(row) for row in rows]
+            results = [dict(row) for row in rows]
+
+            # Calculate execution time
+            execution_time_ms = (time_module.time() - start_time) * 1000
+
+            # Count filters applied
+            filter_count = sum([
+                1 if thread_id else 0,
+                1 if source else 0,
+                1 if content_type else 0,
+                1 if tags else 0,
+                1 if start_date else 0,
+                1 if end_date else 0,
+            ])
+            # Add metadata filter count
+            filter_count += metadata_filter_count
+
+            # Build statistics
+            stats: dict[str, Any] = {
+                'execution_time_ms': round(execution_time_ms, 2),
+                'filters_applied': filter_count,
+                'rows_returned': len(results),
+                'backend': 'postgresql',
+            }
+
+            # Get query plan if requested
+            if explain_query:
+                explain_result = await conn.fetch(f'EXPLAIN {sql_query}', *filter_params)
+                plan_data: list[str] = [record['QUERY PLAN'] for record in explain_result]
+                stats['query_plan'] = '\n'.join(plan_data)
+
+            return results, stats
 
         return await self.backend.execute_read(cast(Any, _search_postgresql_inner))
+
+    def _escape_double_quotes(self, text: str) -> str:
+        """Escape double quotes for FTS5 phrase literals.
+
+        FTS5 requires double quotes to be escaped by doubling them.
+
+        Args:
+            text: Text that may contain double quotes
+
+        Returns:
+            Text with double quotes escaped as ""
+        """
+        return text.replace('"', '""')
+
+    def _quote_hyphenated_words_sqlite(self, query: str) -> str:
+        """Wrap hyphenated words in double quotes for FTS5.
+
+        Transforms queries like "full-text search" to '"full-text" search'
+        so that FTS5 treats hyphens as part of words, not as NOT operator.
+
+        Args:
+            query: Original search query
+
+        Returns:
+            Query with hyphenated words wrapped in double quotes
+        """
+
+        def replace_hyphenated(match: re.Match[str]) -> str:
+            word = match.group(1)
+            escaped = self._escape_double_quotes(word)
+            return f'"{escaped}"'
+
+        return HYPHENATED_WORD_PATTERN.sub(replace_hyphenated, query)
+
+    def _handle_hyphenated_prefix_postgresql(self, word: str) -> str:
+        """Handle hyphenated words for PostgreSQL prefix mode.
+
+        Splits hyphenated words into AND-ed prefix terms.
+        "full-text" -> "full:* & text:*"
+
+        Args:
+            word: Single word that may contain hyphens
+
+        Returns:
+            PostgreSQL prefix query fragment
+        """
+        # Strip existing wildcards
+        clean_word = word.rstrip('*').removesuffix(':')
+
+        if '-' in clean_word:
+            # Split and create AND-ed prefix terms
+            parts = clean_word.split('-')
+            return ' & '.join(f'{part}:*' for part in parts if part)
+
+        return f'{clean_word}:*'
 
     def _transform_query_sqlite(
         self,
@@ -449,18 +656,33 @@ class FtsRepository(BaseRepository):
 
         if mode == 'phrase':
             # Exact phrase matching - wrap in double quotes
-            return f'"{query}"'
+            # Escape any existing double quotes first
+            escaped = self._escape_double_quotes(query)
+            return f'"{escaped}"'
+
         if mode == 'prefix':
-            # Prefix matching - add * to each word
-            # Strip any existing * to prevent double wildcards (e.g., "implement*" -> "implement**")
-            words = query.split()
-            return ' '.join(f'{word.rstrip("*")}*' for word in words)
+            # Prefix matching - handle hyphenated words specially
+            # First quote hyphenated words, then add wildcards
+            quoted = self._quote_hyphenated_words_sqlite(query)
+            words = quoted.split()
+            result_words = []
+            for word in words:
+                if word.startswith('"') and word.endswith('"'):
+                    # Hyphenated word already quoted, add wildcard after
+                    result_words.append(f'{word}*')
+                else:
+                    # Regular word, add wildcard
+                    result_words.append(f'{word.rstrip("*")}*')
+            return ' '.join(result_words)
+
         if mode == 'boolean':
             # Boolean mode - pass through as-is (user provides AND/OR/NOT)
+            # User is responsible for quoting hyphenated words
             return query
+
         # 'match' - default
-        # Standard matching - split into words for implicit AND
-        return query
+        # Quote hyphenated words to prevent NOT operator interpretation
+        return self._quote_hyphenated_words_sqlite(query)
 
     def _transform_query_postgresql(
         self,
@@ -483,17 +705,15 @@ class FtsRepository(BaseRepository):
         query = query.strip()
 
         if mode == 'prefix':
-            # Prefix matching for PostgreSQL - add :* to each word with & operator
-            # Strip any existing * or :* to prevent double wildcards
+            # Prefix matching - handle hyphenated words by splitting
             words = query.split()
-            transformed_words = []
-            for word in words:
-                # Strip trailing :* or * to normalize
-                clean_word = word.rstrip('*')
-                clean_word = clean_word.removesuffix(':')
-                transformed_words.append(f'{clean_word}:*')
-            return ' & '.join(transformed_words)
-        # For other modes, return query as-is (the tsquery function handles it)
+            prefix_terms = [self._handle_hyphenated_prefix_postgresql(word) for word in words]
+            return ' & '.join(prefix_terms)
+
+        # For other modes, return query as-is
+        # - match: plainto_tsquery discards punctuation (safe)
+        # - phrase: phraseto_tsquery discards punctuation (safe)
+        # - boolean: websearch_to_tsquery treats - as NOT (by design)
         return query
 
     def _get_tsquery_function(

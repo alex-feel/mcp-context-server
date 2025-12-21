@@ -42,7 +42,7 @@ class TestSemanticSearchFilters:
     ) -> None:
         """Regression test: thread_id filter returns correct number of results.
 
-        This test verifies the fix for the bug where requesting top_k=3 with
+        This test verifies the fix for the bug where requesting limit=3 with
         thread_id filter returned only 1 result when 2 should be returned.
 
         The bug occurred because sqlite-vec's k parameter limited results
@@ -83,7 +83,7 @@ class TestSemanticSearchFilters:
 
         # Perform search with thread filter
         query_embedding = [0.1] * embedding_dim
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=query_embedding,
             limit=3,
             thread_id='test-thread',
@@ -133,7 +133,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with source filter
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             source='user',
@@ -183,7 +183,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with both filters
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='test-thread',
@@ -224,7 +224,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search without filters
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=3,
         )
@@ -258,7 +258,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with non-existent thread
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='thread-b',  # Does not exist
@@ -293,7 +293,7 @@ class TestSemanticSearchFilters:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 10 but only 2 exist
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='small-thread',
@@ -338,7 +338,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with start_date in the past - should find all entries
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             start_date=yesterday,
@@ -347,7 +347,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with start_date in the future - should find no entries
         future_date = (datetime.now(UTC) + timedelta(days=30)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             start_date=future_date,
@@ -385,7 +385,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with end_date in the future - should find all entries
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.2] * embedding_dim,
             limit=10,
             end_date=tomorrow,
@@ -394,7 +394,7 @@ class TestSemanticSearchDateFiltering:
 
         # Search with end_date in the past - should find no entries
         past_date = (datetime.now(UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.2] * embedding_dim,
             limit=10,
             end_date=past_date,
@@ -433,7 +433,7 @@ class TestSemanticSearchDateFiltering:
         # Search with valid date range (yesterday to tomorrow) - should find all
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.15] * embedding_dim,
             limit=10,
             start_date=yesterday,
@@ -444,7 +444,7 @@ class TestSemanticSearchDateFiltering:
         # Search with date range in the past - should find none
         far_past = (datetime.now(UTC) - timedelta(days=60)).strftime('%Y-%m-%d')
         past = (datetime.now(UTC) - timedelta(days=30)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.15] * embedding_dim,
             limit=10,
             start_date=far_past,
@@ -494,7 +494,7 @@ class TestSemanticSearchDateFiltering:
         # Search with date filter and thread_id - should find 2 entries from target thread
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-date-thread',
@@ -547,7 +547,7 @@ class TestSemanticSearchDateFiltering:
         # Search with date filter and source - should find 2 user entries
         yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime('%Y-%m-%d')
         tomorrow = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source='user',
@@ -584,7 +584,7 @@ class TestSemanticSearchDateFiltering:
             await embedding_repo.store(context_id, [0.25 * (i + 1)] * embedding_dim)
 
         # Search with None dates - should find all entries
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.25] * embedding_dim,
             limit=10,
             start_date=None,
@@ -637,7 +637,7 @@ class TestSemanticSearchPerformance:
 
         # Measure search time
         start_time = time.perf_counter()
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-thread',
@@ -677,7 +677,7 @@ class TestSemanticSearchPerformance:
 
         # Measure search time
         start_time = time.perf_counter()
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=20,
             thread_id='medium-thread',
@@ -729,7 +729,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(ctx_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search for single thread
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='single-thread',
@@ -764,7 +764,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for 5 from only-thread
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=5,
             thread_id='only-thread',
@@ -800,7 +800,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with thread_id=None
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id=None,
@@ -837,7 +837,7 @@ class TestSemanticSearchEdgeCases:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with source=None
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source=None,
@@ -892,7 +892,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with simple metadata filter for status=completed
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'completed'},
@@ -932,7 +932,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * priority] * embedding_dim)
 
         # Search with metadata_filters for priority > 5
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 5}],
@@ -974,7 +974,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for task_name containing 'refactor'
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'task_name', 'operator': 'contains', 'value': 'refactor'}],
@@ -1024,7 +1024,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search for entries where 'important' key exists
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'important', 'operator': 'exists'}],
@@ -1086,7 +1086,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.2 * (i + 1)] * embedding_dim)
 
         # Search with combined filters: thread_id + source + metadata
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='combined-filter-thread',
@@ -1174,7 +1174,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for non-existent status
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata={'status': 'archived'},  # No entries have this status
@@ -1212,7 +1212,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries in backend or frontend categories
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'category', 'operator': 'in', 'value': ['backend', 'frontend']}],
@@ -1258,7 +1258,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries with priority IN [5, 9] - INTEGER array
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'in', 'value': [5, 9]}],
@@ -1302,7 +1302,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search for entries with priority NOT IN [1, 2, 3] - INTEGER array
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata_filters=[{'key': 'priority', 'operator': 'not_in', 'value': [1, 2, 3]}],
@@ -1342,7 +1342,7 @@ class TestSemanticSearchMetadataFiltering:
             await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
 
         # Search with None metadata and metadata_filters
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             metadata=None,
@@ -1351,3 +1351,372 @@ class TestSemanticSearchMetadataFiltering:
 
         # Should return all 4 entries
         assert len(results) == 4
+
+
+@pytest.mark.asyncio
+class TestSemanticSearchContentTypeFilter:
+    """Test content_type filtering in semantic search - covers lines 203-206."""
+
+    @requires_semantic_search
+    async def test_content_type_filter_text(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test filtering by content_type='text'."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create text entry
+        text_id, _ = await repos.context.store_with_deduplication(
+            thread_id='content-type-test',
+            source='user',
+            content_type='text',
+            text_content='Text only entry',
+            metadata=None,
+        )
+        await embedding_repo.store(text_id, [0.1] * embedding_dim)
+
+        # Create multimodal entry
+        multi_id, _ = await repos.context.store_with_deduplication(
+            thread_id='content-type-test',
+            source='user',
+            content_type='multimodal',
+            text_content='Entry with image',
+            metadata=None,
+        )
+        await embedding_repo.store(multi_id, [0.2] * embedding_dim)
+
+        # Search with content_type filter for text
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.15] * embedding_dim,
+            limit=10,
+            content_type='text',
+        )
+
+        assert len(results) == 1
+        assert results[0]['content_type'] == 'text'
+
+    @requires_semantic_search
+    async def test_content_type_filter_multimodal(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test filtering by content_type='multimodal'."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create text entries
+        for i in range(3):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='content-type-multimodal-test',
+                source='agent',
+                content_type='text',
+                text_content=f'Text entry {i}',
+                metadata=None,
+            )
+            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Create multimodal entry
+        multi_id, _ = await repos.context.store_with_deduplication(
+            thread_id='content-type-multimodal-test',
+            source='agent',
+            content_type='multimodal',
+            text_content='Multimodal entry with image',
+            metadata=None,
+        )
+        await embedding_repo.store(multi_id, [0.5] * embedding_dim)
+
+        # Search with content_type filter for multimodal
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.5] * embedding_dim,
+            limit=10,
+            content_type='multimodal',
+        )
+
+        assert len(results) == 1
+        assert results[0]['content_type'] == 'multimodal'
+
+    @requires_semantic_search
+    async def test_content_type_none_returns_all(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that None content_type returns all entries."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create mixed entries
+        text_id, _ = await repos.context.store_with_deduplication(
+            thread_id='content-type-none-test',
+            source='user',
+            content_type='text',
+            text_content='Text entry',
+            metadata=None,
+        )
+        await embedding_repo.store(text_id, [0.1] * embedding_dim)
+
+        multi_id, _ = await repos.context.store_with_deduplication(
+            thread_id='content-type-none-test',
+            source='user',
+            content_type='multimodal',
+            text_content='Multimodal entry',
+            metadata=None,
+        )
+        await embedding_repo.store(multi_id, [0.2] * embedding_dim)
+
+        # Search without content_type filter
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.15] * embedding_dim,
+            limit=10,
+            content_type=None,
+        )
+
+        assert len(results) == 2
+        content_types = {r['content_type'] for r in results}
+        assert 'text' in content_types
+        assert 'multimodal' in content_types
+
+
+@pytest.mark.asyncio
+class TestSemanticSearchTagsFilter:
+    """Test tags filtering in semantic search - covers lines 208-221."""
+
+    @requires_semantic_search
+    async def test_tags_filter_or_logic(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that tags filter uses OR logic."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create entries with different tags
+        id1, _ = await repos.context.store_with_deduplication(
+            thread_id='tags-test',
+            source='user',
+            content_type='text',
+            text_content='Entry with python tag',
+            metadata=None,
+        )
+        await repos.tags.store_tags(id1, ['python'])
+        await embedding_repo.store(id1, [0.1] * embedding_dim)
+
+        id2, _ = await repos.context.store_with_deduplication(
+            thread_id='tags-test',
+            source='user',
+            content_type='text',
+            text_content='Entry with javascript tag',
+            metadata=None,
+        )
+        await repos.tags.store_tags(id2, ['javascript'])
+        await embedding_repo.store(id2, [0.2] * embedding_dim)
+
+        id3, _ = await repos.context.store_with_deduplication(
+            thread_id='tags-test',
+            source='user',
+            content_type='text',
+            text_content='Entry with no matching tags',
+            metadata=None,
+        )
+        await repos.tags.store_tags(id3, ['rust'])
+        await embedding_repo.store(id3, [0.3] * embedding_dim)
+
+        # Search with tags filter (OR logic)
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.15] * embedding_dim,
+            limit=10,
+            tags=['python', 'javascript'],
+        )
+
+        # Should return 2 entries (python OR javascript)
+        assert len(results) == 2
+        result_ids = {r['id'] for r in results}
+        assert id1 in result_ids
+        assert id2 in result_ids
+
+    @requires_semantic_search
+    async def test_tags_filter_single_tag(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test filtering by a single tag."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create entries with various tags
+        for i in range(3):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='single-tag-test',
+                source='agent',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            tag = 'important' if i == 0 else f'other-{i}'
+            await repos.tags.store_tags(ctx_id, [tag])
+            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search for only 'important' tagged entries
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=10,
+            tags=['important'],
+        )
+
+        assert len(results) == 1
+
+    @requires_semantic_search
+    async def test_tags_filter_empty_list_returns_all(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that empty tags list returns all entries."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create entries
+        for i in range(3):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='empty-tags-test',
+                source='user',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await repos.tags.store_tags(ctx_id, [f'tag-{i}'])
+            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search with empty tags list
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.2] * embedding_dim,
+            limit=10,
+            tags=[],
+        )
+
+        # Empty tags should not filter
+        assert len(results) == 3
+
+    @requires_semantic_search
+    async def test_tags_filter_none_returns_all(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test that None tags returns all entries."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create entries
+        for i in range(4):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='none-tags-test',
+                source='agent',
+                content_type='text',
+                text_content=f'Entry {i}',
+                metadata=None,
+            )
+            await repos.tags.store_tags(ctx_id, [f'tag-{i}'])
+            await embedding_repo.store(ctx_id, [0.1 * (i + 1)] * embedding_dim)
+
+        # Search with tags=None
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.25] * embedding_dim,
+            limit=10,
+            tags=None,
+        )
+
+        assert len(results) == 4
+
+    @requires_semantic_search
+    async def test_tags_combined_with_other_filters(
+        self,
+        async_db_with_embeddings: StorageBackend,
+        embedding_dim: int,
+    ) -> None:
+        """Test tags filter combined with thread_id and source filters."""
+        from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import EmbeddingRepository
+
+        backend = async_db_with_embeddings
+        repos = RepositoryContainer(backend)
+        embedding_repo = EmbeddingRepository(backend)
+
+        # Create target entry: in target thread, user source, python tag
+        target_id, _ = await repos.context.store_with_deduplication(
+            thread_id='combined-tags-thread',
+            source='user',
+            content_type='text',
+            text_content='Python programming',
+            metadata=None,
+        )
+        await repos.tags.store_tags(target_id, ['python'])
+        await embedding_repo.store(target_id, [0.1] * embedding_dim)
+
+        # Create non-matching: wrong source
+        wrong_source_id, _ = await repos.context.store_with_deduplication(
+            thread_id='combined-tags-thread',
+            source='agent',  # Different source
+            content_type='text',
+            text_content='Python from agent',
+            metadata=None,
+        )
+        await repos.tags.store_tags(wrong_source_id, ['python'])
+        await embedding_repo.store(wrong_source_id, [0.2] * embedding_dim)
+
+        # Create non-matching: wrong tag
+        wrong_tag_id, _ = await repos.context.store_with_deduplication(
+            thread_id='combined-tags-thread',
+            source='user',
+            content_type='text',
+            text_content='JavaScript user entry',
+            metadata=None,
+        )
+        await repos.tags.store_tags(wrong_tag_id, ['javascript'])
+        await embedding_repo.store(wrong_tag_id, [0.3] * embedding_dim)
+
+        # Search with combined filters
+        results, _ = await embedding_repo.search(
+            query_embedding=[0.1] * embedding_dim,
+            limit=10,
+            thread_id='combined-tags-thread',
+            source='user',
+            tags=['python'],
+        )
+
+        # Should only return the one matching all criteria
+        assert len(results) == 1
+        assert results[0]['id'] == target_id

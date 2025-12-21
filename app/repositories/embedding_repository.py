@@ -135,13 +135,16 @@ class EmbeddingRepository(BaseRepository):
         self,
         query_embedding: list[float],
         limit: int = 20,
+        offset: int = 0,
         thread_id: str | None = None,
         source: Literal['user', 'agent'] | None = None,
+        content_type: Literal['text', 'multimodal'] | None = None,
+        tags: list[str] | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
         metadata: dict[str, str | int | float | bool] | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """KNN search with optional filters including date range and metadata.
 
         SQLite: Uses CTE-based pre-filtering with vec_distance_l2() function
@@ -150,19 +153,28 @@ class EmbeddingRepository(BaseRepository):
         Args:
             query_embedding: Query vector for similarity search
             limit: Maximum number of results to return
+            offset: Number of results to skip (pagination)
             thread_id: Optional filter by thread
             source: Optional filter by source type
+            content_type: Filter by content type (text or multimodal)
+            tags: Filter by any of these tags (OR logic)
             start_date: Filter by created_at >= date (ISO 8601 format)
             end_date: Filter by created_at <= date (ISO 8601 format)
             metadata: Simple metadata filters (key=value equality)
             metadata_filters: Advanced metadata filters with operators
 
         Returns:
-            List of search results with context and similarity scores
+            Tuple of (search results list, statistics dictionary)
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _search_sqlite(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            def _search_sqlite(
+                conn: sqlite3.Connection,
+            ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                import time as time_module
+
+                start_time = time_module.time()
+
                 try:
                     import sqlite_vec
                 except ImportError as e:
@@ -175,13 +187,38 @@ class EmbeddingRepository(BaseRepository):
                 filter_conditions = []
                 filter_params: list[Any] = []
 
+                # Count filters applied
+                filter_count = 0
+
                 if thread_id:
                     filter_conditions.append('thread_id = ?')
                     filter_params.append(thread_id)
+                    filter_count += 1
 
                 if source:
                     filter_conditions.append('source = ?')
                     filter_params.append(source)
+                    filter_count += 1
+
+                if content_type:
+                    filter_conditions.append('content_type = ?')
+                    filter_params.append(content_type)
+                    filter_count += 1
+
+                # Tag filter (uses subquery with indexed tag table)
+                if tags:
+                    normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                    if normalized_tags:
+                        tag_placeholders = ','.join(['?' for _ in normalized_tags])
+                        filter_conditions.append(f'''
+                            id IN (
+                                SELECT DISTINCT context_entry_id
+                                FROM tags
+                                WHERE tag IN ({tag_placeholders})
+                            )
+                        ''')
+                        filter_params.extend(normalized_tags)
+                        filter_count += 1
 
                 # Date range filtering - Use datetime() to normalize ISO 8601 input
                 # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
@@ -190,12 +227,15 @@ class EmbeddingRepository(BaseRepository):
                 if start_date:
                     filter_conditions.append('created_at >= datetime(?)')
                     filter_params.append(start_date)
+                    filter_count += 1
 
                 if end_date:
                     filter_conditions.append('created_at <= datetime(?)')
                     filter_params.append(end_date)
+                    filter_count += 1
 
                 # Metadata filtering using MetadataQueryBuilder
+                metadata_filter_count = 0
                 if metadata or metadata_filters:
                     from pydantic import ValidationError
 
@@ -209,6 +249,7 @@ class EmbeddingRepository(BaseRepository):
                         for key, value in metadata.items():
                             try:
                                 metadata_builder.add_simple_filter(key, value)
+                                metadata_filter_count += 1
                             except ValueError as e:
                                 logger.warning(f'Invalid simple metadata filter key={key}: {e}')
 
@@ -219,6 +260,7 @@ class EmbeddingRepository(BaseRepository):
                             try:
                                 filter_spec = MetadataFilter(**filter_dict)
                                 metadata_builder.add_advanced_filter(filter_spec)
+                                metadata_filter_count += 1
                             except ValidationError as e:
                                 error_msg = f'Invalid metadata filter {filter_dict}: {e}'
                                 validation_errors.append(error_msg)
@@ -242,6 +284,7 @@ class EmbeddingRepository(BaseRepository):
                     if metadata_clause:
                         filter_conditions.append(metadata_clause)
                         filter_params.extend(metadata_params)
+                        filter_count += metadata_filter_count
 
                 where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
@@ -265,33 +308,78 @@ class EmbeddingRepository(BaseRepository):
                     JOIN context_entries ce ON ce.id = fc.id
                     JOIN vec_context_embeddings ve ON ve.rowid = fc.id
                     ORDER BY distance
-                    LIMIT ?
+                    LIMIT ? OFFSET ?
                 '''
 
-                params = filter_params + [query_blob, limit]
+                params = filter_params + [query_blob, limit, offset]
 
                 cursor = conn.execute(query, params)
                 rows = cursor.fetchall()
+                results = [dict(row) for row in rows]
 
-                return [dict(row) for row in rows]
+                # Calculate execution time and build stats
+                execution_time_ms = (time_module.time() - start_time) * 1000
+                stats: dict[str, Any] = {
+                    'execution_time_ms': round(execution_time_ms, 2),
+                    'filters_applied': filter_count,
+                    'rows_returned': len(results),
+                    'backend': 'sqlite',
+                }
+
+                return results, stats
 
             return await self.backend.execute_read(_search_sqlite)
 
         # postgresql
-        async def _search_postgresql(conn: asyncpg.Connection) -> list[dict[str, Any]]:
+        async def _search_postgresql(
+            conn: asyncpg.Connection,
+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            import time as time_module
+
+            start_time = time_module.time()
+
             filter_conditions = ['1=1']  # Always true, makes building easier
             filter_params: list[Any] = [query_embedding]
             param_position = 2  # Start at 2 because $1 is embedding
+
+            # Count filters applied
+            filter_count = 0
 
             if thread_id:
                 filter_conditions.append(f'ce.thread_id = {self._placeholder(param_position)}')
                 filter_params.append(thread_id)
                 param_position += 1
+                filter_count += 1
 
             if source:
                 filter_conditions.append(f'ce.source = {self._placeholder(param_position)}')
                 filter_params.append(source)
                 param_position += 1
+                filter_count += 1
+
+            if content_type:
+                filter_conditions.append(f'ce.content_type = {self._placeholder(param_position)}')
+                filter_params.append(content_type)
+                param_position += 1
+                filter_count += 1
+
+            # Tag filter (uses subquery with indexed tag table)
+            if tags:
+                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+                if normalized_tags:
+                    tag_placeholders = ','.join([
+                        self._placeholder(param_position + i) for i in range(len(normalized_tags))
+                    ])
+                    filter_conditions.append(f'''
+                        ce.id IN (
+                            SELECT DISTINCT context_entry_id
+                            FROM tags
+                            WHERE tag IN ({tag_placeholders})
+                        )
+                    ''')
+                    filter_params.extend(normalized_tags)
+                    param_position += len(normalized_tags)
+                    filter_count += 1
 
             # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
             # asyncpg requires Python datetime objects, not strings, for TIMESTAMPTZ parameters
@@ -299,13 +387,16 @@ class EmbeddingRepository(BaseRepository):
                 filter_conditions.append(f'ce.created_at >= {self._placeholder(param_position)}')
                 filter_params.append(self._parse_date_for_postgresql(start_date))
                 param_position += 1
+                filter_count += 1
 
             if end_date:
                 filter_conditions.append(f'ce.created_at <= {self._placeholder(param_position)}')
                 filter_params.append(self._parse_date_for_postgresql(end_date))
                 param_position += 1
+                filter_count += 1
 
             # Metadata filtering using MetadataQueryBuilder
+            metadata_filter_count = 0
             if metadata or metadata_filters:
                 from pydantic import ValidationError
 
@@ -324,6 +415,7 @@ class EmbeddingRepository(BaseRepository):
                     for key, value in metadata.items():
                         try:
                             metadata_builder.add_simple_filter(key, value)
+                            metadata_filter_count += 1
                         except ValueError as e:
                             logger.warning(f'Invalid simple metadata filter key={key}: {e}')
 
@@ -334,6 +426,7 @@ class EmbeddingRepository(BaseRepository):
                         try:
                             filter_spec = MetadataFilter(**filter_dict)
                             metadata_builder.add_advanced_filter(filter_spec)
+                            metadata_filter_count += 1
                         except ValidationError as e:
                             error_msg = f'Invalid metadata filter {filter_dict}: {e}'
                             validation_errors.append(error_msg)
@@ -360,6 +453,7 @@ class EmbeddingRepository(BaseRepository):
                     filter_conditions.append(metadata_clause_with_alias)
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
+                    filter_count += metadata_filter_count
 
             where_clause = ' AND '.join(filter_conditions)
 
@@ -379,14 +473,24 @@ class EmbeddingRepository(BaseRepository):
                     JOIN vec_context_embeddings ve ON ve.context_id = ce.id
                     WHERE {where_clause}
                     ORDER BY ve.embedding <-> {self._placeholder(1)}
-                    LIMIT {self._placeholder(param_position)}
+                    LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 '''
 
-            filter_params.append(limit)
+            filter_params.extend([limit, offset])
 
             rows = await conn.fetch(query, *filter_params)
+            results = [dict(row) for row in rows]
 
-            return [dict(row) for row in rows]
+            # Calculate execution time and build stats
+            execution_time_ms = (time_module.time() - start_time) * 1000
+            stats: dict[str, Any] = {
+                'execution_time_ms': round(execution_time_ms, 2),
+                'filters_applied': filter_count,
+                'rows_returned': len(results),
+                'backend': 'postgresql',
+            }
+
+            return results, stats
 
         return await self.backend.execute_read(_search_postgresql)
 
@@ -534,6 +638,7 @@ class EmbeddingRepository(BaseRepository):
                     'total_embeddings': embedding_count,
                     'total_entries': total_entries,
                     'coverage_percentage': round(coverage_percentage, 2),
+                    'backend': 'sqlite',
                 }
 
             return await self.backend.execute_read(_get_stats_sqlite)
@@ -563,6 +668,7 @@ class EmbeddingRepository(BaseRepository):
                 'total_embeddings': embedding_count,
                 'total_entries': total_entries,
                 'coverage_percentage': round(coverage_percentage, 2),
+                'backend': 'postgresql',
             }
 
         return await self.backend.execute_read(_get_stats_postgresql)

@@ -188,7 +188,7 @@ class TestSearchContext:
     ) -> None:
         """Test searching without filters returns all contexts."""
         _ = multiple_context_entries  # Fixture ensures data exists
-        results = await search_context()
+        results = await search_context(limit=50)
 
         assert isinstance(results, dict)
         assert 'entries' in results
@@ -202,7 +202,7 @@ class TestSearchContext:
     ) -> None:
         """Test filtering by thread ID."""
         _ = multiple_context_entries  # Fixture ensures data exists
-        results = await search_context(thread_id='thread_1')
+        results = await search_context(limit=50, thread_id='thread_1')
 
         assert isinstance(results, dict)
         assert len(results['entries']) == 2
@@ -216,7 +216,7 @@ class TestSearchContext:
     ) -> None:
         """Test filtering by source type."""
         _ = multiple_context_entries  # Fixture ensures data exists
-        results = await search_context(source='agent')
+        results = await search_context(limit=50, source='agent')
 
         assert isinstance(results, dict)
         assert len(results['entries']) == 2
@@ -230,7 +230,7 @@ class TestSearchContext:
     ) -> None:
         """Test filtering by tags."""
         _ = multiple_context_entries  # Fixture ensures data exists
-        results = await search_context(tags=['important', 'nonexistent'])
+        results = await search_context(limit=50, tags=['important', 'nonexistent'])
 
         assert isinstance(results, dict)
         assert len(results['entries']) == 1
@@ -243,7 +243,7 @@ class TestSearchContext:
     ) -> None:
         """Test filtering by content type."""
         _ = multiple_context_entries  # Fixture ensures data exists
-        results = await search_context(content_type='multimodal')
+        results = await search_context(limit=50, content_type='multimodal')
 
         assert isinstance(results, dict)
         assert len(results['entries']) == 1
@@ -289,6 +289,7 @@ class TestSearchContext:
 
         # Search with images included
         results = await search_context(
+            limit=50,
             thread_id='image_test',
             include_images=True,
         )
@@ -307,6 +308,7 @@ class TestSearchContext:
         """Test combining multiple filters."""
         _ = multiple_context_entries  # Fixture ensures data exists
         results = await search_context(
+            limit=50,
             thread_id='thread_2',
             source='user',
             content_type='multimodal',
@@ -329,17 +331,17 @@ class TestSearchContext:
         """
         _ = multiple_context_entries  # Fixture ensures data exists
         # Valid source works fine
-        result = await search_context(source='user')
+        result = await search_context(limit=50, source='user')
         assert 'entries' in result
 
     @pytest.mark.asyncio
     async def test_search_limit_max(self) -> None:
-        """Test that Pydantic Field(le=500) enforces max limit.
+        """Test that Pydantic Field(le=100) enforces max limit.
 
         Note: Pydantic validates at FastMCP level. This test verifies max limit works.
         """
         # Create many entries
-        for i in range(600):
+        for i in range(150):
             await store_context(
                 thread_id=f'bulk_thread_{i}',
                 source='user',
@@ -347,9 +349,9 @@ class TestSearchContext:
             )
 
         # Valid max limit works fine
-        result = await search_context(limit=500)
+        result = await search_context(limit=100)
         assert 'entries' in result
-        assert len(result['entries']) <= 500
+        assert len(result['entries']) <= 100
 
     @pytest.mark.asyncio
     async def test_search_text_truncation_short(self) -> None:
@@ -363,7 +365,7 @@ class TestSearchContext:
             text=short_text,
         )
 
-        results = await search_context(thread_id='truncation_test')
+        results = await search_context(limit=50, thread_id='truncation_test')
         assert isinstance(results, dict)
         assert len(results['entries']) == 1
         assert results['entries'][0]['text_content'] == short_text
@@ -387,7 +389,7 @@ class TestSearchContext:
             text=long_text,
         )
 
-        results = await search_context(thread_id='truncation_long_test')
+        results = await search_context(limit=50, thread_id='truncation_long_test')
         assert isinstance(results, dict)
         assert len(results['entries']) == 1
 
@@ -416,7 +418,7 @@ class TestSearchContext:
             text=text_with_good_boundary,
         )
 
-        results = await search_context(thread_id='boundary_test_good')
+        results = await search_context(limit=50, thread_id='boundary_test_good')
         assert isinstance(results, dict)
         assert len(results['entries']) == 1
         assert results['entries'][0]['is_truncated'] is True
@@ -433,7 +435,7 @@ class TestSearchContext:
             text=text_with_bad_boundary,
         )
 
-        results_bad = await search_context(thread_id='boundary_test_bad')
+        results_bad = await search_context(limit=50, thread_id='boundary_test_bad')
         assert isinstance(results_bad, dict)
         assert len(results_bad['entries']) == 1
         assert results_bad['entries'][0]['is_truncated'] is True
@@ -460,7 +462,7 @@ class TestSearchContext:
         context_id = store_result['context_id']
 
         # Search should return truncated text
-        search_results = await search_context(thread_id='comparison_test')
+        search_results = await search_context(limit=50, thread_id='comparison_test')
         assert isinstance(search_results, dict)
         assert len(search_results['entries']) == 1
         assert search_results['entries'][0]['is_truncated'] is True
@@ -510,7 +512,7 @@ class TestSearchContext:
                     '', 'null_test',
                 )
 
-        results = await search_context(thread_id='null_test')
+        results = await search_context(limit=50, thread_id='null_test')
         assert isinstance(results, dict)
         assert len(results['entries']) == 1
         assert results['entries'][0]['text_content'] == ''
@@ -660,7 +662,7 @@ class TestDeleteContext:
         assert delete_result['deleted_count'] == 2
 
         # Verify third still exists
-        remaining = await search_context(thread_id='delete_test')
+        remaining = await search_context(limit=50, thread_id='delete_test')
         assert isinstance(remaining, dict)
         assert len(remaining['entries']) == 1
         assert remaining['entries'][0]['id'] == result3['context_id']
@@ -685,7 +687,7 @@ class TestDeleteContext:
         assert delete_result['deleted_count'] == 5
 
         # Verify all deleted
-        remaining = await search_context(thread_id=thread_id)
+        remaining = await search_context(limit=50, thread_id=thread_id)
         assert isinstance(remaining, dict)
         assert remaining['entries'] == []
 
@@ -916,7 +918,7 @@ class TestContextParameter:
         )
         assert mock_ctx.info.call_count == 1
 
-        await search_context(thread_id='ctx_test', ctx=mock_ctx)
+        await search_context(limit=50, thread_id='ctx_test', ctx=mock_ctx)
         assert mock_ctx.info.call_count == 2
 
         await get_context_by_ids(context_ids=[1], ctx=mock_ctx)
@@ -950,7 +952,7 @@ class TestEdgeCases:
         assert result['success'] is True
 
         # Verify retrieval
-        search_result = await search_context(thread_id='unicode_test')
+        search_result = await search_context(limit=50, thread_id='unicode_test')
         assert isinstance(search_result, dict)
         assert search_result['entries'][0]['text_content'] == unicode_text
 
@@ -997,7 +999,7 @@ class TestEdgeCases:
         assert result['success'] is True
 
         # Verify data integrity
-        search_result = await search_context(thread_id=malicious_thread)
+        search_result = await search_context(limit=50, thread_id=malicious_thread)
         assert isinstance(search_result, dict)
         assert len(search_result['entries']) == 1
         # Tag should be normalized to lowercase

@@ -36,7 +36,7 @@ class TestStoreContextEdgeCases:
         assert 'context_id' in result
 
         # Verify empty tags
-        search_result = await search_context.fn(thread_id='empty_tags_thread')
+        search_result = await search_context.fn(limit=50, thread_id='empty_tags_thread')
         assert len(search_result['entries']) == 1
         assert search_result['entries'][0]['tags'] == []
 
@@ -54,7 +54,7 @@ class TestStoreContextEdgeCases:
         assert result['success'] is True
 
         # Verify tags are normalized
-        search_result = await search_context.fn(thread_id='whitespace_tags_thread')
+        search_result = await search_context.fn(limit=50, thread_id='whitespace_tags_thread')
         assert len(search_result['entries']) == 1
         # Tags should be stripped and lowercased
         tags = search_result['entries'][0]['tags']
@@ -76,7 +76,7 @@ class TestStoreContextEdgeCases:
         assert result['success'] is True
 
         # Verify tags are normalized to lowercase
-        search_result = await search_context.fn(thread_id='mixed_case_tags_thread')
+        search_result = await search_context.fn(limit=50, thread_id='mixed_case_tags_thread')
         tags = search_result['entries'][0]['tags']
         assert 'important' in tags
         assert 'review' in tags
@@ -185,6 +185,7 @@ class TestSearchContextEdgeCases:
 
         # Search with multiple tags - should find entries with ANY of the tags
         result = await search_context.fn(
+            limit=50,
             thread_id='multi_tag_search',
             tags=['tag1', 'tag2'],
         )
@@ -221,6 +222,7 @@ class TestSearchContextEdgeCases:
         )
 
         result = await search_context.fn(
+            limit=50,
             thread_id='large_offset_thread',
             offset=1000,
         )
@@ -238,6 +240,7 @@ class TestSearchContextEdgeCases:
         )
 
         result = await search_context.fn(
+            limit=50,
             thread_id='explain_thread',
             explain_query=True,
         )
@@ -263,6 +266,7 @@ class TestSearchContextEdgeCases:
         )
 
         result = await search_context.fn(
+            limit=50,
             thread_id='meta_int_thread',
             metadata={'priority': 1},
         )
@@ -288,6 +292,7 @@ class TestSearchContextEdgeCases:
         )
 
         result = await search_context.fn(
+            limit=50,
             thread_id='meta_bool_thread',
             metadata={'completed': True},
         )
@@ -436,7 +441,7 @@ class TestDeleteContextEdgeCases:
         assert delete_result['deleted_count'] == 3
 
         # Verify remaining entries
-        search_result = await search_context.fn(thread_id='multi_delete_thread')
+        search_result = await search_context.fn(limit=50, thread_id='multi_delete_thread')
         assert len(search_result['entries']) == 2
 
     @pytest.mark.asyncio
@@ -637,6 +642,7 @@ class TestMetadataFilters:
 
         # Search with advanced filter for priority > 2
         result = await search_context.fn(
+            limit=50,
             thread_id='adv_filter_thread',
             metadata_filters=[{'key': 'priority', 'operator': 'gt', 'value': 2}],
         )
@@ -663,6 +669,7 @@ class TestMetadataFilters:
 
         # Search for tasks containing "Important"
         result = await search_context.fn(
+            limit=50,
             thread_id='contains_filter_thread',
             metadata_filters=[{'key': 'task_name', 'operator': 'contains', 'value': 'Important'}],
         )

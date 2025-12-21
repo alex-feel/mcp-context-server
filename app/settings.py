@@ -142,6 +142,16 @@ class AppSettings(CommonSettings):
         description='Language for FTS stemming (e.g., english, german, french)',
     )
 
+    # Hybrid search settings
+    enable_hybrid_search: bool = Field(default=False, alias='ENABLE_HYBRID_SEARCH')
+    hybrid_rrf_k: int = Field(
+        default=60,
+        alias='HYBRID_RRF_K',
+        ge=1,
+        le=1000,
+        description='RRF smoothing constant for hybrid search (default 60)',
+    )
+
     @field_validator('embedding_dim')
     @classmethod
     def validate_embedding_dim(cls, v: int) -> int:

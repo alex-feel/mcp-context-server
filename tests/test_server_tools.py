@@ -120,7 +120,7 @@ class TestSearchContext:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_context_empty_database(self) -> None:
         """Test searching empty database."""
-        result = await search_context.fn()
+        result = await search_context.fn(limit=50)
 
         assert result['entries'] == []
 
@@ -132,7 +132,7 @@ class TestSearchContext:
         await store_context.fn(thread_id='search_thread', source='agent', text='Message 2')
         await store_context.fn(thread_id='other_thread', source='user', text='Message 3')
 
-        result = await search_context.fn(thread_id='search_thread')
+        result = await search_context.fn(limit=50, thread_id='search_thread')
 
         assert len(result['entries']) == 2
         for entry in result['entries']:
@@ -145,7 +145,7 @@ class TestSearchContext:
         await store_context.fn(thread_id='src_thread', source='user', text='User msg')
         await store_context.fn(thread_id='src_thread', source='agent', text='Agent msg')
 
-        result = await search_context.fn(source='user')
+        result = await search_context.fn(limit=50, source='user')
 
         assert len(result['entries']) == 1
         assert result['entries'][0]['source'] == 'user'
@@ -167,7 +167,7 @@ class TestSearchContext:
             tags=['other'],
         )
 
-        result = await search_context.fn(tags=['important'])
+        result = await search_context.fn(limit=50, tags=['important'])
 
         assert len(result['entries']) == 1
         assert 'important' in result['entries'][0]['tags']
@@ -224,7 +224,7 @@ class TestSearchContext:
         )
 
         # Search for multimodal
-        result = await search_context.fn(content_type='multimodal')
+        result = await search_context.fn(limit=50, content_type='multimodal')
 
         assert len(result['entries']) == 1
         assert result['entries'][0]['content_type'] == 'multimodal'
@@ -253,6 +253,7 @@ class TestSearchContext:
         )
 
         result = await search_context.fn(
+            limit=50,
             thread_id='combined_thread',
             source='user',
             tags=['tag_a'],
@@ -370,11 +371,11 @@ class TestDeleteContext:
         assert result['deleted_count'] == 2
 
         # Verify deletion
-        search = await search_context.fn(thread_id='delete_thread')
+        search = await search_context.fn(limit=50, thread_id='delete_thread')
         assert len(search['entries']) == 0
 
         # Verify other thread untouched
-        search_keep = await search_context.fn(thread_id='keep_thread')
+        search_keep = await search_context.fn(limit=50, thread_id='keep_thread')
         assert len(search_keep['entries']) == 1
 
     @pytest.mark.asyncio
@@ -391,7 +392,7 @@ class TestDeleteContext:
         assert result['deleted_count'] == 1
 
         # Verify only the specified entry was deleted
-        search = await search_context.fn(thread_id='id_del_thread')
+        search = await search_context.fn(limit=50, thread_id='id_del_thread')
         assert len(search['entries']) == 1
         assert search['entries'][0]['id'] == result2['context_id']
 
@@ -422,7 +423,7 @@ class TestDeleteContext:
         assert result['deleted_count'] == 1
 
         # Images should be cascade deleted (verified by searching)
-        search = await search_context.fn(thread_id='cascade_thread')
+        search = await search_context.fn(limit=50, thread_id='cascade_thread')
         assert len(search['entries']) == 0
 
     @pytest.mark.asyncio
@@ -464,6 +465,7 @@ class TestStoreContextWithMetadata:
 
         # Search with simple metadata filter
         result = await search_context.fn(
+            limit=50,
             thread_id='meta_thread',
             metadata={'status': 'active'},
         )
@@ -482,7 +484,7 @@ class TestStoreContextWithMetadata:
             metadata={'user': {'name': 'test', 'settings': {'theme': 'dark'}}},
         )
 
-        result = await search_context.fn(thread_id='nested_meta_thread')
+        result = await search_context.fn(limit=50, thread_id='nested_meta_thread')
 
         assert len(result['entries']) == 1
         assert result['entries'][0]['metadata']['user']['name'] == 'test'

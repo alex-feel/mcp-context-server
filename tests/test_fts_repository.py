@@ -426,3 +426,226 @@ class TestFtsLanguageDetection:
 
         language = await repo.get_current_language()
         assert language is None
+
+
+class TestFtsHyphenHandlingSQLite:
+    """Test hyphen handling in SQLite FTS5 queries.
+
+    These tests verify the fix for the bug where hyphens in queries like
+    "full-text" were interpreted as the NOT operator instead of being
+    treated as part of the word.
+    """
+
+    @pytest.fixture
+    def mock_backend(self) -> MagicMock:
+        """Create a mock SQLite backend for testing."""
+        backend = MagicMock()
+        backend.backend_type = 'sqlite'
+        return backend
+
+    @pytest.fixture
+    def repo(self, mock_backend: MagicMock) -> FtsRepository:
+        """Create a repository with mock SQLite backend."""
+        return FtsRepository(mock_backend)
+
+    # Helper method tests
+    def test_escape_double_quotes_no_quotes(self, repo: FtsRepository) -> None:
+        """Test double quote escaping with no quotes."""
+        assert repo._escape_double_quotes('hello') == 'hello'
+
+    def test_escape_double_quotes_with_quotes(self, repo: FtsRepository) -> None:
+        """Test double quote escaping with quotes."""
+        assert repo._escape_double_quotes('say "hello"') == 'say ""hello""'
+
+    def test_escape_double_quotes_only_quotes(self, repo: FtsRepository) -> None:
+        """Test double quote escaping with only quotes."""
+        assert repo._escape_double_quotes('"test"') == '""test""'
+
+    def test_quote_hyphenated_words_single(self, repo: FtsRepository) -> None:
+        """Test hyphenated word quoting - single hyphenated word."""
+        assert repo._quote_hyphenated_words_sqlite('full-text') == '"full-text"'
+
+    def test_quote_hyphenated_words_with_regular(self, repo: FtsRepository) -> None:
+        """Test hyphenated word quoting - mixed with regular words."""
+        assert repo._quote_hyphenated_words_sqlite('full-text search') == '"full-text" search'
+
+    def test_quote_hyphenated_words_prefix(self, repo: FtsRepository) -> None:
+        """Test hyphenated word quoting - at start of query."""
+        assert repo._quote_hyphenated_words_sqlite('pre-commit hook') == '"pre-commit" hook'
+
+    def test_quote_hyphenated_words_no_hyphens(self, repo: FtsRepository) -> None:
+        """Test hyphenated word quoting - no hyphens in query."""
+        assert repo._quote_hyphenated_words_sqlite('hello world') == 'hello world'
+
+    def test_quote_hyphenated_words_multiple(self, repo: FtsRepository) -> None:
+        """Test hyphenated word quoting - multiple hyphenated words."""
+        result = repo._quote_hyphenated_words_sqlite('full-text real-time')
+        assert result == '"full-text" "real-time"'
+
+    def test_quote_hyphenated_words_multi_hyphen(self, repo: FtsRepository) -> None:
+        """Test hyphenated word quoting - word with multiple hyphens."""
+        result = repo._quote_hyphenated_words_sqlite('pre-commit-hook')
+        assert result == '"pre-commit-hook"'
+
+    def test_quote_hyphenated_with_quotes_not_matched(self, repo: FtsRepository) -> None:
+        """Test that words with quotes are not matched as hyphenated.
+
+        The regex pattern requires word characters after the hyphen,
+        so 'test-"quoted"' is not recognized as a hyphenated word.
+        This is expected behavior - such patterns are rare in practice.
+        """
+        result = repo._quote_hyphenated_words_sqlite('test-"quoted"')
+        # Not matched as hyphenated because " is not a word character
+        assert result == 'test-"quoted"'
+
+    def test_quote_hyphenated_word_with_number(self, repo: FtsRepository) -> None:
+        """Test hyphenated word with number."""
+        result = repo._quote_hyphenated_words_sqlite('utf-8 encoding')
+        assert result == '"utf-8" encoding'
+
+    # Transform query tests - match mode
+    def test_transform_match_simple(self, repo: FtsRepository) -> None:
+        """Test match mode with simple query."""
+        result = repo._transform_query_sqlite('hello world', 'match')
+        assert result == 'hello world'
+
+    def test_transform_match_hyphenated(self, repo: FtsRepository) -> None:
+        """Test match mode with hyphenated word."""
+        result = repo._transform_query_sqlite('full-text search', 'match')
+        assert result == '"full-text" search'
+
+    def test_transform_match_multiple_hyphens(self, repo: FtsRepository) -> None:
+        """Test match mode with multi-hyphen word."""
+        result = repo._transform_query_sqlite('pre-commit-hook', 'match')
+        assert result == '"pre-commit-hook"'
+
+    def test_transform_match_multiple_hyphenated_words(self, repo: FtsRepository) -> None:
+        """Test match mode with multiple hyphenated words."""
+        result = repo._transform_query_sqlite('full-text real-time search', 'match')
+        assert result == '"full-text" "real-time" search'
+
+    # Transform query tests - prefix mode
+    def test_transform_prefix_simple(self, repo: FtsRepository) -> None:
+        """Test prefix mode with simple query."""
+        result = repo._transform_query_sqlite('hello world', 'prefix')
+        assert result == 'hello* world*'
+
+    def test_transform_prefix_hyphenated(self, repo: FtsRepository) -> None:
+        """Test prefix mode with hyphenated word."""
+        result = repo._transform_query_sqlite('full-text', 'prefix')
+        assert result == '"full-text"*'
+
+    def test_transform_prefix_mixed(self, repo: FtsRepository) -> None:
+        """Test prefix mode with mixed words."""
+        result = repo._transform_query_sqlite('real-time data', 'prefix')
+        assert result == '"real-time"* data*'
+
+    def test_transform_prefix_multiple_hyphenated(self, repo: FtsRepository) -> None:
+        """Test prefix mode with multiple hyphenated words."""
+        result = repo._transform_query_sqlite('full-text real-time', 'prefix')
+        assert result == '"full-text"* "real-time"*'
+
+    # Transform query tests - phrase mode (should remain unchanged)
+    def test_transform_phrase_hyphenated(self, repo: FtsRepository) -> None:
+        """Test phrase mode with hyphenated word - entire phrase is quoted."""
+        result = repo._transform_query_sqlite('full-text search', 'phrase')
+        assert result == '"full-text search"'
+
+    def test_transform_phrase_with_quotes(self, repo: FtsRepository) -> None:
+        """Test phrase mode escapes existing quotes."""
+        result = repo._transform_query_sqlite('say "hello"', 'phrase')
+        assert result == '"say ""hello"""'
+
+    # Transform query tests - boolean mode (pass-through)
+    def test_transform_boolean_hyphenated(self, repo: FtsRepository) -> None:
+        """Test boolean mode passes through as-is."""
+        result = repo._transform_query_sqlite('"full-text" AND search', 'boolean')
+        assert result == '"full-text" AND search'
+
+    def test_transform_boolean_not_operator(self, repo: FtsRepository) -> None:
+        """Test boolean mode preserves NOT operator usage."""
+        result = repo._transform_query_sqlite('search NOT deprecated', 'boolean')
+        assert result == 'search NOT deprecated'
+
+
+class TestFtsHyphenHandlingPostgreSQL:
+    """Test hyphen handling in PostgreSQL tsquery queries.
+
+    These tests verify the fix for the bug where hyphens in prefix mode
+    queries caused syntax errors with to_tsquery().
+    """
+
+    @pytest.fixture
+    def mock_backend(self) -> MagicMock:
+        """Create a mock PostgreSQL backend for testing."""
+        backend = MagicMock()
+        backend.backend_type = 'postgresql'
+        return backend
+
+    @pytest.fixture
+    def repo(self, mock_backend: MagicMock) -> FtsRepository:
+        """Create a repository with mock PostgreSQL backend."""
+        return FtsRepository(mock_backend)
+
+    # Helper method tests
+    def test_handle_hyphenated_prefix_simple(self, repo: FtsRepository) -> None:
+        """Test simple word prefix handling."""
+        result = repo._handle_hyphenated_prefix_postgresql('hello')
+        assert result == 'hello:*'
+
+    def test_handle_hyphenated_prefix_hyphen(self, repo: FtsRepository) -> None:
+        """Test hyphenated word prefix handling."""
+        result = repo._handle_hyphenated_prefix_postgresql('full-text')
+        assert result == 'full:* & text:*'
+
+    def test_handle_hyphenated_prefix_multi_hyphen(self, repo: FtsRepository) -> None:
+        """Test multi-hyphen word prefix handling."""
+        result = repo._handle_hyphenated_prefix_postgresql('pre-commit-hook')
+        assert result == 'pre:* & commit:* & hook:*'
+
+    def test_handle_hyphenated_prefix_with_wildcard(self, repo: FtsRepository) -> None:
+        """Test word with existing wildcard."""
+        result = repo._handle_hyphenated_prefix_postgresql('full-text*')
+        assert result == 'full:* & text:*'
+
+    def test_handle_hyphenated_prefix_with_colon_star(self, repo: FtsRepository) -> None:
+        """Test word with existing :* suffix."""
+        result = repo._handle_hyphenated_prefix_postgresql('hello:*')
+        assert result == 'hello:*'
+
+    # Transform query tests - prefix mode
+    def test_transform_prefix_simple(self, repo: FtsRepository) -> None:
+        """Test prefix mode with simple words."""
+        result = repo._transform_query_postgresql('hello world', 'prefix')
+        assert result == 'hello:* & world:*'
+
+    def test_transform_prefix_hyphenated(self, repo: FtsRepository) -> None:
+        """Test prefix mode with hyphenated word."""
+        result = repo._transform_query_postgresql('full-text', 'prefix')
+        assert result == 'full:* & text:*'
+
+    def test_transform_prefix_mixed(self, repo: FtsRepository) -> None:
+        """Test prefix mode with mixed words."""
+        result = repo._transform_query_postgresql('real-time data', 'prefix')
+        assert result == 'real:* & time:* & data:*'
+
+    def test_transform_prefix_multiple_hyphenated(self, repo: FtsRepository) -> None:
+        """Test prefix mode with multiple hyphenated words."""
+        result = repo._transform_query_postgresql('full-text real-time', 'prefix')
+        assert result == 'full:* & text:* & real:* & time:*'
+
+    # Other modes - verify pass-through
+    def test_transform_match_passthrough(self, repo: FtsRepository) -> None:
+        """Test match mode passes through (plainto_tsquery handles)."""
+        result = repo._transform_query_postgresql('full-text search', 'match')
+        assert result == 'full-text search'
+
+    def test_transform_phrase_passthrough(self, repo: FtsRepository) -> None:
+        """Test phrase mode passes through (phraseto_tsquery handles)."""
+        result = repo._transform_query_postgresql('full-text search', 'phrase')
+        assert result == 'full-text search'
+
+    def test_transform_boolean_passthrough(self, repo: FtsRepository) -> None:
+        """Test boolean mode passes through (websearch_to_tsquery)."""
+        result = repo._transform_query_postgresql('full-text -exclude', 'boolean')
+        assert result == 'full-text -exclude'

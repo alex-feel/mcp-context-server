@@ -165,6 +165,8 @@ Add to your `.mcp.json` file:
       "type": "stdio",
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "--with",
         "mcp-context-server[semantic-search]",
         "mcp-context-server"
@@ -254,6 +256,8 @@ Add to your `.mcp.json`:
       "type": "stdio",
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "--with",
         "mcp-context-server[semantic-search]",
         "mcp-context-server"
@@ -408,13 +412,17 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 
 **Parameters**:
 - `query` (str, required): Natural language search query
-- `top_k` (int, optional): Number of results to return (1-100, default: 20)
-- `thread_id` (str, optional): Filter results to specific thread
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
+- `offset` (int, optional): Pagination offset (default: 0)
+- `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `include_images` (bool, optional): Include image data in results (default: false)
 
 **Metadata Filtering**: The `metadata` and `metadata_filters` parameters work identically to `search_context`. For comprehensive documentation on operators, nested paths, and best practices, see the [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
@@ -452,7 +460,7 @@ If embedding generation fails, the context is still stored successfully (gracefu
 
 1. **Cross-thread discovery**: Find related work from other sessions
    ```
-   semantic_search_context(query="authentication implementation", top_k=10)
+   semantic_search_context(query="authentication implementation", limit=10)
    ```
 
 2. **Agent collaboration**: Find what other agents learned
@@ -462,7 +470,7 @@ If embedding generation fails, the context is still stored successfully (gracefu
 
 3. **Filtered search**: Combine semantic and structured filters
    ```
-   semantic_search_context(query="error handling", thread_id="current-task", top_k=5)
+   semantic_search_context(query="error handling", thread_id="current-task", limit=5)
    ```
 
 4. **Metadata-filtered search**: Combine semantic search with metadata filtering
@@ -547,7 +555,7 @@ Run through this checklist to verify your semantic search installation:
 
 9. **Test functionality**:
     ```
-    semantic_search_context(query="test", top_k=5)
+    semantic_search_context(query="test", limit=5)
     ```
 
 ## Troubleshooting
@@ -719,3 +727,9 @@ ollama list
 
 - **SQLite Extensions on macOS**: [til.simonwillison.net/sqlite/sqlite-extensions-python-macos](https://til.simonwillison.net/sqlite/sqlite-extensions-python-macos)
 - **sqlite-vec Python Integration**: [alexgarcia.xyz/sqlite-vec/python.html](https://alexgarcia.xyz/sqlite-vec/python.html)
+
+### Related Guides
+
+- **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - linguistic search with stemming and ranking
+- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion
+- **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators

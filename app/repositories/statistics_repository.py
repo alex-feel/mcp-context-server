@@ -154,6 +154,7 @@ class StatisticsRepository(BaseRepository):
                 top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in cursor.fetchall()]
                 stats['top_tags'] = top_tags
 
+                stats['backend'] = 'sqlite'
                 return stats
 
             stats = await self.backend.execute_read(_get_stats_sqlite)
@@ -203,6 +204,7 @@ class StatisticsRepository(BaseRepository):
                 top_tags: list[dict[str, Any]] = [{'tag': row['tag'], 'count': row['count']} for row in rows]
                 stats['top_tags'] = top_tags
 
+                stats['backend'] = 'postgresql'
                 return stats
 
             stats = await self.backend.execute_read(_get_stats_postgresql)

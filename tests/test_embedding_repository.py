@@ -112,12 +112,16 @@ class TestEmbeddingRepository:
 
         # Search for similar embeddings
         query_embedding = [0.1] * embedding_dim
-        results = await embedding_repo.search(
+        results, stats = await embedding_repo.search(
             query_embedding=query_embedding,
             limit=3,
         )
 
         assert len(results) == 3
+        # Verify stats are returned
+        assert 'execution_time_ms' in stats
+        assert 'filters_applied' in stats
+        assert 'rows_returned' in stats
         # Results should have distance field
         for result in results:
             assert 'distance' in result
@@ -158,7 +162,7 @@ class TestEmbeddingRepository:
             await embedding_repo.store(context_id, [0.2] * embedding_dim)
 
         # Search with thread filter
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             thread_id='target-thread',
@@ -202,7 +206,7 @@ class TestEmbeddingRepository:
             await embedding_repo.store(context_id, [0.2] * embedding_dim)
 
         # Search with source filter
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
             source='user',
@@ -239,7 +243,7 @@ class TestEmbeddingRepository:
         await embedding_repo.update(context_id, new_embedding)
 
         # Verify update by searching
-        results = await embedding_repo.search(
+        results, _ = await embedding_repo.search(
             query_embedding=[0.5] * embedding_dim,
             limit=1,
         )
@@ -438,12 +442,13 @@ class TestEmbeddingRepository:
         embedding_repo = EmbeddingRepository(backend)
 
         # Search empty database
-        results = await embedding_repo.search(
+        results, stats = await embedding_repo.search(
             query_embedding=[0.1] * embedding_dim,
             limit=10,
         )
 
         assert results == []
+        assert stats['rows_returned'] == 0
 
     @requires_sqlite_vec
     async def test_get_statistics_empty_database(

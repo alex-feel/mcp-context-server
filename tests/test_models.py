@@ -252,8 +252,8 @@ class TestSearchFilters:
         assert filters.limit == 1
 
         # Test maximum
-        filters = SearchFilters(limit=500, offset=0)
-        assert filters.limit == 500
+        filters = SearchFilters(limit=100, offset=0)
+        assert filters.limit == 100
 
         # Test below minimum
         with pytest.raises(ValidationError) as exc_info:
@@ -262,8 +262,8 @@ class TestSearchFilters:
 
         # Test above maximum
         with pytest.raises(ValidationError) as exc_info:
-            SearchFilters(limit=501, offset=0)
-        assert 'less than or equal to 500' in str(exc_info.value)
+            SearchFilters(limit=101, offset=0)
+        assert 'less than or equal to 100' in str(exc_info.value)
 
     def test_negative_offset(self) -> None:
         """Test negative offset raises validation error."""

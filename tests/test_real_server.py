@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -285,7 +286,7 @@ class MCPServerIntegrationTest:
             # Test search by thread
             thread_results = await self.client.call_tool(
                 'search_context',
-                {'thread_id': self.test_thread_id},
+                {'limit': 50, 'thread_id': self.test_thread_id},
             )
 
             thread_data = self._extract_content(thread_results)
@@ -298,7 +299,7 @@ class MCPServerIntegrationTest:
             # Test search by source
             source_results = await self.client.call_tool(
                 'search_context',
-                {'source': 'user'},
+                {'limit': 50, 'source': 'user'},
             )
 
             source_data = self._extract_content(source_results)
@@ -311,7 +312,7 @@ class MCPServerIntegrationTest:
             # Test search by tags
             tag_results = await self.client.call_tool(
                 'search_context',
-                {'tags': ['searchable']},
+                {'limit': 50, 'tags': ['searchable']},
             )
 
             tag_data = self._extract_content(tag_results)
@@ -407,7 +408,7 @@ class MCPServerIntegrationTest:
             # Test 1: Simple metadata filtering
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata': {'status': 'active'},
                 },
@@ -421,7 +422,7 @@ class MCPServerIntegrationTest:
             # Test 2: Advanced metadata filtering with gte operator
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 5}],
                 },
@@ -435,7 +436,7 @@ class MCPServerIntegrationTest:
             # Test 3: Combined metadata filters
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata': {'status': 'active'},
                     'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 7}],
@@ -450,7 +451,7 @@ class MCPServerIntegrationTest:
             # Test 4: Exists operator
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata_filters': [{'key': 'completed', 'operator': 'exists', 'value': None}],
                 },
@@ -464,7 +465,7 @@ class MCPServerIntegrationTest:
             # Test 5: In operator
             result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': f'{self.test_thread_id}_metadata',
                     'metadata_filters': [{'key': 'agent_name', 'operator': 'in', 'value': ['analyzer', 'coordinator']}],
                 },
@@ -662,7 +663,7 @@ class MCPServerIntegrationTest:
             # Verify thread deletion
             check_thread = await self.client.call_tool(
                 'search_context',
-                {'thread_id': delete_thread},
+                {'limit': 50, 'thread_id': delete_thread},
             )
 
             check_thread_data = self._extract_content(check_thread)
@@ -1472,7 +1473,7 @@ class MCPServerIntegrationTest:
             # Test 1: Search with valid date range (today to tomorrow) - should find entry
             valid_range_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'start_date': today,
                     'end_date': tomorrow,
@@ -1488,7 +1489,7 @@ class MCPServerIntegrationTest:
             # Test 2: Search with future start_date - should NOT find entry
             future_start_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'start_date': future_date,
                 },
@@ -1503,7 +1504,7 @@ class MCPServerIntegrationTest:
             # Test 3: Search with past end_date - should NOT find entry
             past_end_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'end_date': past_date,
                 },
@@ -1519,7 +1520,7 @@ class MCPServerIntegrationTest:
             # This verifies the UX fix where date-only end_date is expanded to end-of-day
             today_end_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'end_date': today,
                 },
@@ -1534,7 +1535,7 @@ class MCPServerIntegrationTest:
             # Test 5: Combined filters (date + source)
             combined_result = await self.client.call_tool(
                 'search_context',
-                {
+                {'limit': 50,
                     'thread_id': date_filter_thread,
                     'source': 'user',
                     'start_date': yesterday,
@@ -1625,7 +1626,7 @@ class MCPServerIntegrationTest:
                     'thread_id': semantic_date_thread,
                     'start_date': today,
                     'end_date': tomorrow,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             valid_range_data = self._extract_content(valid_range_result)
@@ -1642,7 +1643,7 @@ class MCPServerIntegrationTest:
                     'query': 'machine learning',
                     'thread_id': semantic_date_thread,
                     'start_date': future_date,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             future_start_data = self._extract_content(future_start_result)
@@ -1659,7 +1660,7 @@ class MCPServerIntegrationTest:
                     'query': 'database indexing',
                     'thread_id': semantic_date_thread,
                     'end_date': past_date,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             past_end_data = self._extract_content(past_end_result)
@@ -1678,7 +1679,7 @@ class MCPServerIntegrationTest:
                     'source': 'agent',
                     'start_date': today,
                     'end_date': tomorrow,
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
             combined_data = self._extract_content(combined_result)
@@ -1759,7 +1760,7 @@ class MCPServerIntegrationTest:
             # Test 2: Verify entries stored correctly via search
             search_result = await self.client.call_tool(
                 'search_context',
-                {'thread_id': bulk_store_thread},
+                {'limit': 50, 'thread_id': bulk_store_thread},
             )
 
             search_data = self._extract_content(search_result)
@@ -2023,7 +2024,7 @@ class MCPServerIntegrationTest:
             # Verify thread is empty
             verify_thread = await self.client.call_tool(
                 'search_context',
-                {'thread_id': delete_by_thread_thread},
+                {'limit': 50, 'thread_id': delete_by_thread_thread},
             )
 
             verify_thread_data = self._extract_content(verify_thread)
@@ -2049,7 +2050,7 @@ class MCPServerIntegrationTest:
             # Verify only agent entry remains
             verify_combined = await self.client.call_tool(
                 'search_context',
-                {'thread_id': delete_combined_thread},
+                {'limit': 50, 'thread_id': delete_combined_thread},
             )
 
             verify_combined_data = self._extract_content(verify_combined)
@@ -2127,7 +2128,7 @@ class MCPServerIntegrationTest:
                 'semantic_search_context',
                 {
                     'query': 'artificial intelligence and deep learning',
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
 
@@ -2151,7 +2152,7 @@ class MCPServerIntegrationTest:
                 {
                     'query': 'programming languages',
                     'thread_id': semantic_thread,
-                    'top_k': 3,
+                    'limit': 3,
                 },
             )
 
@@ -2167,7 +2168,7 @@ class MCPServerIntegrationTest:
                 {
                     'query': 'data science',
                     'source': 'agent',
-                    'top_k': 5,
+                    'limit': 5,
                 },
             )
 
@@ -2247,7 +2248,7 @@ class MCPServerIntegrationTest:
                     'query': 'development tasks',
                     'thread_id': metadata_thread,
                     'metadata': {'category': 'backend'},
-                    'top_k': 10,
+                    'limit': 10,
                 },
             )
 
@@ -2272,7 +2273,7 @@ class MCPServerIntegrationTest:
                     'query': 'tasks',
                     'thread_id': metadata_thread,
                     'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 5}],
-                    'top_k': 10,
+                    'limit': 10,
                 },
             )
 
@@ -2299,7 +2300,7 @@ class MCPServerIntegrationTest:
                     'source': 'agent',
                     'metadata': {'category': 'backend'},
                     'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 8}],
-                    'top_k': 10,
+                    'limit': 10,
                 },
             )
 
@@ -2336,7 +2337,7 @@ class MCPServerIntegrationTest:
             # Test with invalid operator
             result = await self.client.call_tool(
                 'search_context',
-                {'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}]},
+                {'limit': 50, 'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'test'}]},
             )
 
             result_data = self._extract_content(result)
@@ -3454,6 +3455,1380 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_hybrid_search_context(self) -> bool:
+        """Test hybrid search combining FTS and semantic search with RRF fusion.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'hybrid_search_context'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if ENABLE_HYBRID_SEARCH environment variable is set
+            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+                self.test_results.append(
+                    (test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'),
+                )
+                return True
+
+            # Check if hybrid search is enabled via get_statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            # Check both FTS and semantic search availability
+            fts_info = stats_data.get('fts', {})
+            semantic_info = stats_data.get('semantic_search', {})
+
+            fts_enabled = fts_info.get('enabled', False)
+            fts_available = fts_info.get('available', False)
+            semantic_enabled = semantic_info.get('enabled', False)
+            semantic_available = semantic_info.get('available', False)
+
+            # Hybrid search requires at least one of FTS or semantic to be available
+            has_fts = fts_enabled and fts_available
+            has_semantic = semantic_enabled and semantic_available
+
+            # Skip gracefully if neither search type is available
+            if not has_fts and not has_semantic:
+                self.test_results.append(
+                    (
+                        test_name,
+                        True,
+                        f'Skipped (fts={has_fts}, semantic={has_semantic})',
+                    ),
+                )
+                return True
+
+            # Create a separate thread for hybrid search tests
+            hybrid_thread = f'{self.test_thread_id}_hybrid'
+
+            # Store test contexts with diverse content
+            test_contexts = [
+                'Python machine learning algorithms for data science applications',
+                'Advanced database indexing and query optimization techniques',
+                'Neural networks and deep learning frameworks in Python',
+                'JavaScript frontend development with modern frameworks',
+            ]
+
+            for text in test_contexts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': hybrid_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store test context: {result_data}'))
+                    return False
+
+            # Test 1: Basic hybrid search with default settings
+            hybrid_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'python machine learning',
+                    'thread_id': hybrid_thread,
+                    'limit': 10,
+                },
+            )
+
+            hybrid_data = self._extract_content(hybrid_result)
+
+            # Check for results
+            if 'results' not in hybrid_data:
+                self.test_results.append((test_name, False, f'Hybrid search failed: {hybrid_data}'))
+                return False
+
+            # Verify response structure
+            if 'fusion_method' not in hybrid_data:
+                self.test_results.append((test_name, False, 'Response missing fusion_method field'))
+                return False
+
+            if 'search_modes_used' not in hybrid_data:
+                self.test_results.append((test_name, False, 'Response missing search_modes_used field'))
+                return False
+
+            if 'fts_count' not in hybrid_data or 'semantic_count' not in hybrid_data:
+                self.test_results.append((test_name, False, 'Response missing source counts'))
+                return False
+
+            hybrid_results = hybrid_data.get('results', [])
+            if len(hybrid_results) < 1:
+                self.test_results.append((test_name, False, 'No results from hybrid search'))
+                return False
+
+            # Test 2: Verify results have RRF scores structure
+            first_result = hybrid_results[0]
+            if 'scores' not in first_result:
+                self.test_results.append((test_name, False, 'Result missing scores field'))
+                return False
+
+            scores = first_result.get('scores', {})
+            if 'rrf' not in scores:
+                self.test_results.append((test_name, False, 'Scores missing rrf field'))
+                return False
+
+            # Test 3: Test with specific search modes
+            fts_only_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'database indexing',
+                    'search_modes': ['fts'],
+                    'thread_id': hybrid_thread,
+                    'limit': 10,
+                },
+            )
+
+            fts_only_data = self._extract_content(fts_only_result)
+
+            # If FTS is available, verify search_modes_used reflects the request
+            if has_fts:
+                search_modes_used = fts_only_data.get('search_modes_used', [])
+                if 'fts' not in search_modes_used:
+                    self.test_results.append((test_name, False, 'FTS mode not used when requested'))
+                    return False
+
+            # Test 4: Test source filtering
+            source_filter_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'python',
+                    'thread_id': hybrid_thread,
+                    'source': 'agent',
+                    'limit': 10,
+                },
+            )
+
+            source_data = self._extract_content(source_filter_result)
+            if 'results' not in source_data:
+                self.test_results.append((test_name, False, f'Source filter search failed: {source_data}'))
+                return False
+
+            # All our test entries are from 'agent', should find results
+            source_results = source_data.get('results', [])
+            # Verify all results have source='agent'
+            for r in source_results:
+                if r.get('source') != 'agent':
+                    self.test_results.append(
+                        (test_name, False, f"Expected source='agent', got '{r.get('source')}'"),
+                    )
+                    return False
+
+            # Test 5: Verify fusion method in response
+            if hybrid_data.get('fusion_method') != 'rrf':
+                self.test_results.append(
+                    (test_name, False, f"Expected fusion_method='rrf', got '{hybrid_data.get('fusion_method')}'"),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Hybrid search with RRF fusion working'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_search_tools_content_type_filter(self) -> bool:
+        """Test content_type parameter across all 4 search tools.
+
+        Verifies that content_type='text' and content_type='multimodal' filters
+        work correctly for search_context, semantic_search, fts_search, and hybrid_search.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'search_tools_content_type_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check feature availability
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            fts_info = stats_data.get('fts', {})
+
+            has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
+            has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
+            has_hybrid = (has_semantic or has_fts) and os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+
+            # Create a separate thread for content_type tests
+            ct_thread = f'{self.test_thread_id}_content_type'
+
+            # Store text-only entries
+            for i in range(2):
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': ct_thread,
+                        'source': 'agent',
+                        'text': f'Text-only content for content type filtering test {i}',
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store text context: {result_data}'))
+                    return False
+
+            # Store multimodal entries with images
+            for i in range(2):
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': ct_thread,
+                        'source': 'agent',
+                        'text': f'Multimodal content with image for filtering test {i}',
+                        'images': [{'data': self._create_test_image(), 'mime_type': 'image/png'}],
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store multimodal context: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: search_context with content_type='text'
+            text_result = await self.client.call_tool(
+                'search_context',
+                {'thread_id': ct_thread, 'content_type': 'text', 'limit': 10},
+            )
+            text_data = self._extract_content(text_result)
+            if not text_data.get('success'):
+                self.test_results.append((test_name, False, f'search_context text filter failed: {text_data}'))
+                return False
+
+            text_results = text_data.get('results', [])
+            if len(text_results) != 2:
+                self.test_results.append((test_name, False, f'Expected 2 text entries, got {len(text_results)}'))
+                return False
+
+            # Verify all results have content_type='text'
+            for r in text_results:
+                if r.get('content_type') != 'text':
+                    ct = r.get('content_type')
+                    self.test_results.append((test_name, False, f"Expected content_type='text', got '{ct}'"))
+                    return False
+
+            # Test 2: search_context with content_type='multimodal'
+            mm_result = await self.client.call_tool(
+                'search_context',
+                {'thread_id': ct_thread, 'content_type': 'multimodal', 'limit': 10},
+            )
+            mm_data = self._extract_content(mm_result)
+            if not mm_data.get('success'):
+                self.test_results.append((test_name, False, f'search_context multimodal filter failed: {mm_data}'))
+                return False
+
+            mm_results = mm_data.get('results', [])
+            if len(mm_results) != 2:
+                self.test_results.append((test_name, False, f'Expected 2 multimodal entries, got {len(mm_results)}'))
+                return False
+
+            # Verify all results have content_type='multimodal'
+            for r in mm_results:
+                if r.get('content_type') != 'multimodal':
+                    ct = r.get('content_type')
+                    self.test_results.append((test_name, False, f"Expected content_type='multimodal', got '{ct}'"))
+                    return False
+
+            # Test 3: semantic_search with content_type filter (if available)
+            if has_semantic:
+                sem_text_result = await self.client.call_tool(
+                    'semantic_search_context',
+                    {'query': 'content filtering', 'thread_id': ct_thread, 'content_type': 'text', 'limit': 10},
+                )
+                sem_text_data = self._extract_content(sem_text_result)
+                if 'results' not in sem_text_data:
+                    self.test_results.append((test_name, False, f'semantic_search text filter failed: {sem_text_data}'))
+                    return False
+
+                # All results should be text type
+                for r in sem_text_data.get('results', []):
+                    if r.get('content_type') != 'text':
+                        ct = r.get('content_type')
+                        self.test_results.append((test_name, False, f"semantic: Expected 'text', got '{ct}'"))
+                        return False
+
+            # Test 4: fts_search with content_type filter (if available)
+            if has_fts:
+                fts_mm_result = await self.client.call_tool(
+                    'fts_search_context',
+                    {
+                        'query': 'content',
+                        'mode': 'match',
+                        'thread_id': ct_thread,
+                        'content_type': 'multimodal',
+                        'limit': 10,
+                    },
+                )
+                fts_mm_data = self._extract_content(fts_mm_result)
+                if 'results' not in fts_mm_data:
+                    self.test_results.append((test_name, False, f'fts multimodal filter failed: {fts_mm_data}'))
+                    return False
+
+                # All results should be multimodal type
+                for r in fts_mm_data.get('results', []):
+                    if r.get('content_type') != 'multimodal':
+                        ct = r.get('content_type')
+                        self.test_results.append((test_name, False, f"fts: Expected 'multimodal', got '{ct}'"))
+                        return False
+
+            # Test 5: hybrid_search with content_type filter (if available)
+            if has_hybrid:
+                hyb_text_result = await self.client.call_tool(
+                    'hybrid_search_context',
+                    {
+                        'query': 'content filtering',
+                        'thread_id': ct_thread,
+                        'content_type': 'text',
+                        'limit': 10,
+                    },
+                )
+                hyb_text_data = self._extract_content(hyb_text_result)
+                if 'results' not in hyb_text_data:
+                    self.test_results.append((test_name, False, f'hybrid text filter failed: {hyb_text_data}'))
+                    return False
+
+                # All results should be text type
+                for r in hyb_text_data.get('results', []):
+                    if r.get('content_type') != 'text':
+                        ct = r.get('content_type')
+                        self.test_results.append((test_name, False, f"hybrid: Expected 'text', got '{ct}'"))
+                        return False
+
+            msg = f'content_type filter working (semantic={has_semantic}, fts={has_fts}, hybrid={has_hybrid})'
+            self.test_results.append((test_name, True, msg))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_search_tools_include_images(self) -> bool:
+        """Test include_images parameter across all 4 search tools.
+
+        Verifies that include_images=True returns image data and include_images=False excludes it.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'search_tools_include_images'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check feature availability
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            fts_info = stats_data.get('fts', {})
+
+            has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
+            has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
+            has_hybrid = (has_semantic or has_fts) and os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+
+            # Create a separate thread for include_images tests
+            img_thread = f'{self.test_thread_id}_include_images'
+
+            # Store multimodal entry with image
+            result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': img_thread,
+                    'source': 'agent',
+                    'text': 'Multimodal content for include images test with Python code',
+                    'images': [{'data': self._create_test_image(), 'mime_type': 'image/png'}],
+                },
+            )
+            result_data = self._extract_content(result)
+            if not result_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to store multimodal context: {result_data}'))
+                return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: search_context with include_images=True
+            with_images_result = await self.client.call_tool(
+                'search_context',
+                {'thread_id': img_thread, 'include_images': True, 'limit': 10},
+            )
+            with_images_data = self._extract_content(with_images_result)
+            if not with_images_data.get('success'):
+                self.test_results.append((test_name, False, f'search_context include_images=True failed: {with_images_data}'))
+                return False
+
+            with_img_results = with_images_data.get('results', [])
+            if len(with_img_results) < 1:
+                self.test_results.append((test_name, False, 'No results found'))
+                return False
+
+            # Verify images are included
+            first_result = with_img_results[0]
+            images = first_result.get('images', [])
+            if len(images) < 1:
+                self.test_results.append((test_name, False, 'Expected images in result with include_images=True'))
+                return False
+
+            # Verify image has data
+            if 'data' not in images[0] or not images[0]['data']:
+                self.test_results.append((test_name, False, 'Image data missing with include_images=True'))
+                return False
+
+            # Test 2: search_context with include_images=False
+            without_images_result = await self.client.call_tool(
+                'search_context',
+                {'thread_id': img_thread, 'include_images': False, 'limit': 10},
+            )
+            without_images_data = self._extract_content(without_images_result)
+            if not without_images_data.get('success'):
+                msg = f'search_context include_images=False failed: {without_images_data}'
+                self.test_results.append((test_name, False, msg))
+                return False
+
+            without_img_results = without_images_data.get('results', [])
+            if len(without_img_results) < 1:
+                self.test_results.append((test_name, False, 'No results found with include_images=False'))
+                return False
+
+            # Verify images are excluded or empty
+            first_wo_img = without_img_results[0]
+            wo_images = first_wo_img.get('images', [])
+            # Images should be empty list or not contain data
+            if wo_images:
+                for img in wo_images:
+                    if img.get('data'):
+                        self.test_results.append((test_name, False, 'Image data should be excluded with include_images=False'))
+                        return False
+
+            # Test 3: semantic_search with include_images (if available)
+            if has_semantic:
+                sem_result = await self.client.call_tool(
+                    'semantic_search_context',
+                    {
+                        'query': 'multimodal content',
+                        'thread_id': img_thread,
+                        'include_images': True,
+                        'limit': 10,
+                    },
+                )
+                sem_data = self._extract_content(sem_result)
+                if 'results' in sem_data and len(sem_data['results']) > 0:
+                    sem_images = sem_data['results'][0].get('images', [])
+                    if len(sem_images) < 1 or not sem_images[0].get('data'):
+                        self.test_results.append((test_name, False, 'semantic: Expected images'))
+                        return False
+
+            # Test 4: fts_search with include_images (if available)
+            if has_fts:
+                fts_result = await self.client.call_tool(
+                    'fts_search_context',
+                    {
+                        'query': 'multimodal',
+                        'mode': 'match',
+                        'thread_id': img_thread,
+                        'include_images': True,
+                        'limit': 10,
+                    },
+                )
+                fts_data = self._extract_content(fts_result)
+                if 'results' in fts_data and len(fts_data['results']) > 0:
+                    fts_images = fts_data['results'][0].get('images', [])
+                    if len(fts_images) < 1 or not fts_images[0].get('data'):
+                        self.test_results.append((test_name, False, 'fts: Expected images'))
+                        return False
+
+            # Test 5: hybrid_search with include_images (if available)
+            if has_hybrid:
+                hyb_result = await self.client.call_tool(
+                    'hybrid_search_context',
+                    {
+                        'query': 'multimodal content',
+                        'thread_id': img_thread,
+                        'include_images': True,
+                        'limit': 10,
+                    },
+                )
+                hyb_data = self._extract_content(hyb_result)
+                if 'results' in hyb_data and len(hyb_data['results']) > 0:
+                    hyb_images = hyb_data['results'][0].get('images', [])
+                    if len(hyb_images) < 1 or not hyb_images[0].get('data'):
+                        self.test_results.append((test_name, False, 'hybrid: Expected images'))
+                        return False
+
+            msg = f'include_images working (semantic={has_semantic}, fts={has_fts}, hybrid={has_hybrid})'
+            self.test_results.append((test_name, True, msg))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_search_tools_tags_filter(self) -> bool:
+        """Test tags parameter for semantic_search, fts_search, and hybrid_search.
+
+        Note: search_context already tests tags. This tests the 3 other search tools.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'search_tools_tags_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check feature availability
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            fts_info = stats_data.get('fts', {})
+
+            has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
+            has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
+            has_hybrid = (has_semantic or has_fts) and os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+
+            # Skip if no advanced search features are available
+            if not has_semantic and not has_fts:
+                self.test_results.append((test_name, True, 'Skipped (no advanced search available)'))
+                return True
+
+            # Create a separate thread for tags tests
+            tags_thread = f'{self.test_thread_id}_tags_filter'
+
+            # Store entries with different tags
+            test_entries = [
+                {'text': 'Python backend development with Flask', 'tags': ['backend', 'python']},
+                {'text': 'JavaScript frontend development with React', 'tags': ['frontend', 'javascript']},
+                {'text': 'Full stack development combining both', 'tags': ['fullstack', 'backend', 'frontend']},
+                {'text': 'Database design and SQL optimization', 'tags': ['database', 'backend']},
+            ]
+
+            for entry in test_entries:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': tags_thread,
+                        'source': 'agent',
+                        'text': entry['text'],
+                        'tags': entry['tags'],
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: semantic_search with tags filter (if available)
+            if has_semantic:
+                sem_result = await self.client.call_tool(
+                    'semantic_search_context',
+                    {
+                        'query': 'development frameworks',
+                        'thread_id': tags_thread,
+                        'tags': ['backend'],
+                        'limit': 10,
+                    },
+                )
+                sem_data = self._extract_content(sem_result)
+                if 'results' not in sem_data:
+                    self.test_results.append((test_name, False, f'semantic tags failed: {sem_data}'))
+                    return False
+
+                sem_results = sem_data.get('results', [])
+                # Should find entries with 'backend' tag (Python, Full stack, Database = 3)
+                if len(sem_results) < 1:
+                    self.test_results.append((test_name, False, 'semantic: No results with backend tag'))
+                    return False
+
+                # Verify all results have 'backend' tag
+                for r in sem_results:
+                    result_tags = r.get('tags', [])
+                    if 'backend' not in result_tags:
+                        self.test_results.append((test_name, False, f"semantic: Expected 'backend', got {result_tags}"))
+                        return False
+
+            # Test 2: fts_search with tags filter (if available)
+            if has_fts:
+                fts_result = await self.client.call_tool(
+                    'fts_search_context',
+                    {
+                        'query': 'development',
+                        'mode': 'match',
+                        'thread_id': tags_thread,
+                        'tags': ['frontend'],
+                        'limit': 10,
+                    },
+                )
+                fts_data = self._extract_content(fts_result)
+                if 'results' not in fts_data:
+                    self.test_results.append((test_name, False, f'fts tags failed: {fts_data}'))
+                    return False
+
+                fts_results = fts_data.get('results', [])
+                # Should find entries with 'frontend' tag (JavaScript, Full stack = 2)
+                if len(fts_results) < 1:
+                    self.test_results.append((test_name, False, 'fts: No results with frontend tag'))
+                    return False
+
+                # Verify all results have 'frontend' tag
+                for r in fts_results:
+                    result_tags = r.get('tags', [])
+                    if 'frontend' not in result_tags:
+                        self.test_results.append((test_name, False, f"fts: Expected 'frontend', got {result_tags}"))
+                        return False
+
+            # Test 3: hybrid_search with tags filter (if available)
+            if has_hybrid:
+                hyb_result = await self.client.call_tool(
+                    'hybrid_search_context',
+                    {
+                        'query': 'development',
+                        'thread_id': tags_thread,
+                        'tags': ['python'],
+                        'limit': 10,
+                    },
+                )
+                hyb_data = self._extract_content(hyb_result)
+                if 'results' not in hyb_data:
+                    self.test_results.append((test_name, False, f'hybrid tags failed: {hyb_data}'))
+                    return False
+
+                hyb_results = hyb_data.get('results', [])
+                # Should find entries with 'python' tag (Python backend = 1)
+                if len(hyb_results) < 1:
+                    self.test_results.append((test_name, False, 'hybrid: No results with python tag'))
+                    return False
+
+                # Verify all results have 'python' tag
+                for r in hyb_results:
+                    result_tags = r.get('tags', [])
+                    if 'python' not in result_tags:
+                        self.test_results.append((test_name, False, f"hybrid: Expected 'python', got {result_tags}"))
+                        return False
+
+            # Test 4: Multiple tags (OR logic)
+            if has_semantic:
+                multi_tag_result = await self.client.call_tool(
+                    'semantic_search_context',
+                    {
+                        'query': 'development',
+                        'thread_id': tags_thread,
+                        'tags': ['python', 'javascript'],
+                        'limit': 10,
+                    },
+                )
+                multi_tag_data = self._extract_content(multi_tag_result)
+                if 'results' in multi_tag_data:
+                    multi_results = multi_tag_data.get('results', [])
+                    # Should find at least 2 entries (Python and JavaScript)
+                    if len(multi_results) < 2:
+                        msg = f'Expected 2+ results with python OR javascript, got {len(multi_results)}'
+                        self.test_results.append((test_name, False, msg))
+                        return False
+
+            msg = f'tags filter working (semantic={has_semantic}, fts={has_fts}, hybrid={has_hybrid})'
+            self.test_results.append((test_name, True, msg))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_semantic_search_offset_pagination(self) -> bool:
+        """Test offset pagination for semantic_search_context.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'semantic_search_offset_pagination'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if semantic search is enabled
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            semantic_info = stats_data.get('semantic_search', {})
+            is_enabled = semantic_info.get('enabled', False)
+            is_available = semantic_info.get('available', False)
+
+            if not is_enabled or not is_available:
+                self.test_results.append((test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'))
+                return True
+
+            # Create a separate thread for pagination tests
+            page_thread = f'{self.test_thread_id}_semantic_offset'
+
+            # Store 5 entries for pagination testing
+            test_texts = [
+                'First Python programming tutorial for beginners',
+                'Second Python advanced programming concepts',
+                'Third Python web development with Django',
+                'Fourth Python data science and machine learning',
+                'Fifth Python automation and scripting guide',
+            ]
+
+            stored_ids = []
+            for text in test_texts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': page_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store context: {result_data}'))
+                    return False
+                stored_ids.append(result_data.get('context_id'))
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: First page (offset=0, limit=2)
+            page1_result = await self.client.call_tool(
+                'semantic_search_context',
+                {'query': 'Python programming', 'thread_id': page_thread, 'offset': 0, 'limit': 2},
+            )
+            page1_data = self._extract_content(page1_result)
+            if 'results' not in page1_data:
+                self.test_results.append((test_name, False, f'Page 1 search failed: {page1_data}'))
+                return False
+
+            page1_results = page1_data.get('results', [])
+            if len(page1_results) != 2:
+                self.test_results.append((test_name, False, f'Expected 2 results for page 1, got {len(page1_results)}'))
+                return False
+
+            page1_ids = [r.get('id') for r in page1_results]
+
+            # Test 2: Second page (offset=2, limit=2)
+            page2_result = await self.client.call_tool(
+                'semantic_search_context',
+                {'query': 'Python programming', 'thread_id': page_thread, 'offset': 2, 'limit': 2},
+            )
+            page2_data = self._extract_content(page2_result)
+            if 'results' not in page2_data:
+                self.test_results.append((test_name, False, f'Page 2 search failed: {page2_data}'))
+                return False
+
+            page2_results = page2_data.get('results', [])
+            if len(page2_results) != 2:
+                self.test_results.append((test_name, False, f'Expected 2 results for page 2, got {len(page2_results)}'))
+                return False
+
+            page2_ids = [r.get('id') for r in page2_results]
+
+            # Verify no overlap between pages
+            overlap = set(page1_ids) & set(page2_ids)
+            if overlap:
+                self.test_results.append((test_name, False, f'Overlap found between pages: {overlap}'))
+                return False
+
+            # Test 3: Third page (offset=4, limit=2) - should get 1 result
+            page3_result = await self.client.call_tool(
+                'semantic_search_context',
+                {'query': 'Python programming', 'thread_id': page_thread, 'offset': 4, 'limit': 2},
+            )
+            page3_data = self._extract_content(page3_result)
+            if 'results' not in page3_data:
+                self.test_results.append((test_name, False, f'Page 3 search failed: {page3_data}'))
+                return False
+
+            page3_results = page3_data.get('results', [])
+            if len(page3_results) != 1:
+                self.test_results.append((test_name, False, f'Expected 1 result for page 3, got {len(page3_results)}'))
+                return False
+
+            self.test_results.append((test_name, True, 'Offset pagination working for semantic_search'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_hybrid_search_metadata_filtering(self) -> bool:
+        """Test metadata and metadata_filters parameters for hybrid_search_context.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'hybrid_search_metadata_filtering'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if hybrid search is available
+            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+                return True
+
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            semantic_info = stats_data.get('semantic_search', {})
+
+            has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
+            has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
+
+            if not has_fts and not has_semantic:
+                self.test_results.append((test_name, True, f'Skipped (fts={has_fts}, semantic={has_semantic})'))
+                return True
+
+            # Create a separate thread for metadata tests
+            meta_thread = f'{self.test_thread_id}_hybrid_metadata'
+
+            # Store entries with different metadata
+            test_entries = [
+                {'text': 'High priority backend task for API development', 'metadata': {'priority': 9, 'category': 'backend'}},
+                {'text': 'Low priority frontend task for UI updates', 'metadata': {'priority': 3, 'category': 'frontend'}},
+                {'text': 'High priority database optimization task', 'metadata': {'priority': 8, 'category': 'backend'}},
+                {'text': 'Medium priority testing task', 'metadata': {'priority': 5, 'category': 'testing'}},
+            ]
+
+            for entry in test_entries:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': meta_thread,
+                        'source': 'agent',
+                        'text': entry['text'],
+                        'metadata': entry['metadata'],
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store context: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: Simple metadata filter (category=backend)
+            simple_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'development task',
+                    'thread_id': meta_thread,
+                    'metadata': {'category': 'backend'},
+                    'limit': 10,
+                },
+            )
+            simple_data = self._extract_content(simple_result)
+            if 'results' not in simple_data:
+                self.test_results.append((test_name, False, f'Simple metadata filter failed: {simple_data}'))
+                return False
+
+            simple_results = simple_data.get('results', [])
+            # Should find 2 backend entries
+            if len(simple_results) < 1:
+                self.test_results.append((test_name, False, 'No results with category=backend'))
+                return False
+
+            # Helper to get metadata (may be dict or JSON string)
+            def get_meta(result: dict[str, Any]) -> dict[str, Any]:
+                meta = result.get('metadata', {})
+                if isinstance(meta, str):
+                    import json
+                    try:
+                        return json.loads(meta)
+                    except (json.JSONDecodeError, TypeError):
+                        return {}
+                return meta if isinstance(meta, dict) else {}
+
+            # Verify all results have category=backend
+            for r in simple_results:
+                meta = get_meta(r)
+                if meta.get('category') != 'backend':
+                    cat = meta.get('category')
+                    self.test_results.append((test_name, False, f"Expected category='backend', got '{cat}'"))
+                    return False
+
+            # Test 2: Advanced metadata filter (priority > 5)
+            adv_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'task',
+                    'thread_id': meta_thread,
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gt', 'value': 5}],
+                    'limit': 10,
+                },
+            )
+            adv_data = self._extract_content(adv_result)
+            if 'results' not in adv_data:
+                self.test_results.append((test_name, False, f'Advanced metadata filter failed: {adv_data}'))
+                return False
+
+            adv_results = adv_data.get('results', [])
+            # Should find entries with priority > 5 (9, 8 = 2)
+            if len(adv_results) < 1:
+                self.test_results.append((test_name, False, 'No results with priority > 5'))
+                return False
+
+            # Verify all results have priority > 5
+            for r in adv_results:
+                meta = get_meta(r)
+                if meta.get('priority', 0) <= 5:
+                    self.test_results.append((test_name, False, f"Expected priority > 5, got {meta.get('priority')}"))
+                    return False
+
+            # Test 3: Combined metadata filter (category=backend AND priority >= 8)
+            combined_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'task',
+                    'thread_id': meta_thread,
+                    'metadata': {'category': 'backend'},
+                    'metadata_filters': [{'key': 'priority', 'operator': 'gte', 'value': 8}],
+                    'limit': 10,
+                },
+            )
+            combined_data = self._extract_content(combined_result)
+            if 'results' not in combined_data:
+                self.test_results.append((test_name, False, f'Combined metadata filter failed: {combined_data}'))
+                return False
+
+            combined_results = combined_data.get('results', [])
+            # Should find entries with category=backend AND priority >= 8 (9, 8 = 2)
+            for r in combined_results:
+                meta = get_meta(r)
+                if meta.get('category') != 'backend' or meta.get('priority', 0) < 8:
+                    self.test_results.append((test_name, False, f'Expected backend+priority>=8, got {meta}'))
+                    return False
+
+            self.test_results.append((test_name, True, 'metadata and metadata_filters working for hybrid_search'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_hybrid_search_date_range_filtering(self) -> bool:
+        """Test start_date and end_date parameters for hybrid_search_context.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'hybrid_search_date_range_filtering'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if hybrid search is available
+            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+                return True
+
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            semantic_info = stats_data.get('semantic_search', {})
+
+            has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
+            has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
+
+            if not has_fts and not has_semantic:
+                self.test_results.append((test_name, True, f'Skipped (fts={has_fts}, semantic={has_semantic})'))
+                return True
+
+            # Create a separate thread for date range tests
+            date_thread = f'{self.test_thread_id}_hybrid_date'
+
+            # Store test entries (will all have current timestamp)
+            test_texts = [
+                'Python machine learning algorithms for AI development',
+                'Database query optimization techniques',
+                'Frontend web development with modern frameworks',
+            ]
+
+            for text in test_texts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': date_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store context: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Get current date for testing
+            from datetime import datetime
+            from datetime import timedelta
+
+            now = datetime.now(UTC)
+            today = now.strftime('%Y-%m-%d')
+            yesterday = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+            tomorrow = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+
+            # Test 1: Filter with start_date (should find entries from today)
+            start_date_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'development',
+                    'thread_id': date_thread,
+                    'start_date': today,
+                    'limit': 10,
+                },
+            )
+            start_date_data = self._extract_content(start_date_result)
+            if 'results' not in start_date_data:
+                self.test_results.append((test_name, False, f'start_date filter failed: {start_date_data}'))
+                return False
+
+            start_results = start_date_data.get('results', [])
+            # Should find all entries (created today)
+            if len(start_results) < 1:
+                self.test_results.append((test_name, False, 'No results with start_date filter'))
+                return False
+
+            # Test 2: Filter with end_date (should find entries up to today)
+            end_date_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'development',
+                    'thread_id': date_thread,
+                    'end_date': today,
+                    'limit': 10,
+                },
+            )
+            end_date_data = self._extract_content(end_date_result)
+            if 'results' not in end_date_data:
+                self.test_results.append((test_name, False, f'end_date filter failed: {end_date_data}'))
+                return False
+
+            end_results = end_date_data.get('results', [])
+            if len(end_results) < 1:
+                self.test_results.append((test_name, False, 'No results with end_date filter'))
+                return False
+
+            # Test 3: Filter with date range (yesterday to tomorrow)
+            range_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'development',
+                    'thread_id': date_thread,
+                    'start_date': yesterday,
+                    'end_date': tomorrow,
+                    'limit': 10,
+                },
+            )
+            range_data = self._extract_content(range_result)
+            if 'results' not in range_data:
+                self.test_results.append((test_name, False, f'Date range filter failed: {range_data}'))
+                return False
+
+            range_results = range_data.get('results', [])
+            if len(range_results) < 1:
+                self.test_results.append((test_name, False, 'No results with date range filter'))
+                return False
+
+            # Test 4: Filter with future start_date (should find no entries)
+            future_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': 'development',
+                    'thread_id': date_thread,
+                    'start_date': tomorrow,
+                    'limit': 10,
+                },
+            )
+            future_data = self._extract_content(future_result)
+            if 'results' not in future_data:
+                self.test_results.append((test_name, False, f'Future date filter failed: {future_data}'))
+                return False
+
+            future_results = future_data.get('results', [])
+            if len(future_results) > 0:
+                self.test_results.append((test_name, False, f'Expected 0 results for future date, got {len(future_results)}'))
+                return False
+
+            self.test_results.append((test_name, True, 'start_date and end_date working for hybrid_search'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_hybrid_search_offset_pagination(self) -> bool:
+        """Test offset pagination for hybrid_search_context.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'hybrid_search_offset_pagination'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check if hybrid search is available
+            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+                self.test_results.append((test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'))
+                return True
+
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            semantic_info = stats_data.get('semantic_search', {})
+
+            has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
+            has_semantic = semantic_info.get('enabled', False) and semantic_info.get('available', False)
+
+            if not has_fts and not has_semantic:
+                self.test_results.append((test_name, True, f'Skipped (fts={has_fts}, semantic={has_semantic})'))
+                return True
+
+            # Create a separate thread for pagination tests
+            page_thread = f'{self.test_thread_id}_hybrid_offset'
+
+            # Store 5 entries for pagination testing
+            # NOTE: All entries MUST contain both 'Python' AND 'programming' because
+            # FTS 'match' mode interprets "Python programming" as "Python AND programming"
+            test_texts = [
+                'First Python programming tutorial for beginners learning to code',
+                'Second Python programming advanced concepts for software experts',
+                'Third Python programming web development with Django framework',
+                'Fourth Python programming data science and machine learning apps',
+                'Fifth Python programming automation and scripting guide for DevOps',
+            ]
+
+            for text in test_texts:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': page_thread,
+                        'source': 'agent',
+                        'text': text,
+                    },
+                )
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store context: {result_data}'))
+                    return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: First page (offset=0, limit=2)
+            page1_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {'query': 'Python programming', 'thread_id': page_thread, 'offset': 0, 'limit': 2},
+            )
+            page1_data = self._extract_content(page1_result)
+            if 'results' not in page1_data:
+                self.test_results.append((test_name, False, f'Page 1 search failed: {page1_data}'))
+                return False
+
+            page1_results = page1_data.get('results', [])
+            if len(page1_results) != 2:
+                self.test_results.append((test_name, False, f'Expected 2 results for page 1, got {len(page1_results)}'))
+                return False
+
+            page1_ids = [r.get('id') for r in page1_results]
+
+            # Test 2: Second page (offset=2, limit=2)
+            page2_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {'query': 'Python programming', 'thread_id': page_thread, 'offset': 2, 'limit': 2},
+            )
+            page2_data = self._extract_content(page2_result)
+            if 'results' not in page2_data:
+                self.test_results.append((test_name, False, f'Page 2 search failed: {page2_data}'))
+                return False
+
+            page2_results = page2_data.get('results', [])
+            if len(page2_results) != 2:
+                self.test_results.append((test_name, False, f'Expected 2 results for page 2, got {len(page2_results)}'))
+                return False
+
+            page2_ids = [r.get('id') for r in page2_results]
+
+            # Verify no overlap between pages
+            overlap = set(page1_ids) & set(page2_ids)
+            if overlap:
+                self.test_results.append((test_name, False, f'Overlap found between pages: {overlap}'))
+                return False
+
+            # Test 3: Third page (offset=4, limit=2) - should get remaining results
+            page3_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {'query': 'Python programming', 'thread_id': page_thread, 'offset': 4, 'limit': 2},
+            )
+            page3_data = self._extract_content(page3_result)
+            if 'results' not in page3_data:
+                self.test_results.append((test_name, False, f'Page 3 search failed: {page3_data}'))
+                return False
+
+            page3_results = page3_data.get('results', [])
+            if len(page3_results) != 1:
+                self.test_results.append((test_name, False, f'Expected 1 result for page 3, got {len(page3_results)}'))
+                return False
+
+            page3_ids = [r.get('id') for r in page3_results]
+
+            # Verify no overlap with previous pages
+            overlap23 = set(page2_ids) & set(page3_ids)
+            overlap13 = set(page1_ids) & set(page3_ids)
+            if overlap23 or overlap13:
+                self.test_results.append((test_name, False, f'Overlap found with page 3: {overlap23 | overlap13}'))
+                return False
+
+            # Verify pagination worked (different IDs across pages)
+            all_ids = set(page1_ids) | set(page2_ids) | set(page3_ids)
+            msg = f'Offset pagination working - {len(all_ids)} unique results across 3 pages'
+            self.test_results.append((test_name, True, msg))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_explain_query_statistics(self) -> bool:
+        """Test explain_query parameter for search_context, fts_search, and hybrid_search.
+
+        Verifies that explain_query=True returns execution statistics.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'explain_query_statistics'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Check feature availability
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            fts_info = stats_data.get('fts', {})
+            has_fts = fts_info.get('enabled', False) and fts_info.get('available', False)
+            has_semantic = stats_data.get('semantic_search', {}).get('available', False)
+            hybrid_enabled = os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() == 'true'
+            has_hybrid = (has_fts or has_semantic) and hybrid_enabled
+
+            # Create a separate thread for explain_query tests
+            explain_thread = f'{self.test_thread_id}_explain_query'
+
+            # Store test entry
+            result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': explain_thread,
+                    'source': 'agent',
+                    'text': 'Test content for explain query statistics verification',
+                },
+            )
+            result_data = self._extract_content(result)
+            if not result_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to store context: {result_data}'))
+                return False
+
+            # Allow time for embedding generation
+            await asyncio.sleep(0.5)
+
+            # Test 1: search_context with explain_query=True
+            search_result = await self.client.call_tool(
+                'search_context',
+                {'thread_id': explain_thread, 'explain_query': True, 'limit': 10},
+            )
+            search_data = self._extract_content(search_result)
+            if not search_data.get('success'):
+                self.test_results.append((test_name, False, f'search_context with explain_query failed: {search_data}'))
+                return False
+
+            # Verify stats are included
+            if 'stats' not in search_data:
+                self.test_results.append((test_name, False, 'search_context: Missing stats with explain_query=True'))
+                return False
+
+            search_stats = search_data.get('stats', {})
+            if 'execution_time_ms' not in search_stats:
+                self.test_results.append((test_name, False, 'search_context: Missing execution_time_ms in stats'))
+                return False
+
+            # Test 2: search_context with explain_query=False (default)
+            no_explain_result = await self.client.call_tool(
+                'search_context',
+                {'thread_id': explain_thread, 'explain_query': False, 'limit': 10},
+            )
+            # With explain_query=False, stats should be present but NOT include query_plan
+            no_explain_data = self._extract_content(no_explain_result)
+
+            # Stats should still exist (basic stats are always returned)
+            if 'stats' not in no_explain_data:
+                self.test_results.append((test_name, False, 'search_context: Missing stats with explain_query=False'))
+                return False
+
+            no_explain_stats = no_explain_data.get('stats', {})
+
+            # When explain_query=False, query_plan should NOT be included
+            if 'query_plan' in no_explain_stats:
+                self.test_results.append(
+                    (test_name, False, 'search_context: query_plan should not be included when explain_query=False'),
+                )
+                return False
+
+            # Test 3: fts_search with explain_query=True (if available)
+            if has_fts:
+                fts_result = await self.client.call_tool(
+                    'fts_search_context',
+                    {
+                        'query': 'test content',
+                        'mode': 'match',
+                        'thread_id': explain_thread,
+                        'explain_query': True,
+                        'limit': 10,
+                    },
+                )
+                fts_data = self._extract_content(fts_result)
+                if 'results' not in fts_data:
+                    self.test_results.append((test_name, False, f'fts_search with explain_query failed: {fts_data}'))
+                    return False
+
+                # Verify stats are included for FTS
+                if 'stats' not in fts_data:
+                    self.test_results.append((test_name, False, 'fts_search: Missing stats with explain_query=True'))
+                    return False
+
+                fts_stats = fts_data.get('stats', {})
+                if 'execution_time_ms' not in fts_stats:
+                    self.test_results.append((test_name, False, 'fts_search: Missing execution_time_ms in stats'))
+                    return False
+
+            # Test 4: hybrid_search with explain_query=True (if available)
+            if has_hybrid:
+                hybrid_result = await self.client.call_tool(
+                    'hybrid_search_context',
+                    {'query': 'test content', 'thread_id': explain_thread, 'explain_query': True, 'limit': 10},
+                )
+                hybrid_data = self._extract_content(hybrid_result)
+                if 'results' not in hybrid_data:
+                    self.test_results.append((test_name, False, f'hybrid_search with explain_query failed: {hybrid_data}'))
+                    return False
+
+                # Verify stats are included for hybrid
+                if 'stats' not in hybrid_data:
+                    self.test_results.append((test_name, False, 'hybrid_search: Missing stats with explain_query=True'))
+                    return False
+
+                hybrid_stats = hybrid_data.get('stats', {})
+                if 'execution_time_ms' not in hybrid_stats:
+                    self.test_results.append((test_name, False, 'hybrid_search: Missing execution_time_ms in stats'))
+                    return False
+
+            self.test_results.append((test_name, True, f'explain_query working (fts={has_fts}, hybrid={has_hybrid})'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -3538,6 +4913,15 @@ class MCPServerIntegrationTest:
             ('FTS Advanced Metadata Filters', self.test_fts_advanced_metadata_filters),
             ('FTS Pagination Offset', self.test_fts_pagination_offset),
             ('FTS Highlight Snippets', self.test_fts_highlight_snippets),
+            ('Hybrid Search', self.test_hybrid_search_context),
+            ('Search Tools Content Type Filter', self.test_search_tools_content_type_filter),
+            ('Search Tools Include Images', self.test_search_tools_include_images),
+            ('Search Tools Tags Filter', self.test_search_tools_tags_filter),
+            ('Semantic Search Offset Pagination', self.test_semantic_search_offset_pagination),
+            ('Hybrid Search Metadata Filtering', self.test_hybrid_search_metadata_filtering),
+            ('Hybrid Search Date Range Filtering', self.test_hybrid_search_date_range_filtering),
+            ('Hybrid Search Offset Pagination', self.test_hybrid_search_offset_pagination),
+            ('Explain Query Statistics', self.test_explain_query_statistics),
         ]
 
         print('\nRunning tests...\n')

@@ -18,6 +18,7 @@ Metadata in the MCP Context Server provides a powerful way to enrich, organize, 
 - **`search_context`**: Keyword and filter-based search with metadata filtering
 - **`semantic_search_context`**: Vector similarity search with metadata filtering (requires semantic search enabled)
 - **`fts_search_context`**: Full-text search with metadata filtering (requires FTS enabled)
+- **`hybrid_search_context`**: Combined FTS + semantic search with metadata filtering (requires hybrid search enabled)
 
 All search tools support identical metadata filtering syntax and return consistent error responses.
 
@@ -329,11 +330,11 @@ tags.append("new_tag")
 update_context(context_id=123, metadata_patch={"tags": tags})
 ```
 
-## Filtering by Metadata (search_context, semantic_search_context)
+## Filtering by Metadata
 
 Metadata filtering enables powerful, flexible querying of context entries using structured JSON data. Unlike simple tag-based organization, metadata filtering supports complex queries with 15 operators, nested JSON paths, and performance-optimized indexes for common fields.
 
-Both `search_context` and `semantic_search_context` support identical metadata filtering syntax.
+All search tools (`search_context`, `semantic_search_context`, `fts_search_context`, and `hybrid_search_context`) support identical metadata filtering syntax.
 
 ### Simple Filtering (Exact Match)
 
@@ -421,6 +422,34 @@ semantic_search_context(
 ```
 
 This combines the power of semantic similarity search with precise metadata filtering, enabling queries like "find similar content about authentication from completed, high-priority tasks."
+
+### Using with Hybrid Search
+
+The same metadata filtering syntax works with `hybrid_search_context`:
+
+```python
+# Hybrid search with metadata filtering
+hybrid_search_context(
+    query="authentication implementation",
+    metadata={"status": "completed"},  # Simple filter
+    metadata_filters=[                 # Advanced filters
+        {"key": "priority", "operator": "gte", "value": 5},
+        {"key": "agent_name", "operator": "exists"}
+    ]
+)
+
+# Find high-confidence matches from a specific project
+hybrid_search_context(
+    query="database optimization",
+    thread_id="project-123",
+    metadata_filters=[
+        {"key": "status", "operator": "in", "value": ["completed", "reviewed"]},
+        {"key": "priority", "operator": "gt", "value": 7}
+    ]
+)
+```
+
+Hybrid search returns results with combined RRF scores from both FTS and semantic search, plus individual rankings from each method.
 
 ### Combining Both Methods
 
@@ -1474,6 +1503,8 @@ stalled = await search_context(
 
 - [README.md](../README.md) - Complete API reference for all MCP tools
 - [Semantic Search Guide](semantic-search.md) - Optional vector similarity search
+- [Full-Text Search Guide](full-text-search.md) - Optional linguistic search with stemming
+- [Hybrid Search Guide](hybrid-search.md) - Combined FTS + semantic search with RRF fusion
 - [CONTRIBUTING.md](../CONTRIBUTING.md) - Architecture and development guidelines
 
 ### Implementation Files

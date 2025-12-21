@@ -94,7 +94,7 @@ This server implements the [Model Context Protocol](https://modelcontextprotocol
 This is a FastMCP 2.0-based Model Context Protocol server that provides persistent context storage for LLM agents. The architecture consists of:
 
 1. **FastMCP Server Layer** (`app/server.py`):
-   - Exposes 12 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`, `fts_search_context`, `store_context_batch`, `update_context_batch`, `delete_context_batch`
+   - Exposes 13 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context`, `store_context_batch`, `update_context_batch`, `delete_context_batch`
    - Handles stdio transport for Claude Desktop/LangGraph integration
    - Manages async request processing with proper lifecycle management
    - Uses `RepositoryContainer` for all database operations (no direct SQL)
@@ -318,6 +318,7 @@ The `fts_search_context` tool is an optional feature that enables linguistic sea
 - `search_context`: Exact keyword filtering on text content
 - `semantic_search_context`: Vector similarity search for meaning-based retrieval
 - `fts_search_context`: Linguistic search with stemming, ranking, and highlighted snippets
+- `hybrid_search_context`: Combines FTS and semantic search with RRF fusion for best of both
 
 **Migration System**:
 - **Location**: `app/migrations/` directory
@@ -325,6 +326,21 @@ The `fts_search_context` tool is an optional feature that enables linguistic sea
   - `add_fts.sql` - SQLite migration (creates FTS5 virtual table with triggers)
   - `add_fts_postgresql.sql` - PostgreSQL migration (adds tsvector column with GIN index)
 - **Language Change**: Changing `FTS_LANGUAGE` requires migration (FTS table rebuild)
+
+### Hybrid Search Implementation
+
+The `hybrid_search_context` tool combines FTS and semantic search with Reciprocal Rank Fusion (RRF):
+
+**Architecture**:
+- Executes both FTS and semantic search in parallel
+- Fuses results using RRF algorithm: `score(d) = Σ(1 / (k + rank_i(d)))`
+- Documents appearing in both result sets score higher
+- Graceful degradation: works with just FTS or just semantic search if one is unavailable
+
+**Configuration**:
+- Requires `ENABLE_HYBRID_SEARCH=true`
+- Also requires at least one of `ENABLE_FTS=true` or `ENABLE_SEMANTIC_SEARCH=true`
+- `HYBRID_RRF_K` controls fusion smoothing (higher = more weight to lower-ranked documents)
 
 ## Package Configuration
 
@@ -445,6 +461,10 @@ Configuration via `.env` file or environment:
 - `OLLAMA_HOST`: Ollama API host URL (default: http://localhost:11434)
 - `EMBEDDING_MODEL`: Embedding model name (default: embeddinggemma:latest)
 - `EMBEDDING_DIM`: Embedding vector dimensions (default: 768)
+
+**Hybrid Search Settings:**
+- `ENABLE_HYBRID_SEARCH`: Enable hybrid search combining FTS and semantic with RRF fusion (default: false)
+- `HYBRID_RRF_K`: RRF smoothing constant for result fusion (default: 60)
 
 **PostgreSQL Settings** (only when STORAGE_BACKEND=postgresql):
 - `POSTGRESQL_CONNECTION_STRING`: Full PostgreSQL connection string (if provided, overrides individual host/port/user/password/database settings)

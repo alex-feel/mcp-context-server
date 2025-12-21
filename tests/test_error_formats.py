@@ -193,7 +193,7 @@ class TestErrorFormatConsistency:
         from fastmcp.exceptions import ToolError
 
         # When called directly (bypassing FastMCP), no runtime validation occurs.
-        # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
+        # This is correct - Pydantic Field(ge=1, le=100) validates at the MCP protocol layer.
         # We trust Pydantic completely and don't add redundant runtime checks.
         #
         # However, database-level validation may still occur:
@@ -217,11 +217,11 @@ class TestErrorFormatConsistency:
         _ = mock_server_dependencies  # Fixture needed for proper test setup
 
         # When called directly (bypassing FastMCP), no runtime validation occurs.
-        # This is correct - Pydantic Field(ge=1, le=500) validates at the MCP protocol layer.
+        # This is correct - Pydantic Field(ge=1, le=100) validates at the MCP protocol layer.
         # We trust Pydantic completely and don't add redundant runtime checks.
 
         result = await search_context(
-            limit=1000,  # Max is 500
+            limit=101,  # Max is 100
         )
 
         # Function proceeds with invalid value when protocol validation is bypassed
@@ -243,6 +243,7 @@ class TestErrorFormatConsistency:
 
         try:
             result = await search_context(
+                limit=50,
                 offset=-1,
             )
             # SQLite backend: proceeds with invalid value

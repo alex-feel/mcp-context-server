@@ -27,7 +27,7 @@ uv run python -m app.server           # Should start without errors
 # Press Ctrl+C to stop
 
 # 4. Test published version (optional)
-uvx mcp-context-server                # Run from PyPI without cloning
+uvx --python 3.12 mcp-context-server  # Run from PyPI without cloning
 ```
 
 ### Making Changes
@@ -295,7 +295,7 @@ When adding frequently-queried metadata fields:
 #### Resource Limits
 - **Individual Image**: 10MB maximum
 - **Total Request**: 100MB maximum
-- **Query Results**: 500 entries maximum
+- **Query Results**: 100 entries maximum
 - **Thread Isolation**: Prevents accidental cross-context access
 
 ## Need Help?

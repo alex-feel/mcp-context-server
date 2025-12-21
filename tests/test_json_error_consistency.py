@@ -106,7 +106,7 @@ class TestJSONErrorConsistency:
         # Test search_context database error
         mock_server_dependencies.context.search_contexts.side_effect = Exception('Search failed')
         with pytest.raises(ToolError, match='Failed to search context'):
-            await search_context()
+            await search_context(limit=50)
 
         # Test get_context_by_ids database error
         mock_server_dependencies.context.get_by_ids.side_effect = Exception('Fetch failed')

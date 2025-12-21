@@ -364,6 +364,150 @@ class TestFtsWithFilters:
             result = cursor.fetchone()[0]
             assert result == 2  # Both Python entries still found
 
+    def test_fts_with_tag_filter(self, fts_enabled_db: Path) -> None:
+        """Test FTS search with tag filtering.
+
+        Covers lines 208-221 in fts_repository.py for tag filtering logic.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # First, insert an entry with tags
+            cursor = conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content)
+                VALUES ('tag-thread', 'agent', 'text', 'Python programming with tags')
+                ''',
+            )
+            entry_id = cursor.lastrowid
+
+            # Add tags
+            conn.execute(
+                'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                (entry_id, 'python'),
+            )
+            conn.execute(
+                'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                (entry_id, 'programming'),
+            )
+            conn.commit()
+
+            # Search with tag filter using a join
+            cursor = conn.execute(
+                '''
+                SELECT DISTINCT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN tags t ON t.context_entry_id = ce.id
+                WHERE fts.text_content MATCH 'python'
+                AND t.tag IN ('python', 'programming')
+                ORDER BY score DESC
+                ''',
+            )
+            results = cursor.fetchall()
+
+            assert len(results) >= 1
+            assert 'Python' in results[0]['text_content']
+
+    def test_fts_with_content_type_filter(self, fts_enabled_db: Path) -> None:
+        """Test FTS search with content_type filter.
+
+        Covers lines 196-198 in fts_repository.py for content_type filtering.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Insert multimodal entry
+            conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content)
+                VALUES ('type-thread', 'agent', 'multimodal', 'Python with image')
+                ''',
+            )
+            conn.commit()
+
+            # Search for text content_type only
+            cursor = conn.execute(
+                '''
+                SELECT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH 'python'
+                AND ce.content_type = 'text'
+                ORDER BY score DESC
+                ''',
+            )
+            results = cursor.fetchall()
+
+            # All results should be 'text' type
+            for result in results:
+                assert result['content_type'] == 'text'
+
+    def test_fts_with_metadata_filter(self, fts_enabled_db: Path) -> None:
+        """Test FTS search with metadata filtering.
+
+        Covers metadata filtering logic in fts_repository.py.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Insert entry with metadata
+            conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content, metadata)
+                VALUES ('meta-thread', 'agent', 'text', 'Python data processing', '{"priority": 5}')
+                ''',
+            )
+            conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content, metadata)
+                VALUES ('meta-thread', 'agent', 'text', 'Python web development', '{"priority": 3}')
+                ''',
+            )
+            conn.commit()
+
+            # Search with metadata filter using json_extract
+            cursor = conn.execute(
+                '''
+                SELECT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH 'python'
+                AND json_extract(ce.metadata, '$.priority') > 4
+                ORDER BY score DESC
+                ''',
+            )
+            results = cursor.fetchall()
+
+            # Should only return the high priority entry
+            assert len(results) == 1
+            assert 'data processing' in results[0]['text_content']
+
+    def test_fts_explain_query_returns_plan(self, fts_enabled_db: Path) -> None:
+        """Test that EXPLAIN QUERY PLAN works with FTS queries.
+
+        Verifies FTS explain_query functionality.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            sql_query = '''
+                SELECT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH ?
+                ORDER BY score DESC
+                LIMIT ? OFFSET ?
+            '''
+
+            cursor = conn.execute(f'EXPLAIN QUERY PLAN {sql_query}', ('python', 10, 0))
+            plan_rows = cursor.fetchall()
+
+            assert len(plan_rows) > 0
+            # Plan should contain details about FTS5 usage
+            plan_text = ' '.join(dict(row).get('detail', '') for row in plan_rows)
+            assert len(plan_text) > 0  # Should have some plan output
+
 
 class TestFtsMultilingualUnicode61:
     """Test FTS with unicode61 tokenizer for multilingual content.
@@ -761,7 +905,7 @@ class TestFtsGracefulDegradation:
             from app.server import fts_search_context
 
             # Call the tool function directly
-            result = await fts_search_context(query='test query')
+            result = await fts_search_context(query='test query', limit=50)
 
             # Verify response structure for migration in progress
             assert result['migration_in_progress'] is True
@@ -808,7 +952,7 @@ class TestFtsGracefulDegradation:
 
             from app.server import fts_search_context
 
-            result = await fts_search_context(query='test query')
+            result = await fts_search_context(query='test query', limit=50)
 
             # Should have approximately 90 seconds remaining (120 - 30)
             remaining = result['estimated_remaining_seconds']
@@ -843,7 +987,7 @@ class TestFtsGracefulDegradation:
 
             from app.server import fts_search_context
 
-            result = await fts_search_context(query='test query')
+            result = await fts_search_context(query='test query', limit=50)
 
             # Verify suggestion includes retry time
             assert 'retry' in result['suggestion'].lower()
@@ -1018,3 +1162,173 @@ class TestInternalColumnsNotExposed:
         internal_columns = {'text_search_vector', 'fts_vector', 'tsvector'}
         for col in internal_columns:
             assert col not in columns, f'Internal column {col} should not be in CONTEXT_ENTRY_COLUMNS'
+
+
+class TestFtsHyphenatedQueries:
+    """Integration tests for FTS hyphen handling with real SQLite FTS5 database.
+
+    These tests verify that hyphenated queries like "full-text" work correctly
+    and do not cause errors like "no such column: text".
+    """
+
+    @pytest.fixture
+    def hyphen_test_db(self, tmp_path: Path) -> Path:
+        """Create a database with hyphenated content for testing.
+
+        Returns:
+            Path to the test database with hyphenated entries.
+        """
+        db_path = tmp_path / 'test_fts_hyphen.db'
+
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
+        fts_sql = migration_path.read_text()
+        fts_sql = fts_sql.replace('{TOKENIZER}', 'unicode61')
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(schema_sql)
+            conn.executescript(fts_sql)
+
+            # Insert test data with hyphenated words
+            test_entries = [
+                ('test-thread', 'agent', 'text', 'Implementing full-text search functionality'),
+                ('test-thread', 'agent', 'text', 'Running pre-commit hooks before committing'),
+                ('test-thread', 'user', 'text', 'Real-time data processing with streaming'),
+                ('test-thread', 'agent', 'text', 'User-friendly interface design patterns'),
+                ('test-thread', 'user', 'text', 'Open-source software development practices'),
+                ('test-thread', 'agent', 'text', 'Multi-threaded application architecture'),
+                ('test-thread', 'user', 'text', 'Regular search without hyphens'),
+            ]
+
+            for thread_id, source, content_type, text_content in test_entries:
+                conn.execute(
+                    '''
+                    INSERT INTO context_entries (thread_id, source, content_type, text_content)
+                    VALUES (?, ?, ?, ?)
+                    ''',
+                    (thread_id, source, content_type, text_content),
+                )
+            conn.commit()
+
+        return db_path
+
+    def test_fts_hyphenated_match_mode(self, hyphen_test_db: Path) -> None:
+        """Test match mode search with hyphenated term - should NOT error."""
+        with sqlite3.connect(str(hyphen_test_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Search with quoted hyphenated term (as transformed by our fix)
+            cursor = conn.execute(
+                '''
+                SELECT ce.* FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH '"full-text"'
+                ''',
+            )
+            results = cursor.fetchall()
+
+            assert len(results) == 1
+            assert 'full-text' in results[0]['text_content']
+
+    def test_fts_hyphenated_prefix_mode(self, hyphen_test_db: Path) -> None:
+        """Test prefix mode search with hyphenated term."""
+        with sqlite3.connect(str(hyphen_test_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Prefix search with quoted hyphenated term
+            cursor = conn.execute(
+                '''
+                SELECT ce.* FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH '"pre-commit"*'
+                ''',
+            )
+            results = cursor.fetchall()
+
+            assert len(results) == 1
+            assert 'pre-commit' in results[0]['text_content']
+
+    def test_fts_hyphenated_phrase_mode(self, hyphen_test_db: Path) -> None:
+        """Test phrase mode search with hyphenated term."""
+        with sqlite3.connect(str(hyphen_test_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Phrase search including hyphenated word
+            cursor = conn.execute(
+                '''
+                SELECT ce.* FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH '"full-text search"'
+                ''',
+            )
+            results = cursor.fetchall()
+
+            assert len(results) == 1
+            assert 'full-text search' in results[0]['text_content']
+
+    def test_fts_common_hyphenated_terms(self, hyphen_test_db: Path) -> None:
+        """Test common hyphenated programming terms."""
+        with sqlite3.connect(str(hyphen_test_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            hyphenated_terms = [
+                ('real-time', 'Real-time'),
+                ('user-friendly', 'User-friendly'),
+                ('open-source', 'Open-source'),
+                ('multi-threaded', 'Multi-threaded'),
+            ]
+
+            for term, expected_content in hyphenated_terms:
+                cursor = conn.execute(
+                    f'''
+                    SELECT ce.* FROM context_entries ce
+                    JOIN context_entries_fts fts ON ce.id = fts.rowid
+                    WHERE fts.text_content MATCH '"{term}"'
+                    ''',
+                )
+                results = cursor.fetchall()
+
+                assert len(results) >= 1, f'Failed to find term: {term}'
+                assert any(
+                    expected_content.lower() in r['text_content'].lower() for r in results
+                ), f'Content mismatch for term: {term}'
+
+    def test_fts_hyphenated_with_regular_words(self, hyphen_test_db: Path) -> None:
+        """Test search mixing hyphenated and regular words."""
+        with sqlite3.connect(str(hyphen_test_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Search for "full-text" AND "search" (both must match)
+            cursor = conn.execute(
+                '''
+                SELECT ce.* FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH '"full-text" search'
+                ''',
+            )
+            results = cursor.fetchall()
+
+            assert len(results) == 1
+            assert 'full-text' in results[0]['text_content']
+            assert 'search' in results[0]['text_content']
+
+    def test_fts_no_hyphen_regression(self, hyphen_test_db: Path) -> None:
+        """Test that regular (non-hyphenated) queries still work."""
+        with sqlite3.connect(str(hyphen_test_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Regular search without hyphens should work as before
+            cursor = conn.execute(
+                '''
+                SELECT ce.* FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH 'Regular search'
+                ''',
+            )
+            results = cursor.fetchall()
+
+            assert len(results) == 1
+            assert 'Regular search' in results[0]['text_content']

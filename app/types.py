@@ -218,3 +218,108 @@ class FtsMigrationInProgressDict(TypedDict):
     old_language: str
     new_language: str
     suggestion: str
+
+
+# Hybrid Search TypedDicts
+
+
+class HybridScoresDict(TypedDict, total=False):
+    """Type definition for hybrid search scores breakdown.
+
+    Contains scores from individual search methods and the combined RRF score.
+    """
+
+    rrf: float  # Combined RRF score
+    fts_rank: int | None  # Rank in FTS results (1-based), None if not in FTS results
+    semantic_rank: int | None  # Rank in semantic results (1-based), None if not in semantic results
+    fts_score: float | None  # Original FTS score (BM25/ts_rank)
+    semantic_distance: float | None  # Original semantic distance (L2)
+
+
+class HybridSearchResultDict(TypedDict, total=False):
+    """Type definition for hybrid search result entry.
+
+    Combines fields from both FTS and semantic search results with
+    hybrid-specific scoring information.
+    """
+
+    id: int
+    thread_id: str
+    source: str
+    content_type: str
+    text_content: str
+    metadata: MetadataDict | None
+    created_at: str
+    updated_at: str
+    tags: list[str]
+    scores: HybridScoresDict  # Hybrid scoring breakdown
+
+
+class HybridSearchResponseDict(TypedDict):
+    """Type definition for hybrid_search_context response."""
+
+    query: str
+    results: list[HybridSearchResultDict]
+    count: int
+    fusion_method: str  # 'rrf'
+    search_modes_used: list[str]  # Actual modes executed, e.g., ['fts', 'semantic']
+    fts_count: int  # Number of results from FTS
+    semantic_count: int  # Number of results from semantic search
+
+
+# Hybrid Search Stats TypedDicts (for explain_query parameter)
+
+
+class HybridFtsStatsDict(TypedDict, total=False):
+    """Type definition for FTS statistics in hybrid search.
+
+    Contains timing and filter information from the FTS portion
+    of hybrid search.
+    """
+
+    execution_time_ms: float
+    filters_applied: int
+    rows_returned: int
+    query_plan: str | None
+    backend: str
+
+
+class HybridSemanticStatsDict(TypedDict):
+    """Type definition for semantic search statistics in hybrid search.
+
+    Contains timing and filter information from the semantic portion
+    of hybrid search.
+    """
+
+    execution_time_ms: float
+    embedding_generation_ms: float
+    filters_applied: int
+    rows_returned: int
+    backend: str
+
+
+class HybridFusionStatsDict(TypedDict):
+    """Type definition for RRF fusion statistics in hybrid search.
+
+    Contains overlap and distribution information about how results
+    were combined from FTS and semantic search.
+    """
+
+    rrf_k: int
+    total_unique_documents: int
+    documents_in_both: int
+    documents_fts_only: int
+    documents_semantic_only: int
+
+
+class HybridSearchStatsDict(TypedDict, total=False):
+    """Type definition for complete hybrid search statistics.
+
+    Aggregates stats from FTS, semantic search, and fusion operations.
+    Only present in response when explain_query=True.
+    """
+
+    execution_time_ms: float  # Total hybrid search time
+    fts_stats: HybridFtsStatsDict | None
+    semantic_stats: HybridSemanticStatsDict | None
+    fusion_stats: HybridFusionStatsDict

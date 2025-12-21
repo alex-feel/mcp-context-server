@@ -14,6 +14,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
 - **Full-Text Search**: Optional linguistic search with stemming, ranking, and boolean queries (FTS5/tsvector)
 - **Semantic Search**: Optional vector similarity search for meaning-based retrieval
+- **Hybrid Search**: Optional combined FTS + semantic search using Reciprocal Rank Fusion (RRF)
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
 - **High Performance**: WAL mode (SQLite) / MVCC (PostgreSQL), strategic indexing, and async operations
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client
@@ -32,16 +33,16 @@ There are two ways to add the MCP Context Server to Claude Code:
 
 ```bash
 # From PyPI (recommended)
-claude mcp add context-server -- uvx mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 mcp-context-server
 
 # Or from GitHub (latest development version)
-claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
 
 # Or with semantic search (for setup instructions, see the docs/semantic-search.md)
-claude mcp add context-server -- uvx --with mcp-context-server[semantic-search] mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --with mcp-context-server[semantic-search] mcp-context-server
 
 # Or from GitHub (latest development version) with semantic search (for setup instructions, see docs/semantic-search.md)
-claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[semantic-search] mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[semantic-search] mcp-context-server
 ```
 
 For more details, see: https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server
@@ -56,7 +57,7 @@ Add the following to your `.mcp.json` file in your project directory:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["mcp-context-server"],
+      "args": ["--python", "3.12", "mcp-context-server"],
       "env": {}
     }
   }
@@ -65,7 +66,7 @@ Add the following to your `.mcp.json` file in your project directory:
 
 For the latest development version from GitHub, use:
 ```json
-"args": ["--from", "git+https://github.com/alex-feel/mcp-context-server", "mcp-context-server"]
+"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "mcp-context-server"]
 ```
 
 For configuration file locations and details, see: https://docs.claude.com/en/docs/claude-code/settings#settings-files
@@ -94,7 +95,7 @@ Example configuration with environment variables:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["mcp-context-server"],
+      "args": ["--python", "3.12", "mcp-context-server"],
       "env": {
         "LOG_LEVEL": "${LOG_LEVEL:-INFO}",
         "DB_PATH": "${DB_PATH:-~/.mcp/context_storage.db}",
@@ -112,7 +113,7 @@ For more details on environment variable expansion, see: https://docs.claude.com
 
 **Core Settings:**
 - **STORAGE_BACKEND**: Database backend - `sqlite` (default) or `postgresql`
-- **LOG_LEVEL**: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) - defaults to INFO
+- **LOG_LEVEL**: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) - defaults to ERROR
 - **DB_PATH**: Database file location (SQLite only) - defaults to ~/.mcp/context_storage.db
 - **MAX_IMAGE_SIZE_MB**: Maximum size per image in MB - defaults to 10
 - **MAX_TOTAL_SIZE_MB**: Maximum total request size in MB - defaults to 100
@@ -120,6 +121,10 @@ For more details on environment variable expansion, see: https://docs.claude.com
 **Full-Text Search Settings:**
 - **ENABLE_FTS**: Enable full-text search functionality (true/false) - defaults to false
 - **FTS_LANGUAGE**: Language for stemming and text search - defaults to `english`. PostgreSQL supports 29 languages with full stemming. SQLite uses `english` for Porter stemmer or any other value for unicode61 tokenizer (no stemming).
+
+**Hybrid Search Settings:**
+- **ENABLE_HYBRID_SEARCH**: Enable hybrid search combining FTS and semantic search with RRF fusion (true/false) - defaults to false
+- **HYBRID_RRF_K**: RRF smoothing constant (1-1000) - defaults to 60. Higher values give more uniform treatment across ranks.
 
 **Semantic Search Settings:**
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
@@ -208,7 +213,7 @@ export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["mcp-context-server"],
+      "args": ["--python", "3.12", "mcp-context-server"],
       "env": {
         "STORAGE_BACKEND": "postgresql",
         "POSTGRESQL_HOST": "localhost",
@@ -274,7 +279,7 @@ Best for: VMs, servers, and local development with IPv6 support
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres"
@@ -292,7 +297,7 @@ Best for: VMs, servers, and local development with IPv6 support
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_HOST": "db.[PROJECT_REF].supabase.co",
@@ -351,7 +356,7 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres.[PROJECT-REF]:your-actual-password@aws-0-[REGION].pooler.supabase.com:5432/postgres"
@@ -369,7 +374,7 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_HOST": "aws-0-[REGION].pooler.supabase.com",
@@ -436,7 +441,7 @@ If you want to use semantic search with Supabase, you must enable the pgvector e
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres",
@@ -518,8 +523,8 @@ Search context entries with powerful filtering including metadata queries and da
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
-- `limit` (int, optional): Maximum results (default: 50, max: 500)
-- `offset` (int, optional): Pagination offset
+- `limit` (int, optional): Maximum results to return (1-100, default: 30)
+- `offset` (int, optional): Pagination offset (default: 0)
 - `include_images` (bool, optional): Include image data in response
 - `explain_query` (bool, optional): Include query execution statistics
 
@@ -628,13 +633,17 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 
 **Parameters:**
 - `query` (str, required): Natural language search query
-- `top_k` (int, optional): Number of results to return (1-100) - defaults to 20
-- `thread_id` (str, optional): Filter results to specific thread
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
+- `offset` (int, optional): Pagination offset (default: 0)
+- `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `include_images` (bool, optional): Include image data in results (default: false)
 
 **Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
 
@@ -673,14 +682,19 @@ Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The
 **Parameters:**
 - `query` (str, required): Search query
 - `mode` (str, optional): Search mode - `match` (default), `prefix`, `phrase`, or `boolean`
-- `thread_id` (str, optional): Filter results to specific thread
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
+- `offset` (int, optional): Pagination offset (default: 0)
+- `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
-- `limit` (int, optional): Maximum results (default: 50, max: 500)
-- `offset` (int, optional): Pagination offset
+- `highlight` (bool, optional): Include highlighted snippets in results (default: false)
+- `include_images` (bool, optional): Include image data in results (default: false)
+- `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Search Modes:**
 - `match`: Standard word matching with stemming (default)
@@ -712,6 +726,76 @@ fts_search_context(
     metadata_filters=[{"key": "status", "operator": "eq", "value": "active"}]
 )
 ```
+
+#### hybrid_search_context
+
+Perform hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
+
+Note: This tool is only available when hybrid search is enabled via `ENABLE_HYBRID_SEARCH=true` and at least one of FTS (`ENABLE_FTS=true`) or semantic search (`ENABLE_SEMANTIC_SEARCH=true`) is enabled. The RRF algorithm combines results from available search methods, boosting documents that appear in both.
+
+**Parameters:**
+- `query` (str, required): Natural language search query
+- `limit` (int, optional): Maximum results to return (1-100, default: 5)
+- `offset` (int, optional): Pagination offset (default: 0)
+- `search_modes` (list, optional): Search modes to use - `['fts', 'semantic']` (default: both)
+- `fusion_method` (str, optional): Fusion algorithm - `'rrf'` (default)
+- `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from HYBRID_RRF_K env var)
+- `thread_id` (str, optional): Optional filter by thread
+- `source` (str, optional): Filter by source type ('user' or 'agent')
+- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
+- `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
+- `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
+- `metadata` (dict, optional): Simple metadata filters (key=value equality)
+- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `include_images` (bool, optional): Include image data in results (default: false)
+- `explain_query` (bool, optional): Include query execution statistics (default: false)
+
+**Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
+
+**Returns:** Dictionary with:
+- Query string and fusion method
+- List of matching entries with combined RRF scores and individual search rankings
+- Result count and counts from each search method
+- List of search modes actually used
+- Query execution statistics (only when `explain_query=True`)
+
+**Scores Breakdown:**
+Each result includes a `scores` object with:
+- `rrf`: Combined RRF score (higher = better)
+- `fts_rank`: Position in FTS results (1-based), null if not in FTS results
+- `semantic_rank`: Position in semantic results (1-based), null if not in semantic results
+- `fts_score`: Original FTS relevance score (BM25/ts_rank)
+- `semantic_distance`: Original semantic distance (L2, lower = more similar)
+
+**Graceful Degradation:**
+- If only FTS is available, returns FTS results only
+- If only semantic search is available, returns semantic results only
+- If neither is available, raises an error
+
+**Example:**
+```python
+# Full hybrid search
+hybrid_search_context(
+    query="authentication implementation",
+    thread_id="project-123"
+)
+
+# Hybrid with metadata filtering
+hybrid_search_context(
+    query="performance optimization",
+    metadata={"status": "completed"},
+    metadata_filters=[{"key": "priority", "operator": "gte", "value": 7}]
+)
+
+# Single mode through hybrid API (for consistent interface)
+hybrid_search_context(
+    query="exact phrase",
+    search_modes=["fts"]
+)
+```
+
+For detailed configuration and troubleshooting, see the [Hybrid Search Guide](docs/hybrid-search.md).
 
 ### Batch Operations
 
@@ -760,7 +844,7 @@ At least one criterion must be provided. Cascading delete removes associated tag
 
 ### Filtering Reference
 
-The following filtering options apply to `search_context`, `semantic_search_context`, and `fts_search_context` tools.
+The following filtering options apply to `search_context`, `semantic_search_context`, `fts_search_context`, and `hybrid_search_context` tools.
 
 **Metadata Filtering:**
 
