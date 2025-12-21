@@ -121,14 +121,17 @@ def estimate_migration_time(records_count: int) -> int:
 
 
 # Dependency check functions for semantic search
-async def check_semantic_search_dependencies() -> bool:
+async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bool:
     """Check all semantic search dependencies.
 
     Performs comprehensive checks for:
-    - Python packages (ollama, numpy, sqlite_vec)
+    - Python packages: ollama, numpy, sqlite_vec (SQLite) or pgvector (PostgreSQL)
     - Ollama service availability
     - EmbeddingGemma model availability
-    - sqlite-vec extension loading
+    - sqlite-vec extension loading (SQLite only)
+
+    Args:
+        backend_type: Either 'sqlite' or 'postgresql'
 
     Returns:
         True if all dependencies are available, False otherwise
@@ -156,14 +159,33 @@ async def check_semantic_search_dependencies() -> bool:
         logger.warning(f'[X] numpy package not available: {e}')
         return False
 
-    # Check sqlite_vec package
-    try:
-        import sqlite_vec
+    # Check sqlite_vec package (SQLite only)
+    if backend_type == 'sqlite':
+        try:
+            import importlib.util as sqlite_vec_util
 
-        logger.debug('[OK] sqlite_vec package available')
-    except ImportError as e:
-        logger.warning(f'[X] sqlite_vec package not available: {e}')
-        return False
+            if sqlite_vec_util.find_spec('sqlite_vec') is None:
+                logger.warning('[X] sqlite_vec package not available')
+                return False
+            logger.debug('[OK] sqlite_vec package available')
+        except ImportError as e:
+            logger.warning(f'[X] sqlite_vec package not available: {e}')
+            return False
+
+    # Check pgvector package (PostgreSQL only)
+    if backend_type == 'postgresql':
+        try:
+            import importlib.util as pgvector_util
+
+            if pgvector_util.find_spec('pgvector') is None:
+                logger.warning('[X] pgvector package not available')
+                logger.warning('  Install with: uv sync --extra semantic-search')
+                return False
+            logger.debug('[OK] pgvector package available')
+        except ImportError as e:
+            logger.warning(f'[X] pgvector package not available: {e}')
+            logger.warning('  Install with: uv sync --extra semantic-search')
+            return False
 
     # Check Ollama service
     try:
@@ -190,19 +212,22 @@ async def check_semantic_search_dependencies() -> bool:
         logger.warning(f'  Run: ollama pull {settings.embedding_model}')
         return False
 
-    # Check sqlite-vec extension loading
-    try:
-        import sqlite3
+    # Check sqlite-vec extension loading (SQLite only)
+    if backend_type == 'sqlite':
+        try:
+            import sqlite3
 
-        test_conn = sqlite3.connect(':memory:')
-        test_conn.enable_load_extension(True)
-        sqlite_vec.load(test_conn)
-        test_conn.enable_load_extension(False)
-        test_conn.close()
-        logger.debug('[OK] sqlite-vec extension loads successfully')
-    except Exception as e:
-        logger.warning(f'[X] sqlite-vec extension failed to load: {e}')
-        return False
+            import sqlite_vec as sqlite_vec_ext
+
+            test_conn = sqlite3.connect(':memory:')
+            test_conn.enable_load_extension(True)
+            sqlite_vec_ext.load(test_conn)
+            test_conn.enable_load_extension(False)
+            test_conn.close()
+            logger.debug('[OK] sqlite-vec extension loads successfully')
+        except Exception as e:
+            logger.warning(f'[X] sqlite-vec extension failed to load: {e}')
+            return False
 
     logger.info('[OK] All semantic search dependencies available')
     return True
@@ -413,6 +438,26 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         logger.info('Semantic search migration: tables already exist, skipping')
 
 
+async def _check_jsonb_merge_patch_exists(conn: asyncpg.Connection) -> bool:
+    """Check if jsonb_merge_patch function already exists in PostgreSQL.
+
+    Args:
+        conn: PostgreSQL connection
+
+    Returns:
+        True if the function exists, False otherwise
+    """
+    result = await conn.fetchval('''
+        SELECT EXISTS (
+            SELECT 1 FROM pg_proc p
+            JOIN pg_namespace n ON p.pronamespace = n.oid
+            WHERE n.nspname = 'public'
+              AND p.proname = 'jsonb_merge_patch'
+        )
+    ''')
+    return bool(result)
+
+
 async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = None) -> None:
     """Apply jsonb_merge_patch function migration for PostgreSQL.
 
@@ -452,6 +497,8 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
         migration_sql = migration_path.read_text(encoding='utf-8')
 
         if backend is not None:
+            # Check if function already exists before applying
+            function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
             async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
                 # Parse SQL statements, handling dollar-quoted function bodies
@@ -485,12 +532,18 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                         await conn.execute(stmt)
 
             await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
-            logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+
+            if function_exists:
+                logger.debug('jsonb_merge_patch function already exists, verified')
+            else:
+                logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
         else:
             # Backward compatibility: create temporary backend
             temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
             await temp_manager.initialize()
             try:
+                # Check if function already exists before applying
+                function_exists = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
                 async def _apply_jsonb_merge_patch_temp(conn: asyncpg.Connection) -> None:
                     statements = []
@@ -518,7 +571,11 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                             await conn.execute(stmt)
 
                 await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
-                logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+
+                if function_exists:
+                    logger.debug('jsonb_merge_patch function already exists, verified')
+                else:
+                    logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
             finally:
                 await temp_manager.shutdown()
     except Exception as e:
@@ -777,7 +834,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
         # 6) Initialize semantic search if enabled
         if settings.enable_semantic_search:
-            semantic_available = await check_semantic_search_dependencies()
+            semantic_available = await check_semantic_search_dependencies(_backend.backend_type)
 
             if semantic_available:
                 try:
