@@ -162,6 +162,50 @@ fix: resolve race condition in repository initialization
 The database connection manager now uses a lock to prevent concurrent initialization attempts during high load.
 ```
 
+## Release Troubleshooting
+
+### Recovering from Partial Release (PyPI Success, MCP Registry Failure)
+
+If a new version was successfully published to PyPI but failed to publish to MCP Registry, follow this recovery procedure:
+
+1. **Fix the root cause**: Identify and fix whatever prevented MCP Registry publication (e.g., `server.json` schema validation errors, network issues).
+
+2. **Commit and push/merge fixes without triggering Release Please**: Use commit types that do NOT trigger a new release. Avoid `feat` and `fix` prefixes, as these trigger Release Please to propose a new version with an incorrect changelog.
+
+   Allowed commit types for fixes:
+   - `chore:` - Maintenance tasks
+   - `ci:` - CI/CD changes
+   - `docs:` - Documentation updates
+   - `test:` - Test modifications
+
+   Example:
+   ```bash
+   git add server.json
+   git commit -m "chore: fix server.json schema for MCP Registry"
+   git push origin main
+   ```
+
+3. **Delete the remote tag**: This makes the already-published GitHub release become a draft.
+   ```bash
+   git push origin :refs/tags/v0.10.0
+   ```
+
+4. **Create a new local tag**: Point the tag to the latest commit (with your fixes).
+   ```bash
+   git tag -fa v0.10.0 -m "v0.10.0"
+   ```
+
+5. **Push the updated tag**:
+   ```bash
+   git push origin v0.10.0
+   ```
+
+6. **Re-publish the GitHub release**: In the GitHub UI, navigate to Releases, find the draft release, and click "Publish release". This triggers the publish workflow:
+   - PyPI publication is **skipped** (version already exists due to `skip-existing: true`)
+   - MCP Registry publication proceeds with the fixed files
+
+**Important**: Replace `v0.10.0` with your actual version tag in all commands.
+
 ## Architecture Overview
 
 ### MCP Protocol Integration
