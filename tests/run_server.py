@@ -28,23 +28,22 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     os.environ['ENABLE_FTS'] = 'true'
     os.environ['ENABLE_HYBRID_SEARCH'] = 'true'
 
-    # Only pass through embedding configuration if explicitly set (e.g., by CI)
+    # Embedding configuration: Use CI values if set, otherwise use defaults
     # CI sets EMBEDDING_MODEL=all-minilm (46MB) and EMBEDDING_DIM=384 for fast tests
-    # When not set, app/settings.py uses defaults: embeddinggemma:latest (768 dim)
+    # Local development typically uses: embeddinggemma:latest (768 dim)
+    # NOTE: We explicitly set defaults if not present to ensure consistent behavior
+    # across environments (subprocess may not inherit all parent env vars)
+    if 'EMBEDDING_MODEL' not in os.environ:
+        os.environ['EMBEDDING_MODEL'] = 'embeddinggemma:latest'
+    if 'EMBEDDING_DIM' not in os.environ:
+        os.environ['EMBEDDING_DIM'] = '768'
+
     print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
     print('[TEST SERVER] ENABLE_SEMANTIC_SEARCH=true', file=sys.stderr)
     print('[TEST SERVER] ENABLE_FTS=true', file=sys.stderr)
     print('[TEST SERVER] ENABLE_HYBRID_SEARCH=true', file=sys.stderr)
-
-    if 'EMBEDDING_MODEL' in os.environ:
-        print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]} (from environment)', file=sys.stderr)
-    else:
-        print('[TEST SERVER] EMBEDDING_MODEL not set, using app defaults (embeddinggemma:latest)', file=sys.stderr)
-
-    if 'EMBEDDING_DIM' in os.environ:
-        print(f'[TEST SERVER] EMBEDDING_DIM={os.environ["EMBEDDING_DIM"]} (from environment)', file=sys.stderr)
-    else:
-        print('[TEST SERVER] EMBEDDING_DIM not set, using app defaults (768)', file=sys.stderr)
+    print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]}', file=sys.stderr)
+    print(f'[TEST SERVER] EMBEDDING_DIM={os.environ["EMBEDDING_DIM"]}', file=sys.stderr)
 
     # Double-check we're not using the default database
     default_db = Path.home() / '.mcp' / 'context_storage.db'

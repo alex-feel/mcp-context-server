@@ -4590,12 +4590,14 @@ class MCPServerIntegrationTest:
             page_thread = f'{self.test_thread_id}_hybrid_offset'
 
             # Store 5 entries for pagination testing
+            # NOTE: All entries MUST contain both 'Python' AND 'programming' because
+            # FTS 'match' mode interprets "Python programming" as "Python AND programming"
             test_texts = [
                 'First Python programming tutorial for beginners learning to code',
-                'Second Python advanced programming concepts for experts',
-                'Third Python web development with Django framework',
-                'Fourth Python data science and machine learning applications',
-                'Fifth Python automation and scripting guide for DevOps',
+                'Second Python programming advanced concepts for software experts',
+                'Third Python programming web development with Django framework',
+                'Fourth Python programming data science and machine learning apps',
+                'Fifth Python programming automation and scripting guide for DevOps',
             ]
 
             for text in test_texts:
