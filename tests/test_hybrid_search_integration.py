@@ -260,6 +260,128 @@ class TestHybridSearchToolIntegration:
         assert results[0].get('metadata') == {'priority': 5}
 
 
+class TestRRFEdgeCases:
+    """Test edge cases in RRF fusion algorithm."""
+
+    def test_rrf_skips_semantic_results_with_none_id(self) -> None:
+        """Test RRF skips semantic results where id is None.
+
+        This covers line 75 in app/fusion.py - the only uncovered line.
+        """
+        semantic_results: list[dict[str, Any]] = [
+            {'id': None, 'distance': 0.1, 'text_content': 'No ID entry'},
+            {'id': 1, 'distance': 0.2, 'text_content': 'Valid entry'},
+        ]
+        fts_results: list[dict[str, Any]] = []
+
+        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+
+        # Only the entry with valid ID should be in results
+        assert len(results) == 1
+        assert results[0].get('id') == 1
+
+    def test_rrf_skips_fts_results_with_none_id(self) -> None:
+        """Test RRF skips FTS results where id is None."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': None, 'score': 10.0, 'text_content': 'No ID'},
+            {'id': 2, 'score': 8.0, 'text_content': 'Valid'},
+        ]
+
+        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+
+        assert len(results) == 1
+        assert results[0].get('id') == 2
+
+    def test_rrf_skips_both_sources_with_none_ids(self) -> None:
+        """Test RRF skips None IDs from both FTS and semantic results."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': None, 'score': 10.0, 'text_content': 'FTS no ID'},
+            {'id': 1, 'score': 8.0, 'text_content': 'FTS valid'},
+        ]
+        semantic_results: list[dict[str, Any]] = [
+            {'id': None, 'distance': 0.1, 'text_content': 'Semantic no ID'},
+            {'id': 2, 'distance': 0.2, 'text_content': 'Semantic valid'},
+        ]
+
+        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+
+        # Only entries with valid IDs should be in results
+        result_ids = {r.get('id') for r in results}
+        assert result_ids == {1, 2}
+        assert len(results) == 2
+
+    def test_rrf_all_none_ids_returns_empty(self) -> None:
+        """Test RRF returns empty list when all IDs are None."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': None, 'score': 10.0, 'text_content': 'No ID 1'},
+            {'id': None, 'score': 8.0, 'text_content': 'No ID 2'},
+        ]
+        semantic_results: list[dict[str, Any]] = [
+            {'id': None, 'distance': 0.1, 'text_content': 'No ID 3'},
+        ]
+
+        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+
+        assert results == []
+
+
+class TestHybridSearchPagination:
+    """Test hybrid search offset and limit handling."""
+
+    def test_limit_applied_correctly(self) -> None:
+        """Test that limit is applied after RRF fusion."""
+        # Create 10 FTS results
+        fts_results: list[dict[str, Any]] = [
+            {'id': i, 'score': 10.0 - i, 'text_content': f'Doc {i}', 'thread_id': 't1'}
+            for i in range(1, 11)
+        ]
+
+        # Request limit=3
+        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=3)
+
+        assert len(results) == 3
+        # Results should be top 3 by RRF score
+        result_ids = [r.get('id') for r in results]
+        assert result_ids == [1, 2, 3]
+
+    def test_limit_exceeds_available_results(self) -> None:
+        """Test limit larger than available results returns all."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': i, 'score': 10.0 - i, 'text_content': f'Doc {i}'}
+            for i in range(1, 6)  # Only 5 results
+        ]
+
+        # Request limit=20 but only 5 exist
+        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=20)
+
+        assert len(results) == 5
+
+    def test_pagination_simulation_with_offset(self) -> None:
+        """Test pagination by simulating offset with list slicing.
+
+        In real usage, offset is applied after RRF fusion via result slicing.
+        This tests the behavior of paginating through fused results.
+        """
+        # Create 10 FTS results
+        fts_results: list[dict[str, Any]] = [
+            {'id': i, 'score': 10.0 - (i * 0.1), 'text_content': f'Doc {i}', 'thread_id': 't1'}
+            for i in range(1, 11)
+        ]
+
+        # Get all results first
+        all_results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+
+        # Simulate offset=3, limit=3 (skip first 3, return next 3)
+        paginated = all_results[3:6]
+
+        assert len(paginated) == 3
+        # First 3 IDs (1, 2, 3) should be skipped
+        paginated_ids = [r.get('id') for r in paginated]
+        assert 1 not in paginated_ids
+        assert 2 not in paginated_ids
+        assert 3 not in paginated_ids
+
+
 class TestHybridSearchResponseStructure:
     """Test hybrid search response TypedDict structure."""
 

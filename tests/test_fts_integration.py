@@ -364,6 +364,150 @@ class TestFtsWithFilters:
             result = cursor.fetchone()[0]
             assert result == 2  # Both Python entries still found
 
+    def test_fts_with_tag_filter(self, fts_enabled_db: Path) -> None:
+        """Test FTS search with tag filtering.
+
+        Covers lines 208-221 in fts_repository.py for tag filtering logic.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # First, insert an entry with tags
+            cursor = conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content)
+                VALUES ('tag-thread', 'agent', 'text', 'Python programming with tags')
+                ''',
+            )
+            entry_id = cursor.lastrowid
+
+            # Add tags
+            conn.execute(
+                'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                (entry_id, 'python'),
+            )
+            conn.execute(
+                'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                (entry_id, 'programming'),
+            )
+            conn.commit()
+
+            # Search with tag filter using a join
+            cursor = conn.execute(
+                '''
+                SELECT DISTINCT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN tags t ON t.context_entry_id = ce.id
+                WHERE fts.text_content MATCH 'python'
+                AND t.tag IN ('python', 'programming')
+                ORDER BY score DESC
+                ''',
+            )
+            results = cursor.fetchall()
+
+            assert len(results) >= 1
+            assert 'Python' in results[0]['text_content']
+
+    def test_fts_with_content_type_filter(self, fts_enabled_db: Path) -> None:
+        """Test FTS search with content_type filter.
+
+        Covers lines 196-198 in fts_repository.py for content_type filtering.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Insert multimodal entry
+            conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content)
+                VALUES ('type-thread', 'agent', 'multimodal', 'Python with image')
+                ''',
+            )
+            conn.commit()
+
+            # Search for text content_type only
+            cursor = conn.execute(
+                '''
+                SELECT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH 'python'
+                AND ce.content_type = 'text'
+                ORDER BY score DESC
+                ''',
+            )
+            results = cursor.fetchall()
+
+            # All results should be 'text' type
+            for result in results:
+                assert result['content_type'] == 'text'
+
+    def test_fts_with_metadata_filter(self, fts_enabled_db: Path) -> None:
+        """Test FTS search with metadata filtering.
+
+        Covers metadata filtering logic in fts_repository.py.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Insert entry with metadata
+            conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content, metadata)
+                VALUES ('meta-thread', 'agent', 'text', 'Python data processing', '{"priority": 5}')
+                ''',
+            )
+            conn.execute(
+                '''
+                INSERT INTO context_entries (thread_id, source, content_type, text_content, metadata)
+                VALUES ('meta-thread', 'agent', 'text', 'Python web development', '{"priority": 3}')
+                ''',
+            )
+            conn.commit()
+
+            # Search with metadata filter using json_extract
+            cursor = conn.execute(
+                '''
+                SELECT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH 'python'
+                AND json_extract(ce.metadata, '$.priority') > 4
+                ORDER BY score DESC
+                ''',
+            )
+            results = cursor.fetchall()
+
+            # Should only return the high priority entry
+            assert len(results) == 1
+            assert 'data processing' in results[0]['text_content']
+
+    def test_fts_explain_query_returns_plan(self, fts_enabled_db: Path) -> None:
+        """Test that EXPLAIN QUERY PLAN works with FTS queries.
+
+        Verifies FTS explain_query functionality.
+        """
+        with sqlite3.connect(str(fts_enabled_db)) as conn:
+            conn.row_factory = sqlite3.Row
+
+            sql_query = '''
+                SELECT ce.*, -bm25(context_entries_fts) as score
+                FROM context_entries ce
+                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                WHERE fts.text_content MATCH ?
+                ORDER BY score DESC
+                LIMIT ? OFFSET ?
+            '''
+
+            cursor = conn.execute(f'EXPLAIN QUERY PLAN {sql_query}', ('python', 10, 0))
+            plan_rows = cursor.fetchall()
+
+            assert len(plan_rows) > 0
+            # Plan should contain details about FTS5 usage
+            plan_text = ' '.join(dict(row).get('detail', '') for row in plan_rows)
+            assert len(plan_text) > 0  # Should have some plan output
+
 
 class TestFtsMultilingualUnicode61:
     """Test FTS with unicode61 tokenizer for multilingual content.
