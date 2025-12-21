@@ -27,7 +27,7 @@ uv run python -m app.server           # Should start without errors
 # Press Ctrl+C to stop
 
 # 4. Test published version (optional)
-uvx mcp-context-server                # Run from PyPI without cloning
+uvx --python 3.12 mcp-context-server  # Run from PyPI without cloning
 ```
 
 ### Making Changes

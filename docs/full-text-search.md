@@ -72,6 +72,8 @@ Add to your `.mcp.json` file:
       "type": "stdio",
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "mcp-context-server"
       ],
       "env": {

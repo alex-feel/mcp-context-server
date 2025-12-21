@@ -33,16 +33,16 @@ There are two ways to add the MCP Context Server to Claude Code:
 
 ```bash
 # From PyPI (recommended)
-claude mcp add context-server -- uvx mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 mcp-context-server
 
 # Or from GitHub (latest development version)
-claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
 
 # Or with semantic search (for setup instructions, see the docs/semantic-search.md)
-claude mcp add context-server -- uvx --with mcp-context-server[semantic-search] mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --with mcp-context-server[semantic-search] mcp-context-server
 
 # Or from GitHub (latest development version) with semantic search (for setup instructions, see docs/semantic-search.md)
-claude mcp add context-server -- uvx --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[semantic-search] mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[semantic-search] mcp-context-server
 ```
 
 For more details, see: https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server
@@ -57,7 +57,7 @@ Add the following to your `.mcp.json` file in your project directory:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["mcp-context-server"],
+      "args": ["--python", "3.12", "mcp-context-server"],
       "env": {}
     }
   }
@@ -66,7 +66,7 @@ Add the following to your `.mcp.json` file in your project directory:
 
 For the latest development version from GitHub, use:
 ```json
-"args": ["--from", "git+https://github.com/alex-feel/mcp-context-server", "mcp-context-server"]
+"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "mcp-context-server"]
 ```
 
 For configuration file locations and details, see: https://docs.claude.com/en/docs/claude-code/settings#settings-files
@@ -95,7 +95,7 @@ Example configuration with environment variables:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["mcp-context-server"],
+      "args": ["--python", "3.12", "mcp-context-server"],
       "env": {
         "LOG_LEVEL": "${LOG_LEVEL:-INFO}",
         "DB_PATH": "${DB_PATH:-~/.mcp/context_storage.db}",
@@ -213,7 +213,7 @@ export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["mcp-context-server"],
+      "args": ["--python", "3.12", "mcp-context-server"],
       "env": {
         "STORAGE_BACKEND": "postgresql",
         "POSTGRESQL_HOST": "localhost",
@@ -279,7 +279,7 @@ Best for: VMs, servers, and local development with IPv6 support
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres"
@@ -297,7 +297,7 @@ Best for: VMs, servers, and local development with IPv6 support
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_HOST": "db.[PROJECT_REF].supabase.co",
@@ -356,7 +356,7 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres.[PROJECT-REF]:your-actual-password@aws-0-[REGION].pooler.supabase.com:5432/postgres"
@@ -374,7 +374,7 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_HOST": "aws-0-[REGION].pooler.supabase.com",
@@ -441,7 +441,7 @@ If you want to use semantic search with Supabase, you must enable the pgvector e
        "context-server": {
          "type": "stdio",
          "command": "uvx",
-         "args": ["mcp-context-server"],
+         "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
            "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres",

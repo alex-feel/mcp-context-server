@@ -165,6 +165,8 @@ Add to your `.mcp.json` file:
       "type": "stdio",
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "--with",
         "mcp-context-server[semantic-search]",
         "mcp-context-server"
@@ -254,6 +256,8 @@ Add to your `.mcp.json`:
       "type": "stdio",
       "command": "uvx",
       "args": [
+        "--python",
+        "3.12",
         "--with",
         "mcp-context-server[semantic-search]",
         "mcp-context-server"
