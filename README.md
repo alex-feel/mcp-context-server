@@ -113,7 +113,7 @@ For more details on environment variable expansion, see: https://docs.claude.com
 
 **Core Settings:**
 - **STORAGE_BACKEND**: Database backend - `sqlite` (default) or `postgresql`
-- **LOG_LEVEL**: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) - defaults to INFO
+- **LOG_LEVEL**: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) - defaults to ERROR
 - **DB_PATH**: Database file location (SQLite only) - defaults to ~/.mcp/context_storage.db
 - **MAX_IMAGE_SIZE_MB**: Maximum size per image in MB - defaults to 10
 - **MAX_TOTAL_SIZE_MB**: Maximum total request size in MB - defaults to 100

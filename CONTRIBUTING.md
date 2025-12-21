@@ -295,7 +295,7 @@ When adding frequently-queried metadata fields:
 #### Resource Limits
 - **Individual Image**: 10MB maximum
 - **Total Request**: 100MB maximum
-- **Query Results**: 500 entries maximum
+- **Query Results**: 100 entries maximum
 - **Thread Isolation**: Prevents accidental cross-context access
 
 ## Need Help?
