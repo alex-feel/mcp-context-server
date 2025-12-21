@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.10.0](https://github.com/alex-feel/mcp-context-server/compare/v0.9.0...v0.10.0) (2025-12-21)
+
+
+### Features
+
+* add explain_query parameter to fts_search_context ([7334e9f](https://github.com/alex-feel/mcp-context-server/commit/7334e9fef5ac88f7806cc5ed9754a219fe703d5c))
+* add explain_query parameter to hybrid_search_context ([b32129d](https://github.com/alex-feel/mcp-context-server/commit/b32129d6a8b60a45575aefc69a5536044ab2cd09))
+* add hybrid search with RRF fusion ([8c6ea15](https://github.com/alex-feel/mcp-context-server/commit/8c6ea15ae7867880183a9ac93e855e586069838f))
+* add offset, content_type, include_images to search tools ([bb22012](https://github.com/alex-feel/mcp-context-server/commit/bb2201257c20e4c645cc3f70863d8e8de133f55e))
+* add tags parameter to semantic, FTS, and hybrid search ([bcf1332](https://github.com/alex-feel/mcp-context-server/commit/bcf1332f5015fae69be640e062f45fd60534fffd))
+* add uniform backend display to all statistics output ([0d7c988](https://github.com/alex-feel/mcp-context-server/commit/0d7c988a25693bdced56cc89cb6235dda5f5d2f0))
+* rename top_k to limit in semantic_search_context ([2c27c14](https://github.com/alex-feel/mcp-context-server/commit/2c27c1418e0055fdf835055c1efb87b37d3e4b0a))
+* standardize limit parameter across all search tools ([d85d07d](https://github.com/alex-feel/mcp-context-server/commit/d85d07de4aada18d4c90375f4e17589692dc4d82))
+
+
+### Bug Fixes
+
+* handle hyphenated words in FTS queries ([b2f9ccb](https://github.com/alex-feel/mcp-context-server/commit/b2f9ccbf94ff1fa5ca875843504edff593de0d2c))
+* hybrid search pagination and test quality improvements ([2da98fe](https://github.com/alex-feel/mcp-context-server/commit/2da98fe5a31d594832916ef6a968245d821fb6a1))
+* make startup checks backend-specific ([3ee1149](https://github.com/alex-feel/mcp-context-server/commit/3ee1149638acdc8869ef8755aadbcb5f14dc9e04))
+* register hybrid_search_context tool dynamically ([0ee0d22](https://github.com/alex-feel/mcp-context-server/commit/0ee0d22f9d1743eb51f5516facad6dcd74a7abae))
+
 ## [0.9.0](https://github.com/alex-feel/mcp-context-server/compare/v0.8.0...v0.9.0) (2025-12-03)
 
 
