@@ -176,7 +176,14 @@ class TestServerConfigurationSettings:
             'STORAGE_BACKEND': 'sqlite',
         }
 
-        with patch.dict(os.environ, env, clear=False):
+        # Remove EMBEDDING_DIM and EMBEDDING_MODEL if set (e.g., by CI)
+        env_copy = os.environ.copy()
+        if 'EMBEDDING_DIM' in env_copy:
+            del env_copy['EMBEDDING_DIM']
+        if 'EMBEDDING_MODEL' in env_copy:
+            del env_copy['EMBEDDING_MODEL']
+
+        with patch.dict(os.environ, {**env_copy, **env}, clear=True):
             from app.settings import AppSettings
 
             settings = AppSettings()
