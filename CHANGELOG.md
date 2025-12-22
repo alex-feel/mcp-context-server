@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/alex-feel/mcp-context-server/compare/v0.10.0...v0.11.0) (2025-12-22)
+
+
+### Features
+
+* standardize search tools API response structure ([04d7472](https://github.com/alex-feel/mcp-context-server/commit/04d7472dec0cb23e292b5405412c9aec0029f9d6))
+
+
+### Bug Fixes
+
+* add explain_query support to semantic search for consistent stats structure ([cd5884b](https://github.com/alex-feel/mcp-context-server/commit/cd5884b490f43df22150fa338a786c2af957ec22))
+* remove duplicate Args sections from MCP tool docstrings ([9e0df55](https://github.com/alex-feel/mcp-context-server/commit/9e0df55b71ffd33154c30ba829030298730d7169))
+* replace blocking pathlib.Path with anyio.Path in async code ([0101b0a](https://github.com/alex-feel/mcp-context-server/commit/0101b0a32566a790a89b62ba5ff42b3c6770713d))
+* standardize MCP tool docstrings to use inline JSON structures ([7bef90d](https://github.com/alex-feel/mcp-context-server/commit/7bef90d55c2c08dcc79b94c2b2d2b20b80871cb7))
+
 ## [0.10.0](https://github.com/alex-feel/mcp-context-server/compare/v0.9.0...v0.10.0) (2025-12-21)
 
 
