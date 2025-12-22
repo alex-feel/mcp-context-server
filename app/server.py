@@ -1311,15 +1311,6 @@ async def store_context(
     - Use indexed metadata fields (status, priority, agent_name, task_name, completed)
       for faster filtering in search_context
 
-    Args:
-        thread_id: Unique identifier for the conversation/task thread
-        source: Either 'user' or 'agent'
-        text: Text content to store
-        images: List of base64 encoded images with mime_type (max 10MB each, 100MB total)
-        metadata: Additional structured data with optional indexed fields
-        tags: List of tags (normalized to lowercase)
-        ctx: FastMCP context object
-
     Returns:
         StoreContextSuccessDict: {success, context_id, thread_id, message}
 
@@ -1514,21 +1505,6 @@ async def search_context(
     - Always specify thread_id to reduce search space
     - Use indexed metadata fields: status, priority, agent_name, task_name, completed
 
-    Args:
-        thread_id: Filter by thread (indexed)
-        source: Filter by source type (indexed)
-        tags: Filter by any of these tags (OR logic)
-        content_type: Filter by content type
-        metadata: Simple metadata filters (key=value equality)
-        metadata_filters: Advanced metadata filters with operators
-        start_date: Filter entries created on or after this date (ISO 8601)
-        end_date: Filter entries created on or before this date (ISO 8601)
-        limit: Maximum results to return (1-100, default: 30)
-        offset: Pagination offset (default: 0)
-        include_images: Whether to include image data
-        explain_query: Include query execution statistics
-        ctx: FastMCP context object
-
     Returns:
         dict: Contains 'entries' list with truncated text_content and 'stats' for query metrics.
 
@@ -1638,11 +1614,6 @@ async def get_context_by_ids(
 
     Workflow: search_context (browse, truncated) -> get_context_by_ids (retrieve full content)
 
-    Args:
-        context_ids: List of context entry IDs to retrieve
-        include_images: Whether to include image data (default: True)
-        ctx: FastMCP context object
-
     Returns:
         list: List of context entries with full text_content, metadata, tags, and images.
 
@@ -1720,11 +1691,6 @@ async def delete_context(
     associated tags, images, and embeddings.
 
     WARNING: This operation cannot be undone. Verify IDs/thread before deletion.
-
-    Args:
-        context_ids: Specific IDs to delete (mutually exclusive with thread_id)
-        thread_id: Delete all entries in thread (mutually exclusive with context_ids)
-        ctx: FastMCP context object
 
     Returns:
         dict: {success: bool, deleted_count: int, message: str}
@@ -1830,15 +1796,6 @@ async def update_context(
       - Limitation: Arrays replaced entirely (no element-wise merge)
 
     Tags and images use REPLACEMENT semantics (not merge).
-
-    Args:
-        context_id: ID of the context entry to update
-        text: New text content (replaces existing)
-        metadata: New metadata object (full replacement)
-        metadata_patch: Partial metadata update (RFC 7396 merge patch)
-        tags: New tags list (replaces all existing)
-        images: New images list (replaces all existing)
-        ctx: FastMCP context object
 
     Returns:
         UpdateContextSuccessDict: {success, context_id, updated_fields, message}
@@ -2046,9 +2003,6 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
     - first_entry/last_entry: ISO timestamps of earliest/latest entries
     - last_id: ID of most recent entry (useful for pagination)
 
-    Args:
-        ctx: FastMCP context object
-
     Returns:
         ThreadListDict: Dictionary containing list of threads and total count.
 
@@ -2089,9 +2043,6 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
     - fts: {enabled, available, language, backend, engine, indexed_entries, coverage_percentage}
 
     Use for: capacity planning, debugging performance issues, verifying search status.
-
-    Args:
-        ctx: FastMCP context object
 
     Returns:
         dict: Database statistics including counts, size metrics, and connection health.
@@ -2180,7 +2131,9 @@ async def semantic_search_context(
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
-    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    content_type: Annotated[
+        Literal['text', 'multimodal'] | None, Field(description='Filter by content type (text or multimodal)'),
+    ] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
@@ -2232,21 +2185,6 @@ async def semantic_search_context(
 
     The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
     Typical interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
-
-    Args:
-        query: Natural language search query
-        limit: Maximum results to return (1-100, default: 5)
-        offset: Pagination offset (default: 0)
-        thread_id: Optional filter by thread
-        source: Optional filter by source type
-        content_type: Filter by content type (text or multimodal)
-        tags: Filter by any of these tags (OR logic)
-        start_date: Filter entries created on or after this date (ISO 8601)
-        end_date: Filter entries created on or before this date (ISO 8601)
-        metadata: Simple metadata filters (key=value equality)
-        metadata_filters: Advanced metadata filters with operators
-        include_images: Whether to include image data for multimodal entries
-        ctx: FastMCP context object
 
     Returns:
         dict: Search results with context entries, similarity distances, and model info.
@@ -2356,7 +2294,9 @@ async def fts_search_context(
     ] = 'match',
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
-    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    content_type: Annotated[
+        Literal['text', 'multimodal'] | None, Field(description='Filter by content type (text or multimodal)'),
+    ] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
@@ -2420,24 +2360,6 @@ async def fts_search_context(
     }
 
     The `score` field is relevance score - HIGHER values mean BETTER match.
-
-    Args:
-        query: Full-text search query
-        mode: Search mode (match, prefix, phrase, boolean)
-        thread_id: Optional filter by thread
-        source: Optional filter by source type
-        content_type: Filter by content type (text or multimodal)
-        tags: Filter by any of these tags (OR logic)
-        start_date: Filter entries created on or after this date (ISO 8601)
-        end_date: Filter entries created on or before this date (ISO 8601)
-        metadata: Simple metadata filters (key=value equality)
-        metadata_filters: Advanced metadata filters with operators
-        limit: Maximum results to return (1-100, default: 5)
-        offset: Pagination offset (default: 0)
-        highlight: Whether to include highlighted snippets
-        include_images: Whether to include image data for multimodal entries
-        explain_query: Include query execution statistics
-        ctx: FastMCP context object
 
     Returns:
         dict: Search results with context entries, relevance scores, and highlighting.
@@ -2606,7 +2528,9 @@ async def hybrid_search_context(
     ] = None,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
-    content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
+    content_type: Annotated[
+        Literal['text', 'multimodal'] | None, Field(description='Filter by content type (text or multimodal)'),
+    ] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
     start_date: Annotated[
         str | None,
@@ -2675,25 +2599,6 @@ async def hybrid_search_context(
     - fts_stats: {execution_time_ms, filters_applied, rows_returned} or None
     - semantic_stats: {execution_time_ms, embedding_generation_ms, filters_applied, rows_returned} or None
     - fusion_stats: {rrf_k, total_unique_documents, documents_in_both, documents_fts_only, documents_semantic_only}
-
-    Args:
-        query: Natural language search query
-        limit: Maximum results to return (1-100, default: 5)
-        offset: Pagination offset (default: 0)
-        search_modes: Which search modes to use (default: both)
-        fusion_method: Fusion algorithm (currently only 'rrf')
-        rrf_k: RRF smoothing constant (default from settings)
-        thread_id: Optional filter by thread
-        source: Optional filter by source type
-        content_type: Filter by content type (text or multimodal)
-        tags: Filter by any of these tags (OR logic)
-        start_date: Filter entries created on or after this date (ISO 8601)
-        end_date: Filter entries created on or before this date (ISO 8601)
-        metadata: Simple metadata filters (key=value equality)
-        metadata_filters: Advanced metadata filters with operators
-        include_images: Whether to include image data for multimodal entries
-        explain_query: Include query execution statistics
-        ctx: FastMCP context object
 
     Returns:
         dict: Combined search results with RRF scores and source breakdown.
@@ -3022,11 +2927,6 @@ async def store_context_batch(
     - Image limits per entry: 10MB each, 100MB total
     - Standard tag normalization (lowercase)
 
-    Args:
-        entries: List of context entry dicts with thread_id, source, text, optional metadata/tags/images
-        atomic: If true, all succeed or all fail; if false, partial success allowed
-        ctx: FastMCP context object
-
     Returns:
         BulkStoreResponseDict: Detailed results for each entry
 
@@ -3244,11 +3144,6 @@ async def update_context_batch(
     Atomicity modes:
     - atomic=True (default): All-or-nothing transaction
     - atomic=False: Best-effort with per-item error reporting
-
-    Args:
-        updates: List of update dicts with context_id (required) and optional fields
-        atomic: If true, all succeed or all fail; if false, partial success allowed
-        ctx: FastMCP context object
 
     Returns:
         BulkUpdateResponseDict: Detailed results for each update including updated_fields
@@ -3499,7 +3394,7 @@ async def delete_context_batch(
     ] = None,
     source: Annotated[
         Literal['user', 'agent'] | None,
-        Field(description='Delete only entries from this source (combine with thread_ids)'),
+        Field(description='Delete only entries from this source (combine with other criteria)'),
     ] = None,
     older_than_days: Annotated[
         int | None,
@@ -3519,13 +3414,6 @@ async def delete_context_batch(
     Cascading delete removes associated tags, images, and embeddings.
 
     WARNING: This operation cannot be undone. Verify criteria before deletion.
-
-    Args:
-        context_ids: Specific context entry IDs to delete
-        thread_ids: Delete all entries in these threads
-        source: Filter by source type (combine with other criteria)
-        older_than_days: Delete entries older than N days
-        ctx: FastMCP context object
 
     Returns:
         BulkDeleteResponseDict: {success, deleted_count, criteria_used, message}
