@@ -1311,11 +1311,12 @@ async def store_context(
     - Use indexed metadata fields (status, priority, agent_name, task_name, completed)
       for faster filtering in search_context
 
-    Returns:
-        StoreContextSuccessDict: {success, context_id, thread_id, message}
-
-    Raises:
-        ToolError: If validation fails or context insertion fails.
+    Returns: {
+        success: bool,
+        context_id: int,
+        thread_id: str,
+        message: str
+    }
     """
     try:
         # Clean input strings - defensive try/except handles edge cases where Pydantic validation bypassed
@@ -1505,11 +1506,11 @@ async def search_context(
     - Always specify thread_id to reduce search space
     - Use indexed metadata fields: status, priority, agent_name, task_name, completed
 
-    Returns:
-        dict: Contains 'results' list with truncated text_content. Stats included when explain_query=True.
-
-    Raises:
-        ToolError: If validation fails or search operation fails.
+    Returns: {
+        results: [{id, thread_id, source, text_content, metadata, tags, ...}],
+        count: int,
+        stats: {...}  # Only when explain_query=True
+    }
     """
     try:
         # Validate date parameters
@@ -1617,11 +1618,9 @@ async def get_context_by_ids(
 
     Workflow: search_context (browse, truncated) -> get_context_by_ids (retrieve full content)
 
-    Returns:
-        list: List of context entries with full text_content, metadata, tags, and images.
-
-    Raises:
-        ToolError: If fetching entries fails.
+    Returns: [
+        {id, thread_id, source, text_content, metadata, tags, images, created_at, updated_at}
+    ]
     """
     try:
         if ctx:
@@ -1695,11 +1694,11 @@ async def delete_context(
 
     WARNING: This operation cannot be undone. Verify IDs/thread before deletion.
 
-    Returns:
-        dict: {success: bool, deleted_count: int, message: str}
-
-    Raises:
-        ToolError: If validation fails or deletion fails.
+    Returns: {
+        success: bool,
+        deleted_count: int,
+        message: str
+    }
     """
     try:
         # Ensure at least one parameter is provided (business logic validation)
@@ -1800,11 +1799,12 @@ async def update_context(
 
     Tags and images use REPLACEMENT semantics (not merge).
 
-    Returns:
-        UpdateContextSuccessDict: {success, context_id, updated_fields, message}
-
-    Raises:
-        ToolError: If validation fails or update operation fails.
+    Returns: {
+        success: bool,
+        context_id: int,
+        updated_fields: [str, ...],
+        message: str
+    }
     """
     try:
         # Clean text input if provided
@@ -2005,12 +2005,6 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
     - multimodal_count: Entries containing images
     - first_entry/last_entry: ISO timestamps of earliest/latest entries
     - last_id: ID of most recent entry (useful for pagination)
-
-    Returns:
-        ThreadListDict: Dictionary containing list of threads and total count.
-
-    Raises:
-        ToolError: If listing threads fails.
     """
     try:
         if ctx:
@@ -2037,21 +2031,18 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
 async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
     """Get database statistics for monitoring and debugging.
 
-    Returns comprehensive metrics including:
-    - total_contexts, total_threads: Entry and thread counts
-    - total_images, total_tags: Attachment counts
-    - database_size_mb: Storage usage
-    - connection_metrics: Backend health (pool size, active connections)
-    - semantic_search: {enabled, available, model, dimensions, embedding_count, coverage_percentage}
-    - fts: {enabled, available, language, backend, engine, indexed_entries, coverage_percentage}
+    Returns: {
+        total_contexts: int,
+        total_threads: int,
+        total_images: int,
+        total_tags: int,
+        database_size_mb: float,
+        connection_metrics: {...},
+        semantic_search: {enabled, available, model, dimensions, embedding_count, coverage_percentage},
+        fts: {enabled, available, language, backend, engine, indexed_entries, coverage_percentage}
+    }
 
     Use for: capacity planning, debugging performance issues, verifying search status.
-
-    Returns:
-        dict: Database statistics including counts, size metrics, and connection health.
-
-    Raises:
-        ToolError: If getting statistics fails.
     """
     try:
         if ctx:
@@ -2190,12 +2181,6 @@ async def semantic_search_context(
 
     The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
     Typical interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
-
-    Returns:
-        dict: Search results with context entries, similarity distances, and model info.
-
-    Raises:
-        ToolError: If semantic search is not available or search fails.
     """
     # Validate date parameters
     start_date = validate_date_param(start_date, 'start_date')
@@ -2368,12 +2353,6 @@ async def fts_search_context(
     }
 
     The `score` field is relevance score - HIGHER values mean BETTER match.
-
-    Returns:
-        dict: Search results with context entries, relevance scores, and highlighting.
-
-    Raises:
-        ToolError: If FTS is not available or search fails.
     """
     # Validate date parameters
     start_date = validate_date_param(start_date, 'start_date')
@@ -2607,12 +2586,6 @@ async def hybrid_search_context(
     - fts_stats: {execution_time_ms, filters_applied, rows_returned} or None
     - semantic_stats: {execution_time_ms, embedding_generation_ms, filters_applied, rows_returned} or None
     - fusion_stats: {rrf_k, total_unique_documents, documents_in_both, documents_fts_only, documents_semantic_only}
-
-    Returns:
-        dict: Combined search results with RRF scores and source breakdown.
-
-    Raises:
-        ToolError: If hybrid search is not available or both search modes fail.
     """
     # Validate date parameters
     start_date = validate_date_param(start_date, 'start_date')
@@ -2934,12 +2907,6 @@ async def store_context_batch(
     - Maximum 100 entries per batch
     - Image limits per entry: 10MB each, 100MB total
     - Standard tag normalization (lowercase)
-
-    Returns:
-        BulkStoreResponseDict: Detailed results for each entry
-
-    Raises:
-        ToolError: If atomic mode and any validation fails
     """
     try:
         if ctx:
@@ -3153,11 +3120,14 @@ async def update_context_batch(
     - atomic=True (default): All-or-nothing transaction
     - atomic=False: Best-effort with per-item error reporting
 
-    Returns:
-        BulkUpdateResponseDict: Detailed results for each update including updated_fields
-
-    Raises:
-        ToolError: If atomic mode and any validation fails
+    Returns: {
+        success: bool (true if ALL succeeded),
+        total: int,
+        succeeded: int,
+        failed: int,
+        results: [{index, context_id, success, updated_fields, error}, ...],
+        message: str
+    }
     """
     try:
         if ctx:
@@ -3423,11 +3393,12 @@ async def delete_context_batch(
 
     WARNING: This operation cannot be undone. Verify criteria before deletion.
 
-    Returns:
-        BulkDeleteResponseDict: {success, deleted_count, criteria_used, message}
-
-    Raises:
-        ToolError: If no criteria provided or deletion fails
+    Returns: {
+        success: bool,
+        deleted_count: int,
+        criteria_used: [str, ...],
+        message: str
+    }
     """
     try:
         # Validate at least one criterion is provided
