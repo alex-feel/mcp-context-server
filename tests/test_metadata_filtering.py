@@ -408,9 +408,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 2
-        for entry in result['entries']:
+        assert 'results' in result
+        assert len(result['results']) == 2
+        for entry in result['results']:
             assert entry['metadata']['status'] == 'active'
 
     @pytest.mark.asyncio
@@ -425,9 +425,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['text_content'] == 'Task 1'
+        assert 'results' in result
+        assert len(result['results']) == 1
+        assert result['results'][0]['text_content'] == 'Task 1'
 
     @pytest.mark.asyncio
     async def test_advanced_gt_operator(self) -> None:
@@ -441,9 +441,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 2  # priority 8 and 10
-        priorities = [e['metadata']['priority'] for e in result['entries']]
+        assert 'results' in result
+        assert len(result['results']) == 2  # priority 8 and 10
+        priorities = [e['metadata']['priority'] for e in result['results']]
         assert all(p > 5 for p in priorities)
 
     @pytest.mark.asyncio
@@ -464,9 +464,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 3
-        statuses = [e['metadata']['status'] for e in result['entries']]
+        assert 'results' in result
+        assert len(result['results']) == 3
+        statuses = [e['metadata']['status'] for e in result['results']]
         assert all(s in ['active', 'pending'] for s in statuses)
 
     @pytest.mark.asyncio
@@ -493,10 +493,10 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
+        assert 'results' in result
         # Should find entries with priority 5 and 10
-        assert len(result['entries']) == 2
-        priorities = [e['metadata']['priority'] for e in result['entries']]
+        assert len(result['results']) == 2
+        priorities = [e['metadata']['priority'] for e in result['results']]
         assert all(p in [5, 10] for p in priorities)
 
     @pytest.mark.asyncio
@@ -521,10 +521,10 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
+        assert 'results' in result
         # Should find entries with priority 8 and 10 (excluding 1, 3, 5)
-        assert len(result['entries']) == 2
-        priorities = [e['metadata']['priority'] for e in result['entries']]
+        assert len(result['results']) == 2
+        priorities = [e['metadata']['priority'] for e in result['results']]
         assert all(p not in [1, 3, 5] for p in priorities)
 
     @pytest.mark.asyncio
@@ -539,9 +539,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 3
-        for entry in result['entries']:
+        assert 'results' in result
+        assert len(result['results']) == 3
+        for entry in result['results']:
             assert 'agent_name' in entry['metadata']
 
     @pytest.mark.asyncio
@@ -562,9 +562,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['metadata']['agent_name'] == 'planner'
+        assert 'results' in result
+        assert len(result['results']) == 1
+        assert result['results'][0]['metadata']['agent_name'] == 'planner'
 
     @pytest.mark.asyncio
     async def test_combined_filters(self) -> None:
@@ -580,9 +580,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 1
-        entry = result['entries'][0]
+        assert 'results' in result
+        assert len(result['results']) == 1
+        entry = result['results'][0]
         assert entry['metadata']['status'] == 'active'
         assert entry['metadata']['priority'] >= 5
         assert entry['source'] == 'agent'
@@ -600,7 +600,7 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
+        assert 'results' in result
         assert 'stats' in result
         stats = result['stats']
         assert 'execution_time_ms' in stats
@@ -622,8 +622,8 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 0
+        assert 'results' in result
+        assert len(result['results']) == 0
 
     @pytest.mark.asyncio
     async def test_null_metadata_handling(self) -> None:
@@ -637,9 +637,9 @@ class TestMetadataFilteringIntegration:
             ctx=None,
         )
 
-        assert 'entries' in result
+        assert 'results' in result
         # Should find the entry with null metadata
-        found_null = any('no metadata' in e['text_content'] for e in result['entries'])
+        found_null = any('no metadata' in e['text_content'] for e in result['results'])
         assert found_null
 
     @pytest.mark.performance
@@ -659,7 +659,7 @@ class TestMetadataFilteringIntegration:
         simple_time = (time.time() - start_time) * 1000
 
         assert simple_time < 200  # Should be under 200ms (relaxed for CI variability)
-        assert 'entries' in result
+        assert 'results' in result
 
         # Complex filter performance test
         start_time = time.time()
@@ -676,7 +676,7 @@ class TestMetadataFilteringIntegration:
         complex_time = (time.time() - start_time) * 1000
 
         assert complex_time < 500  # Should be under 500ms (relaxed for CI variability)
-        assert 'entries' in result
+        assert 'results' in result
 
 
 @pytest.mark.asyncio
@@ -736,8 +736,8 @@ async def test_all_operators(
         ctx=None,
     )
 
-    assert 'entries' in result
-    assert len(result['entries']) == expected_count
+    assert 'results' in result
+    assert len(result['results']) == expected_count
 
 
 @pytest.mark.integration
@@ -828,9 +828,9 @@ class TestNestedJSONMetadata:
 
         # Retrieve and verify the metadata is preserved
         search_result = await search_context.fn(limit=50, thread_id='test_nested_json', ctx=None)
-        assert len(search_result['entries']) == 1
+        assert len(search_result['results']) == 1
 
-        stored_metadata = search_result['entries'][0]['metadata']
+        stored_metadata = search_result['results'][0]['metadata']
         assert stored_metadata['status'] == 'active'
         assert stored_metadata['config']['database']['connection']['pool']['size'] == 10
         assert stored_metadata['config']['database']['connection']['pool']['timeout'] == 30
@@ -862,7 +862,7 @@ class TestNestedJSONMetadata:
 
         # Retrieve and verify arrays are preserved
         search_result = await search_context.fn(limit=50, thread_id='test_arrays', ctx=None)
-        stored_metadata = search_result['entries'][0]['metadata']
+        stored_metadata = search_result['results'][0]['metadata']
 
         assert stored_metadata['tags'] == ['urgent', 'backend', 'production']
         assert stored_metadata['priority_levels'] == [1, 2, 3, 4, 5]
@@ -897,9 +897,9 @@ class TestNestedJSONMetadata:
             ctx=None,
         )
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['text_content'] == 'Entry 1'
-        assert result['entries'][0]['metadata']['user']['preferences']['theme'] == 'dark'
+        assert len(result['results']) == 1
+        assert result['results'][0]['text_content'] == 'Entry 1'
+        assert result['results'][0]['metadata']['user']['preferences']['theme'] == 'dark'
 
     @pytest.mark.asyncio
     async def test_complex_nested_structure(self) -> None:
@@ -941,7 +941,7 @@ class TestNestedJSONMetadata:
 
         # Verify structure is preserved
         search_result = await search_context.fn(limit=50, thread_id='test_complex', ctx=None)
-        stored_metadata = search_result['entries'][0]['metadata']
+        stored_metadata = search_result['results'][0]['metadata']
 
         # Verify deep nesting
         assert stored_metadata['level1']['level2']['level3']['level4']['value'] == 'deeply_nested'
@@ -984,10 +984,10 @@ class TestNestedJSONMetadata:
         search_result = await search_context.fn(
             limit=50, thread_id='test_mixed', metadata={'simple_string': 'value'}, ctx=None,
         )
-        assert len(search_result['entries']) == 1
+        assert len(search_result['results']) == 1
 
         # Verify all types are preserved
-        stored_metadata = search_result['entries'][0]['metadata']
+        stored_metadata = search_result['results'][0]['metadata']
         assert stored_metadata['simple_string'] == 'value'
         assert stored_metadata['simple_int'] == 42
         assert stored_metadata['simple_bool'] is True

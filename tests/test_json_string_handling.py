@@ -186,9 +186,8 @@ class TestSearchContextWithJSONStrings:
             )
 
             assert isinstance(result, dict)
-            assert 'entries' in result
-            assert 'stats' in result
-            assert result['entries'] == []
+            assert 'results' in result
+            assert result['results'] == []
 
     @pytest.mark.asyncio
     async def test_search_context_with_native_tags(self):
@@ -209,9 +208,8 @@ class TestSearchContextWithJSONStrings:
             )
 
             assert isinstance(result, dict)
-            assert 'entries' in result
-            assert 'stats' in result
-            assert result['entries'] == []
+            assert 'results' in result
+            assert result['results'] == []
 
 
 class TestDeleteContextWithJSONStrings:

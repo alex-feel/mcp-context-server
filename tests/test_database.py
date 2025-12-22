@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from anyio import Path as AsyncPath
 
 from app.backends import StorageBackend
 from app.server import init_database
@@ -35,7 +36,8 @@ class TestDatabaseInitialization:
         await backend.shutdown()
 
         # Verify database exists
-        assert temp_db_path.exists()
+        async_temp_db_path = AsyncPath(temp_db_path)
+        assert await async_temp_db_path.exists()
 
         # Verify tables were created
         with sqlite3.connect(str(temp_db_path)) as conn:
@@ -83,8 +85,9 @@ class TestDatabaseInitialization:
 
         # Make directory read-only to cause error
         temp_db_path.parent.mkdir(exist_ok=True)
-        temp_db_path.touch()
-        temp_db_path.chmod(0o444)  # Read-only
+        async_temp_db_path = AsyncPath(temp_db_path)
+        await async_temp_db_path.touch()
+        await async_temp_db_path.chmod(0o444)  # Read-only
 
         # Create SQLite backend explicitly - expect error during initialization
         backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
@@ -94,7 +97,7 @@ class TestDatabaseInitialization:
             await backend.initialize()
 
         # Clean up (no need to shutdown as initialization failed)
-        temp_db_path.chmod(0o644)
+        await async_temp_db_path.chmod(0o644)
 
 
 class TestDatabaseConnection:

@@ -259,7 +259,7 @@ class TestSearchContextValidation:
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid source works fine
             result = await search_context(limit=50, source='user')
-            assert 'entries' in result
+            assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_invalid_content_type(self, mock_repos):
@@ -267,10 +267,10 @@ class TestSearchContextValidation:
         with patch('app.server._ensure_repositories', return_value=mock_repos):
             # Should work with valid content types
             result = await search_context(limit=50, content_type='text')
-            assert 'entries' in result
+            assert 'results' in result
 
             result = await search_context(limit=50, content_type='multimodal')
-            assert 'entries' in result
+            assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_invalid_limit(self, mock_repos):
@@ -282,9 +282,9 @@ class TestSearchContextValidation:
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid limits work fine
             result = await search_context(limit=1)
-            assert 'entries' in result
+            assert 'results' in result
             result = await search_context(limit=100)
-            assert 'entries' in result
+            assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_negative_offset(self, mock_repos):
@@ -296,9 +296,9 @@ class TestSearchContextValidation:
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid offsets work fine
             result = await search_context(limit=50, offset=0)
-            assert 'entries' in result
+            assert 'results' in result
             result = await search_context(limit=50, offset=100)
-            assert 'entries' in result
+            assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_limit_exceeds_maximum(self, mock_repos):
@@ -310,7 +310,7 @@ class TestSearchContextValidation:
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid max limit works fine
             result = await search_context(limit=100)
-            assert 'entries' in result
+            assert 'results' in result
 
 
 class TestGetContextByIdsValidation:
@@ -474,7 +474,7 @@ class TestEdgeCasesAndCombinations:
                 limit=10,
                 offset=0,
             )
-            assert 'entries' in result
+            assert 'results' in result
 
 
 class TestExceptionHandling:

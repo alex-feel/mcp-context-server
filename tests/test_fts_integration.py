@@ -893,13 +893,13 @@ class TestFtsGracefulDegradation:
             records_count=1000,
         )
 
-        # Mock the global status and other dependencies
+        # Mock the global status and settings variable (NOT get_settings function)
         with (
             patch('app.server._fts_migration_status', migration_status),
-            patch('app.server.get_settings') as mock_settings,
+            patch('app.server.settings') as mock_settings,
         ):
-            mock_settings.return_value.enable_fts = True
-            mock_settings.return_value.fts_language = 'english'
+            mock_settings.enable_fts = True
+            mock_settings.fts_language = 'english'
 
             # Import after patching to get patched version
             from app.server import fts_search_context
@@ -945,10 +945,10 @@ class TestFtsGracefulDegradation:
 
         with (
             patch('app.server._fts_migration_status', migration_status),
-            patch('app.server.get_settings') as mock_settings,
+            patch('app.server.settings') as mock_settings,
         ):
-            mock_settings.return_value.enable_fts = True
-            mock_settings.return_value.fts_language = 'english'
+            mock_settings.enable_fts = True
+            mock_settings.fts_language = 'english'
 
             from app.server import fts_search_context
 
@@ -980,10 +980,10 @@ class TestFtsGracefulDegradation:
 
         with (
             patch('app.server._fts_migration_status', migration_status),
-            patch('app.server.get_settings') as mock_settings,
+            patch('app.server.settings') as mock_settings,
         ):
-            mock_settings.return_value.enable_fts = True
-            mock_settings.return_value.fts_language = 'german'
+            mock_settings.enable_fts = True
+            mock_settings.fts_language = 'german'
 
             from app.server import fts_search_context
 

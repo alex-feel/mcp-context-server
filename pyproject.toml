@@ -7,12 +7,13 @@ authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
-    "fastmcp==2.13.1",
+    "fastmcp==2.14.1",
     "pydantic-settings==2.12.0",
-    "pydantic==2.12.4",
+    "pydantic==2.12.5",
     "python-dotenv==1.2.1",
     "typing_extensions==4.15.0",
-    "asyncpg==0.30.0",
+    "asyncpg==0.31.0",
+    "anyio>=4.11.0",
 ]
 
 [build-system]
@@ -47,7 +48,7 @@ dev = [
     "mypy>=1.18.2",
     "pyright>=1.1.406",
     "pytest-timeout>=2.4.0",
-    "asyncpg-stubs>=0.30.2",
+    "asyncpg-stubs>=0.31.1",
     "types-jsonschema>=4.23.0",
 ]
 
@@ -208,27 +209,81 @@ module = 'app.services.embedding_service'
 disallow_any_unimported = false
 
 [tool.pyright]
-include = ["app"]
+include = ["app", "tests"]
 exclude = [".venv", "**/__pycache__"]
-# Set a sane global baseline; strictness is then scoped below.
-typeCheckingMode = "standard"
-
-# Let Ruff handle these:
-reportUnusedImport = "none"
-reportUnusedVariable = "none"
-reportUnnecessaryTypeIgnoreComment = "none"
-
-# Make app/ strict
-strict = ["app"]
-
-# Per-folder overrides (execution environments)
-[[tool.pyright.executionEnvironments]]
-root = "app"
+# Strict mode globally with per-directory suppressions via executionEnvironments
 typeCheckingMode = "strict"
 
+# Let Ruff handle these (use false, not "none" - pyright 1.1.407 requires boolean)
+reportUnusedImport = false
+reportUnusedVariable = false
+reportUnnecessaryTypeIgnoreComment = false
+
+# Suppress optional dependency errors in app/backends (pgvector.asyncpg, sqlite_vec)
+[[tool.pyright.executionEnvironments]]
+root = "app/backends"
+reportMissingImports = false
+reportMissingModuleSource = false
+reportMissingTypeStubs = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+
+# Suppress optional dependency errors in app/services (ollama, numpy)
+[[tool.pyright.executionEnvironments]]
+root = "app/services"
+reportMissingImports = false
+reportMissingModuleSource = false
+reportMissingTypeStubs = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+
+# Suppress optional dependency errors in app/repositories (sqlite_vec, numpy)
+[[tool.pyright.executionEnvironments]]
+root = "app/repositories"
+reportMissingImports = false
+reportMissingModuleSource = false
+reportMissingTypeStubs = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+
+# Catch-all for remaining app files (e.g., server.py) - MUST come after more specific environments
+[[tool.pyright.executionEnvironments]]
+root = "app"
+reportMissingImports = false
+reportMissingModuleSource = false
+reportMissingTypeStubs = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+
+# Relaxed checking for tests (simulate basic mode + suppress optional deps)
 [[tool.pyright.executionEnvironments]]
 root = "tests"
-typeCheckingMode = "basic"
+reportMissingImports = false
+reportMissingModuleSource = false
+reportMissingTypeStubs = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = false
+reportPrivateUsage = false
+reportOptionalMemberAccess = false
+reportOptionalSubscript = false
+reportOptionalCall = false
+reportOptionalIterable = false
+reportOptionalContextManager = false
+reportOptionalOperand = false
+reportMissingParameterType = false
+reportUnnecessaryComparison = false
+reportArgumentType = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"

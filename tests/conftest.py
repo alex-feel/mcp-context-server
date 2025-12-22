@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
+from anyio import Path as AsyncPath
 from dotenv import load_dotenv
 from fastmcp import Context
 
@@ -77,6 +78,23 @@ requires_numpy = pytest.mark.skipif(
 requires_semantic_search = pytest.mark.skipif(
     not are_semantic_search_deps_available(),
     reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
+)
+
+
+def is_fts_enabled() -> bool:
+    """Check if FTS is enabled in environment."""
+    from app.settings import get_settings
+    return get_settings().enable_fts
+
+
+requires_fts = pytest.mark.skipif(
+    not is_fts_enabled(),
+    reason='FTS is not enabled (ENABLE_FTS=true not set)',
+)
+
+requires_hybrid_search = pytest.mark.skipif(
+    not (is_fts_enabled() or are_semantic_search_deps_available()),
+    reason='Neither FTS nor semantic search is available for hybrid search',
 )
 
 # Load .env file to make environment variables available for PostgreSQL tests
@@ -512,8 +530,9 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     await asyncio.sleep(0.05)
 
     # Remove existing database if it exists (DB_PATH is patched by mock_server_dependencies)
-    if temp_db_path.exists():
-        temp_db_path.unlink()
+    async_temp_db_path = AsyncPath(temp_db_path)
+    if await async_temp_db_path.exists():
+        await async_temp_db_path.unlink()
 
     # Create persistent backend before yielding (prevents lazy initialization in tests)
     # NOTE: We create SQLite backend directly instead of calling init_database() to avoid

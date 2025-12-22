@@ -264,10 +264,10 @@ class TestSearchContextErrors:
 
         # Valid limits work fine
         result = await search_context(limit=1)
-        assert 'entries' in result
+        assert 'results' in result
 
         result = await search_context(limit=100)
-        assert 'entries' in result
+        assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_negative_offset(self, mock_server_dependencies):
@@ -280,10 +280,10 @@ class TestSearchContextErrors:
 
         # Valid offsets work fine
         result = await search_context(limit=50, offset=0)
-        assert 'entries' in result
+        assert 'results' in result
 
         result = await search_context(limit=50, offset=100)
-        assert 'entries' in result
+        assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_search_database_error(self, mock_server_dependencies):
@@ -392,9 +392,9 @@ class TestFieldValidation:
 
         # Valid limits work
         result = await search_context(limit=1)
-        assert 'entries' in result
+        assert 'results' in result
         result = await search_context(limit=100)
-        assert 'entries' in result
+        assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_offset_non_negative(self, mock_server_dependencies):
@@ -404,9 +404,9 @@ class TestFieldValidation:
 
         # Valid offsets work
         result = await search_context(limit=50, offset=0)
-        assert 'entries' in result
+        assert 'results' in result
         result = await search_context(limit=50, offset=100)
-        assert 'entries' in result
+        assert 'results' in result
 
 
 class TestErrorMessageConsistency:

@@ -108,24 +108,24 @@ Key points:
         # Verify the complete conversation
         conversation = await search_context(limit=50, thread_id=thread_id)
         assert isinstance(conversation, dict)
-        assert len(conversation['entries']) == 4
+        assert len(conversation['results']) == 4
 
         # Check conversation order (newest first) - compare actual IDs not list indices
-        conversation_ids = [c['id'] for c in conversation['entries']]
+        conversation_ids = [c['id'] for c in conversation['results']]
         assert agent_review['context_id'] in conversation_ids
         assert user_msg['context_id'] in conversation_ids
         # Verify newest is first (agent_review was stored last)
-        assert conversation['entries'][0]['id'] == agent_review['context_id']
+        assert conversation['results'][0]['id'] == agent_review['context_id']
 
         # Verify mixed content types
-        content_types = [c['content_type'] for c in conversation['entries']]
+        content_types = [c['content_type'] for c in conversation['results']]
         assert 'text' in content_types
         assert 'multimodal' in content_types
 
         # Search for code review entries
         reviews = await search_context(limit=50, tags=['code-review'])
         assert isinstance(reviews, dict)
-        assert len(reviews['entries']) == 2
+        assert len(reviews['results']) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -193,10 +193,10 @@ Key points:
         # Analyze agent contributions
         agent_entries = await search_context(limit=50, thread_id=thread_id, source='agent')
         assert isinstance(agent_entries, dict)
-        assert len(agent_entries['entries']) == 4
+        assert len(agent_entries['results']) == 4
 
         # Verify different agent names participated
-        agent_names = {e['metadata']['agent_name'] for e in agent_entries['entries']}
+        agent_names = {e['metadata']['agent_name'] for e in agent_entries['results']}
         assert agent_names == {'planner', 'coder', 'tester', 'reviewer'}
 
     @pytest.mark.asyncio
@@ -246,7 +246,7 @@ Key points:
         # Search across documentation
         docs = await search_context(limit=50, tags=['documentation'])
         assert isinstance(docs, dict)
-        assert len(docs['entries']) >= 1
+        assert len(docs['results']) >= 1
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -284,7 +284,7 @@ class TestConcurrentOperations:
         # Verify all entries exist
         all_entries = await search_context(limit=50, thread_id=thread_id)
         assert isinstance(all_entries, dict)
-        assert len(all_entries['entries']) == 20
+        assert len(all_entries['results']) == 20
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -421,7 +421,7 @@ class TestDataIntegrity:
         # Verify complete deletion
         remaining = await search_context(limit=50, thread_id=thread_id)
         assert isinstance(remaining, dict)
-        assert remaining['entries'] == []
+        assert remaining['results'] == []
 
         # Verify stats reflect deletion
         await get_statistics()
@@ -460,14 +460,14 @@ class TestPerformanceAndScaling:
         page2 = await search_context(thread_id=thread_id, limit=20, offset=20)
         page3 = await search_context(thread_id=thread_id, limit=20, offset=40)
 
-        assert len(page1['entries']) == 20
-        assert len(page2['entries']) == 20
-        assert len(page3['entries']) == 20
+        assert len(page1['results']) == 20
+        assert len(page2['results']) == 20
+        assert len(page3['results']) == 20
 
         # Verify no overlap
-        ids1 = {e['id'] for e in page1['entries']}
-        ids2 = {e['id'] for e in page2['entries']}
-        ids3 = {e['id'] for e in page3['entries']}
+        ids1 = {e['id'] for e in page1['results']}
+        ids2 = {e['id'] for e in page2['results']}
+        ids3 = {e['id'] for e in page3['results']}
 
         assert ids1.isdisjoint(ids2)
         assert ids2.isdisjoint(ids3)
@@ -499,7 +499,7 @@ class TestPerformanceAndScaling:
 
         # Search across all threads
         all_entries = await search_context(tags=['multi-thread-test'], limit=100)
-        assert len(all_entries['entries']) >= 100
+        assert len(all_entries['results']) >= 100
 
         # Get statistics
         stats = await get_statistics()
@@ -531,7 +531,7 @@ class TestErrorRecovery:
 
         # Verify only valid entries were stored
         all_entries = await search_context(limit=50)
-        thread_ids = {e['thread_id'] for e in all_entries['entries']}
+        thread_ids = {e['thread_id'] for e in all_entries['results']}
         assert 'valid1' in thread_ids
         assert 'valid2' not in thread_ids  # Should not exist
         assert 'valid3' in thread_ids
@@ -560,8 +560,8 @@ class TestErrorRecovery:
 
         # Verify data integrity
         entries = await search_context(limit=50, thread_id='test')
-        assert len(entries['entries']) == 1
-        assert entries['entries'][0]['text_content'] == 'This should work'
+        assert len(entries['results']) == 1
+        assert entries['results'][0]['text_content'] == 'This should work'
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -606,7 +606,7 @@ class TestComplexQueries:
 
         # Complex query 2: All Python entries (ML or backend)
         python_results = await search_context(limit=50, tags=['python'])
-        assert len(python_results['entries']) >= 12  # At least 2 python tag sets * 3 threads * 2 sources
+        assert len(python_results['results']) >= 12  # At least 2 python tag sets * 3 threads * 2 sources
 
         # Complex query 3: User entries in project_b with pagination
         page1 = await search_context(
@@ -621,9 +621,9 @@ class TestComplexQueries:
             limit=2,
             offset=2,
         )
-        assert len(page1['entries']) == 2
-        assert len(page2['entries']) == 2
-        assert page1['entries'][0]['id'] != page2['entries'][0]['id']
+        assert len(page1['results']) == 2
+        assert len(page2['results']) == 2
+        assert page1['results'][0]['id'] != page2['results'][0]['id']
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -697,12 +697,12 @@ class TestMaintenanceOperations:
         python_results = await search_context(limit=50, tags=['python'])
         testing_results = await search_context(limit=50, tags=['testing'])
 
-        assert len(python_results['entries']) == 1
-        assert len(testing_results['entries']) == 1
+        assert len(python_results['results']) == 1
+        assert len(testing_results['results']) == 1
 
         # Check that tags are normalized in results
-        assert 'python' in python_results['entries'][0]['tags']
-        assert 'testing' in testing_results['entries'][0]['tags']
+        assert 'python' in python_results['results'][0]['tags']
+        assert 'testing' in testing_results['results'][0]['tags']
 
         # Get unique tags from stats
         stats = await get_statistics()

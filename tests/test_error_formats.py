@@ -205,7 +205,7 @@ class TestErrorFormatConsistency:
                 limit=-1,
             )
             # SQLite backend: proceeds with invalid value
-            assert 'entries' in result, 'Should return result structure'
+            assert 'results' in result, 'Should return result structure'
         except ToolError:
             # PostgreSQL backend: database-level validation rejects negative LIMIT
             # Test passes - exception is expected for PostgreSQL
@@ -225,7 +225,7 @@ class TestErrorFormatConsistency:
         )
 
         # Function proceeds with invalid value when protocol validation is bypassed
-        assert 'entries' in result, 'Should return result structure even with excessive limit'
+        assert 'results' in result, 'Should return result structure even with excessive limit'
 
     @pytest.mark.asyncio
     async def test_search_context_negative_offset(self, mock_server_dependencies: None) -> None:
@@ -247,7 +247,7 @@ class TestErrorFormatConsistency:
                 offset=-1,
             )
             # SQLite backend: proceeds with invalid value
-            assert 'entries' in result, 'Should return result structure'
+            assert 'results' in result, 'Should return result structure'
         except ToolError:
             # PostgreSQL backend: database-level validation rejects negative OFFSET
             # Test passes - exception is expected for PostgreSQL

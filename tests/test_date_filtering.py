@@ -207,7 +207,7 @@ class TestSearchContextDateFiltering:
             limit=50,
             )
 
-        assert len(result['entries']) == 0
+        assert len(result['results']) == 0
         # Verify start_date was passed to repository
         call_args = self.mock_repos.context.search_contexts.call_args
         assert call_args[1]['start_date'] == future_date
@@ -231,7 +231,7 @@ class TestSearchContextDateFiltering:
             limit=50,
             )
 
-        assert len(result['entries']) == 0
+        assert len(result['results']) == 0
         call_args = self.mock_repos.context.search_contexts.call_args
         # Verify end_date was expanded to end-of-day
         assert call_args[1]['end_date'] == expected_end_date
@@ -268,7 +268,7 @@ class TestSearchContextDateFiltering:
             limit=50,
             )
 
-        assert len(result['entries']) == 1
+        assert len(result['results']) == 1
         call_args = self.mock_repos.context.search_contexts.call_args
         assert call_args[1]['start_date'] == today
         # Verify end_date was expanded to end-of-day
@@ -375,8 +375,8 @@ class TestSearchContextDateIntegration:
         )
 
         # Entry should be found because end_date is expanded to end-of-day
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['text_content'] == 'UX fix test entry'
+        assert len(result['results']) == 1
+        assert result['results'][0]['text_content'] == 'UX fix test entry'
 
     @pytest.mark.asyncio
     async def test_date_filter_with_real_database(self) -> None:
@@ -400,7 +400,7 @@ class TestSearchContextDateIntegration:
         limit=50,
         )
 
-        assert len(result['entries']) == 1
+        assert len(result['results']) == 1
 
     @pytest.mark.asyncio
     async def test_future_start_date_returns_empty(self) -> None:
@@ -421,7 +421,7 @@ class TestSearchContextDateIntegration:
         limit=50,
         )
 
-        assert len(result['entries']) == 0
+        assert len(result['results']) == 0
 
     @pytest.mark.asyncio
     async def test_past_end_date_returns_empty(self) -> None:
@@ -442,7 +442,7 @@ class TestSearchContextDateIntegration:
         limit=50,
         )
 
-        assert len(result['entries']) == 0
+        assert len(result['results']) == 0
 
     @pytest.mark.asyncio
     async def test_date_filter_combined_with_source(self) -> None:
@@ -471,8 +471,8 @@ class TestSearchContextDateIntegration:
         limit=50,
         )
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['source'] == 'user'
+        assert len(result['results']) == 1
+        assert result['results'][0]['source'] == 'user'
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -874,8 +874,8 @@ class TestSQLiteDatetimeNormalization:
         limit=50,
         )
 
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['text_content'] == 'Entry with space separator in timestamp'
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['text_content'] == 'Entry with space separator in timestamp'
 
     @pytest.mark.asyncio
     async def test_sqlite_datetime_z_suffix(self) -> None:
@@ -901,8 +901,8 @@ class TestSQLiteDatetimeNormalization:
         limit=50,
         )
 
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['text_content'] == 'Entry for Z suffix test'
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['text_content'] == 'Entry for Z suffix test'
 
     @pytest.mark.asyncio
     async def test_sqlite_datetime_positive_timezone_offset(self) -> None:
@@ -931,8 +931,8 @@ class TestSQLiteDatetimeNormalization:
         )
 
         # Entry should be found (datetime() normalizes +02:00 to UTC, which is 2 hours earlier)
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['text_content'] == 'Entry for positive timezone test'
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['text_content'] == 'Entry for positive timezone test'
 
     @pytest.mark.asyncio
     async def test_sqlite_datetime_negative_timezone_offset(self) -> None:
@@ -962,8 +962,8 @@ class TestSQLiteDatetimeNormalization:
         )
 
         # Entry should be found (datetime() normalizes -05:00 to UTC, which is 5 hours later)
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['text_content'] == 'Entry for negative timezone test'
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['text_content'] == 'Entry for negative timezone test'
 
     @pytest.mark.asyncio
     async def test_sqlite_date_only_still_works(self) -> None:
@@ -990,8 +990,8 @@ class TestSQLiteDatetimeNormalization:
         limit=50,
         )
 
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['text_content'] == 'Entry for date-only test'
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['text_content'] == 'Entry for date-only test'
 
     @pytest.mark.asyncio
     async def test_sqlite_datetime_end_date_with_t_separator(self) -> None:
@@ -1019,8 +1019,8 @@ class TestSQLiteDatetimeNormalization:
         limit=50,
         )
 
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['text_content'] == 'Entry for end_date T separator test'
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['text_content'] == 'Entry for end_date T separator test'
 
     @pytest.mark.asyncio
     async def test_sqlite_datetime_mixed_formats(self) -> None:
@@ -1048,5 +1048,5 @@ class TestSQLiteDatetimeNormalization:
         limit=50,
         )
 
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['text_content'] == 'Entry for mixed format test'
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['text_content'] == 'Entry for mixed format test'

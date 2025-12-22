@@ -232,10 +232,10 @@ class TestUTF8Encoding:
                 limit=50,
             )
 
-        assert 'entries' in result
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['text_content'] == 'Текст на русском'
-        assert result['entries'][0]['tags'] == ['тест', 'юникод']
+        assert 'results' in result
+        assert len(result['results']) == 1
+        assert result['results'][0]['text_content'] == 'Текст на русском'
+        assert result['results'][0]['tags'] == ['тест', 'юникод']
 
     @pytest.mark.asyncio
     async def test_metadata_with_unicode(self) -> None:

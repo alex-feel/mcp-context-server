@@ -53,8 +53,8 @@ class TestParameterHandling:
 
         # Verify tags were stored correctly
         search_result = await search_context(limit=50, thread_id='param_test_tags')
-        assert len(search_result['entries']) == 1
-        assert set(search_result['entries'][0]['tags']) == set(tags_list)
+        assert len(search_result['results']) == 1
+        assert set(search_result['results'][0]['tags']) == set(tags_list)
 
     @pytest.mark.asyncio
     async def test_store_context_tags_none(self) -> None:
@@ -70,7 +70,7 @@ class TestParameterHandling:
 
         # Verify no tags stored
         search_result = await search_context(limit=50, thread_id='param_test_no_tags')
-        assert search_result['entries'][0]['tags'] == []
+        assert search_result['results'][0]['tags'] == []
 
     @pytest.mark.asyncio
     async def test_store_context_metadata_as_dict(self) -> None:
@@ -246,11 +246,11 @@ class TestParameterHandling:
         results = await search_context(limit=50, tags=['python', 'javascript'])
 
         # Should find entries with either python or javascript tags
-        assert len(results['entries']) >= 3  # All three entries match
+        assert len(results['results']) >= 3  # All three entries match
 
         # Test with single tag in list
         results = await search_context(limit=50, tags=['testing'])
-        found = [r for r in results['entries'] if r['thread_id'] == 'search_tags_test' and 'testing' in r['tags']]
+        found = [r for r in results['results'] if r['thread_id'] == 'search_tags_test' and 'testing' in r['tags']]
         assert len(found) == 1
 
     @pytest.mark.asyncio
@@ -267,8 +267,8 @@ class TestParameterHandling:
         # Search without tags filter (tags=None)
         results = await search_context(limit=50, thread_id='search_no_tags_test', tags=None)
 
-        assert len(results['entries']) == 1
-        assert results['entries'][0]['thread_id'] == 'search_no_tags_test'
+        assert len(results['results']) == 1
+        assert results['results'][0]['thread_id'] == 'search_no_tags_test'
 
     @pytest.mark.asyncio
     async def test_search_context_empty_tags_list(self) -> None:
@@ -284,7 +284,7 @@ class TestParameterHandling:
         # Search with empty tags list should return all entries (no filter applied)
         results = await search_context(limit=50, thread_id='search_empty_tags_test', tags=[])
 
-        assert len(results['entries']) == 1
+        assert len(results['results']) == 1
 
     @pytest.mark.asyncio
     async def test_get_context_by_ids_list_of_ints(self) -> None:
@@ -360,8 +360,8 @@ class TestParameterHandling:
 
         # Verify only the kept entry remains
         remaining = await search_context(limit=50, thread_id='delete_ids_test')
-        assert len(remaining['entries']) == 1
-        assert remaining['entries'][0]['id'] == keep_result['context_id']
+        assert len(remaining['results']) == 1
+        assert remaining['results'][0]['id'] == keep_result['context_id']
 
     @pytest.mark.asyncio
     async def test_delete_context_ids_none(self) -> None:
@@ -416,9 +416,9 @@ class TestParameterValidation:
         """
         # Valid limits work fine
         result = await search_context(limit=1)
-        assert 'entries' in result
+        assert 'results' in result
         result = await search_context(limit=100)
-        assert 'entries' in result
+        assert 'results' in result
 
     @pytest.mark.asyncio
     async def test_offset_validation(self) -> None:
@@ -428,9 +428,9 @@ class TestParameterValidation:
         """
         # Valid offsets work fine
         result = await search_context(limit=50, offset=0)
-        assert 'entries' in result
+        assert 'results' in result
         result = await search_context(limit=50, offset=100)
-        assert 'entries' in result
+        assert 'results' in result
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -454,7 +454,7 @@ class TestParameterTypeCoercion:
         # Verify tags were normalized to lowercase
         search_result = await search_context(limit=50, thread_id='tags_normalization_test')
         normalized_tags = ['python', 'testing', 'mixed-case']
-        assert set(search_result['entries'][0]['tags']) == set(normalized_tags)
+        assert set(search_result['results'][0]['tags']) == set(normalized_tags)
 
     @pytest.mark.asyncio
     async def test_metadata_json_serialization(self) -> None:
@@ -509,7 +509,7 @@ class TestEdgeCasesForParameters:
 
         # Verify Unicode tags work in search
         search_results = await search_context(limit=50, tags=['中文标签'])
-        found = [r for r in search_results['entries'] if r['thread_id'] == 'unicode_tags_test']
+        found = [r for r in search_results['results'] if r['thread_id'] == 'unicode_tags_test']
         assert len(found) == 1
 
     @pytest.mark.asyncio
@@ -529,7 +529,7 @@ class TestEdgeCasesForParameters:
 
         # Verify all tags were stored
         search_result = await search_context(limit=50, thread_id='large_tags_test')
-        assert len(search_result['entries'][0]['tags']) == 100
+        assert len(search_result['results'][0]['tags']) == 100
 
     @pytest.mark.asyncio
     async def test_very_large_metadata(self) -> None:
@@ -577,7 +577,7 @@ class TestEdgeCasesForParameters:
 
         # Verify duplicates were removed
         search_result = await search_context(limit=50, thread_id='duplicate_tags_test')
-        unique_tags = set(search_result['entries'][0]['tags'])
+        unique_tags = set(search_result['results'][0]['tags'])
         assert unique_tags == {'python', 'test'}
 
     @pytest.mark.asyncio
@@ -629,12 +629,12 @@ class TestForwardSlashAndSpecialCharacterTags:
 
         # Verify tags were stored correctly with forward slashes preserved
         search_result = await search_context(limit=50, thread_id='forward_slash_test')
-        assert len(search_result['entries']) == 1
-        assert set(search_result['entries'][0]['tags']) == set(forward_slash_tags)
+        assert len(search_result['results']) == 1
+        assert set(search_result['results'][0]['tags']) == set(forward_slash_tags)
 
         # Test searching by forward slash tags
         search_by_tag = await search_context(limit=50, tags=['app/file'])
-        found = [r for r in search_by_tag['entries'] if r['thread_id'] == 'forward_slash_test']
+        found = [r for r in search_by_tag['results'] if r['thread_id'] == 'forward_slash_test']
         assert len(found) == 1
 
     @pytest.mark.asyncio
@@ -661,8 +661,8 @@ class TestForwardSlashAndSpecialCharacterTags:
 
         # Verify all path tags were stored
         search_result = await search_context(limit=50, thread_id='path_tags_test')
-        assert len(search_result['entries']) == 1
-        assert len(search_result['entries'][0]['tags']) == len(path_tags)
+        assert len(search_result['results']) == 1
+        assert len(search_result['results'][0]['tags']) == len(path_tags)
 
     @pytest.mark.asyncio
     async def test_mixed_special_characters_in_tags(self) -> None:
@@ -697,11 +697,11 @@ class TestForwardSlashAndSpecialCharacterTags:
 
         # Verify all special character tags were stored (normalized to lowercase)
         search_result = await search_context(limit=50, thread_id='special_chars_test')
-        assert len(search_result['entries']) == 1
-        assert len(search_result['entries'][0]['tags']) == len(special_tags)
+        assert len(search_result['results']) == 1
+        assert len(search_result['results'][0]['tags']) == len(special_tags)
         # Check that lowercase normalization happened
-        assert 'feature/new-ui' in search_result['entries'][0]['tags']
-        assert 'v1.2.3' in search_result['entries'][0]['tags']
+        assert 'feature/new-ui' in search_result['results'][0]['tags']
+        assert 'v1.2.3' in search_result['results'][0]['tags']
 
     @pytest.mark.asyncio
     async def test_empty_and_whitespace_tags_filtering(self) -> None:
@@ -731,8 +731,8 @@ class TestForwardSlashAndSpecialCharacterTags:
 
         # Verify only valid tags were stored
         search_result = await search_context(limit=50, thread_id='empty_tags_test')
-        assert len(search_result['entries']) == 1
-        assert set(search_result['entries'][0]['tags']) == {'valid_tag', 'another_valid_tag'}
+        assert len(search_result['results']) == 1
+        assert set(search_result['results'][0]['tags']) == {'valid_tag', 'another_valid_tag'}
 
     @pytest.mark.asyncio
     async def test_tag_normalization_with_special_chars(self) -> None:
@@ -764,7 +764,7 @@ class TestForwardSlashAndSpecialCharacterTags:
             'path\\to\\file',
             'user@domain.com',
         ]
-        assert set(search_result['entries'][0]['tags']) == set(expected_tags)
+        assert set(search_result['results'][0]['tags']) == set(expected_tags)
 
     @pytest.mark.asyncio
     async def test_search_by_forward_slash_tags(self) -> None:
@@ -791,13 +791,13 @@ class TestForwardSlashAndSpecialCharacterTags:
 
         # Search by forward slash tag
         results = await search_context(limit=50, tags=['src/python/main.py'])
-        found = [r for r in results['entries'] if r['thread_id'] == 'search_slash_test']
+        found = [r for r in results['results'] if r['thread_id'] == 'search_slash_test']
         assert len(found) == 1
         assert found[0]['text_content'] == 'Python file'
 
         # Search by multiple forward slash tags (OR logic)
         results = await search_context(limit=50, tags=['config/settings.yaml', 'tests/unit/test_main.py'])
-        found = [r for r in results['entries'] if r['thread_id'] == 'search_slash_test']
+        found = [r for r in results['results'] if r['thread_id'] == 'search_slash_test']
         assert len(found) == 2
         texts = {r['text_content'] for r in found}
         assert texts == {'Config file', 'Test file'}
@@ -848,8 +848,8 @@ class TestForwardSlashAndSpecialCharacterTags:
 
         # Verify all edge cases were stored
         search_result = await search_context(limit=50, thread_id='extreme_slash_test')
-        assert len(search_result['entries']) == 1
-        assert len(search_result['entries'][0]['tags']) == len(edge_case_tags)
+        assert len(search_result['results']) == 1
+        assert len(search_result['results'][0]['tags']) == len(edge_case_tags)
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -894,8 +894,8 @@ class TestParameterInteractions:
         )
 
         # Should find only entries 1 and 3 (correct thread, source, and tags)
-        assert len(results['entries']) == 2
-        texts = [r['text_content'] for r in results['entries']]
+        assert len(results['results']) == 2
+        texts = [r['text_content'] for r in results['results']]
         assert set(texts) == {'Entry 1', 'Entry 3'}
 
     @pytest.mark.asyncio

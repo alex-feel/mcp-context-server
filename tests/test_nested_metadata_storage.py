@@ -74,7 +74,7 @@ async def test_complex_nested_metadata() -> None:
         limit=1,
     )
 
-    entries = search_result.get('entries', [])
+    entries = search_result.get('results', [])
     assert len(entries) == 1
     retrieved_metadata = entries[0].get('metadata')
     assert retrieved_metadata is not None
@@ -110,7 +110,7 @@ async def test_array_metadata() -> None:
         limit=1,
     )
 
-    entries = search_result.get('entries', [])
+    entries = search_result.get('results', [])
     assert len(entries) == 1
     retrieved_metadata = entries[0].get('metadata')
     assert retrieved_metadata is not None
@@ -158,7 +158,7 @@ async def test_deeply_nested_metadata() -> None:
         limit=1,
     )
 
-    entries = search_result.get('entries', [])
+    entries = search_result.get('results', [])
     assert len(entries) == 1
     retrieved_metadata = entries[0].get('metadata')
     assert retrieved_metadata is not None
@@ -213,7 +213,7 @@ async def test_mixed_nested_structures() -> None:
         limit=1,
     )
 
-    entries = search_result.get('entries', [])
+    entries = search_result.get('results', [])
     assert len(entries) == 1
     retrieved_metadata = entries[0].get('metadata')
     assert retrieved_metadata is not None
@@ -248,7 +248,7 @@ async def test_backward_compatibility_flat_metadata() -> None:
         limit=1,
     )
 
-    entries = search_result.get('entries', [])
+    entries = search_result.get('results', [])
     assert len(entries) == 1
     retrieved_metadata = entries[0].get('metadata')
     assert retrieved_metadata is not None

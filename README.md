@@ -797,6 +797,44 @@ hybrid_search_context(
 
 For detailed configuration and troubleshooting, see the [Hybrid Search Guide](docs/hybrid-search.md).
 
+### Search Tools Response Structure
+
+All search tools return consistent response structures with common fields and tool-specific additions:
+
+| Field | search_context | semantic_search_context | fts_search_context | hybrid_search_context |
+|-------|----------------|------------------------|-------------------|----------------------|
+| `results` | List of entries | List of entries | List of entries | List of entries |
+| `count` | Yes | Yes | Yes | Yes |
+| `query` | No | Yes | Yes | Yes |
+| `stats` | explain_query=True | explain_query=True | explain_query=True | explain_query=True |
+| `model` | No | Yes (embedding model) | No | No |
+| `mode` | No | No | Yes (search mode) | No |
+| `language` | No | No | Yes (FTS language) | No |
+| `fusion_method` | No | No | No | Yes |
+| `search_modes_used` | No | No | No | Yes |
+| `fts_count` | No | No | No | Yes |
+| `semantic_count` | No | No | No | Yes |
+
+**Entry Fields by Tool:**
+
+| Entry Field | search_context | semantic_search_context | fts_search_context | hybrid_search_context |
+|-------------|----------------|------------------------|-------------------|----------------------|
+| `id`, `thread_id`, `source`, `content_type` | Yes | Yes | Yes | Yes |
+| `text_content` | Truncated (150 chars) | Full | Full | Full |
+| `is_truncated` | Yes | No | No | No |
+| `metadata`, `tags`, `created_at`, `updated_at` | Yes | Yes | Yes | Yes |
+| `images` | include_images=True | include_images=True | include_images=True | include_images=True |
+| `distance` | No | Yes (L2 distance) | No | No |
+| `score` | No | No | Yes (relevance) | No |
+| `highlighted` | No | No | highlight=True | No |
+| `scores` (rrf, fts_rank, semantic_rank, etc.) | No | No | No | Yes |
+
+**Notes:**
+- `stats` is only included when `explain_query=True` for all search tools
+- `search_context` returns truncated text for browsing; use `get_context_by_ids` for full content
+- Lower `distance` values indicate higher semantic similarity
+- Higher `score` values indicate better FTS relevance
+
 ### Batch Operations
 
 The following tools enable efficient batch processing of context entries.
