@@ -653,6 +653,7 @@ name = "mcp-context-server"
 version = "0.10.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "asyncpg" },
     { name = "fastmcp" },
     { name = "pydantic" },
@@ -685,6 +686,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.11.0" },
     { name = "asyncpg", specifier = "==0.31.0" },
     { name = "fastmcp", specifier = "==2.14.1" },
     { name = "numpy", marker = "extra == 'semantic-search'", specifier = ">=1.24.0" },

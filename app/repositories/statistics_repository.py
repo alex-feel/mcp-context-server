@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 
+from anyio import Path as AsyncPath
+
 from app.backends.base import StorageBackend
 from app.repositories.base import BaseRepository
 from app.types import ThreadInfoDict
@@ -209,10 +211,13 @@ class StatisticsRepository(BaseRepository):
 
             stats = await self.backend.execute_read(_get_stats_postgresql)
 
-        if db_path and db_path.exists():
-            size_in_bytes: int = db_path.stat().st_size
-            size_in_mb: float = size_in_bytes / (1024 * 1024)
-            stats['database_size_mb'] = round(size_in_mb, 2)
+        if db_path:
+            async_path = AsyncPath(db_path)
+            if await async_path.exists():
+                stat_result = await async_path.stat()
+                size_in_bytes: int = stat_result.st_size
+                size_in_mb: float = size_in_bytes / (1024 * 1024)
+                stats['database_size_mb'] = round(size_in_mb, 2)
 
         return stats
 

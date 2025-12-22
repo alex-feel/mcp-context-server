@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
+from anyio import Path as AsyncPath
 from dotenv import load_dotenv
 from fastmcp import Context
 
@@ -529,8 +530,9 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     await asyncio.sleep(0.05)
 
     # Remove existing database if it exists (DB_PATH is patched by mock_server_dependencies)
-    if temp_db_path.exists():
-        temp_db_path.unlink()
+    async_temp_db_path = AsyncPath(temp_db_path)
+    if await async_temp_db_path.exists():
+        await async_temp_db_path.unlink()
 
     # Create persistent backend before yielding (prevents lazy initialization in tests)
     # NOTE: We create SQLite backend directly instead of calling init_database() to avoid
