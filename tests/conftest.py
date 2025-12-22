@@ -79,6 +79,23 @@ requires_semantic_search = pytest.mark.skipif(
     reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
 )
 
+
+def is_fts_enabled() -> bool:
+    """Check if FTS is enabled in environment."""
+    from app.settings import get_settings
+    return get_settings().enable_fts
+
+
+requires_fts = pytest.mark.skipif(
+    not is_fts_enabled(),
+    reason='FTS is not enabled (ENABLE_FTS=true not set)',
+)
+
+requires_hybrid_search = pytest.mark.skipif(
+    not (is_fts_enabled() or are_semantic_search_deps_available()),
+    reason='Neither FTS nor semantic search is available for hybrid search',
+)
+
 # Load .env file to make environment variables available for PostgreSQL tests
 load_dotenv()
 
