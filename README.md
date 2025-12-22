@@ -644,6 +644,7 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `include_images` (bool, optional): Include image data in results (default: false)
+- `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Metadata Filtering:** Supports same filtering syntax as search_context. See [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
 
@@ -652,6 +653,7 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 - List of semantically similar context entries with similarity scores
 - Result count
 - Model name used for embeddings
+- Query execution statistics (only when `explain_query=True`)
 
 **Use Cases:**
 - Find related work across different threads based on semantic similarity

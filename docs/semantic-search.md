@@ -423,6 +423,7 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
 - `include_images` (bool, optional): Include image data in results (default: false)
+- `explain_query` (bool, optional): Include query execution statistics (default: false)
 
 **Metadata Filtering**: The `metadata` and `metadata_filters` parameters work identically to `search_context`. For comprehensive documentation on operators, nested paths, and best practices, see the [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
@@ -440,9 +441,18 @@ When semantic search is enabled and all dependencies are met, a new MCP tool bec
     }
   ],
   "count": 5,
-  "model": "embeddinggemma:latest"
+  "model": "embeddinggemma:latest",
+  "stats": {
+    "execution_time_ms": 85.3,
+    "embedding_generation_ms": 45.1,
+    "filters_applied": 2,
+    "rows_returned": 5,
+    "query_plan": "..."
+  }
 }
 ```
+
+**Note:** The `stats` field is only included when `explain_query=True`.
 
 **Distance Metric**: L2 (Euclidean distance) - lower values indicate higher similarity.
 

@@ -217,13 +217,15 @@ When hybrid search is enabled and at least one underlying search method is avail
     "fts_stats": {
       "execution_time_ms": 15.2,
       "filters_applied": 2,
-      "rows_returned": 12
+      "rows_returned": 12,
+      "query_plan": "..."
     },
     "semantic_stats": {
       "execution_time_ms": 85.3,
       "embedding_generation_ms": 45.1,
       "filters_applied": 2,
-      "rows_returned": 10
+      "rows_returned": 10,
+      "query_plan": "..."
     },
     "fusion_stats": {
       "rrf_k": 60,
@@ -253,12 +255,14 @@ When `explain_query=True`, the response includes a `stats` object with detailed 
 - `execution_time_ms`: FTS search execution time
 - `filters_applied`: Number of metadata/date filters applied
 - `rows_returned`: Number of FTS results before fusion
+- `query_plan`: Query execution plan details (when explain_query=True)
 
 **Semantic Stats:**
 - `execution_time_ms`: Semantic search execution time
 - `embedding_generation_ms`: Time spent generating query embedding via Ollama
 - `filters_applied`: Number of metadata/date filters applied
 - `rows_returned`: Number of semantic results before fusion
+- `query_plan`: Query execution plan details (when explain_query=True)
 
 **Fusion Stats:**
 - `rrf_k`: RRF smoothing constant used
