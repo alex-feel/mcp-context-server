@@ -144,6 +144,7 @@ class EmbeddingRepository(BaseRepository):
         end_date: str | None = None,
         metadata: dict[str, str | int | float | bool] | None = None,
         metadata_filters: list[dict[str, Any]] | None = None,
+        explain_query: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """KNN search with optional filters including date range and metadata.
 
@@ -162,6 +163,7 @@ class EmbeddingRepository(BaseRepository):
             end_date: Filter by created_at <= date (ISO 8601 format)
             metadata: Simple metadata filters (key=value equality)
             metadata_filters: Advanced metadata filters with operators
+            explain_query: If True, include query execution plan in stats
 
         Returns:
             Tuple of (search results list, statistics dictionary)
@@ -326,6 +328,21 @@ class EmbeddingRepository(BaseRepository):
                     'backend': 'sqlite',
                 }
 
+                # Get query plan if requested
+                if explain_query:
+                    cursor = conn.execute(f'EXPLAIN QUERY PLAN {query}', params)
+                    plan_rows = cursor.fetchall()
+                    plan_data: list[str] = []
+                    for row in plan_rows:
+                        row_dict = dict(row)
+                        id_val = row_dict.get('id', '?')
+                        parent_val = row_dict.get('parent', '?')
+                        notused_val = row_dict.get('notused', '?')
+                        detail_val = row_dict.get('detail', '?')
+                        formatted = f'id:{id_val} parent:{parent_val} notused:{notused_val} detail:{detail_val}'
+                        plan_data.append(formatted)
+                    stats['query_plan'] = '\n'.join(plan_data)
+
                 return results, stats
 
             return await self.backend.execute_read(_search_sqlite)
@@ -489,6 +506,12 @@ class EmbeddingRepository(BaseRepository):
                 'rows_returned': len(results),
                 'backend': 'postgresql',
             }
+
+            # Get query plan if requested
+            if explain_query:
+                plan_result = await conn.fetch(f'EXPLAIN {query}', *filter_params)
+                plan_data = [str(row[0]) for row in plan_result]
+                stats['query_plan'] = '\n'.join(plan_data)
 
             return results, stats
 

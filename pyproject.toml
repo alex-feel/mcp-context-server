@@ -13,7 +13,7 @@ dependencies = [
     "python-dotenv==1.2.1",
     "typing_extensions==4.15.0",
     "asyncpg==0.31.0",
-    "anyio>=4.11.0",
+    "anyio>=4.12.0",
 ]
 
 [build-system]
@@ -60,6 +60,8 @@ src = ["app"]
 target-version = "py312"
 line-length = 127
 extend-include = ["tests/**/*.py"]
+# Per-file ignores: FastMCP tools use inline JSON structures instead of formal docstring sections
+extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501"] }
 
 [tool.ruff.lint]
 # Ignore specific rules
