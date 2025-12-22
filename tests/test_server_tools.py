@@ -122,7 +122,7 @@ class TestSearchContext:
         """Test searching empty database."""
         result = await search_context.fn(limit=50)
 
-        assert result['entries'] == []
+        assert result['results'] == []
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -134,8 +134,8 @@ class TestSearchContext:
 
         result = await search_context.fn(limit=50, thread_id='search_thread')
 
-        assert len(result['entries']) == 2
-        for entry in result['entries']:
+        assert len(result['results']) == 2
+        for entry in result['results']:
             assert entry['thread_id'] == 'search_thread'
 
     @pytest.mark.asyncio
@@ -147,8 +147,8 @@ class TestSearchContext:
 
         result = await search_context.fn(limit=50, source='user')
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['source'] == 'user'
+        assert len(result['results']) == 1
+        assert result['results'][0]['source'] == 'user'
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -169,8 +169,8 @@ class TestSearchContext:
 
         result = await search_context.fn(limit=50, tags=['important'])
 
-        assert len(result['entries']) == 1
-        assert 'important' in result['entries'][0]['tags']
+        assert len(result['results']) == 1
+        assert 'important' in result['results'][0]['tags']
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -186,7 +186,7 @@ class TestSearchContext:
 
         result = await search_context.fn(thread_id='limit_thread', limit=3)
 
-        assert len(result['entries']) == 3
+        assert len(result['results']) == 3
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -202,7 +202,7 @@ class TestSearchContext:
 
         result = await search_context.fn(thread_id='offset_thread', limit=2, offset=2)
 
-        assert len(result['entries']) == 2
+        assert len(result['results']) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -226,8 +226,8 @@ class TestSearchContext:
         # Search for multimodal
         result = await search_context.fn(limit=50, content_type='multimodal')
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['content_type'] == 'multimodal'
+        assert len(result['results']) == 1
+        assert result['results'][0]['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -259,9 +259,9 @@ class TestSearchContext:
             tags=['tag_a'],
         )
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['thread_id'] == 'combined_thread'
-        assert result['entries'][0]['source'] == 'user'
+        assert len(result['results']) == 1
+        assert result['results'][0]['thread_id'] == 'combined_thread'
+        assert result['results'][0]['source'] == 'user'
 
 
 class TestGetContextByIds:
@@ -372,11 +372,11 @@ class TestDeleteContext:
 
         # Verify deletion
         search = await search_context.fn(limit=50, thread_id='delete_thread')
-        assert len(search['entries']) == 0
+        assert len(search['results']) == 0
 
         # Verify other thread untouched
         search_keep = await search_context.fn(limit=50, thread_id='keep_thread')
-        assert len(search_keep['entries']) == 1
+        assert len(search_keep['results']) == 1
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -393,8 +393,8 @@ class TestDeleteContext:
 
         # Verify only the specified entry was deleted
         search = await search_context.fn(limit=50, thread_id='id_del_thread')
-        assert len(search['entries']) == 1
-        assert search['entries'][0]['id'] == result2['context_id']
+        assert len(search['results']) == 1
+        assert search['results'][0]['id'] == result2['context_id']
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -424,7 +424,7 @@ class TestDeleteContext:
 
         # Images should be cascade deleted (verified by searching)
         search = await search_context.fn(limit=50, thread_id='cascade_thread')
-        assert len(search['entries']) == 0
+        assert len(search['results']) == 0
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -470,8 +470,8 @@ class TestStoreContextWithMetadata:
             metadata={'status': 'active'},
         )
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['metadata']['status'] == 'active'
+        assert len(result['results']) == 1
+        assert result['results'][0]['metadata']['status'] == 'active'
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -486,6 +486,6 @@ class TestStoreContextWithMetadata:
 
         result = await search_context.fn(limit=50, thread_id='nested_meta_thread')
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['metadata']['user']['name'] == 'test'
-        assert result['entries'][0]['metadata']['user']['settings']['theme'] == 'dark'
+        assert len(result['results']) == 1
+        assert result['results'][0]['metadata']['user']['name'] == 'test'
+        assert result['results'][0]['metadata']['user']['settings']['theme'] == 'dark'

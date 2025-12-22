@@ -37,8 +37,8 @@ class TestStoreContextEdgeCases:
 
         # Verify empty tags
         search_result = await search_context.fn(limit=50, thread_id='empty_tags_thread')
-        assert len(search_result['entries']) == 1
-        assert search_result['entries'][0]['tags'] == []
+        assert len(search_result['results']) == 1
+        assert search_result['results'][0]['tags'] == []
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -55,9 +55,9 @@ class TestStoreContextEdgeCases:
 
         # Verify tags are normalized
         search_result = await search_context.fn(limit=50, thread_id='whitespace_tags_thread')
-        assert len(search_result['entries']) == 1
+        assert len(search_result['results']) == 1
         # Tags should be stripped and lowercased
-        tags = search_result['entries'][0]['tags']
+        tags = search_result['results'][0]['tags']
         assert 'important' in tags
         assert 'review' in tags
         assert 'critical' in tags
@@ -77,7 +77,7 @@ class TestStoreContextEdgeCases:
 
         # Verify tags are normalized to lowercase
         search_result = await search_context.fn(limit=50, thread_id='mixed_case_tags_thread')
-        tags = search_result['entries'][0]['tags']
+        tags = search_result['results'][0]['tags']
         assert 'important' in tags
         assert 'review' in tags
         assert 'critical' in tags
@@ -191,7 +191,7 @@ class TestSearchContextEdgeCases:
         )
 
         # Should find 2 entries (tag1 OR tag2)
-        assert len(result['entries']) == 2
+        assert len(result['results']) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -209,7 +209,7 @@ class TestSearchContextEdgeCases:
             limit=1,  # Using limit=1 to test minimal results
         )
 
-        assert len(result['entries']) <= 1
+        assert len(result['results']) <= 1
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -227,7 +227,7 @@ class TestSearchContextEdgeCases:
             offset=1000,
         )
 
-        assert result['entries'] == []
+        assert result['results'] == []
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -246,7 +246,7 @@ class TestSearchContextEdgeCases:
         )
 
         # Should include stats when explain_query is true
-        assert 'stats' in result or 'entries' in result
+        assert 'stats' in result or 'results' in result
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -271,8 +271,8 @@ class TestSearchContextEdgeCases:
             metadata={'priority': 1},
         )
 
-        assert len(result['entries']) == 1
-        assert result['entries'][0]['metadata']['priority'] == 1
+        assert len(result['results']) == 1
+        assert result['results'][0]['metadata']['priority'] == 1
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -297,7 +297,7 @@ class TestSearchContextEdgeCases:
             metadata={'completed': True},
         )
 
-        assert len(result['entries']) == 1
+        assert len(result['results']) == 1
 
 
 class TestUpdateContextEdgeCases:
@@ -442,7 +442,7 @@ class TestDeleteContextEdgeCases:
 
         # Verify remaining entries
         search_result = await search_context.fn(limit=50, thread_id='multi_delete_thread')
-        assert len(search_result['entries']) == 2
+        assert len(search_result['results']) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -648,7 +648,7 @@ class TestMetadataFilters:
         )
 
         # Should find entries with priority > 2
-        assert len(result['entries']) == 2
+        assert len(result['results']) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -674,5 +674,5 @@ class TestMetadataFilters:
             metadata_filters=[{'key': 'task_name', 'operator': 'contains', 'value': 'Important'}],
         )
 
-        assert len(result['entries']) == 1
-        assert 'Important' in result['entries'][0]['metadata']['task_name']
+        assert len(result['results']) == 1
+        assert 'Important' in result['results'][0]['metadata']['task_name']

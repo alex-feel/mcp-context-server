@@ -25,8 +25,8 @@ class TestMetadataErrorHandling:
 
         # Should return an error response
         assert isinstance(result, dict)
-        assert 'entries' in result
-        assert result['entries'] == []
+        assert 'results' in result
+        assert result['results'] == []
         assert 'error' in result
         assert 'Metadata filter validation failed' in result['error']
         assert 'validation_errors' in result
@@ -48,8 +48,8 @@ class TestMetadataErrorHandling:
 
         # Should return an error response
         assert isinstance(result, dict)
-        assert 'entries' in result
-        assert result['entries'] == []
+        assert 'results' in result
+        assert result['results'] == []
         assert 'error' in result
         assert 'Metadata filter validation failed' in result['error']
         assert 'validation_errors' in result
@@ -73,8 +73,8 @@ class TestMetadataErrorHandling:
 
         # Should return an error response with all validation errors
         assert isinstance(result, dict)
-        assert 'entries' in result
-        assert result['entries'] == []
+        assert 'results' in result
+        assert result['results'] == []
         assert 'error' in result
         assert 'validation_errors' in result
         assert len(result['validation_errors']) == 3  # All three errors collected
@@ -96,10 +96,9 @@ class TestMetadataErrorHandling:
 
         # Should NOT return an error
         assert isinstance(result, dict)
-        assert 'entries' in result
+        assert 'results' in result
         assert 'error' not in result
         assert 'validation_errors' not in result
-        assert 'stats' in result
 
     @pytest.mark.usefixtures('initialized_server')
     async def test_case_sensitivity_flag_works(self, mock_context: MockFastMCPContext) -> None:
@@ -124,8 +123,8 @@ class TestMetadataErrorHandling:
             ],
             ctx=mock_context,
         )
-        assert 'entries' in result1
-        assert len(result1['entries']) == 1  # Should find the entry
+        assert 'results' in result1
+        assert len(result1['results']) == 1  # Should find the entry
 
         # Search with case-sensitive
         result2 = await search_context.fn(
@@ -136,8 +135,8 @@ class TestMetadataErrorHandling:
             ],
             ctx=mock_context,
         )
-        assert 'entries' in result2
-        assert len(result2['entries']) == 0  # Should NOT find the entry (case mismatch)
+        assert 'results' in result2
+        assert len(result2['results']) == 0  # Should NOT find the entry (case mismatch)
 
         # Search with correct case
         result3 = await search_context.fn(
@@ -148,8 +147,8 @@ class TestMetadataErrorHandling:
             ],
             ctx=mock_context,
         )
-        assert 'entries' in result3
-        assert len(result3['entries']) == 1  # Should find the entry (exact match)
+        assert 'results' in result3
+        assert len(result3['results']) == 1  # Should find the entry (exact match)
 
 
 class TestMetadataFilterValidation:

@@ -173,9 +173,13 @@ class MCPServerIntegrationTest:
                         return {'success': True, 'results': content['result']}
                     if isinstance(content['result'], dict):
                         return content['result']
-                # Special handling for search_context - it returns entries and stats
-                if 'entries' in content and 'stats' in content:
-                    return {'success': True, 'results': content['entries'], 'stats': content['stats']}
+                # Special handling for search responses - return full content as-is
+                # (search_context, semantic_search, fts_search, hybrid_search all return 'results' and 'count')
+                if 'results' in content and 'count' in content:
+                    # Add success=True if not present, preserve all other fields (error, stats, etc.)
+                    if 'success' not in content:
+                        return {'success': True, **content}
+                    return content
                 # Special handling for list_threads - it returns threads directly
                 if 'threads' in content:
                     return {'success': True, 'threads': content['threads'], 'total_threads': content.get('total_threads', 0)}
@@ -4758,20 +4762,13 @@ class MCPServerIntegrationTest:
                 'search_context',
                 {'thread_id': explain_thread, 'explain_query': False, 'limit': 10},
             )
-            # With explain_query=False, stats should be present but NOT include query_plan
+            # With explain_query=False, stats should NOT be included
             no_explain_data = self._extract_content(no_explain_result)
 
-            # Stats should still exist (basic stats are always returned)
-            if 'stats' not in no_explain_data:
-                self.test_results.append((test_name, False, 'search_context: Missing stats with explain_query=False'))
-                return False
-
-            no_explain_stats = no_explain_data.get('stats', {})
-
-            # When explain_query=False, query_plan should NOT be included
-            if 'query_plan' in no_explain_stats:
+            # Stats should NOT exist when explain_query=False
+            if 'stats' in no_explain_data:
                 self.test_results.append(
-                    (test_name, False, 'search_context: query_plan should not be included when explain_query=False'),
+                    (test_name, False, 'search_context: stats should not be included when explain_query=False'),
                 )
                 return False
 

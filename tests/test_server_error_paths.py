@@ -61,7 +61,7 @@ class TestSearchContextErrorPaths:
         )
 
         # Should return error in response or empty results
-        assert 'entries' in result or 'error' in result
+        assert 'results' in result or 'error' in result
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -81,7 +81,7 @@ class TestSearchContextErrorPaths:
         )
 
         # Should handle gracefully
-        assert 'entries' in result or 'error' in result
+        assert 'results' in result or 'error' in result
 
 
 class TestUpdateContextErrorPaths:
@@ -277,7 +277,7 @@ class TestRepoFailureSimulation:
         )
 
         # Should return empty results, not error
-        assert result['entries'] == []
+        assert result['results'] == []
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -333,4 +333,4 @@ class TestContextServerWithContext:
             ctx=None,
         )
 
-        assert len(result['entries']) == 1
+        assert len(result['results']) == 1

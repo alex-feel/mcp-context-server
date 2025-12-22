@@ -45,6 +45,19 @@ class ContextEntryDict(TypedDict, total=False):
     is_truncated: bool | None
 
 
+class SearchContextResponseDict(TypedDict, total=False):
+    """Type definition for search_context response.
+
+    Uses total=False to handle optional fields (stats, error, validation_errors).
+    """
+
+    results: list[ContextEntryDict]
+    count: int
+    stats: dict[str, object] | None  # Only present when explain_query=True
+    error: str | None
+    validation_errors: list[str] | None
+
+
 class StoreContextSuccessDict(TypedDict):
     """Type definition for successful store context response."""
 
@@ -193,14 +206,54 @@ class FtsSearchResultDict(TypedDict, total=False):
     highlighted: str | None
 
 
-class FtsSearchResponseDict(TypedDict):
-    """Type definition for fts_search_context response."""
+class FtsSearchResponseDict(TypedDict, total=False):
+    """Type definition for fts_search_context response.
+
+    Uses total=False to handle optional fields (stats, error, validation_errors).
+    """
 
     query: str
     mode: str
     results: list[FtsSearchResultDict]
     count: int
     language: str
+    stats: dict[str, object] | None  # Only present when explain_query=True
+    error: str | None
+    validation_errors: list[str] | None
+
+
+class SemanticSearchResultDict(TypedDict, total=False):
+    """Type definition for semantic search result entry.
+
+    Similar to FtsSearchResultDict but with distance instead of score.
+    """
+
+    id: int
+    thread_id: str
+    source: str
+    content_type: str
+    text_content: str
+    metadata: MetadataDict | None
+    created_at: str
+    updated_at: str
+    tags: list[str]
+    distance: float  # L2 Euclidean distance (LOWER = more similar)
+    images: list[ImageAttachmentDict] | list[dict[str, str]] | None
+
+
+class SemanticSearchResponseDict(TypedDict, total=False):
+    """Type definition for semantic_search_context response.
+
+    Uses total=False to handle optional fields (stats, error, validation_errors).
+    """
+
+    query: str
+    results: list[SemanticSearchResultDict]
+    count: int
+    model: str
+    stats: dict[str, object] | None  # Only present when explain_query=True
+    error: str | None
+    validation_errors: list[str] | None
 
 
 class FtsMigrationInProgressDict(TypedDict):
@@ -255,19 +308,8 @@ class HybridSearchResultDict(TypedDict, total=False):
     scores: HybridScoresDict  # Hybrid scoring breakdown
 
 
-class HybridSearchResponseDict(TypedDict):
-    """Type definition for hybrid_search_context response."""
-
-    query: str
-    results: list[HybridSearchResultDict]
-    count: int
-    fusion_method: str  # 'rrf'
-    search_modes_used: list[str]  # Actual modes executed, e.g., ['fts', 'semantic']
-    fts_count: int  # Number of results from FTS
-    semantic_count: int  # Number of results from semantic search
-
-
 # Hybrid Search Stats TypedDicts (for explain_query parameter)
+# NOTE: Stats types defined before HybridSearchResponseDict to avoid forward reference
 
 
 class HybridFtsStatsDict(TypedDict, total=False):
@@ -323,3 +365,19 @@ class HybridSearchStatsDict(TypedDict, total=False):
     fts_stats: HybridFtsStatsDict | None
     semantic_stats: HybridSemanticStatsDict | None
     fusion_stats: HybridFusionStatsDict
+
+
+class HybridSearchResponseDict(TypedDict, total=False):
+    """Type definition for hybrid_search_context response.
+
+    Uses total=False to handle optional stats field.
+    """
+
+    query: str
+    results: list[HybridSearchResultDict]
+    count: int
+    fusion_method: str  # 'rrf'
+    search_modes_used: list[str]  # Actual modes executed, e.g., ['fts', 'semantic']
+    fts_count: int  # Number of results from FTS
+    semantic_count: int  # Number of results from semantic search
+    stats: HybridSearchStatsDict | None  # Only present when explain_query=True

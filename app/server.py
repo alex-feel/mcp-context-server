@@ -1506,7 +1506,7 @@ async def search_context(
     - Use indexed metadata fields: status, priority, agent_name, task_name, completed
 
     Returns:
-        dict: Contains 'entries' list with truncated text_content and 'stats' for query metrics.
+        dict: Contains 'results' list with truncated text_content. Stats included when explain_query=True.
 
     Raises:
         ToolError: If validation fails or search operation fails.
@@ -1545,7 +1545,8 @@ async def search_context(
         if 'error' in stats:
             # Return the error response with validation details
             error_response: dict[str, Any] = {
-                'entries': [],
+                'results': [],
+                'count': 0,
                 'error': stats.get('error', 'Unknown error'),
             }
             if 'validation_errors' in stats:
@@ -1591,8 +1592,10 @@ async def search_context(
 
             entries.append(entry)
 
-        # Always return dict with entries and stats
-        response: dict[str, Any] = {'entries': entries, 'stats': stats}
+        # Return dict with results, count, and optional stats
+        response: dict[str, Any] = {'results': entries, 'count': len(entries)}
+        if explain_query:
+            response['stats'] = stats
         return response
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
@@ -2160,6 +2163,7 @@ async def semantic_search_context(
         ),
     ] = None,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
+    explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Find semantically similar context using vector embeddings with optional metadata filtering.
@@ -2180,7 +2184,8 @@ async def semantic_search_context(
       query: str,
       results: [{id, thread_id, source, text_content, metadata, distance, tags, ...}],
       count: int,
-      model: str
+      model: str,
+      stats: {...}  # Only when explain_query=True
     }
 
     The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
@@ -2224,8 +2229,8 @@ async def semantic_search_context(
         from app.repositories.embedding_repository import MetadataFilterValidationError
 
         try:
-            # Unpack tuple; discard stats (not used in semantic_search_context)
-            search_results, _ = await repos.embeddings.search(
+            # Unpack tuple; stats used when explain_query=True
+            search_results, search_stats = await repos.embeddings.search(
                 query_embedding=query_embedding,
                 limit=limit,
                 offset=offset,
@@ -2267,12 +2272,15 @@ async def semantic_search_context(
 
         logger.info(f'Semantic search found {len(search_results)} results for query: "{query[:50]}..."')
 
-        return {
+        response: dict[str, Any] = {
             'query': query,
             'results': search_results,
             'count': len(search_results),
             'model': settings.embedding_model,
         }
+        if explain_query:
+            response['stats'] = search_stats
+        return response
 
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
