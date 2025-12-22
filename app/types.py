@@ -326,7 +326,7 @@ class HybridFtsStatsDict(TypedDict, total=False):
     backend: str
 
 
-class HybridSemanticStatsDict(TypedDict):
+class HybridSemanticStatsDict(TypedDict, total=False):
     """Type definition for semantic search statistics in hybrid search.
 
     Contains timing and filter information from the semantic portion
@@ -338,6 +338,7 @@ class HybridSemanticStatsDict(TypedDict):
     filters_applied: int
     rows_returned: int
     backend: str
+    query_plan: str | None
 
 
 class HybridFusionStatsDict(TypedDict):

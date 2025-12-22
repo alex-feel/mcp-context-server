@@ -2227,6 +2227,7 @@ async def semantic_search_context(
                 end_date=end_date,
                 metadata=metadata,
                 metadata_filters=metadata_filters,
+                explain_query=explain_query,
             )
         except MetadataFilterValidationError as e:
             # Return error response (unified with search_context behavior)
@@ -2738,6 +2739,7 @@ async def hybrid_search_context(
                         end_date=end_date,
                         metadata=metadata,
                         metadata_filters=metadata_filters,
+                        explain_query=explain_query,
                     )
                     semantic_results = results
 
@@ -2749,6 +2751,7 @@ async def hybrid_search_context(
                             'filters_applied': search_stats.get('filters_applied', 0),
                             'rows_returned': search_stats.get('rows_returned', 0),
                             'backend': search_stats.get('backend', 'unknown'),
+                            'query_plan': search_stats.get('query_plan'),
                         }
                 except MetadataFilterValidationError as e:
                     semantic_error = str(e.message)
