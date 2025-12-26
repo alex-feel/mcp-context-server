@@ -1,0 +1,53 @@
+# Docker Compose for MCP Context Server with Ollama
+# Usage: docker-compose up -d
+
+services:
+  mcp-context-server:
+    image: mcp-context-server
+    build: .
+    pull_policy: build
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_TRANSPORT=http
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_PORT=8000
+      - LOG_LEVEL=INFO
+      - STORAGE_BACKEND=sqlite
+      - DB_PATH=/data/context_storage.db
+      - ENABLE_SEMANTIC_SEARCH=true
+      - OLLAMA_HOST=http://ollama:11434
+      - EMBEDDING_MODEL=embeddinggemma:latest
+      - EMBEDDING_DIM=768
+      - ENABLE_FTS=true
+      - ENABLE_HYBRID_SEARCH=true
+    volumes:
+      - mcp-data:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ollama:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ollama
+    pull_policy: build
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - MODEL=embeddinggemma:latest
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q embeddinggemma || exit 1"]
+      interval: 10s
+      timeout: 30s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  mcp-data:
+    name: mcp-context-sqlite-data
+  ollama-data:
+    name: ollama-models
