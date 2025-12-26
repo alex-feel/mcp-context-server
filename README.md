@@ -154,6 +154,10 @@ For a complete list of all configuration options, see [app/settings.py](app/sett
 
 For detailed instructions on enabling optional semantic search with Ollama and EmbeddingGemma, see the [Semantic Search Guide](docs/semantic-search.md).
 
+### Docker Deployment
+
+For production deployments with HTTP transport and container orchestration, Docker Compose configurations are available for SQLite, PostgreSQL, and external PostgreSQL (Supabase). See the [Docker Deployment Guide](docs/docker-deployment.md) for setup instructions and client connection details.
+
 ## Database Backends
 
 The server supports multiple database backends, selectable via the `STORAGE_BACKEND` environment variable.
