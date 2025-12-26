@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.0](https://github.com/alex-feel/mcp-context-server/compare/v0.11.0...v0.12.0) (2025-12-26)
+
+
+### Features
+
+* add compose configuration for external PostgreSQL ([61b294f](https://github.com/alex-feel/mcp-context-server/commit/61b294f5c3112ffd46d4472146cac317f09aa245))
+* add Docker deployment with HTTP transport support ([77390e9](https://github.com/alex-feel/mcp-context-server/commit/77390e9b552cd7b76d31bd0c89cccd699e65bb68))
+* split compose files for independent SQLite and PostgreSQL deployments ([7840291](https://github.com/alex-feel/mcp-context-server/commit/784029108dd798a0dde86ba417dd8007876cda6b))
+
 ## [0.11.0](https://github.com/alex-feel/mcp-context-server/compare/v0.10.0...v0.11.0) (2025-12-22)
 
 
