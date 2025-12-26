@@ -31,6 +31,28 @@ class CommonSettings(BaseSettings):
     )
 
 
+class TransportSettings(CommonSettings):
+    """HTTP transport settings for Docker/remote deployments."""
+
+    transport: Literal['stdio', 'http', 'streamable-http', 'sse'] = Field(
+        default='stdio',
+        alias='MCP_TRANSPORT',
+        description='Transport mode: stdio for local, http for Docker/remote',
+    )
+    host: str = Field(
+        default='0.0.0.0',
+        alias='FASTMCP_HOST',
+        description='HTTP bind address (use 0.0.0.0 for Docker)',
+    )
+    port: int = Field(
+        default=8000,
+        alias='FASTMCP_PORT',
+        ge=1,
+        le=65535,
+        description='HTTP port number',
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage-related settings with environment variable mapping."""
 
@@ -151,6 +173,9 @@ class AppSettings(CommonSettings):
         le=1000,
         description='RRF smoothing constant for hybrid search (default 60)',
     )
+
+    # Transport settings
+    transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
 
     @field_validator('embedding_dim')
     @classmethod
