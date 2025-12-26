@@ -170,23 +170,112 @@ class TestServerJsonSchemaValidation:
         """
         Verify all env vars from settings.py are in server.json.
 
-        Reads ALL env var aliases from app/settings.py (both AppSettings and nested
-        StorageSettings) and verifies ALL are listed in server.json environmentVariables
-        array. This ensures server.json stays in sync with application configuration.
+        Uses recursive detection to automatically find ALL environment variable aliases
+        from AppSettings and all nested settings classes (StorageSettings, TransportSettings,
+        and any future additions). This ensures server.json stays in sync with application
+        configuration without manual maintenance.
         """
+        import types
+        from typing import ClassVar
+        from typing import Union
+        from typing import get_args
+        from typing import get_origin
+        from typing import get_type_hints
+
+        from pydantic import BaseModel
+
         from app.settings import AppSettings
-        from app.settings import StorageSettings
 
-        # Extract aliases from both settings classes
-        settings_env_vars: set[str] = set()
+        def _extract_model_types(annotation: type | object) -> list[type[BaseModel]]:
+            """Extract all BaseModel subclasses from a type annotation.
 
-        for field_info in AppSettings.model_fields.values():
-            if field_info.alias:
-                settings_env_vars.add(field_info.alias)
+            Handles:
+            - Direct types: SomeSettings -> [SomeSettings]
+            - Union types: SomeSettings | None -> [SomeSettings]
+            - typing.Union: Union[SomeSettings, Other] -> [SomeSettings, Other] (if BaseModel)
+            - Nested generics: list[SomeSettings] -> [SomeSettings]
+            - ClassVar: ClassVar[...] -> [] (skipped)
 
-        for field_info in StorageSettings.model_fields.values():
-            if field_info.alias:
-                settings_env_vars.add(field_info.alias)
+            Returns:
+                List of BaseModel subclasses found in the annotation.
+            """
+            origin = get_origin(annotation)
+
+            # Skip ClassVar fields (like model_config)
+            if origin is ClassVar:
+                return []
+
+            # Handle Union types (including Python 3.10+ X | Y syntax)
+            if origin is Union or origin is types.UnionType:
+                result: list[type[BaseModel]] = []
+                for arg in get_args(annotation):
+                    if arg is type(None):
+                        continue  # Skip NoneType
+                    result.extend(_extract_model_types(arg))
+                return result
+
+            # Handle other generic types (list[T], dict[K,V], etc.)
+            if origin is not None:
+                result = []
+                for arg in get_args(annotation):
+                    result.extend(_extract_model_types(arg))
+                return result
+
+            # Direct type - check if it's a BaseModel subclass
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                return [annotation]
+
+            return []
+
+        def collect_all_env_aliases(
+            settings_cls: type[BaseModel],
+            visited: set[type[BaseModel]] | None = None,
+        ) -> set[str]:
+            """Recursively collect all environment variable aliases from a settings class.
+
+            This function traverses the settings class and all nested BaseModel subclasses
+            to find all fields with environment variable aliases. It handles:
+            - Direct class fields with aliases
+            - Nested settings classes (fields typed as BaseModel subclasses)
+            - Optional/Union types (e.g., SomeSettings | None)
+            - Circular references (via visited set)
+
+            Returns:
+                Set of environment variable alias names found in the settings class hierarchy.
+            """
+            if visited is None:
+                visited = set()
+
+            # Prevent infinite recursion on circular references
+            if settings_cls in visited:
+                return set()
+            visited.add(settings_cls)
+
+            aliases: set[str] = set()
+
+            # Collect aliases from this class's fields
+            for field_info in settings_cls.model_fields.values():
+                if field_info.alias:
+                    aliases.add(field_info.alias)
+
+            # Resolve type annotations (handles 'from __future__ import annotations')
+            try:
+                hints = get_type_hints(settings_cls)
+            except Exception:
+                # If type hints can't be resolved, fall back to just this class
+                return aliases
+
+            # Check each field's type for nested settings classes
+            for annotation in hints.values():
+                nested_types = _extract_model_types(annotation)
+                for nested_type in nested_types:
+                    if nested_type not in visited:
+                        aliases.update(collect_all_env_aliases(nested_type, visited))
+
+            return aliases
+
+        # Automatically collect all env vars from AppSettings and ALL nested classes
+        settings_env_vars = collect_all_env_aliases(AppSettings)
 
         # Get env vars from server.json
         server_json_env_vars = {
