@@ -28,6 +28,8 @@ from fastmcp import Context
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from app.backends import StorageBackend
 from app.backends import create_backend
@@ -930,6 +932,16 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 # Initialize FastMCP server with lifespan management
 # mask_error_details=False exposes validation errors for LLM autocorrection
 mcp = FastMCP(name='mcp-context-server', lifespan=lifespan, mask_error_details=False)
+
+
+@mcp.custom_route('/health', methods=['GET'])
+async def health(_: Request) -> JSONResponse:
+    """Health check endpoint for container orchestration.
+
+    Returns simple status for Docker/Kubernetes liveness probes.
+    This endpoint is only available when running in HTTP transport mode.
+    """
+    return JSONResponse({'status': 'ok'})
 
 
 async def init_database(backend: StorageBackend | None = None) -> None:
@@ -3468,13 +3480,29 @@ async def delete_context_batch(
 def main() -> None:
     """Main entry point for the MCP Context Server.
 
-    Simply runs the FastMCP server. Initialization and shutdown
-    are handled by the @mcp.startup and @mcp.shutdown decorators.
+    Supports both stdio (default) and HTTP transport modes:
+    - stdio: Default for local process spawning (uv run mcp-context-server)
+    - http: For Docker/remote deployments (set MCP_TRANSPORT=http)
+
+    Initialization and shutdown are handled by the @mcp.startup and @mcp.shutdown decorators.
     """
     try:
-        # Run the FastMCP server - this manages its own event loop
-        # and will call our startup/shutdown hooks
-        mcp.run()
+        transport = settings.transport.transport
+
+        if transport == 'stdio':
+            logger.info('Transport: STDIO')
+            mcp.run()
+        else:
+            host = settings.transport.host
+            port = settings.transport.port
+            logger.info('Transport: HTTP')
+            logger.info(f'Server URL: http://{host}:{port}/mcp')
+            mcp.run(
+                transport=cast(Literal['stdio', 'http', 'sse', 'streamable-http'], transport),
+                host=host,
+                port=port,
+            )
+
     except KeyboardInterrupt:
         logger.info('Server shutdown requested')
     except Exception as e:

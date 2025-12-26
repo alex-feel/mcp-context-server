@@ -1,0 +1,76 @@
+# Docker Compose for MCP Context Server with PostgreSQL + Ollama
+# Usage: docker compose -f docker-compose.postgresql.yml up -d
+
+services:
+  mcp-context-server:
+    image: mcp-context-server
+    build: .
+    pull_policy: build
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_TRANSPORT=http
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_PORT=8000
+      - LOG_LEVEL=INFO
+      # PostgreSQL backend configuration
+      - STORAGE_BACKEND=postgresql
+      - POSTGRESQL_HOST=postgres
+      - POSTGRESQL_PORT=5432
+      - POSTGRESQL_USER=postgres
+      - POSTGRESQL_PASSWORD=postgres
+      - POSTGRESQL_DATABASE=mcp_context
+      # Semantic search configuration
+      - ENABLE_SEMANTIC_SEARCH=true
+      - OLLAMA_HOST=http://ollama:11434
+      - EMBEDDING_MODEL=embeddinggemma:latest
+      - EMBEDDING_DIM=768
+      # Full-text and hybrid search
+      - ENABLE_FTS=true
+      - ENABLE_HYBRID_SEARCH=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ollama:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ollama
+    pull_policy: build
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - MODEL=embeddinggemma:latest
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q embeddinggemma || exit 1"]
+      interval: 10s
+      timeout: 30s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg18-trixie
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mcp_context
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mcp_context"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+    name: mcp-context-postgres-data
+  ollama-data:
+    name: ollama-models

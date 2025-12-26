@@ -1,0 +1,49 @@
+# Virtual environment (platform-specific, must be created in container)
+.venv/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Type checking and linting cache
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tests (not needed in production image)
+tests/
+
+# Documentation (not needed for runtime)
+docs/
+
+# Development configuration
+.pre-commit-config.yaml
+.claude/
+
+# Environment files (secrets - should use Docker secrets/env vars instead)
+.env
+.env.*

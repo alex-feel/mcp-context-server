@@ -1,0 +1,10 @@
+FROM ollama/ollama:latest
+
+ENV MODEL=embeddinggemma:latest
+
+COPY docker/ollama-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 11434
+
+ENTRYPOINT ["/entrypoint.sh"]
