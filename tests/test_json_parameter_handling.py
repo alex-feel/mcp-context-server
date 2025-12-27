@@ -89,7 +89,7 @@ class TestStoreContextParameterHandling:
 
             # Send tags as JSON string (how Claude Code sends it)
             # Call the wrapped function directly
-            result = await store_context.fn(
+            result = await store_context(
                 thread_id='test-thread',
                 source='user',
                 text='Test content',
@@ -112,7 +112,7 @@ class TestStoreContextParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send tags as native list
-            result = await store_context.fn(
+            result = await store_context(
                 thread_id='test-thread',
                 source='user',
                 text='Test content',
@@ -135,7 +135,7 @@ class TestStoreContextParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send metadata as JSON string
-            result = await store_context.fn(
+            result = await store_context(
                 thread_id='test-thread',
                 source='agent',
                 text='Test content',
@@ -161,7 +161,7 @@ class TestStoreContextParameterHandling:
             images_json = json.dumps([
                 {'data': 'dGVzdCBpbWFnZQ==', 'mime_type': 'image/png'},
             ])
-            result = await store_context.fn(
+            result = await store_context(
                 thread_id='test-thread',
                 source='user',
                 text='Test with image',
@@ -184,7 +184,7 @@ class TestStoreContextParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send all complex types as JSON strings
-            result = await store_context.fn(
+            result = await store_context(
                 thread_id='test-thread',
                 source='agent',
                 text='Complex test',
@@ -213,7 +213,7 @@ class TestSearchContextParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send tags as JSON string
-            result = await search_context.fn(
+            result = await search_context(
                 limit=50,
                 thread_id='test-thread',
                 tags='["tag1", "tag2"]',  # JSON string
@@ -236,7 +236,7 @@ class TestSearchContextParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send tags as native list
-            result = await search_context.fn(
+            result = await search_context(
                 limit=50,
                 thread_id='test-thread',
                 tags=['tag1', 'tag2'],  # Native list
@@ -263,7 +263,7 @@ class TestGetContextByIdsParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send context_ids as JSON string
-            result = await get_context_by_ids.fn(
+            result = await get_context_by_ids(
                 context_ids='[1, 2, 3]',  # JSON string
             )
 
@@ -283,7 +283,7 @@ class TestGetContextByIdsParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send context_ids as native list
-            result = await get_context_by_ids.fn(
+            result = await get_context_by_ids(
                 context_ids=[1, 2, 3],  # Native list
             )
 
@@ -306,7 +306,7 @@ class TestDeleteContextParameterHandling:
             mock_ensure_repos.return_value = mock_repos
 
             # Send context_ids as JSON string
-            result = await delete_context.fn(
+            result = await delete_context(
                 context_ids='[1, 2, 3]',  # JSON string
             )
 
@@ -322,7 +322,7 @@ class TestDeleteContextParameterHandling:
             mock_backend.execute_write = AsyncMock(return_value=2)
 
             # Send context_ids as native list
-            result = await delete_context.fn(
+            result = await delete_context(
                 context_ids=[1, 2],  # Native list
             )
 
@@ -342,7 +342,7 @@ class TestMixedParameterFormats:
         assert async_db_initialized is not None
 
         # Mix of formats
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='test-thread',
             source='user',
             text='Mixed format test',

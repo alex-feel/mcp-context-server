@@ -21,12 +21,12 @@ from fastmcp.exceptions import ToolError
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
 
-# Get the actual async functions from the FunctionTool wrappers
-# FastMCP wraps our functions in FunctionTool objects, but we need the original functions for testing
-store_context = app.server.store_context.fn
-store_context_batch = app.server.store_context_batch.fn
-update_context_batch = app.server.update_context_batch.fn
-delete_context_batch = app.server.delete_context_batch.fn
+# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+# Tools are registered dynamically in lifespan(), so we can access the functions directly
+store_context = app.server.store_context
+store_context_batch = app.server.store_context_batch
+update_context_batch = app.server.update_context_batch
+delete_context_batch = app.server.delete_context_batch
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -169,7 +169,9 @@ class TestStoreContextBatch:
         failed = [r for r in result['results'] if not r['success']]
         assert len(failed) == 1
         assert failed[0]['index'] == 1
-        assert 'source' in failed[0]['error'].lower()
+        error_msg = failed[0]['error']
+        assert error_msg is not None
+        assert 'source' in error_msg.lower()
 
     @pytest.mark.asyncio
     async def test_store_batch_missing_thread_id(self) -> None:
@@ -182,7 +184,9 @@ class TestStoreContextBatch:
 
         assert result['success'] is False
         assert result['failed'] == 1
-        assert 'thread_id' in result['results'][0]['error'].lower()
+        error_msg = result['results'][0]['error']
+        assert error_msg is not None
+        assert 'thread_id' in error_msg.lower()
 
     @pytest.mark.asyncio
     async def test_store_batch_missing_text(self) -> None:
@@ -195,7 +199,9 @@ class TestStoreContextBatch:
 
         assert result['success'] is False
         assert result['failed'] == 1
-        assert 'text' in result['results'][0]['error'].lower()
+        error_msg = result['results'][0]['error']
+        assert error_msg is not None
+        assert 'text' in error_msg.lower()
 
     @pytest.mark.asyncio
     async def test_store_batch_empty_text(self) -> None:
@@ -208,7 +214,9 @@ class TestStoreContextBatch:
 
         assert result['success'] is False
         assert result['failed'] == 1
-        assert 'empty' in result['results'][0]['error'].lower()
+        error_msg = result['results'][0]['error']
+        assert error_msg is not None
+        assert 'empty' in error_msg.lower()
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -244,6 +252,7 @@ class TestUpdateContextBatch:
         # Verify updated_fields includes text_content
         for item in result['results']:
             assert item['success'] is True
+            assert item['updated_fields'] is not None
             assert 'text_content' in item['updated_fields']
 
     @pytest.mark.asyncio
@@ -267,6 +276,7 @@ class TestUpdateContextBatch:
 
         assert result['success'] is True
         assert result['succeeded'] == 1
+        assert result['results'][0]['updated_fields'] is not None
         assert 'metadata' in result['results'][0]['updated_fields']
 
     @pytest.mark.asyncio
@@ -290,6 +300,7 @@ class TestUpdateContextBatch:
 
         assert result['success'] is True
         assert result['succeeded'] == 1
+        assert result['results'][0]['updated_fields'] is not None
         assert 'tags' in result['results'][0]['updated_fields']
 
     @pytest.mark.asyncio
@@ -303,7 +314,9 @@ class TestUpdateContextBatch:
 
         assert result['success'] is False
         assert result['failed'] == 1
-        assert 'not found' in result['results'][0]['error'].lower()
+        error_msg = result['results'][0]['error']
+        assert error_msg is not None
+        assert 'not found' in error_msg.lower()
 
     @pytest.mark.asyncio
     async def test_update_batch_missing_context_id(self) -> None:
@@ -316,7 +329,9 @@ class TestUpdateContextBatch:
 
         assert result['success'] is False
         assert result['failed'] == 1
-        assert 'context_id' in result['results'][0]['error'].lower()
+        error_msg = result['results'][0]['error']
+        assert error_msg is not None
+        assert 'context_id' in error_msg.lower()
 
     @pytest.mark.asyncio
     async def test_update_batch_metadata_and_patch_conflict(self) -> None:
@@ -339,7 +354,9 @@ class TestUpdateContextBatch:
 
         assert result['success'] is False
         assert result['failed'] == 1
-        assert 'both' in result['results'][0]['error'].lower()
+        error_msg = result['results'][0]['error']
+        assert error_msg is not None
+        assert 'both' in error_msg.lower()
 
     @pytest.mark.asyncio
     async def test_update_batch_no_fields_to_update(self) -> None:
@@ -358,7 +375,9 @@ class TestUpdateContextBatch:
 
         assert result['success'] is False
         assert result['failed'] == 1
-        assert 'field' in result['results'][0]['error'].lower()
+        error_msg = result['results'][0]['error']
+        assert error_msg is not None
+        assert 'field' in error_msg.lower()
 
     @pytest.mark.asyncio
     async def test_update_batch_partial_success(self) -> None:
@@ -545,6 +564,7 @@ class TestBulkOperationsEdgeCases:
         assert result['success'] is True
         assert result['succeeded'] == 1
         updated_fields = result['results'][0]['updated_fields']
+        assert updated_fields is not None
         assert 'text_content' in updated_fields
         assert 'metadata' in updated_fields
         assert 'tags' in updated_fields

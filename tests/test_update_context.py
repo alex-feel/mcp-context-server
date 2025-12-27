@@ -16,9 +16,9 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 
-# Get the actual async function from the FunctionTool wrapper
-# FastMCP wraps our function in a FunctionTool object, but we need the original function for testing
-update_context = app.server.update_context.fn
+# Get the actual async function - no longer wrapped by @mcp.tool() at import time
+# Tools are registered dynamically in lifespan(), so we can access the functions directly
+update_context = app.server.update_context
 
 
 @pytest.fixture

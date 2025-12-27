@@ -17,14 +17,14 @@ from fastmcp.exceptions import ToolError
 import app.server
 from app.repositories import RepositoryContainer
 
-# Get the actual async functions from the FunctionTool wrappers
-store_context = app.server.store_context.fn
-search_context = app.server.search_context.fn
-get_context_by_ids = app.server.get_context_by_ids.fn
-delete_context = app.server.delete_context.fn
-update_context = app.server.update_context.fn
-list_threads = app.server.list_threads.fn
-get_statistics = app.server.get_statistics.fn
+# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+store_context = app.server.store_context
+search_context = app.server.search_context
+get_context_by_ids = app.server.get_context_by_ids
+delete_context = app.server.delete_context
+update_context = app.server.update_context
+list_threads = app.server.list_threads
+get_statistics = app.server.get_statistics
 
 
 @pytest.fixture

@@ -17,12 +17,12 @@ import pytest
 
 import app.server
 
-# Get the actual async functions from the FunctionTool wrappers
-# FastMCP wraps our functions in FunctionTool objects, but we need the original functions for testing
-store_context = app.server.store_context.fn
-search_context = app.server.search_context.fn
-get_context_by_ids = app.server.get_context_by_ids.fn
-update_context = app.server.update_context.fn
+# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+# Tools are registered dynamically in lifespan(), so we can access the functions directly
+store_context = app.server.store_context
+search_context = app.server.search_context
+get_context_by_ids = app.server.get_context_by_ids
+update_context = app.server.update_context
 
 
 class TestErrorFormatConsistency:
