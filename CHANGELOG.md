@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/alex-feel/mcp-context-server/compare/v0.12.0...v0.13.0) (2025-12-27)
+
+
+### Features
+
+* add DISABLED_TOOLS environment variable and MCP tool annotations ([f6bccd7](https://github.com/alex-feel/mcp-context-server/commit/f6bccd7593c0bc2e9220299b5a9325ed76323850))
+
 ## [0.12.0](https://github.com/alex-feel/mcp-context-server/compare/v0.11.0...v0.12.0) (2025-12-26)
 
 
