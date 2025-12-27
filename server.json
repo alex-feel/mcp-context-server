@@ -394,6 +394,13 @@
           "format": "number",
           "isSecret": false,
           "name": "FASTMCP_PORT"
+        },
+        {
+          "description": "Comma-separated list of tools to disable (e.g., delete_context,update_context)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "DISABLED_TOOLS"
         }
       ]
     }

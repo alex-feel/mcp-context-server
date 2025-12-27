@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+from typing import Any
 from typing import Literal
 from typing import cast
 
@@ -24,11 +25,11 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 
-# Get the actual async functions from the FunctionTool wrappers
-store_context = app.server.store_context.fn
-search_context = app.server.search_context.fn
-get_context_by_ids = app.server.get_context_by_ids.fn
-delete_context = app.server.delete_context.fn
+# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+store_context = app.server.store_context
+search_context = app.server.search_context
+get_context_by_ids = app.server.get_context_by_ids
+delete_context = app.server.delete_context
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -105,7 +106,8 @@ class TestParameterHandling:
             include_images=False,
         )
         assert len(fetched) == 1
-        assert fetched[0]['metadata'] == metadata_dict
+        entry = dict(fetched[0])
+        assert entry['metadata'] == metadata_dict
 
     @pytest.mark.asyncio
     async def test_store_context_metadata_none(self) -> None:
@@ -121,7 +123,8 @@ class TestParameterHandling:
 
         # Verify no metadata stored
         fetched = await get_context_by_ids(context_ids=[result['context_id']])
-        assert fetched[0]['metadata'] is None
+        entry = dict(fetched[0])
+        assert entry['metadata'] is None
 
     @pytest.mark.asyncio
     async def test_store_context_images_as_list_of_dicts(self) -> None:
@@ -212,7 +215,7 @@ class TestParameterHandling:
             include_images=True,
         )
         assert len(fetched) == 1
-        entry = fetched[0]
+        entry: dict[str, Any] = dict(fetched[0])
 
         assert set(entry['tags']) == set(tags)
         assert entry['metadata'] == metadata
@@ -304,7 +307,7 @@ class TestParameterHandling:
         results = await get_context_by_ids(context_ids=context_ids)
 
         assert len(results) == 3
-        returned_ids = [r['id'] for r in results]
+        returned_ids = [dict(r)['id'] for r in results]
         assert set(returned_ids) == set(context_ids)
 
     @pytest.mark.asyncio
@@ -330,7 +333,8 @@ class TestParameterHandling:
         results = await get_context_by_ids(context_ids=[context_id])
 
         assert len(results) == 1
-        assert results[0]['id'] == context_id
+        entry = dict(results[0])
+        assert entry['id'] == context_id
 
     @pytest.mark.asyncio
     async def test_delete_context_ids_as_list(self) -> None:
@@ -486,7 +490,8 @@ class TestParameterTypeCoercion:
 
         # Fetch and verify metadata round-trip
         fetched = await get_context_by_ids(context_ids=[result['context_id']])
-        assert fetched[0]['metadata'] == metadata
+        entry = dict(fetched[0])
+        assert entry['metadata'] == metadata
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -559,7 +564,8 @@ class TestEdgeCasesForParameters:
 
         # Verify large metadata round-trips correctly
         fetched = await get_context_by_ids(context_ids=[result['context_id']])
-        assert fetched[0]['metadata'] == large_metadata
+        entry = dict(fetched[0])
+        assert entry['metadata'] == large_metadata
 
     @pytest.mark.asyncio
     async def test_multiple_identical_tags(self) -> None:
@@ -604,7 +610,8 @@ class TestEdgeCasesForParameters:
 
         # Verify special keys preserved
         fetched = await get_context_by_ids(context_ids=[result['context_id']])
-        assert fetched[0]['metadata'] == special_metadata
+        entry = dict(fetched[0])
+        assert entry['metadata'] == special_metadata
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -936,8 +943,9 @@ class TestParameterInteractions:
             context_ids=[result['context_id']],
             include_images=True,
         )
-        assert fetched[0]['metadata'] == metadata
-        assert len(fetched[0]['images']) == 2
+        entry = dict(fetched[0])
+        assert entry['metadata'] == metadata
+        assert len(entry['images']) == 2
 
     @pytest.mark.asyncio
     async def test_all_parameters_none_except_required(self) -> None:
@@ -955,6 +963,7 @@ class TestParameterInteractions:
 
         # Verify entry has no optional data
         fetched = await get_context_by_ids(context_ids=[result['context_id']])
-        assert fetched[0]['tags'] == []
-        assert fetched[0]['metadata'] is None
-        assert 'images' not in fetched[0] or fetched[0]['images'] == []
+        entry = dict(fetched[0])
+        assert entry['tags'] == []
+        assert entry['metadata'] is None
+        assert 'images' not in entry or entry['images'] == []

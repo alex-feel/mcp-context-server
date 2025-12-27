@@ -150,6 +150,20 @@ class AppSettings(CommonSettings):
 
     storage: StorageSettings = Field(default_factory=lambda: StorageSettings())
 
+    # Tool disabling - stored as raw string to avoid pydantic-settings JSON parsing
+    disabled_tools_raw: str = Field(
+        default='',
+        alias='DISABLED_TOOLS',
+        description='Comma-separated list of tools to disable (e.g., delete_context,update_context)',
+    )
+
+    @property
+    def disabled_tools(self) -> set[str]:
+        """Parse comma-separated string into lowercase set of disabled tool names."""
+        if not self.disabled_tools_raw or not self.disabled_tools_raw.strip():
+            return set()
+        return {t.lower().strip() for t in self.disabled_tools_raw.split(',') if t.strip()}
+
     # Semantic search settings
     enable_semantic_search: bool = Field(default=False, alias='ENABLE_SEMANTIC_SEARCH')
     ollama_host: str = Field(default='http://localhost:11434', alias='OLLAMA_HOST')

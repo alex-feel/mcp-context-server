@@ -7,6 +7,7 @@ to improve coverage of exception handling and edge cases.
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -26,7 +27,7 @@ class TestDeleteContextErrors:
     async def test_delete_without_any_parameters(self) -> None:
         """Test delete_context fails without context_ids or thread_id."""
         with pytest.raises(ToolError, match='Must provide either context_ids or thread_id'):
-            await delete_context.fn()
+            await delete_context()
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -34,7 +35,7 @@ class TestDeleteContextErrors:
         """Test deleting with empty list returns success with 0 deleted."""
         # Note: Empty list should be caught by Field validation before reaching our code
         # But if it somehow gets through, it should handle gracefully
-        result = await delete_context.fn(thread_id='nonexistent_thread')
+        result = await delete_context(thread_id='nonexistent_thread')
         assert result['success'] is True
         assert result['deleted_count'] == 0
 
@@ -47,14 +48,14 @@ class TestSearchContextErrorPaths:
     async def test_search_with_invalid_metadata_filter_operator(self) -> None:
         """Test search with invalid metadata filter operator returns error."""
         # Create entry first
-        await store_context.fn(
+        await store_context(
             thread_id='invalid_op_thread',
             source='user',
             text='Test entry',
         )
 
         # Invalid operator should be handled
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='invalid_op_thread',
             metadata_filters=[{'key': 'test', 'operator': 'invalid_op', 'value': 1}],
@@ -67,14 +68,14 @@ class TestSearchContextErrorPaths:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_with_malformed_metadata_filter(self) -> None:
         """Test search with malformed metadata filter structure."""
-        await store_context.fn(
+        await store_context(
             thread_id='malformed_filter_thread',
             source='user',
             text='Test entry',
         )
 
         # Filter missing required fields
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='malformed_filter_thread',
             metadata_filters=[{'key': 'test'}],  # Missing operator and value
@@ -91,7 +92,7 @@ class TestUpdateContextErrorPaths:
     @pytest.mark.usefixtures('initialized_server')
     async def test_update_without_any_updates(self) -> None:
         """Test update_context with no update fields provided fails validation."""
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='no_update_thread',
             source='user',
             text='Original text',
@@ -100,13 +101,13 @@ class TestUpdateContextErrorPaths:
 
         # Update with nothing - should fail because no update fields provided
         with pytest.raises(ToolError, match='At least one field'):
-            await update_context.fn(context_id=context_id)
+            await update_context(context_id=context_id)
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
     async def test_update_text_to_empty_string(self) -> None:
         """Test updating text to empty string."""
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='empty_text_thread',
             source='user',
             text='Has content',
@@ -116,7 +117,7 @@ class TestUpdateContextErrorPaths:
         # Updating to empty text might not be valid
         # The behavior depends on validation rules
         try:
-            update_result = await update_context.fn(
+            update_result = await update_context(
                 context_id=context_id,
                 text='',
             )
@@ -130,7 +131,7 @@ class TestUpdateContextErrorPaths:
     @pytest.mark.usefixtures('initialized_server')
     async def test_update_with_images_adding(self) -> None:
         """Test updating context to add images."""
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='add_images_thread',
             source='user',
             text='Text only entry',
@@ -139,7 +140,7 @@ class TestUpdateContextErrorPaths:
 
         # Add images to text-only entry
         image_data = base64.b64encode(b'new image data').decode('utf-8')
-        update_result = await update_context.fn(
+        update_result = await update_context(
             context_id=context_id,
             images=[{'data': image_data, 'mime_type': 'image/png'}],
         )
@@ -153,7 +154,7 @@ class TestUpdateContextErrorPaths:
     async def test_update_with_images_removal(self) -> None:
         """Test updating context to remove images."""
         image_data = base64.b64encode(b'image data').decode('utf-8')
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='remove_images_thread',
             source='user',
             text='Multimodal entry',
@@ -162,7 +163,7 @@ class TestUpdateContextErrorPaths:
         context_id = result['context_id']
 
         # Remove images by providing empty list
-        update_result = await update_context.fn(
+        update_result = await update_context(
             context_id=context_id,
             images=[],
         )
@@ -180,7 +181,7 @@ class TestStoreContextErrorPaths:
     async def test_store_with_duplicate_content_updates_timestamp(self) -> None:
         """Test storing duplicate content updates timestamp instead of creating new."""
         # Store first entry
-        result1 = await store_context.fn(
+        result1 = await store_context(
             thread_id='dedup_error_thread',
             source='user',
             text='Same content',
@@ -188,7 +189,7 @@ class TestStoreContextErrorPaths:
         context_id1 = result1['context_id']
 
         # Store same content again
-        result2 = await store_context.fn(
+        result2 = await store_context(
             thread_id='dedup_error_thread',
             source='user',
             text='Same content',
@@ -202,7 +203,7 @@ class TestStoreContextErrorPaths:
     @pytest.mark.usefixtures('initialized_server')
     async def test_store_with_complex_nested_metadata(self) -> None:
         """Test storing deeply nested metadata."""
-        deep_metadata = {
+        deep_metadata: dict[str, Any] = {
             'level1': {
                 'level2': {
                     'level3': {
@@ -215,7 +216,7 @@ class TestStoreContextErrorPaths:
             'array': [1, 2, {'nested': True}],
         }
 
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='deep_meta_thread',
             source='user',
             text='Deep metadata entry',
@@ -225,8 +226,9 @@ class TestStoreContextErrorPaths:
         assert result['success'] is True
 
         # Verify metadata was stored correctly
-        entries = await get_context_by_ids.fn(context_ids=[result['context_id']])
-        assert entries[0]['metadata']['level1']['level2']['level3']['level4']['level5'] == 'deep_value'
+        entries = await get_context_by_ids(context_ids=[result['context_id']])
+        entry: dict[str, Any] = dict(entries[0])
+        assert entry['metadata']['level1']['level2']['level3']['level4']['level5'] == 'deep_value'
 
 
 class TestGetContextByIdsErrorPaths:
@@ -236,7 +238,7 @@ class TestGetContextByIdsErrorPaths:
     @pytest.mark.usefixtures('initialized_server')
     async def test_get_by_ids_all_nonexistent(self) -> None:
         """Test getting all non-existent IDs returns empty list."""
-        entries = await get_context_by_ids.fn(context_ids=[999997, 999998, 999999])
+        entries = await get_context_by_ids(context_ids=[999997, 999998, 999999])
         assert entries == []
 
     @pytest.mark.asyncio
@@ -244,20 +246,21 @@ class TestGetContextByIdsErrorPaths:
     async def test_get_multimodal_without_images_flag(self) -> None:
         """Test getting multimodal content with include_images=False."""
         image_data = base64.b64encode(b'test image').decode('utf-8')
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='multimodal_no_images_thread',
             source='user',
             text='With image',
             images=[{'data': image_data, 'mime_type': 'image/png'}],
         )
 
-        entries = await get_context_by_ids.fn(
+        entries = await get_context_by_ids(
             context_ids=[result['context_id']],
             include_images=False,
         )
 
         assert len(entries) == 1
-        assert entries[0]['content_type'] == 'multimodal'
+        entry: dict[str, Any] = dict(entries[0])
+        assert entry['content_type'] == 'multimodal'
         # When include_images=False, images key may not be present or may be empty
 
 
@@ -270,7 +273,7 @@ class TestRepoFailureSimulation:
         """Test that search handles repository errors gracefully."""
         # This tests the error handling path
         # We can't easily mock the internal repos, but we can test edge cases
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='nonexistent_thread_xyz_123',
             source='user',
@@ -285,7 +288,7 @@ class TestRepoFailureSimulation:
         """Test storing entry with many tags."""
         many_tags = [f'tag_{i}' for i in range(50)]
 
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='many_tags_thread',
             source='user',
             text='Entry with many tags',
@@ -295,8 +298,9 @@ class TestRepoFailureSimulation:
         assert result['success'] is True
 
         # Verify all tags stored
-        entries = await get_context_by_ids.fn(context_ids=[result['context_id']])
-        assert len(entries[0]['tags']) == 50
+        entries = await get_context_by_ids(context_ids=[result['context_id']])
+        entry: dict[str, Any] = dict(entries[0])
+        assert len(entry['tags']) == 50
 
 
 class TestContextServerWithContext:
@@ -308,7 +312,7 @@ class TestContextServerWithContext:
         """Test store_context with ctx parameter (normally hidden from MCP)."""
         # The ctx parameter is optional and hidden from MCP clients
         # Testing to ensure it doesn't break functionality
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='ctx_param_thread',
             source='user',
             text='Testing ctx parameter',
@@ -321,13 +325,13 @@ class TestContextServerWithContext:
     @pytest.mark.usefixtures('initialized_server')
     async def test_search_with_context_parameter(self) -> None:
         """Test search_context with ctx parameter."""
-        await store_context.fn(
+        await store_context(
             thread_id='search_ctx_thread',
             source='user',
             text='Test entry',
         )
 
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='search_ctx_thread',
             ctx=None,

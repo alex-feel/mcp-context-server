@@ -15,9 +15,9 @@ import pytest
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
 
-# Get the actual async functions from the FunctionTool wrappers
-store_context = app.server.store_context.fn
-search_context = app.server.search_context.fn
+# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+store_context = app.server.store_context
+search_context = app.server.search_context
 
 
 @pytest.mark.asyncio

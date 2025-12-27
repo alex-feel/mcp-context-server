@@ -324,7 +324,7 @@ class TestStoreContextEdgeCases:
         from app.server import store_context
 
         with pytest.raises(ToolError, match='thread_id cannot be empty or whitespace'):
-            await store_context.fn(
+            await store_context(
                 thread_id='   ',  # Whitespace only
                 source='user',
                 text='Some text',
@@ -339,7 +339,7 @@ class TestStoreContextEdgeCases:
         from app.server import store_context
 
         with pytest.raises(ToolError, match='text cannot be empty or whitespace'):
-            await store_context.fn(
+            await store_context(
                 thread_id='test_thread',
                 source='user',
                 text='   ',  # Whitespace only
@@ -354,7 +354,7 @@ class TestStoreContextEdgeCases:
         from app.server import store_context
 
         with pytest.raises(ToolError, match='missing required "data" field'):
-            await store_context.fn(
+            await store_context(
                 thread_id='test_thread',
                 source='user',
                 text='Some text',
@@ -370,7 +370,7 @@ class TestStoreContextEdgeCases:
         from app.server import store_context
 
         with pytest.raises(ToolError, match='empty "data" field'):
-            await store_context.fn(
+            await store_context(
                 thread_id='test_thread',
                 source='user',
                 text='Some text',
@@ -387,7 +387,7 @@ class TestStoreContextEdgeCases:
         from app.server import store_context
 
         image_data = base64.b64encode(b'test_image').decode('utf-8')
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='test_default_mime',
             source='user',
             text='Test image',
@@ -397,12 +397,14 @@ class TestStoreContextEdgeCases:
         assert result['success'] is True
 
         # Verify the image was stored
-        context = await get_context_by_ids.fn(
+        context = await get_context_by_ids(
             context_ids=[result['context_id']],
             include_images=True,
         )
         assert len(context) == 1
-        assert context[0]['content_type'] == 'multimodal'
+        # Convert TypedDict to regular dict for test assertion
+        entry = dict(context[0])
+        assert entry['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -421,7 +423,7 @@ class TestStoreContextEdgeCases:
             mock_ensure.return_value = mock_repos
 
             with pytest.raises(ToolError, match='Failed to store context'):
-                await store_context.fn(
+                await store_context(
                     thread_id='test_thread',
                     source='user',
                     text='Some text',
@@ -441,7 +443,7 @@ class TestUpdateContextEdgeCases:
         from app.server import update_context
 
         # First create a context
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='test_update',
             source='user',
             text='Original text',
@@ -450,7 +452,7 @@ class TestUpdateContextEdgeCases:
 
         # Try to update with no fields
         with pytest.raises(ToolError, match='At least one field must be provided'):
-            await update_context.fn(context_id=context_id)
+            await update_context(context_id=context_id)
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -462,7 +464,7 @@ class TestUpdateContextEdgeCases:
         from app.server import update_context
 
         # First create a context
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='test_update_ws',
             source='user',
             text='Original text',
@@ -471,7 +473,7 @@ class TestUpdateContextEdgeCases:
 
         # Try to update with whitespace text
         with pytest.raises(ToolError, match='text cannot be empty'):
-            await update_context.fn(context_id=context_id, text='   ')
+            await update_context(context_id=context_id, text='   ')
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -482,7 +484,7 @@ class TestUpdateContextEdgeCases:
         from app.server import update_context
 
         with pytest.raises(ToolError, match='not found'):
-            await update_context.fn(context_id=999999, text='New text')
+            await update_context(context_id=999999, text='New text')
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -497,7 +499,7 @@ class TestUpdateContextEdgeCases:
         image_data = base64.b64encode(b'test').decode('utf-8')
 
         # Create with image
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='test_clear_images',
             source='user',
             text='With image',
@@ -506,18 +508,20 @@ class TestUpdateContextEdgeCases:
         context_id = result['context_id']
 
         # Update with empty images list
-        update_result = await update_context.fn(context_id=context_id, images=[])
+        update_result = await update_context(context_id=context_id, images=[])
 
         assert update_result['success'] is True
         assert 'images' in update_result['updated_fields']
         assert 'content_type' in update_result['updated_fields']
 
         # Verify images were removed
-        context = await get_context_by_ids.fn(
+        context = await get_context_by_ids(
             context_ids=[context_id],
             include_images=True,
         )
-        assert context[0]['content_type'] == 'text'
+        # Convert TypedDict to regular dict for test assertion
+        entry = dict(context[0])
+        assert entry['content_type'] == 'text'
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -531,7 +535,7 @@ class TestUpdateContextEdgeCases:
         from app.server import update_context
 
         # Create a context
-        result = await store_context.fn(
+        result = await store_context(
             thread_id='test_image_limit',
             source='user',
             text='Original',
@@ -542,7 +546,7 @@ class TestUpdateContextEdgeCases:
         large_data = base64.b64encode(b'x' * (6 * 1024 * 1024)).decode('utf-8')
 
         with pytest.raises(ToolError, match='exceeds size limit'):
-            await update_context.fn(
+            await update_context(
                 context_id=context_id,
                 images=[{'data': large_data, 'mime_type': 'image/png'}],
             )
@@ -557,7 +561,7 @@ class TestDeleteContextEdgeCases:
         """Test deleting from nonexistent thread returns 0."""
         from app.server import delete_context
 
-        result = await delete_context.fn(thread_id='nonexistent_thread_xyz')
+        result = await delete_context(thread_id='nonexistent_thread_xyz')
 
         assert result['success'] is True
         assert result['deleted_count'] == 0

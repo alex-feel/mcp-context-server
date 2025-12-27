@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from typing import Literal
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -17,14 +18,17 @@ from fastmcp.exceptions import ToolError
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
 
-# Get the actual async functions from the FunctionTool wrappers
-# FastMCP wraps our functions in FunctionTool objects, but we need the original functions for testing
-store_context = app.server.store_context.fn
-search_context = app.server.search_context.fn
-get_context_by_ids = app.server.get_context_by_ids.fn
-delete_context = app.server.delete_context.fn
-list_threads = app.server.list_threads.fn
-get_statistics = app.server.get_statistics.fn
+# Type alias for source parameter - helps with testing invalid values
+SourceType = Literal['user', 'agent']
+
+# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+# Tools are registered dynamically in lifespan(), so we can access the functions directly
+store_context = app.server.store_context
+search_context = app.server.search_context
+get_context_by_ids = app.server.get_context_by_ids
+delete_context = app.server.delete_context
+list_threads = app.server.list_threads
+get_statistics = app.server.get_statistics
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -79,7 +83,7 @@ Key points:
                 {
                     'data': base64.b64encode(b'code_screenshot').decode('utf-8'),
                     'mime_type': 'image/png',
-                    'metadata': {'filename': 'async_code.png'},
+                    'filename': 'async_code.png',
                 },
             ],
             tags=['code-review', 'python'],
@@ -96,7 +100,7 @@ Key points:
                 {
                     'data': base64.b64encode(b'annotated_code').decode('utf-8'),
                     'mime_type': 'image/png',
-                    'metadata': {'annotations': 3},
+                    'annotations': '3',
                 },
             ],
             metadata={'review_status': 'approved'},
@@ -241,7 +245,9 @@ Key points:
         )
 
         assert len(referenced_docs) == 1
-        assert 'API Documentation' in referenced_docs[0]['text_content']
+        text_content = referenced_docs[0].get('text_content')
+        assert text_content is not None
+        assert 'API Documentation' in text_content
 
         # Search across documentation
         docs = await search_context(limit=50, tags=['documentation'])
@@ -387,15 +393,22 @@ class TestDataIntegrity:
         )
 
         assert len(fetched) == 1
-        entry = fetched[0]
+        # Convert TypedDict to regular dict for test assertions
+        entry = dict(fetched[0])
 
         assert entry['thread_id'] == thread_id
         assert entry['source'] == 'user'
         assert entry['text_content'] == 'Complete entry'
         assert entry['content_type'] == 'multimodal'
-        assert len(entry['images']) == 1
+        images = entry['images']
+        assert images is not None
+        assert isinstance(images, list)
+        assert len(images) == 1
         assert entry['metadata'] == {'important': True}
-        assert set(entry['tags']) == {'critical', 'test'}
+        tags = entry['tags']
+        assert tags is not None
+        assert isinstance(tags, list)
+        assert set(tags) == {'critical', 'test'}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -515,9 +528,11 @@ class TestErrorRecovery:
     async def test_partial_failure_handling(self) -> None:
         """Test handling of partial failures in batch operations."""
         # Mix of valid and invalid operations
+        # Use cast to bypass static type checking for invalid source - testing runtime validation
+        from typing import cast
         results = await asyncio.gather(
             store_context(thread_id='valid1', source='user', text='Valid'),
-            store_context(thread_id='valid2', source='invalid', text='Invalid source'),  # Will fail
+            store_context(thread_id='valid2', source=cast(SourceType, 'invalid'), text='Invalid source'),  # Will fail
             store_context(thread_id='valid3', source='agent', text='Valid'),
             return_exceptions=True,
         )
@@ -543,10 +558,11 @@ class TestErrorRecovery:
         # Cause an error - using cast() to bypass Pydantic, database CHECK constraint catches invalid source
         # SQLite: "CHECK constraint failed: source"
         # PostgreSQL: "new row for relation \"context_entries\" violates check constraint"
+        from typing import cast
         with pytest.raises(ToolError, match=r'(CHECK constraint failed.*source|violates check constraint.*source)'):
             await store_context(
                 thread_id='test',
-                source='invalid_source',  # Invalid
+                source=cast(SourceType, 'invalid_source'),  # Invalid - cast bypasses static checks
                 text='This will fail',
             )
 
@@ -574,7 +590,7 @@ class TestComplexQueries:
         """Test combining multiple search filters."""
         # Setup diverse test data
         threads = ['project_a', 'project_b', 'project_c']
-        sources = ['user', 'agent']
+        sources: list[SourceType] = ['user', 'agent']
         tags_sets = [
             ['python', 'backend'],
             ['javascript', 'frontend'],
@@ -584,7 +600,8 @@ class TestComplexQueries:
 
         # Create varied entries
         for thread in threads:
-            for source in sources:
+            for source_val in sources:
+                source: SourceType = source_val
                 for tag_set in tags_sets:
                     await store_context(
                         thread_id=thread,

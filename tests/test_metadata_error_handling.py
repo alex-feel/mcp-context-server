@@ -14,7 +14,7 @@ class TestMetadataErrorHandling:
     async def test_invalid_operator_returns_error(self, mock_context: MockFastMCPContext) -> None:
         """Test that invalid operators return proper error responses."""
         # Try to use an invalid operator
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='test',
             metadata_filters=[
@@ -37,7 +37,7 @@ class TestMetadataErrorHandling:
     async def test_empty_in_list_returns_error(self, mock_context: MockFastMCPContext) -> None:
         """Test that empty IN operator lists return proper error responses."""
         # Try to use an empty list with IN operator
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='test',
             metadata_filters=[
@@ -60,7 +60,7 @@ class TestMetadataErrorHandling:
     async def test_multiple_invalid_filters_collect_all_errors(self, mock_context: MockFastMCPContext) -> None:
         """Test that multiple invalid filters collect all errors."""
         # Try multiple invalid filters
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='test',
             metadata_filters=[
@@ -83,7 +83,7 @@ class TestMetadataErrorHandling:
     async def test_valid_filters_work_correctly(self, mock_context: MockFastMCPContext) -> None:
         """Test that valid filters still work correctly after error handling changes."""
         # Use valid filters
-        result = await search_context.fn(
+        result = await search_context(
             limit=50,
             thread_id='test',
             metadata_filters=[
@@ -106,7 +106,7 @@ class TestMetadataErrorHandling:
         # Store test data first
         from app.server import store_context
 
-        await store_context.fn(
+        await store_context(
             thread_id='test_case',
             source='user',
             text='Test entry',
@@ -115,7 +115,7 @@ class TestMetadataErrorHandling:
         )
 
         # Search with case-insensitive (default)
-        result1 = await search_context.fn(
+        result1 = await search_context(
             limit=50,
             thread_id='test_case',
             metadata_filters=[
@@ -127,7 +127,7 @@ class TestMetadataErrorHandling:
         assert len(result1['results']) == 1  # Should find the entry
 
         # Search with case-sensitive
-        result2 = await search_context.fn(
+        result2 = await search_context(
             limit=50,
             thread_id='test_case',
             metadata_filters=[
@@ -139,7 +139,7 @@ class TestMetadataErrorHandling:
         assert len(result2['results']) == 0  # Should NOT find the entry (case mismatch)
 
         # Search with correct case
-        result3 = await search_context.fn(
+        result3 = await search_context(
             limit=50,
             thread_id='test_case',
             metadata_filters=[

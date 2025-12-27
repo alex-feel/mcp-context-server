@@ -13,6 +13,7 @@ import logging
 import operator
 import sqlite3
 from collections.abc import AsyncGenerator
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC
@@ -27,6 +28,7 @@ import asyncpg
 from fastmcp import Context
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -66,6 +68,31 @@ _repositories: RepositoryContainer | None = None
 
 # Global embedding service (only if semantic search enabled and available)
 _embedding_service: Any | None = None
+
+
+# Tool Annotations for MCP protocol hints
+# Read-only tools: do not modify environment
+READ_ONLY_ANNOTATIONS = ToolAnnotations(readOnlyHint=True)
+
+# Additive tools: create new entries (not destructive)
+ADDITIVE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+)
+
+# Delete tools: destructive but idempotent (deleting twice is no-op)
+DELETE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=True,
+)
+
+# Update tools: destructive and NOT idempotent (same update may have different effects)
+UPDATE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+)
 
 
 @dataclass
@@ -802,6 +829,49 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts_language}')
 
 
+def _is_tool_disabled(tool_name: str) -> bool:
+    """Check if a tool is in the disabled list.
+
+    Args:
+        tool_name: The name of the tool to check
+
+    Returns:
+        True if tool is disabled, False otherwise
+    """
+    return tool_name.lower() in settings.disabled_tools
+
+
+def _register_tool(
+    func: Callable[..., Any],
+    name: str | None = None,
+    annotations: ToolAnnotations | None = None,
+) -> bool:
+    """Register a tool only if it's not in the disabled list.
+
+    Args:
+        func: The tool function to register
+        name: Optional explicit tool name (defaults to function name)
+        annotations: Optional ToolAnnotations for hints
+
+    Returns:
+        True if tool was registered, False if disabled
+    """
+    tool_name = name or func.__name__
+
+    if _is_tool_disabled(tool_name):
+        logger.info(f'[!] {tool_name} not registered (in DISABLED_TOOLS)')
+        return False
+
+    # Register with annotations if provided
+    if annotations is not None:
+        mcp.tool(annotations=annotations)(func)
+    else:
+        mcp.tool()(func)
+
+    logger.info(f'[OK] {tool_name} registered')
+    return True
+
+
 # Lifespan context manager for FastMCP
 @asynccontextmanager
 async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
@@ -834,7 +904,26 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         # 5) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
-        # 6) Initialize semantic search if enabled
+        # 6) Register core tools with appropriate annotations
+        # Additive tools (create new entries)
+        _register_tool(store_context, annotations=ADDITIVE_ANNOTATIONS)
+        _register_tool(store_context_batch, annotations=ADDITIVE_ANNOTATIONS)
+
+        # Read-only tools (no modifications)
+        _register_tool(search_context, annotations=READ_ONLY_ANNOTATIONS)
+        _register_tool(get_context_by_ids, annotations=READ_ONLY_ANNOTATIONS)
+        _register_tool(list_threads, annotations=READ_ONLY_ANNOTATIONS)
+        _register_tool(get_statistics, annotations=READ_ONLY_ANNOTATIONS)
+
+        # Update tools (destructive, not idempotent)
+        _register_tool(update_context, annotations=UPDATE_ANNOTATIONS)
+        _register_tool(update_context_batch, annotations=UPDATE_ANNOTATIONS)
+
+        # Delete tools (destructive, idempotent)
+        _register_tool(delete_context, annotations=DELETE_ANNOTATIONS)
+        _register_tool(delete_context_batch, annotations=DELETE_ANNOTATIONS)
+
+        # 7) Initialize semantic search if enabled
         if settings.enable_semantic_search:
             semantic_available = await check_semantic_search_dependencies(_backend.backend_type)
 
@@ -843,10 +932,9 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
                     from app.services.embedding_service import EmbeddingService
 
                     _embedding_service = EmbeddingService()
-                    # Register the semantic search tool dynamically
-                    mcp.tool()(semantic_search_context)
+                    # Register the semantic search tool dynamically (DISABLED_TOOLS takes priority)
+                    _register_tool(semantic_search_context, annotations=READ_ONLY_ANNOTATIONS)
                     logger.info('[OK] Semantic search enabled and available')
-                    logger.info('[OK] semantic_search_context registered and exposed')
                 except Exception as e:
                     logger.error(f'Failed to initialize embedding service: {e}')
                     _embedding_service = None
@@ -863,13 +951,12 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
-        # 7) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 8) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.enable_fts:
-            # Always register the FTS tool when enabled
+            # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
             # The tool itself checks migration status and returns informative response
-            mcp.tool()(fts_search_context)
-            logger.info('[OK] fts_search_context registered and exposed')
+            _register_tool(fts_search_context, annotations=READ_ONLY_ANNOTATIONS)
 
             # Check if FTS is available and log status
             fts_available = await _repositories.fts.is_available()
@@ -881,19 +968,20 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
-        # 8) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 9) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.enable_hybrid_search:
             semantic_available_for_hybrid = settings.enable_semantic_search and _embedding_service is not None
             fts_available_for_hybrid = settings.enable_fts
 
             if semantic_available_for_hybrid or fts_available_for_hybrid:
-                mcp.tool()(hybrid_search_context)
+                # DISABLED_TOOLS takes priority over ENABLE_HYBRID_SEARCH
+                _register_tool(hybrid_search_context, annotations=READ_ONLY_ANNOTATIONS)
                 modes_available = []
                 if fts_available_for_hybrid:
                     modes_available.append('fts')
                 if semantic_available_for_hybrid:
                     modes_available.append('semantic')
-                logger.info(f'[OK] hybrid_search_context registered (modes available: {modes_available})')
+                logger.info(f'[OK] hybrid_search_context modes available: {modes_available}')
             else:
                 logger.warning(
                     '[!] Hybrid search enabled but no search modes available - feature disabled. '
@@ -1289,7 +1377,6 @@ def validate_date_range(start_date: str | None, end_date: str | None) -> None:
 # MCP Tools
 
 
-@mcp.tool()
 async def store_context(
     thread_id: Annotated[str, Field(min_length=1, description='Unique identifier for the conversation/task thread')],
     source: Annotated[Literal['user', 'agent'], Field(description="Either 'user' or 'agent'")],
@@ -1467,7 +1554,6 @@ async def store_context(
         raise ToolError(f'Failed to store context: {str(e)}') from e
 
 
-@mcp.tool()
 async def search_context(
     limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 30)')] = 30,
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (indexed)')] = None,
@@ -1617,7 +1703,6 @@ async def search_context(
         raise ToolError(f'Failed to search context: {str(e)}') from e
 
 
-@mcp.tool()
 async def get_context_by_ids(
     context_ids: Annotated[list[int], Field(min_length=1, description='List of context entry IDs to retrieve')],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
@@ -1687,7 +1772,6 @@ async def get_context_by_ids(
         raise ToolError(f'Failed to fetch context entries: {str(e)}') from e
 
 
-@mcp.tool()
 async def delete_context(
     context_ids: Annotated[
         list[int] | None,
@@ -1778,7 +1862,6 @@ async def delete_context(
         raise ToolError(f'Failed to delete context: {str(e)}') from e
 
 
-@mcp.tool()
 async def update_context(
     context_id: Annotated[int, Field(gt=0, description='ID of the context entry to update')],
     text: Annotated[str | None, Field(min_length=1, description='New text content (replaces existing)')] = None,
@@ -2002,7 +2085,6 @@ async def update_context(
 # MCP Resources for read-only access
 
 
-@mcp.tool()
 async def list_threads(ctx: Context | None = None) -> ThreadListDict:
     """List all threads with entry statistics. Use for thread discovery and overview.
 
@@ -2039,7 +2121,6 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
         raise ToolError(f'Failed to list threads: {str(e)}') from e
 
 
-@mcp.tool()
 async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
     """Get database statistics for monitoring and debugging.
 
@@ -2879,7 +2960,6 @@ async def hybrid_search_context(
 # Bulk Operation MCP Tools
 
 
-@mcp.tool()
 async def store_context_batch(
     entries: Annotated[
         list[dict[str, Any]],
@@ -3102,7 +3182,6 @@ async def store_context_batch(
         raise ToolError(f'Batch store failed: {str(e)}') from e
 
 
-@mcp.tool()
 async def update_context_batch(
     updates: Annotated[
         list[dict[str, Any]],
@@ -3375,7 +3454,6 @@ async def update_context_batch(
         raise ToolError(f'Batch update failed: {str(e)}') from e
 
 
-@mcp.tool()
 async def delete_context_batch(
     context_ids: Annotated[
         list[int] | None,

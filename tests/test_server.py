@@ -26,14 +26,14 @@ from fastmcp.exceptions import ToolError
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
 
-# Get the actual async functions from the FunctionTool wrappers
-# FastMCP wraps our functions in FunctionTool objects, but we need the original functions for testing
-store_context = app.server.store_context.fn
-search_context = app.server.search_context.fn
-get_context_by_ids = app.server.get_context_by_ids.fn
-delete_context = app.server.delete_context.fn
-list_threads = app.server.list_threads.fn
-get_statistics = app.server.get_statistics.fn
+# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
+# Tools are registered dynamically in lifespan(), so we can access the functions directly
+store_context = app.server.store_context
+search_context = app.server.search_context
+get_context_by_ids = app.server.get_context_by_ids
+delete_context = app.server.delete_context
+list_threads = app.server.list_threads
+get_statistics = app.server.get_statistics
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -471,8 +471,9 @@ class TestSearchContext:
         # get_context_by_ids should return full text
         get_results = await get_context_by_ids(context_ids=[context_id])
         assert len(get_results) == 1
-        assert get_results[0]['text_content'] == long_text
-        assert 'is_truncated' not in get_results[0]  # This field should not exist
+        entry = dict(get_results[0])
+        assert entry['text_content'] == long_text
+        assert 'is_truncated' not in entry  # This field should not exist
 
     @pytest.mark.asyncio
     async def test_search_null_text_truncation(self, temp_db_path: Path) -> None:
@@ -532,7 +533,8 @@ class TestGetContextByIds:
         results = await get_context_by_ids(context_ids=[context_id])
 
         assert len(results) == 1
-        assert results[0]['id'] == context_id
+        entry = dict(results[0])
+        assert entry['id'] == context_id
 
     @pytest.mark.asyncio
     async def test_get_multiple_contexts(
@@ -544,7 +546,7 @@ class TestGetContextByIds:
         results = await get_context_by_ids(context_ids=ids_to_fetch)
 
         assert len(results) == 3
-        result_ids = [r['id'] for r in results]
+        result_ids = [dict(r)['id'] for r in results]
         assert set(result_ids) == set(ids_to_fetch)
 
     @pytest.mark.asyncio
@@ -979,7 +981,8 @@ class TestEdgeCases:
 
         # Verify retrieval
         fetched = await get_context_by_ids(context_ids=[result['context_id']])
-        assert fetched[0]['metadata'] == large_metadata
+        entry = dict(fetched[0])
+        assert entry['metadata'] == large_metadata
 
     @pytest.mark.asyncio
     async def test_sql_injection_prevention(self) -> None:
