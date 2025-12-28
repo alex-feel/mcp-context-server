@@ -110,11 +110,8 @@ Authorization: Bearer your-secret-token-here
 **Claude Code CLI:**
 
 ```bash
-# Add server with HTTP transport
-claude mcp add --transport http context-server http://localhost:8000/mcp
-
-# Note: Claude Code currently requires manual header configuration for auth
-# Check Claude Code documentation for latest auth support
+# Add HTTP server with Bearer token authentication
+claude mcp add --transport http context-server http://localhost:8000/mcp --header "Authorization: Bearer your-secret-token-here"
 ```
 
 **HTTP Client Example (curl):**
@@ -427,11 +424,12 @@ OAuth flows require browser-based authentication. The MCP client must support th
 # Add STDIO server (no auth)
 claude mcp add context-server -- uvx mcp-context-server
 
-# Add HTTP server
+# Add HTTP server (no auth)
 claude mcp add --transport http context-server http://localhost:8000/mcp
-```
 
-For authenticated HTTP servers, check Claude Code documentation for authentication configuration options.
+# Add HTTP server with Bearer token authentication
+claude mcp add --transport http context-server http://localhost:8000/mcp --header "Authorization: Bearer your-secret-token-here"
+```
 
 ### Custom MCP Clients
 
