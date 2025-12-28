@@ -147,4 +147,59 @@ jobs:
 
       - name: Verify in MCP Registry
         run: |
-          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}" | jq .
+          set -euo pipefail
+
+          # Extract expected version from server.json (the file we just published)
+          expected_version=$(jq -r '.version' server.json)
+          echo "Expected version: $expected_version"
+
+          # Retry parameters (matching PyPI wait logic)
+          max_attempts=30
+          delay=10
+
+          for i in $(seq 1 $max_attempts); do
+            echo "Attempt $i/$max_attempts: Checking MCP Registry for version $expected_version..."
+
+            # Query the registry
+            response=$(curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}" || echo '{"servers":[]}')
+
+            # Check if version exists with isLatest=true
+            # Using jq to find an entry where:
+            # 1. server.version matches expected version
+            # 2. _meta."io.modelcontextprotocol.registry/official".isLatest is true
+            found=$(echo "$response" | jq -e --arg v "$expected_version" '
+              .servers[] |
+              select(.server.version == $v) |
+              select(._meta."io.modelcontextprotocol.registry/official".isLatest == true)
+            ' 2>/dev/null || echo "")
+
+            if [ -n "$found" ]; then
+              echo "SUCCESS: Version $expected_version found in MCP Registry with isLatest=true"
+              echo "Published entry:"
+              echo "$found" | jq .
+              exit 0
+            fi
+
+            # Check if version exists but isLatest is false (for diagnostics)
+            version_exists=$(echo "$response" | jq -e --arg v "$expected_version" '
+              .servers[] | select(.server.version == $v)
+            ' 2>/dev/null || echo "")
+
+            if [ -n "$version_exists" ]; then
+              echo "INFO: Version $expected_version exists but isLatest is NOT yet true"
+              latest=$(echo "$response" | jq -r '
+                .servers[] |
+                select(._meta."io.modelcontextprotocol.registry/official".isLatest == true) |
+                .server.version
+              ' 2>/dev/null || echo "unknown")
+              echo "Current latest version in registry: $latest"
+            fi
+
+            echo "Version $expected_version not yet visible with isLatest=true, waiting ${delay}s..."
+            sleep $delay
+          done
+
+          echo "ERROR: Version $expected_version not found in MCP Registry with isLatest=true after $max_attempts attempts"
+          echo "Final registry response:"
+          curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}" | jq . || true
+          exit 1
