@@ -158,6 +158,10 @@ For detailed instructions on enabling optional semantic search with Ollama and E
 
 For production deployments with HTTP transport and container orchestration, Docker Compose configurations are available for SQLite, PostgreSQL, and external PostgreSQL (Supabase). See the [Docker Deployment Guide](docs/docker-deployment.md) for setup instructions and client connection details.
 
+### Authentication
+
+For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token, Google OAuth, and Azure AD configuration options.
+
 ## Database Backends
 
 The server supports multiple database backends, selectable via the `STORAGE_BACKEND` environment variable.

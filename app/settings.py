@@ -53,6 +53,25 @@ class TransportSettings(CommonSettings):
     )
 
 
+class AuthSettings(CommonSettings):
+    """Authentication settings for HTTP transport.
+
+    These settings are used by the SimpleTokenVerifier when
+    FASTMCP_SERVER_AUTH=app.auth.simple_token.SimpleTokenVerifier is set.
+    """
+
+    auth_token: SecretStr | None = Field(
+        default=None,
+        alias='MCP_AUTH_TOKEN',
+        description='Bearer token for HTTP authentication',
+    )
+    auth_client_id: str = Field(
+        default='mcp-client',
+        alias='MCP_AUTH_CLIENT_ID',
+        description='Client ID to assign to authenticated requests',
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage-related settings with environment variable mapping."""
 
@@ -190,6 +209,9 @@ class AppSettings(CommonSettings):
 
     # Transport settings
     transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
+
+    # Auth settings
+    auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
 
     @field_validator('embedding_dim')
     @classmethod
