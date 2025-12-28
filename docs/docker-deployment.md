@@ -445,6 +445,7 @@ docker build -f docker/Dockerfile.ollama -t mcp-ollama .
 
 ## Related Documentation
 
+- [Authentication Guide](authentication.md) - Bearer token and OAuth authentication for HTTP transport
 - [Semantic Search Guide](semantic-search.md) - Vector similarity search configuration
 - [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - [Hybrid Search Guide](hybrid-search.md) - Combined search with RRF fusion

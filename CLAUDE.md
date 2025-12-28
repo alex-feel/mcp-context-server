@@ -86,8 +86,9 @@ This server implements the [Model Context Protocol](https://modelcontextprotocol
 - **JSON-RPC 2.0 Protocol**: Standardized communication for reliable tool invocation
 - **Automatic Tool Discovery**: MCP clients auto-detect available tools and their schemas
 - **Strong Typing**: Pydantic models ensure data integrity across client-server boundary
-- **Universal Compatibility**: Works with Claude Desktop, LangGraph, and any MCP-compliant client
-- **Stdio Transport**: Communication via standard input/output for simple integration
+- **Universal Compatibility**: Works with Claude Desktop, Claude Code, LangGraph, and any MCP-compliant client
+- **Multi-Transport Support**: Stdio (default), HTTP, streamable-http, or SSE transport modes
+- **Tool Annotations**: MCP protocol hints (readOnlyHint, destructiveHint, idempotentHint) for client behavior optimization
 
 ### MCP Server Architecture
 
@@ -95,12 +96,19 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
 
 1. **FastMCP Server Layer** (`app/server.py`):
    - Exposes 13 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context`, `store_context_batch`, `update_context_batch`, `delete_context_batch`
-   - Handles stdio transport for Claude Desktop/LangGraph integration
-   - Manages async request processing with proper lifecycle management
+   - Supports multiple transports: stdio (default), HTTP, streamable-http, SSE
+   - Provides `/health` endpoint for container orchestration (HTTP transport only)
+   - Dynamic tool registration during server lifespan with `DISABLED_TOOLS` support
    - Uses `RepositoryContainer` for all database operations (no direct SQL)
    - Database initialization in `init_database()`, repository management via `_ensure_repositories()`
 
-2. **Storage Backend Layer** (`app/backends/`):
+2. **Authentication Layer** (`app/auth/`):
+   - **SimpleTokenVerifier** (`simple_token.py`): Bearer token authentication for HTTP transport
+   - Constant-time token comparison to prevent timing attacks
+   - Configured via `FASTMCP_SERVER_AUTH` and `MCP_AUTH_TOKEN` environment variables
+   - **AuthSettings**: Centralized auth configuration via `app/settings.py`
+
+3. **Storage Backend Layer** (`app/backends/`):
    - **StorageBackend Protocol** (`base.py`): Defines database-agnostic interface with 7 required methods
    - **SQLiteBackend** (`sqlite_backend.py`): Production-grade SQLite implementation with connection pooling, write queue, circuit breaker
    - **PostgreSQLBackend** (`postgresql_backend.py`): Async PostgreSQL implementation using asyncpg with connection pooling, MVCC, JSONB support
@@ -108,7 +116,7 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Runtime backend selection enables support for multiple databases (SQLite, PostgreSQL)
    - All backends implement the same protocol for seamless switching
 
-3. **Repository Pattern** (`app/repositories/`):
+4. **Repository Pattern** (`app/repositories/`):
    - **RepositoryContainer**: Dependency injection container managing all repository instances
    - **ContextRepository**: Manages context entries (CRUD operations, search, deduplication, metadata filtering, updates)
    - **TagRepository**: Handles tag normalization and many-to-many relationships
@@ -119,17 +127,17 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Each repository uses `StorageBackend` protocol for database operations
    - Repositories are database-agnostic - work with any backend implementation
 
-4. **Data Models** (`app/models.py`):
+5. **Data Models** (`app/models.py`):
    - Pydantic V2 models with `StrEnum` for Python 3.12+ compatibility
    - Strict validation for multimodal content (text + images)
    - Base64 image encoding/decoding with configurable size limits
    - `ContextEntry`, `ImageAttachment`, `StoreContextRequest` as main models
 
-5. **Services Layer** (`app/services/`):
+6. **Services Layer** (`app/services/`):
    - **EmbeddingService** (`embedding_service.py`): Generates embeddings via Ollama API for semantic search
    - Handles model communication, vector dimension validation, and graceful degradation
 
-6. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
+7. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
    - **MetadataFilter**: Advanced filter specification with 15 operators (eq, ne, gt, lt, contains, etc.)
    - **QueryBuilder**: Backend-aware SQL generation with proper parameter binding and type casting
    - Supports nested JSON path queries (e.g., "user.preferences.theme")
@@ -137,7 +145,7 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Safe SQL generation with injection prevention
    - Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) JSON operators
 
-7. **Database Layer** (`app/schemas/`):
+8. **Database Layer** (`app/schemas/`):
    - **SQLite Schema** (`sqlite_schema.sql`): 3 tables with JSON support, BLOB storage
    - **PostgreSQL Schema** (`postgresql_schema.sql`): 3 tables with JSONB support, BYTEA storage
    - Thread-scoped context isolation with strategic indexing
@@ -320,6 +328,13 @@ The `fts_search_context` tool is an optional feature that enables linguistic sea
 - `fts_search_context`: Linguistic search with stemming, ranking, and highlighted snippets
 - `hybrid_search_context`: Combines FTS and semantic search with RRF fusion for best of both
 
+### Search API Response Structure
+
+All search tools use a standardized response format:
+- `results`: Array of matching entries (replaces legacy `entries` key)
+- `count`: Number of results returned
+- `stats`: Query execution statistics (only when `explain_query=True`)
+
 **Migration System**:
 - **Location**: `app/migrations/` directory
 - **Backend-Specific Migrations**:
@@ -447,10 +462,21 @@ Configuration via `.env` file or environment:
 
 **Core Settings:**
 - `STORAGE_BACKEND`: Backend type - `sqlite` (default) or `postgresql`
-- `LOG_LEVEL`: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
+- `LOG_LEVEL`: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: ERROR)
 - `DB_PATH`: Custom database location for SQLite (default: ~/.mcp/context_storage.db)
 - `MAX_IMAGE_SIZE_MB`: Individual image size limit (default: 10)
 - `MAX_TOTAL_SIZE_MB`: Total request size limit (default: 100)
+- `DISABLED_TOOLS`: Comma-separated list of tools to disable (e.g., `delete_context,update_context`)
+
+**Transport Settings** (for Docker/remote deployments):
+- `MCP_TRANSPORT`: Transport mode - `stdio` (default), `http`, `streamable-http`, or `sse`
+- `FASTMCP_HOST`: HTTP bind address (default: 0.0.0.0 for Docker)
+- `FASTMCP_PORT`: HTTP port number (default: 8000)
+
+**Authentication Settings** (for HTTP transport):
+- `FASTMCP_SERVER_AUTH`: Auth verifier class (e.g., `app.auth.simple_token.SimpleTokenVerifier`)
+- `MCP_AUTH_TOKEN`: Bearer token for HTTP authentication (required when using SimpleTokenVerifier)
+- `MCP_AUTH_CLIENT_ID`: Client ID to assign to authenticated requests (default: mcp-client)
 
 **Full-Text Search Settings:**
 - `ENABLE_FTS`: Enable full-text search functionality (default: false)
@@ -591,6 +617,17 @@ All backends implement the `StorageBackend` protocol with these required methods
 4. **Future-Proof**: Add new backends by implementing the protocol
 5. **Type-Safe**: Protocol ensures all backends provide required functionality
 
+## Docker Deployment
+
+The project supports containerized deployment with HTTP transport for remote access:
+
+- **Multi-stage Dockerfile** with uv, non-root user (UID 10001), health check endpoint
+- **Three Docker Compose configurations**: SQLite, PostgreSQL, External PostgreSQL (Supabase)
+- **Ollama sidecar** with automatic embedding model download
+- **Health check endpoint** at `/health` for container orchestration
+
+For detailed setup instructions, see [Docker Deployment Guide](docs/docker-deployment.md).
+
 ## Windows Development Notes
 
 **Platform-Specific Considerations:**
@@ -665,20 +702,45 @@ Both mypy and pyright are configured:
 
 ## Critical Implementation Warnings
 
+### Environment Variables - Centralized Configuration
+
+**All environment variables MUST be read exclusively from `app/settings.py`**:
+
+1. **Never use `os.environ` or `os.getenv()` directly** in any module except `app/settings.py`
+2. **Always use `get_settings()`** to access configuration values throughout the codebase
+3. **Add new environment variables** to the appropriate settings class in `app/settings.py`, or create a new class if none fits:
+   - `AppSettings`: General application settings (log level, feature flags)
+   - `StorageSettings`: Database and backend configuration
+   - `TransportSettings`: HTTP transport settings (host, port, transport mode)
+   - `AuthSettings`: Authentication settings (tokens, client IDs)
+4. **Use `Field(alias='ENV_VAR_NAME')`** to map settings attributes to environment variable names
+5. **Update `server.json`** when adding new environment variables (for MCP registry)
+
+```python
+# WRONG - never do this
+import os
+db_path = os.getenv('DB_PATH', 'default.db')
+
+# CORRECT - always use centralized settings
+from app.settings import get_settings
+settings = get_settings()
+db_path = settings.storage.db_path
+```
+
 ### FastMCP-Specific Requirements
 
 1. **Never add `from __future__ import annotations`** to server.py - it breaks FastMCP's runtime type introspection
 2. **Tool signatures must include `ctx: Context | None = None`** as the last parameter (hidden from MCP clients)
 3. **Return types must be serializable dicts/lists** - use TypedDicts from `app/types.py`
-4. **Tool decorators require specific imports**: Use `Annotated` and `Field` from `typing` and `pydantic`
+4. **Use `Annotated` and `Field`** from `typing` and `pydantic` for parameter documentation
+5. **Tools are registered dynamically** via `_register_tool()` in `lifespan()`, not with `@mcp.tool()` decorator
 
 ### Adding New MCP Tools
 
-When adding a new tool to the server, follow this pattern:
+Tools are registered dynamically during server lifespan (not at import time) to support `DISABLED_TOOLS`. Follow this pattern:
 
 ```python
-# In app/server.py
-@mcp.tool()
+# In app/server.py - define the tool function (no decorator)
 async def my_new_tool(
     required_param: Annotated[str, Field(description='Description for MCP clients')],
     optional_param: Annotated[int | None, Field(description='Optional parameter')] = None,
@@ -689,15 +751,25 @@ async def my_new_tool(
     # Use repository methods for database operations
     result = await repos.context.some_method(required_param)
     return {'success': True, 'data': result}
+
+# In lifespan() - register with appropriate annotations
+_register_tool(my_new_tool, annotations=READ_ONLY_ANNOTATIONS)
 ```
+
+**Tool Annotation Categories** (defined at module level):
+- `READ_ONLY_ANNOTATIONS`: Search/read tools (readOnlyHint=True)
+- `ADDITIVE_ANNOTATIONS`: Store tools (destructiveHint=False)
+- `UPDATE_ANNOTATIONS`: Update tools (destructiveHint=True, idempotentHint=False)
+- `DELETE_ANNOTATIONS`: Delete tools (destructiveHint=True, idempotentHint=True)
 
 **Checklist for new tools:**
 1. Add TypedDict response type to `app/types.py`
 2. Add repository methods if database access needed
 3. Use `Literal["user", "agent"]` for source parameters
-4. Add tests in `tests/test_server.py` or dedicated test file
-5. Add real server integration tests in `tests/test_real_server.py`
-6. Update server.json if tool adds new environment variables
+4. Register in `lifespan()` with `_register_tool()` and appropriate annotations
+5. Add tests in `tests/test_server.py` or dedicated test file
+6. Add real server integration tests in `tests/test_real_server.py`
+7. Update server.json if tool adds new environment variables
 
 ### Repository Pattern Implementation
 
