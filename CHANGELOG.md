@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/alex-feel/mcp-context-server/compare/v0.13.0...v0.14.0) (2025-12-28)
+
+
+### Features
+
+* add HTTP authentication support with bearer token and OAuth options ([e625b42](https://github.com/alex-feel/mcp-context-server/commit/e625b42add2360f1bd9212690182b0b8474b03f8))
+
 ## [0.13.0](https://github.com/alex-feel/mcp-context-server/compare/v0.12.0...v0.13.0) (2025-12-27)
 
 
