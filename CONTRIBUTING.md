@@ -162,6 +162,48 @@ fix: resolve race condition in repository initialization
 The database connection manager now uses a lock to prevent concurrent initialization attempts during high load.
 ```
 
+## Release Process
+
+Releases are automated using [Release Please](https://github.com/googleapis/release-please).
+
+### How It Works
+
+1. **Conventional commits** on `main` branch are tracked automatically
+2. Release Please creates/updates a release PR with changelog
+3. Merging the release PR:
+   - Creates a GitHub release with semantic version tag
+   - Triggers `publish.yml` workflow via `release:published` event
+
+### Publish Workflow
+
+On release, three jobs run from `.github/workflows/publish.yml`:
+
+| Job | Depends On | Output |
+|-----|------------|--------|
+| `publish-to-pypi` | `build` | Package on [PyPI](https://pypi.org/project/mcp-context-server/) |
+| `publish-docker-image` | `build` | Image on [GHCR](https://github.com/alex-feel/mcp-context-server/pkgs/container/mcp-context-server) |
+| `publish-to-mcp-registry` | `publish-to-pypi` | Entry in [MCP Registry](https://registry.modelcontextprotocol.io/) |
+
+PyPI and Docker publishing run in parallel. MCP Registry waits for PyPI.
+
+### Docker Image Details
+
+**Registry:** `ghcr.io/alex-feel/mcp-context-server`
+
+**Platforms:** `linux/amd64`, `linux/arm64`
+
+**Tags** (for release `v0.14.0`):
+- `0.14.0` - Full version
+- `0.14` - Minor version
+- `0` - Major version
+- `sha-abc1234` - Git commit SHA
+- `latest` - Most recent release
+
+**Supply Chain Security:**
+- SLSA provenance attestation
+- Software Bill of Materials (SBOM)
+- Cryptographically signed build provenance via `actions/attest-build-provenance`
+
 ## Release Troubleshooting
 
 ### Recovering from Partial Release (PyPI Success, MCP Registry Failure)
@@ -202,6 +244,7 @@ If a new version was successfully published to PyPI but failed to publish to MCP
 
 6. **Re-publish the GitHub release**: In the GitHub UI, navigate to Releases, find the draft release, and click "Publish release". This triggers the publish workflow:
    - PyPI publication is **skipped** (version already exists due to `skip-existing: true`)
+   - Docker image is **rebuilt and pushed** (tags are overwritten)
    - MCP Registry publication proceeds with the fixed files
 
 **Important**: Replace `v0.10.0` with your actual version tag in all commands.
