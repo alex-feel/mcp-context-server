@@ -142,10 +142,28 @@ jobs:
       - name: Login to MCP Registry using GitHub OIDC
         run: ./mcp-publisher login github-oidc
 
+      - name: Check if version exists in MCP Registry
+        id: check-mcp-version
+        run: |
+          set -euo pipefail
+          expected_version=$(jq -r '.version' server.json)
+          echo "Checking if version $expected_version already exists in MCP Registry..."
+          response=$(curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}" 2>/dev/null || echo '{"servers":[]}')
+          version_exists=$(echo "$response" | jq -e --arg v "$expected_version" '.servers[] | select(.server.version == $v)' 2>/dev/null || echo "")
+          if [ -n "$version_exists" ]; then
+            echo "Version $expected_version already exists in MCP Registry - will skip publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version $expected_version not found in MCP Registry - will proceed with publish"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to MCP Registry
+        if: steps.check-mcp-version.outputs.skip != 'true'
         run: ./mcp-publisher publish --file server.json
 
       - name: Verify in MCP Registry
+        if: steps.check-mcp-version.outputs.skip != 'true'
         run: |
           set -euo pipefail
 
