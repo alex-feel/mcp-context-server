@@ -372,8 +372,24 @@ The project uses `uv` as the package manager with `tool.uv.package = true` in py
 The project uses [Release Please](https://github.com/googleapis/release-please) for automated releases:
 - Conventional commits are automatically parsed for CHANGELOG generation
 - Version bumping is automated based on commit types
-- PyPI publishing is handled by GitHub Actions
 - To trigger a release, merge commits following [Conventional Commits](https://www.conventionalcommits.org/)
+
+### Publish Workflow
+
+On `release:published` event, three jobs run in parallel:
+
+| Job | Target | Artifact |
+|-----|--------|----------|
+| `publish-to-pypi` | PyPI | `mcp-context-server` package |
+| `publish-to-mcp-registry` | MCP Registry | Server metadata |
+| `publish-docker-image` | GHCR | `ghcr.io/alex-feel/mcp-context-server` |
+
+### Docker Image Details
+
+- **Registry**: `ghcr.io/alex-feel/mcp-context-server`
+- **Platforms**: `linux/amd64`, `linux/arm64`
+- **Tags**: `0.14.0`, `0.14`, `0`, `sha-xxx`, `latest`
+- **Security**: SLSA provenance, SBOM, build attestations
 
 ## MCP Registry and server.json Maintenance
 
