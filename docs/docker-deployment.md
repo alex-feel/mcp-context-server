@@ -443,10 +443,15 @@ docker build -f docker/Dockerfile.ollama -t mcp-ollama .
 | `docker/ollama-entrypoint.sh` | Auto model pull entrypoint |
 | `.dockerignore` | Build context optimization |
 
-## Related Documentation
+## Additional Resources
 
-- [Authentication Guide](authentication.md) - Bearer token and OAuth authentication for HTTP transport
-- [Semantic Search Guide](semantic-search.md) - Vector similarity search configuration
-- [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
-- [Hybrid Search Guide](hybrid-search.md) - Combined search with RRF fusion
-- [README.md](../README.md) - Main documentation and API reference
+### Related Documentation
+
+- **API Reference**: [API Reference](api-reference.md) - complete tool documentation
+- **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
+- **Semantic Search**: [Semantic Search Guide](semantic-search.md) - vector similarity search configuration
+- **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
+- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined search with RRF fusion
+- **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata filtering with operators
+- **Authentication**: [Authentication Guide](authentication.md) - bearer token and OAuth authentication
+- **Main Documentation**: [README.md](../README.md) - overview and quick start

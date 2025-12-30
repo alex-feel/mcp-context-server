@@ -484,8 +484,13 @@ Both operations automatically rebuild the index from existing data.
 - **BM25**: [en.wikipedia.org/wiki/Okapi_BM25](https://en.wikipedia.org/wiki/Okapi_BM25)
 - **Porter Stemmer**: [tartarus.org/martin/PorterStemmer](https://tartarus.org/martin/PorterStemmer/)
 
-### Related Guides
+### Related Documentation
 
-- **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators
+- **API Reference**: [API Reference](api-reference.md) - complete tool documentation
+- **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - meaning-based search with embeddings
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion
+- **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators
+- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
+- **Main Documentation**: [README.md](../README.md) - overview and quick start

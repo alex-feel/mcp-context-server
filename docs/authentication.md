@@ -578,9 +578,16 @@ curl -v -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8000/mcp
 4. **Regular rotation**: Rotate secrets and tokens periodically
 5. **Secure storage**: Use secrets managers for credentials
 
-## Related Documentation
+## Additional Resources
 
-- [Docker Deployment Guide](docker-deployment.md) - HTTP transport configuration
-- [Semantic Search Guide](semantic-search.md) - Feature configuration
-- [README.md](../README.md) - Main documentation and API reference
-- [FastMCP Authentication](https://gofastmcp.com/servers/auth) - FastMCP auth documentation
+### Related Documentation
+
+- **API Reference**: [API Reference](api-reference.md) - complete tool documentation
+- **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
+- **Semantic Search**: [Semantic Search Guide](semantic-search.md) - vector similarity search
+- **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
+- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search
+- **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata filtering with operators
+- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - HTTP transport configuration
+- **Main Documentation**: [README.md](../README.md) - overview and quick start
+- **FastMCP Authentication**: [FastMCP Auth](https://gofastmcp.com/servers/auth) - FastMCP auth documentation

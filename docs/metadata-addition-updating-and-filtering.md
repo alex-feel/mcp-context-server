@@ -1501,11 +1501,15 @@ stalled = await search_context(
 
 ### Related Documentation
 
-- [README.md](../README.md) - Complete API reference for all MCP tools
-- [Semantic Search Guide](semantic-search.md) - Optional vector similarity search
-- [Full-Text Search Guide](full-text-search.md) - Optional linguistic search with stemming
-- [Hybrid Search Guide](hybrid-search.md) - Combined FTS + semantic search with RRF fusion
-- [CONTRIBUTING.md](../CONTRIBUTING.md) - Architecture and development guidelines
+- **API Reference**: [API Reference](api-reference.md) - complete tool documentation
+- **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
+- **Semantic Search**: [Semantic Search Guide](semantic-search.md) - vector similarity search
+- **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - linguistic search with stemming
+- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion
+- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
+- **Main Documentation**: [README.md](../README.md) - overview and quick start
+- **Contributing**: [CONTRIBUTING.md](../CONTRIBUTING.md) - architecture and development guidelines
 
 ### Implementation Files
 
