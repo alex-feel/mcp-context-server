@@ -1,0 +1,28 @@
+# PostgreSQL-specific configuration
+# Usage: helm install mcp deploy/helm/mcp-context-server -f deploy/helm/mcp-context-server/values-postgresql.yaml
+
+storage:
+  backend: postgresql
+  sqlite:
+    enabled: false
+  postgresql:
+    enabled: true
+    host: "postgresql"
+    port: "5432"
+    user: "postgres"
+    # Set password via --set storage.postgresql.password=xxx
+    # or use existingSecret
+    password: ""
+    database: "mcp_context"
+    sslMode: "prefer"
+
+search:
+  fts:
+    enabled: true
+  semantic:
+    enabled: false
+  hybrid:
+    enabled: false
+
+ollama:
+  enabled: false

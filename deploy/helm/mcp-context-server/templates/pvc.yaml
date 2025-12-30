@@ -1,0 +1,37 @@
+{{- if and .Values.storage.sqlite.enabled .Values.storage.sqlite.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mcp-context-server.fullname" . }}-data
+  labels:
+    {{- include "mcp-context-server.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- range .Values.storage.sqlite.persistence.accessModes }}
+    - {{ . }}
+    {{- end }}
+  {{- if .Values.storage.sqlite.persistence.storageClassName }}
+  storageClassName: {{ .Values.storage.sqlite.persistence.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.sqlite.persistence.size }}
+{{- end }}
+---
+{{- if and .Values.ollama.enabled .Values.ollama.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mcp-context-server.fullname" . }}-ollama
+  labels:
+    {{- include "mcp-context-server.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.ollama.persistence.storageClassName }}
+  storageClassName: {{ .Values.ollama.persistence.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ollama.persistence.size }}
+{{- end }}

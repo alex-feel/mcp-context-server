@@ -1,0 +1,23 @@
+# SQLite-specific configuration
+# Usage: helm install mcp deploy/helm/mcp-context-server -f deploy/helm/mcp-context-server/values-sqlite.yaml
+
+storage:
+  backend: sqlite
+  sqlite:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 1Gi
+  postgresql:
+    enabled: false
+
+search:
+  fts:
+    enabled: true
+  semantic:
+    enabled: false
+  hybrid:
+    enabled: false
+
+ollama:
+  enabled: false

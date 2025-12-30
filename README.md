@@ -186,7 +186,11 @@ For complete tool documentation including parameters, return values, filtering o
 
 ## Docker Deployment
 
-For production deployments with HTTP transport and container orchestration, Docker Compose configurations are available for SQLite, PostgreSQL, and external PostgreSQL (Supabase). See the [Docker Deployment Guide](docs/docker-deployment.md) for setup instructions and client connection details.
+For production deployments with HTTP transport and container orchestration, Docker Compose configurations are available for SQLite, PostgreSQL, and external PostgreSQL (Supabase). See the [Docker Deployment Guide](docs/deployment/docker.md) for setup instructions and client connection details.
+
+## Kubernetes Deployment
+
+For Kubernetes deployments, a Helm chart is provided with configurable values for different environments. See the [Helm Deployment Guide](docs/deployment/helm.md) for installation instructions, or the [Kubernetes Deployment Guide](docs/deployment/kubernetes.md) for general Kubernetes concepts.
 
 ## Authentication
 

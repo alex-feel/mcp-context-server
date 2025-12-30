@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mcp-context-server.fullname" . }}
+  labels:
+    {{- include "mcp-context-server.labels" . | nindent 4 }}
+data:
+  # Transport settings
+  MCP_TRANSPORT: {{ .Values.env.MCP_TRANSPORT | quote }}
+  FASTMCP_HOST: {{ .Values.env.FASTMCP_HOST | quote }}
+  FASTMCP_PORT: {{ .Values.env.FASTMCP_PORT | quote }}
+  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
+  # Storage backend
+  STORAGE_BACKEND: {{ .Values.storage.backend | quote }}
+  {{- if .Values.storage.sqlite.enabled }}
+  DB_PATH: {{ .Values.storage.sqlite.path | quote }}
+  {{- end }}
+  {{- if .Values.storage.postgresql.enabled }}
+  POSTGRESQL_HOST: {{ .Values.storage.postgresql.host | quote }}
+  POSTGRESQL_PORT: {{ .Values.storage.postgresql.port | quote }}
+  POSTGRESQL_USER: {{ .Values.storage.postgresql.user | quote }}
+  POSTGRESQL_DATABASE: {{ .Values.storage.postgresql.database | quote }}
+  POSTGRESQL_SSL_MODE: {{ .Values.storage.postgresql.sslMode | quote }}
+  {{- end }}
+  # Search features
+  ENABLE_FTS: {{ .Values.search.fts.enabled | quote }}
+  {{- if .Values.search.fts.enabled }}
+  FTS_LANGUAGE: {{ .Values.search.fts.language | quote }}
+  {{- end }}
+  ENABLE_SEMANTIC_SEARCH: {{ .Values.search.semantic.enabled | quote }}
+  {{- if .Values.search.semantic.enabled }}
+  EMBEDDING_MODEL: {{ .Values.search.semantic.model | quote }}
+  EMBEDDING_DIM: {{ .Values.search.semantic.dim | quote }}
+  {{- if .Values.ollama.enabled }}
+  OLLAMA_HOST: "http://localhost:11434"
+  {{- end }}
+  {{- end }}
+  ENABLE_HYBRID_SEARCH: {{ .Values.search.hybrid.enabled | quote }}
+  {{- if .Values.search.hybrid.enabled }}
+  HYBRID_RRF_K: {{ .Values.search.hybrid.rrfK | quote }}
+  {{- end }}

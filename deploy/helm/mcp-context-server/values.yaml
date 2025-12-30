@@ -1,0 +1,163 @@
+# Default values for mcp-context-server
+# This is a YAML-formatted file.
+
+# Image configuration
+image:
+  repository: ghcr.io/alex-feel/mcp-context-server
+  # Defaults to Chart.appVersion if not set
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8000
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: mcp-context-server.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: mcp-context-server-tls
+  #    hosts:
+  #      - mcp-context-server.local
+
+# Resource limits
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+# Health probes
+probes:
+  liveness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+  startup:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 30
+
+# Environment configuration
+env:
+  MCP_TRANSPORT: "http"
+  FASTMCP_HOST: "0.0.0.0"
+  FASTMCP_PORT: "8000"
+  LOG_LEVEL: "INFO"
+
+# Storage backend configuration
+storage:
+  backend: sqlite
+  sqlite:
+    enabled: true
+    path: /data/context_storage.db
+    persistence:
+      enabled: true
+      size: 1Gi
+      storageClassName: ""
+      accessModes:
+        - ReadWriteOnce
+  postgresql:
+    enabled: false
+    host: ""
+    port: "5432"
+    user: "postgres"
+    password: ""
+    database: "mcp_context"
+    sslMode: "prefer"
+    # Use existing secret for password
+    existingSecret: ""
+    existingSecretKey: "postgresql-password"
+
+# Search features
+search:
+  fts:
+    enabled: true
+    language: "english"
+  semantic:
+    enabled: false
+    model: "embeddinggemma:latest"
+    dim: 768
+  hybrid:
+    enabled: false
+    rrfK: 60
+
+# Ollama sidecar configuration
+ollama:
+  enabled: false
+  image:
+    repository: ollama/ollama
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: ""
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+# Service account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod labels
+podLabels: {}
