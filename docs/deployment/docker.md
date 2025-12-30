@@ -24,9 +24,9 @@ Three Docker Compose configurations are provided, each as a standalone file:
 
 | Configuration | File | Database | Use Case |
 |--------------|------|----------|----------|
-| SQLite | `docker-compose.sqlite.yml` | Local SQLite | Single-user, testing, development |
-| PostgreSQL | `docker-compose.postgresql.yml` | Internal PostgreSQL | Multi-user, production |
-| External PostgreSQL | `docker-compose.postgresql-external.yml` | Supabase, corporate DB | Existing database infrastructure |
+| SQLite | `deploy/docker/docker-compose.sqlite.yml` | Local SQLite | Single-user, testing, development |
+| PostgreSQL | `deploy/docker/docker-compose.postgresql.yml` | Internal PostgreSQL | Multi-user, production |
+| External PostgreSQL | `deploy/docker/docker-compose.postgresql-external.yml` | Supabase, corporate DB | Existing database infrastructure |
 
 ## Quick Start
 
@@ -34,10 +34,10 @@ Three Docker Compose configurations are provided, each as a standalone file:
 
 ```bash
 # Build and start
-docker compose -f docker-compose.sqlite.yml up -d
+docker compose -f deploy/docker/docker-compose.sqlite.yml up -d
 
 # Wait for embedding model download (first run only, ~2-3 minutes)
-docker compose -f docker-compose.sqlite.yml logs -f ollama
+docker compose -f deploy/docker/docker-compose.sqlite.yml logs -f ollama
 
 # Verify server is ready
 curl http://localhost:8000/health
@@ -47,10 +47,10 @@ curl http://localhost:8000/health
 
 ```bash
 # Build and start (includes PostgreSQL with pgvector)
-docker compose -f docker-compose.postgresql.yml up -d
+docker compose -f deploy/docker/docker-compose.postgresql.yml up -d
 
 # Wait for all services to be healthy
-docker compose -f docker-compose.postgresql.yml ps
+docker compose -f deploy/docker/docker-compose.postgresql.yml ps
 
 # Verify server is ready
 curl http://localhost:8000/health
@@ -60,13 +60,13 @@ curl http://localhost:8000/health
 
 ```bash
 # 1. Copy and configure environment file
-cp .env.postgresql-external.example .env
+cp deploy/docker/.env.example deploy/docker/.env
 
 # 2. Edit .env with your PostgreSQL connection details
 # See "External PostgreSQL Configuration" section below
 
 # 3. Build and start
-docker compose -f docker-compose.postgresql-external.yml up -d
+docker compose -f deploy/docker/docker-compose.postgresql-external.yml up -d
 
 # Verify server is ready
 curl http://localhost:8000/health
@@ -146,7 +146,7 @@ The `ollama-models` volume is shared across all configurations, so switching bet
 
 ### Automatic Model Download
 
-The custom Ollama image (`docker/Dockerfile.ollama`) includes an entrypoint script that:
+The custom Ollama image (`deploy/docker/ollama/Dockerfile`) includes an entrypoint script that:
 
 1. Starts Ollama server on a temporary internal port
 2. Checks if the configured embedding model exists
@@ -199,7 +199,7 @@ All Docker Compose files use environment variables for configuration. Key settin
 
 ### External PostgreSQL Configuration
 
-For external PostgreSQL (Supabase, corporate databases), copy `.env.postgresql-external.example` to `.env` and configure:
+For external PostgreSQL (Supabase, corporate databases), copy `deploy/docker/.env.example` to `deploy/docker/.env` and configure:
 
 ```bash
 # Option A: Individual variables (recommended)
@@ -239,7 +239,7 @@ POSTGRESQL_DATABASE=postgres
 POSTGRESQL_SSL_MODE=require
 ```
 
-See the [Supabase section in README.md](../README.md#using-with-supabase) for detailed connection setup.
+See the [Supabase section in README.md](../../README.md#using-with-supabase) for detailed connection setup.
 
 ## Verification
 
@@ -257,10 +257,10 @@ curl http://localhost:8000/health
 
 ```bash
 # SQLite deployment
-docker compose -f docker-compose.sqlite.yml ps
+docker compose -f deploy/docker/docker-compose.sqlite.yml ps
 
 # PostgreSQL deployment
-docker compose -f docker-compose.postgresql.yml ps
+docker compose -f deploy/docker/docker-compose.postgresql.yml ps
 
 # Expected output: all services "healthy"
 NAME                  STATUS
@@ -273,7 +273,7 @@ postgres              Up (healthy)   # PostgreSQL only
 
 ```bash
 # Check if embedding model is loaded
-docker compose -f docker-compose.sqlite.yml exec ollama ollama list
+docker compose -f deploy/docker/docker-compose.sqlite.yml exec ollama ollama list
 
 # Expected output includes:
 # embeddinggemma:latest    622 MB
@@ -299,7 +299,7 @@ curl -X POST http://localhost:8000/mcp \
 **Solution:**
 ```bash
 # Check download progress
-docker compose -f docker-compose.sqlite.yml logs -f ollama
+docker compose -f deploy/docker/docker-compose.sqlite.yml logs -f ollama
 
 # The entrypoint shows: "Pulling model: embeddinggemma:latest..."
 # Wait for: "Model pulled successfully!"
@@ -316,13 +316,13 @@ docker compose -f docker-compose.sqlite.yml logs -f ollama
 **Solutions:**
 ```bash
 # Check PostgreSQL logs
-docker compose -f docker-compose.postgresql.yml logs postgres
+docker compose -f deploy/docker/docker-compose.postgresql.yml logs postgres
 
 # Verify PostgreSQL is accepting connections
-docker compose -f docker-compose.postgresql.yml exec postgres pg_isready
+docker compose -f deploy/docker/docker-compose.postgresql.yml exec postgres pg_isready
 
 # Test credentials manually
-docker compose -f docker-compose.postgresql.yml exec postgres \
+docker compose -f deploy/docker/docker-compose.postgresql.yml exec postgres \
   psql -U postgres -d mcp_context -c "SELECT 1"
 ```
 
@@ -357,13 +357,13 @@ Then connect clients to `http://localhost:8001/mcp`
 **Solutions:**
 ```bash
 # Verify Ollama is healthy
-docker compose -f docker-compose.sqlite.yml ps ollama
+docker compose -f deploy/docker/docker-compose.sqlite.yml ps ollama
 
 # Check if model exists
-docker compose -f docker-compose.sqlite.yml exec ollama ollama list
+docker compose -f deploy/docker/docker-compose.sqlite.yml exec ollama ollama list
 
 # If model missing, trigger download
-docker compose -f docker-compose.sqlite.yml exec ollama ollama pull embeddinggemma:latest
+docker compose -f deploy/docker/docker-compose.sqlite.yml exec ollama ollama pull embeddinggemma:latest
 ```
 
 ### Common Error Messages
@@ -419,7 +419,7 @@ Both the MCP server and Ollama images are built locally:
 docker build -t mcp-context-server .
 
 # Build custom Ollama image
-docker build -f docker/Dockerfile.ollama -t mcp-ollama .
+docker build -f deploy/docker/ollama/Dockerfile -t mcp-ollama .
 ```
 
 ### Production Considerations
@@ -434,24 +434,30 @@ docker build -f docker/Dockerfile.ollama -t mcp-ollama .
 
 | File | Description |
 |------|-------------|
-| `Dockerfile` | Multi-stage MCP server image |
-| `docker-compose.sqlite.yml` | SQLite deployment |
-| `docker-compose.postgresql.yml` | PostgreSQL with pgvector deployment |
-| `docker-compose.postgresql-external.yml` | External PostgreSQL deployment |
-| `.env.postgresql-external.example` | Environment template for external DB |
-| `docker/Dockerfile.ollama` | Custom Ollama image |
-| `docker/ollama-entrypoint.sh` | Auto model pull entrypoint |
-| `.dockerignore` | Build context optimization |
+| `Dockerfile` | Multi-stage MCP server image (repository root) |
+| `deploy/docker/docker-compose.sqlite.yml` | SQLite deployment |
+| `deploy/docker/docker-compose.postgresql.yml` | PostgreSQL with pgvector deployment |
+| `deploy/docker/docker-compose.postgresql-external.yml` | External PostgreSQL deployment |
+| `deploy/docker/.env.example` | Environment template for external DB |
+| `deploy/docker/ollama/Dockerfile` | Custom Ollama image |
+| `deploy/docker/ollama/entrypoint.sh` | Auto model pull entrypoint |
+| `.dockerignore` | Build context optimization (repository root) |
 
 ## Additional Resources
 
 ### Related Documentation
 
-- **API Reference**: [API Reference](api-reference.md) - complete tool documentation
-- **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
-- **Semantic Search**: [Semantic Search Guide](semantic-search.md) - vector similarity search configuration
-- **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
-- **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined search with RRF fusion
-- **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata filtering with operators
-- **Authentication**: [Authentication Guide](authentication.md) - bearer token and OAuth authentication
-- **Main Documentation**: [README.md](../README.md) - overview and quick start
+- **API Reference**: [API Reference](../api-reference.md) - complete tool documentation
+- **Database Backends**: [Database Backends Guide](../database-backends.md) - database configuration
+- **Semantic Search**: [Semantic Search Guide](../semantic-search.md) - vector similarity search configuration
+- **Full-Text Search**: [Full-Text Search Guide](../full-text-search.md) - FTS configuration and usage
+- **Hybrid Search**: [Hybrid Search Guide](../hybrid-search.md) - combined search with RRF fusion
+- **Metadata Filtering**: [Metadata Guide](../metadata-addition-updating-and-filtering.md) - metadata filtering with operators
+- **Authentication**: [Authentication Guide](../authentication.md) - bearer token and OAuth authentication
+- **Main Documentation**: [README.md](../../README.md) - overview and quick start
+
+### Kubernetes Deployment
+
+For Kubernetes deployments, see:
+- **Helm Chart**: [Helm Deployment Guide](helm.md)
+- **Raw Manifests**: [Kubernetes Guide](kubernetes.md)

@@ -2,7 +2,7 @@ FROM ollama/ollama:latest
 
 ENV MODEL=embeddinggemma:latest
 
-COPY docker/ollama-entrypoint.sh /entrypoint.sh
+COPY deploy/docker/ollama/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 11434
