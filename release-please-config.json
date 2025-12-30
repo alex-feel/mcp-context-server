@@ -17,6 +17,15 @@
           "type": "json",
           "path": "server.json",
           "jsonpath": "$.packages[0].version"
+        },
+        {
+          "type": "json",
+          "path": "server.json",
+          "jsonpath": "$.packages[1].version"
+        },
+        {
+          "type": "generic",
+          "path": "deploy/helm/mcp-context-server/Chart.yaml"
         }
       ],
       "bump-minor-pre-major": false,

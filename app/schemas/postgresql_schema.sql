@@ -2,13 +2,15 @@
 -- Converted from SQLite schema with PostgreSQL-specific optimizations
 
 -- Function to automatically update updated_at timestamp
+-- SET search_path for security (CVE-2018-1058 mitigation)
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = CURRENT_TIMESTAMP;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp;
 
 -- Main context storage table
 CREATE TABLE IF NOT EXISTS context_entries (

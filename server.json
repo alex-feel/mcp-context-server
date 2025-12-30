@@ -487,6 +487,488 @@
           "name": "FASTMCP_SERVER_AUTH_AZURE_REQUIRED_SCOPES"
         }
       ]
+    },
+    {
+      "registryType": "oci",
+      "registryBaseUrl": "https://ghcr.io",
+      "identifier": "ghcr.io/alex-feel/mcp-context-server",
+      "version": "0.14.0",
+      "runtimeHint": "docker",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:8000/mcp"
+      },
+      "environmentVariables": [
+        {
+          "description": "Log level",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "LOG_LEVEL"
+        },
+        {
+          "description": "Storage backend type: sqlite (default) or postgresql",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "STORAGE_BACKEND"
+        },
+        {
+          "description": "Maximum individual image size in megabytes",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "MAX_IMAGE_SIZE_MB"
+        },
+        {
+          "description": "Maximum total request size in megabytes",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "MAX_TOTAL_SIZE_MB"
+        },
+        {
+          "description": "Custom database file location path",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "DB_PATH"
+        },
+        {
+          "description": "Maximum number of concurrent read connections in the pool",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POOL_MAX_READERS"
+        },
+        {
+          "description": "Maximum number of concurrent write connections in the pool",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POOL_MAX_WRITERS"
+        },
+        {
+          "description": "Connection timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POOL_CONNECTION_TIMEOUT_S"
+        },
+        {
+          "description": "Idle connection timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POOL_IDLE_TIMEOUT_S"
+        },
+        {
+          "description": "Connection health check interval in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POOL_HEALTH_CHECK_INTERVAL_S"
+        },
+        {
+          "description": "Maximum number of retry attempts for failed operations",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RETRY_MAX_RETRIES"
+        },
+        {
+          "description": "Base delay in seconds between retry attempts",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RETRY_BASE_DELAY_S"
+        },
+        {
+          "description": "Maximum delay in seconds between retry attempts",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RETRY_MAX_DELAY_S"
+        },
+        {
+          "description": "Enable random jitter in retry delays",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "RETRY_JITTER"
+        },
+        {
+          "description": "Exponential backoff multiplication factor for retries",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RETRY_BACKOFF_FACTOR"
+        },
+        {
+          "description": "Enable SQLite foreign key constraints",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "SQLITE_FOREIGN_KEYS"
+        },
+        {
+          "description": "SQLite journal mode (e.g., WAL, DELETE)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SQLITE_JOURNAL_MODE"
+        },
+        {
+          "description": "SQLite synchronous mode (e.g., NORMAL, FULL, OFF)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SQLITE_SYNCHRONOUS"
+        },
+        {
+          "description": "SQLite temporary storage location (e.g., MEMORY, FILE)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SQLITE_TEMP_STORE"
+        },
+        {
+          "description": "SQLite memory-mapped I/O size in bytes",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SQLITE_MMAP_SIZE"
+        },
+        {
+          "description": "SQLite cache size (negative value for KB, positive for pages)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SQLITE_CACHE_SIZE"
+        },
+        {
+          "description": "SQLite page size in bytes",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SQLITE_PAGE_SIZE"
+        },
+        {
+          "description": "SQLite WAL autocheckpoint threshold in pages",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SQLITE_WAL_AUTOCHECKPOINT"
+        },
+        {
+          "description": "SQLite busy timeout in milliseconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SQLITE_BUSY_TIMEOUT_MS"
+        },
+        {
+          "description": "SQLite WAL checkpoint mode (e.g., PASSIVE, FULL, RESTART)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SQLITE_WAL_CHECKPOINT"
+        },
+        {
+          "description": "Server shutdown timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SHUTDOWN_TIMEOUT_S"
+        },
+        {
+          "description": "Test mode shutdown timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SHUTDOWN_TIMEOUT_TEST_S"
+        },
+        {
+          "description": "Queue operation timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "QUEUE_TIMEOUT_S"
+        },
+        {
+          "description": "Test mode queue timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "QUEUE_TIMEOUT_TEST_S"
+        },
+        {
+          "description": "Circuit breaker failure threshold before opening",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CIRCUIT_BREAKER_FAILURE_THRESHOLD"
+        },
+        {
+          "description": "Circuit breaker recovery timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum calls allowed in circuit breaker half-open state",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS"
+        },
+        {
+          "description": "Complete PostgreSQL connection string (overrides individual settings if provided)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "POSTGRESQL_CONNECTION_STRING"
+        },
+        {
+          "description": "PostgreSQL server host address",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_HOST"
+        },
+        {
+          "description": "PostgreSQL server port number",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_PORT"
+        },
+        {
+          "description": "PostgreSQL database username",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_USER"
+        },
+        {
+          "description": "PostgreSQL database password",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "POSTGRESQL_PASSWORD"
+        },
+        {
+          "description": "PostgreSQL database name",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_DATABASE"
+        },
+        {
+          "description": "PostgreSQL connection pool minimum size",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_POOL_MIN"
+        },
+        {
+          "description": "PostgreSQL connection pool maximum size",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_POOL_MAX"
+        },
+        {
+          "description": "PostgreSQL connection pool timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_POOL_TIMEOUT_S"
+        },
+        {
+          "description": "PostgreSQL command execution timeout in seconds",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_COMMAND_TIMEOUT_S"
+        },
+        {
+          "description": "PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_SSL_MODE"
+        },
+        {
+          "description": "Enable semantic search functionality",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_SEMANTIC_SEARCH"
+        },
+        {
+          "description": "Ollama API host URL for embedding generation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "OLLAMA_HOST"
+        },
+        {
+          "description": "Embedding model name for semantic search",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_MODEL"
+        },
+        {
+          "description": "Embedding vector dimensions",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_DIM"
+        },
+        {
+          "description": "Enable full-text search functionality",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_FTS"
+        },
+        {
+          "description": "Language for FTS stemming (e.g., english, german, french)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FTS_LANGUAGE"
+        },
+        {
+          "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_HYBRID_SEARCH"
+        },
+        {
+          "description": "RRF smoothing constant for hybrid search (default 60)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_RRF_K"
+        },
+        {
+          "description": "Transport mode: stdio for local, http for Docker/remote",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_TRANSPORT"
+        },
+        {
+          "description": "HTTP bind address (use 0.0.0.0 for Docker)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_HOST"
+        },
+        {
+          "description": "HTTP port number",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FASTMCP_PORT"
+        },
+        {
+          "description": "Comma-separated list of tools to disable (e.g., delete_context,update_context)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "DISABLED_TOOLS"
+        },
+        {
+          "description": "Bearer token for HTTP authentication (required when using SimpleTokenVerifier)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "MCP_AUTH_TOKEN"
+        },
+        {
+          "description": "Client ID to assign to authenticated requests",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_AUTH_CLIENT_ID"
+        },
+        {
+          "description": "Authentication provider class path (e.g., app.auth.simple_token.SimpleTokenVerifier)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH"
+        },
+        {
+          "description": "Google OAuth Client ID (required when using GoogleProvider)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_ID"
+        },
+        {
+          "description": "Google OAuth Client Secret (required when using GoogleProvider)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_SECRET"
+        },
+        {
+          "description": "Server base URL for OAuth callbacks (required when using GoogleProvider)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH_GOOGLE_BASE_URL"
+        },
+        {
+          "description": "Required OAuth scopes (comma-separated, e.g., openid,email)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH_GOOGLE_REQUIRED_SCOPES"
+        },
+        {
+          "description": "Azure OAuth Client ID (required when using AzureProvider)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH_AZURE_CLIENT_ID"
+        },
+        {
+          "description": "Azure OAuth Client Secret (required when using AzureProvider)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "FASTMCP_SERVER_AUTH_AZURE_CLIENT_SECRET"
+        },
+        {
+          "description": "Azure Tenant ID - use specific GUID for org-only access, 'organizations' for multi-tenant, or 'consumers' for personal accounts",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH_AZURE_TENANT_ID"
+        },
+        {
+          "description": "Server base URL for OAuth callbacks (required when using AzureProvider)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH_AZURE_BASE_URL"
+        },
+        {
+          "description": "Required OAuth scopes for Azure (comma-separated, e.g., read,write)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "FASTMCP_SERVER_AUTH_AZURE_REQUIRED_SCOPES"
+        }
+      ]
     }
   ]
 }
