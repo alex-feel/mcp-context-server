@@ -142,25 +142,70 @@ class TestServerJsonSchemaValidation:
                 f'Found {len(errors)} error(s):\n\n' + '\n\n'.join(error_messages),
             )
 
-    def test_server_json_transport_is_stdio(
+    def test_server_json_transport_types_match_registry_types(
         self,
         server_json_content: dict[str, Any],
     ) -> None:
         """
-        Verify transport type is 'stdio' for this server.
+        Verify transport types are appropriate for each package registry type.
 
-        The MCP Context Server uses stdio transport for communication.
+        - PyPI packages (registryType: pypi) should use stdio transport
+        - OCI packages (registryType: oci) should use streamable-http transport
         """
         packages = server_json_content.get('packages', [])
 
+        expected_transport_by_registry: dict[str, str] = {
+            'pypi': 'stdio',
+            'npm': 'stdio',
+            'cargo': 'stdio',
+            'go': 'stdio',
+            'nuget': 'stdio',
+            'oci': 'streamable-http',
+            'mcpb': 'streamable-http',
+        }
+
         for i, package in enumerate(packages):
+            registry_type = package.get('registryType')
             transport = package.get('transport', {})
             transport_type = transport.get('type')
 
-            if transport_type != 'stdio':
+            expected = expected_transport_by_registry.get(registry_type)
+            if expected and transport_type != expected:
                 pytest.fail(
-                    f'Package at index {i} has unexpected transport type: {transport_type}\n'
-                    f'Expected: stdio',
+                    f'Package at index {i} (registryType: {registry_type}) has '
+                    f'unexpected transport type: {transport_type}\n'
+                    f'Expected: {expected}',
+                )
+
+    def test_server_json_oci_package_has_valid_transport_url(
+        self,
+        server_json_content: dict[str, Any],
+    ) -> None:
+        """
+        Verify OCI packages have valid streamable-http transport URLs.
+
+        OCI packages with streamable-http transport must have a valid URL
+        that ends with '/mcp' for the MCP endpoint.
+        """
+        for i, pkg in enumerate(server_json_content.get('packages', [])):
+            if pkg.get('registryType') != 'oci':
+                continue
+
+            transport = pkg.get('transport', {})
+            if transport.get('type') != 'streamable-http':
+                continue
+
+            url = transport.get('url')
+            if not url:
+                pytest.fail(
+                    f'OCI package at index {i} with streamable-http transport '
+                    f'is missing required "url" field.',
+                )
+
+            if not url.endswith('/mcp'):
+                pytest.fail(
+                    f'OCI package at index {i} has non-standard MCP endpoint URL: {url}\n'
+                    f'Expected URL to end with "/mcp".',
                 )
 
     def test_server_json_environment_variables_match_settings(
@@ -291,6 +336,54 @@ class TestServerJsonSchemaValidation:
                 f'Environment variables defined in settings.py but missing from server.json:\n'
                 f'{sorted(missing)}',
             )
+
+    def test_all_packages_have_identical_environment_variables(
+        self,
+        server_json_content: dict[str, Any],
+    ) -> None:
+        """
+        Verify all packages have identical environment variable sets.
+
+        All packages in server.json should expose the same configuration options
+        to ensure consistent behavior regardless of deployment method (PyPI vs OCI).
+        This prevents silent failures where one package is missing variables that
+        exist in another.
+        """
+        packages = server_json_content.get('packages', [])
+
+        if len(packages) < 2:
+            pytest.skip('Only one package present, nothing to compare')
+
+        # Collect environment variable sets per package
+        package_env_sets: list[tuple[str, set[str]]] = []
+        for i, pkg in enumerate(packages):
+            registry_type = pkg.get('registryType', f'package-{i}')
+            env_vars = {env['name'] for env in pkg.get('environmentVariables', [])}
+            package_env_sets.append((registry_type, env_vars))
+
+        # Compare all packages against the first one (reference)
+        reference_name, reference_vars = package_env_sets[0]
+
+        for pkg_name, pkg_vars in package_env_sets[1:]:
+            missing_from_pkg = reference_vars - pkg_vars
+            extra_in_pkg = pkg_vars - reference_vars
+
+            if missing_from_pkg or extra_in_pkg:
+                errors: list[str] = []
+                if missing_from_pkg:
+                    errors.append(
+                        f'  Missing from {pkg_name} (present in {reference_name}):\n'
+                        f'    {sorted(missing_from_pkg)}',
+                    )
+                if extra_in_pkg:
+                    errors.append(
+                        f'  Extra in {pkg_name} (not in {reference_name}):\n'
+                        f'    {sorted(extra_in_pkg)}',
+                    )
+                pytest.fail(
+                    'Environment variable mismatch between packages:\n'
+                    + '\n'.join(errors),
+                )
 
     def test_server_json_schema_matches_schema_id(
         self,
