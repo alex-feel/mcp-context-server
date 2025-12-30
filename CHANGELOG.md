@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/alex-feel/mcp-context-server/compare/v0.14.0...v0.14.1) (2025-12-30)
+
+
+### Bug Fixes
+
+* add search_path to functions for CVE-2018-1058 mitigation ([d156235](https://github.com/alex-feel/mcp-context-server/commit/d156235547f0ab5b5837022bb91bbdfdba94edf9))
+
 ## [0.14.0](https://github.com/alex-feel/mcp-context-server/compare/v0.13.0...v0.14.0) (2025-12-28)
 
 
