@@ -444,31 +444,6 @@ log_level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(
 }
 ```
 
-### Validation Commands
-
-**Validate JSON syntax:**
-```bash
-python -m json.tool server.json > /dev/null && echo "JSON is valid" || echo "JSON is invalid"
-```
-
-**Count environment variables:**
-```bash
-# Should match number of Field aliases in app/settings.py
-python -c "import json; print(len(json.load(open('server.json'))['packages'][0]['environmentVariables']))"
-```
-
-**List all environment variable names:**
-```bash
-python -c "import json; print('\n'.join([e['name'] for e in json.load(open('server.json'))['packages'][0]['environmentVariables']]))"
-```
-
-### Version Synchronization
-
-The version in `server.json` must match `pyproject.toml`:
-- Top-level `version` field
-- Package-level `version` field (inside packages array)
-- Both must be identical semantic versions (e.g., `0.5.0`)
-
 **Automated version updates:**
 - Release Please automatically updates `server.json` version during releases
 
