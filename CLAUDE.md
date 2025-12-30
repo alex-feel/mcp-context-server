@@ -613,11 +613,18 @@ All backends implement the `StorageBackend` protocol with these required methods
 The project supports containerized deployment with HTTP transport for remote access:
 
 - **Multi-stage Dockerfile** with uv, non-root user (UID 10001), health check endpoint
-- **Three Docker Compose configurations**: SQLite, PostgreSQL, External PostgreSQL (Supabase)
-- **Ollama sidecar** with automatic embedding model download
+- **Three Docker Compose configurations** in `deploy/docker/`: SQLite, PostgreSQL, External PostgreSQL (Supabase)
+- **Ollama sidecar** with automatic embedding model download (`deploy/docker/ollama/`)
 - **Health check endpoint** at `/health` for container orchestration
 
-For detailed setup instructions, see [Docker Deployment Guide](docs/docker-deployment.md).
+## Kubernetes Deployment
+
+The project includes Helm chart support for Kubernetes deployments:
+
+- **Helm chart** in `deploy/helm/mcp-context-server/` with configurable values
+- **Pre-configured profiles**: `values-sqlite.yaml` and `values-postgresql.yaml`
+- **Optional Ollama sidecar** for semantic search
+- **Ingress support** with TLS configuration
 
 ## Windows Development Notes
 
