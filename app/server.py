@@ -612,6 +612,118 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
         raise RuntimeError(f'jsonb_merge_patch migration failed: {e}') from e
 
 
+async def apply_function_search_path_migration(backend: StorageBackend | None = None) -> None:
+    """Apply search_path fix for PostgreSQL functions (CVE-2018-1058 mitigation).
+
+    This migration sets search_path for all PostgreSQL functions to prevent
+    potential search_path hijacking attacks. The migration is idempotent
+    and can be safely run multiple times.
+
+    Args:
+        backend: Optional backend to use. If None, creates temporary backend.
+
+    Raises:
+        RuntimeError: If migration execution fails.
+
+    Note:
+        - Only applies to PostgreSQL backends
+        - Idempotent: ALTER FUNCTION SET is safe to run repeatedly
+        - Must be called after all function-creating migrations
+    """
+    # Determine backend type
+    if backend is not None:
+        backend_type = backend.backend_type
+    else:
+        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
+        backend_type = temp_backend.backend_type
+
+    # Only apply to PostgreSQL backends
+    if backend_type != 'postgresql':
+        return
+
+    migration_path = Path(__file__).parent / 'migrations' / 'fix_function_search_path_postgresql.sql'
+
+    if not migration_path.exists():
+        logger.warning(f'Function search_path migration file not found: {migration_path}')
+        return
+
+    try:
+        migration_sql = migration_path.read_text(encoding='utf-8')
+
+        if backend is not None:
+
+            async def _apply_search_path_fix(conn: asyncpg.Connection) -> None:
+                # Parse SQL statements, handling dollar-quoted DO blocks
+                statements = []
+                current_stmt: list[str] = []
+                in_dollar_quote = False
+
+                for line in migration_sql.split('\n'):
+                    stripped = line.strip()
+                    # Skip comment-only lines outside dollar quotes
+                    if stripped.startswith('--') and not in_dollar_quote:
+                        continue
+                    # Track dollar-quoted strings (DO blocks and function bodies)
+                    if '$$' in stripped:
+                        in_dollar_quote = not in_dollar_quote
+                    if stripped:
+                        current_stmt.append(line)
+                    # End of statement: semicolon when not in dollar quotes
+                    if stripped.endswith(';') and not in_dollar_quote:
+                        statements.append('\n'.join(current_stmt))
+                        current_stmt = []
+
+                # Add any remaining statement
+                if current_stmt:
+                    statements.append('\n'.join(current_stmt))
+
+                for stmt in statements:
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        await conn.execute(stmt)
+
+            await backend.execute_write(cast(Any, _apply_search_path_fix))
+            logger.info('Applied function search_path security fix for PostgreSQL')
+        else:
+            # Backward compatibility: create temporary backend
+            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
+            await temp_manager.initialize()
+            try:
+
+                async def _apply_search_path_fix_temp(conn: asyncpg.Connection) -> None:
+                    statements = []
+                    current_stmt: list[str] = []
+                    in_dollar_quote = False
+
+                    for line in migration_sql.split('\n'):
+                        stripped = line.strip()
+                        if stripped.startswith('--') and not in_dollar_quote:
+                            continue
+                        if '$$' in stripped:
+                            in_dollar_quote = not in_dollar_quote
+                        if stripped:
+                            current_stmt.append(line)
+                        if stripped.endswith(';') and not in_dollar_quote:
+                            statements.append('\n'.join(current_stmt))
+                            current_stmt = []
+
+                    if current_stmt:
+                        statements.append('\n'.join(current_stmt))
+
+                    for stmt in statements:
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith('--'):
+                            await conn.execute(stmt)
+
+                await temp_manager.execute_write(cast(Any, _apply_search_path_fix_temp))
+                logger.info('Applied function search_path security fix for PostgreSQL')
+            finally:
+                await temp_manager.shutdown()
+    except Exception as e:
+        logger.error(f'Failed to apply function search_path migration: {e}')
+        raise RuntimeError(f'Function search_path migration failed: {e}') from e
+
+
 async def apply_fts_migration(backend: StorageBackend | None = None, repos: RepositoryContainer | None = None) -> None:
     """Apply full-text search migration if enabled, with language-aware tokenizer selection.
 
@@ -899,12 +1011,14 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_semantic_search_migration(backend=_backend)
         # 3) Apply jsonb_merge_patch migration for PostgreSQL (required for metadata_patch)
         await apply_jsonb_merge_patch_migration(backend=_backend)
-        # 4) Apply FTS migration if enabled
+        # 4) Apply function search_path security fix for PostgreSQL
+        await apply_function_search_path_migration(backend=_backend)
+        # 5) Apply FTS migration if enabled
         await apply_fts_migration(backend=_backend)
-        # 5) Initialize repositories with the backend
+        # 6) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
-        # 6) Register core tools with appropriate annotations
+        # 7) Register core tools with appropriate annotations
         # Additive tools (create new entries)
         _register_tool(store_context, annotations=ADDITIVE_ANNOTATIONS)
         _register_tool(store_context_batch, annotations=ADDITIVE_ANNOTATIONS)
@@ -923,7 +1037,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         _register_tool(delete_context, annotations=DELETE_ANNOTATIONS)
         _register_tool(delete_context_batch, annotations=DELETE_ANNOTATIONS)
 
-        # 7) Initialize semantic search if enabled
+        # 8) Initialize semantic search if enabled
         if settings.enable_semantic_search:
             semantic_available = await check_semantic_search_dependencies(_backend.backend_type)
 
@@ -951,7 +1065,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
-        # 8) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 9) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.enable_fts:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
@@ -968,7 +1082,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
-        # 9) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 10) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.enable_hybrid_search:
             semantic_available_for_hybrid = settings.enable_semantic_search and _embedding_service is not None
             fts_available_for_hybrid = settings.enable_fts

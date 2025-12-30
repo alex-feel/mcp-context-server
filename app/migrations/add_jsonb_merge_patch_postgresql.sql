@@ -14,7 +14,7 @@
 --
 -- This function replaces the shallow || - pattern which only handles top-level keys.
 -- The new implementation correctly handles deeply nested structures.
-
+-- SET search_path for security (CVE-2018-1058 mitigation)
 CREATE OR REPLACE FUNCTION jsonb_merge_patch(
     target jsonb,
     patch jsonb
@@ -23,6 +23,7 @@ RETURNS jsonb
 LANGUAGE plpgsql
 IMMUTABLE
 PARALLEL SAFE
+SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
     -- RFC 7396 Section 2, Step 1:

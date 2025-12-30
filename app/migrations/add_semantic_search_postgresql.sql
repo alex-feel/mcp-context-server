@@ -34,13 +34,15 @@ CREATE INDEX IF NOT EXISTS idx_embedding_metadata_model
 ON embedding_metadata(model_name);
 
 -- Trigger to automatically update updated_at timestamp
+-- SET search_path for security (CVE-2018-1058 mitigation)
 CREATE OR REPLACE FUNCTION update_embedding_metadata_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = CURRENT_TIMESTAMP;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp;
 
 DROP TRIGGER IF EXISTS trigger_embedding_metadata_updated_at ON embedding_metadata;
 CREATE TRIGGER trigger_embedding_metadata_updated_at
