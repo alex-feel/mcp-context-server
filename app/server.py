@@ -12,12 +12,15 @@ import json
 import logging
 import operator
 import sqlite3
+import tomllib
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Annotated
 from typing import Any
@@ -56,6 +59,37 @@ settings = get_settings()
 # Configure logging
 config_logger(settings.log_level)
 logger = logging.getLogger(__name__)
+
+
+def _get_server_version() -> str:
+    """Get server version from package metadata or pyproject.toml fallback.
+
+    Returns:
+        Version string (e.g., '0.14.0') or 'unknown' if unavailable.
+    """
+    # Primary: installed package metadata (works for pip, uv, editable installs)
+    try:
+        return pkg_version('mcp-context-server')
+    except PackageNotFoundError:
+        pass
+
+    # Fallback: read directly from pyproject.toml (for running from source)
+    try:
+        pyproject_path = Path(__file__).resolve().parents[1] / 'pyproject.toml'
+        if pyproject_path.exists():
+            with pyproject_path.open('rb') as f:
+                data = tomllib.load(f)
+            version = data.get('project', {}).get('version')
+            if isinstance(version, str):
+                return version
+    except Exception:
+        pass
+
+    return 'unknown'
+
+
+# Cache version at module load time
+SERVER_VERSION = _get_server_version()
 
 # Database configuration
 DB_PATH = settings.storage.db_path
@@ -3679,6 +3713,9 @@ def main() -> None:
     Initialization and shutdown are handled by the @mcp.startup and @mcp.shutdown decorators.
     """
     try:
+        # Log server version at startup
+        logger.info(f'MCP Context Server v{SERVER_VERSION}')
+
         transport = settings.transport.transport
 
         if transport == 'stdio':
