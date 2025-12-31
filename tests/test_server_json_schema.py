@@ -487,6 +487,45 @@ class TestServerJsonSchemaValidation:
                     f'(e.g., "ghcr.io/owner/image:1.0.0").'
                 )
 
+    def test_oci_packages_do_not_have_version_field(
+        self,
+        server_json_content: dict[str, Any],
+    ) -> None:
+        """
+        Verify OCI packages don't have version field (MCP Registry business rule).
+
+        OCI packages must include the version in the identifier field instead
+        (e.g., 'ghcr.io/owner/image:1.0.0'), not as a separate 'version' field.
+        """
+        for i, pkg in enumerate(server_json_content.get('packages', [])):
+            if pkg.get('registryType') == 'oci':
+                assert 'version' not in pkg, (
+                    f'OCI package at index {i} has invalid version field. '
+                    f'OCI packages must include version in identifier instead '
+                    f'(e.g., "ghcr.io/owner/image:1.0.0").'
+                )
+
+    def test_oci_packages_have_version_in_identifier(
+        self,
+        server_json_content: dict[str, Any],
+    ) -> None:
+        """
+        Verify OCI package identifiers include version tag.
+
+        OCI identifiers must be in format: registry/namespace/image:tag
+        or include a digest reference (@sha256:...).
+        """
+        # Pattern matches :tag or @sha256:digest at end of string
+        version_pattern = re.compile(r'(:[a-zA-Z0-9][a-zA-Z0-9._-]*|@sha256:[a-f0-9]{64})$')
+
+        for i, pkg in enumerate(server_json_content.get('packages', [])):
+            if pkg.get('registryType') == 'oci':
+                identifier = pkg.get('identifier', '')
+                assert version_pattern.search(identifier), (
+                    f'OCI package at index {i} has identifier without version tag: {identifier}. '
+                    f'OCI identifiers must include version tag (e.g., ":1.0.0") or digest.'
+                )
+
 
 class TestServerJsonVersionSync:
     """Tests to verify version synchronization between server.json and pyproject.toml."""
