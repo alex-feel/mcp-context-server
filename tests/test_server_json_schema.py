@@ -467,6 +467,26 @@ class TestServerJsonSchemaValidation:
                     f'  Valid values: {sorted(valid_types)}',
                 )
 
+    def test_oci_packages_do_not_have_registry_base_url(
+        self,
+        server_json_content: dict[str, Any],
+    ) -> None:
+        """
+        Verify OCI packages don't have registryBaseUrl field (MCP Registry business rule).
+
+        While the JSON Schema technically allows registryBaseUrl for OCI packages,
+        the MCP Registry has a runtime business rule that rejects OCI packages with
+        this field. OCI packages must use a canonical reference in the identifier
+        instead (e.g., 'ghcr.io/owner/image:1.0.0').
+        """
+        for i, pkg in enumerate(server_json_content.get('packages', [])):
+            if pkg.get('registryType') == 'oci':
+                assert 'registryBaseUrl' not in pkg, (
+                    f'OCI package at index {i} has invalid registryBaseUrl field. '
+                    f'OCI packages must use canonical reference in identifier instead '
+                    f'(e.g., "ghcr.io/owner/image:1.0.0").'
+                )
+
 
 class TestServerJsonVersionSync:
     """Tests to verify version synchronization between server.json and pyproject.toml."""

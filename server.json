@@ -490,7 +490,6 @@
     },
     {
       "registryType": "oci",
-      "registryBaseUrl": "https://ghcr.io",
       "identifier": "ghcr.io/alex-feel/mcp-context-server",
       "version": "0.14.1",
       "runtimeHint": "docker",
