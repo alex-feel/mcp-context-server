@@ -21,7 +21,7 @@
         {
           "type": "json",
           "path": "server.json",
-          "jsonpath": "$.packages[1].version"
+          "jsonpath": "$.packages[1].identifier"
         },
         {
           "type": "generic",

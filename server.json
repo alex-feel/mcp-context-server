@@ -490,8 +490,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/alex-feel/mcp-context-server",
-      "version": "0.14.1",
+      "identifier": "ghcr.io/alex-feel/mcp-context-server:0.14.1",
       "runtimeHint": "docker",
       "transport": {
         "type": "streamable-http",
