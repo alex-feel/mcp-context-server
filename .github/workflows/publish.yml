@@ -121,6 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+      packages: read
     env:
       SERVER_NAME: io.github.alex-feel/mcp-context-server
       PACKAGE_NAME: mcp-context-server
@@ -167,74 +168,36 @@ jobs:
           echo "Version $version not visible on PyPI yet"
           exit 1
 
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Wait for GHCR to serve Docker image
         run: |
           set -euo pipefail
 
-          # Extract OCI identifier from server.json (e.g., "ghcr.io/alex-feel/mcp-context-server:0.14.1")
+          # Extract OCI identifier from server.json
           OCI_IDENTIFIER=$(jq -r '.packages[] | select(.registryType == "oci") | .identifier' server.json)
           if [ -z "$OCI_IDENTIFIER" ] || [ "$OCI_IDENTIFIER" = "null" ]; then
             echo "ERROR: No OCI package identifier found in server.json" >&2
             exit 1
           fi
-          echo "OCI identifier: $OCI_IDENTIFIER"
+          echo "Checking for image: $OCI_IDENTIFIER"
 
-          # Parse identifier: ghcr.io/owner/image:tag
-          REGISTRY="${OCI_IDENTIFIER%%/*}"
-          PATH_REF="${OCI_IDENTIFIER#*/}"
-
-          if [[ "$PATH_REF" == *@* ]]; then
-            REPO="${PATH_REF%@*}"
-            TAG="${PATH_REF##*@}"
-          elif [[ "$PATH_REF" == *:* ]]; then
-            REPO="${PATH_REF%:*}"
-            TAG="${PATH_REF##*:}"
-          else
-            echo "ERROR: Identifier must include :tag or @digest" >&2
-            exit 1
-          fi
-
-          echo "Checking for image: registry=$REGISTRY repo=$REPO tag=$TAG"
-
-          # Get GHCR token using GITHUB_TOKEN
-          TOKEN_JSON=$(curl -fsSL -u "${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}" \
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO}:pull" 2>/dev/null || echo '{}')
-          TOKEN=$(echo "$TOKEN_JSON" | jq -r '.token // .access_token // empty')
-
-          if [ -z "$TOKEN" ]; then
-            echo "ERROR: Failed to obtain GHCR token" >&2
-            exit 1
-          fi
-
-          # Accept headers for OCI and Docker manifests
-          ACCEPT="application/vnd.oci.image.manifest.v1+json"
-          ACCEPT="$ACCEPT, application/vnd.docker.distribution.manifest.v2+json"
-          ACCEPT="$ACCEPT, application/vnd.oci.image.index.v1+json"
-          ACCEPT="$ACCEPT, application/vnd.docker.distribution.manifest.list.v2+json"
-
-          # Retry loop matching PyPI wait pattern (30 attempts, 10s delay = 5 min max)
+          # Retry loop (30 attempts, 10s delay = 5 min max)
           for i in {1..30}; do
-            STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -I \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Accept: ${ACCEPT}" \
-              "https://ghcr.io/v2/${REPO}/manifests/${TAG}" 2>/dev/null || echo "000")
-
-            if [ "$STATUS" = "200" ]; then
-              echo "GHCR has image ${OCI_IDENTIFIER}"
+            if docker buildx imagetools inspect "$OCI_IDENTIFIER" > /dev/null 2>&1; then
+              echo "GHCR has image $OCI_IDENTIFIER"
               exit 0
-            elif [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ]; then
-              echo "ERROR: Authentication failed (status $STATUS). Image may be private." >&2
-              exit 1
-            elif [ "$STATUS" = "429" ]; then
-              echo "Rate limited by GHCR, waiting longer..."
-              sleep 30
-            else
-              echo "Waiting for GHCR to serve ${OCI_IDENTIFIER}, attempt $i (status: $STATUS)"
-              sleep 10
             fi
+            echo "Waiting for GHCR to serve $OCI_IDENTIFIER, attempt $i"
+            sleep 10
           done
 
-          echo "ERROR: Image ${OCI_IDENTIFIER} not visible on GHCR after 30 attempts"
+          echo "ERROR: Image $OCI_IDENTIFIER not visible on GHCR after 30 attempts"
           exit 1
 
       - name: Login to MCP Registry using GitHub OIDC
