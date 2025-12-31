@@ -295,6 +295,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: alex-feel/mcp-context-server
+      SERVER_NAME: io.github.alex-feel/mcp-context-server
 
     steps:
       - name: Checkout code
@@ -331,6 +332,8 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ needs.build.outputs.version }}
+          labels: |
+            io.modelcontextprotocol.server.name=${{ env.SERVER_NAME }}
 
       - name: Build and push Docker image
         id: push
