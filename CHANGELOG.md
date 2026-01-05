@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/alex-feel/mcp-context-server/compare/v0.15.0...v0.15.1) (2026-01-05)
+
+
+### Bug Fixes
+
+* add array_contains to MCP tool metadata_filters descriptions ([45f2357](https://github.com/alex-feel/mcp-context-server/commit/45f23572fe6250c570f0d41f272996311f617857))
+
 ## [0.15.0](https://github.com/alex-feel/mcp-context-server/compare/v0.14.1...v0.15.0) (2026-01-05)
 
 
