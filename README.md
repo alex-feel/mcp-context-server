@@ -9,7 +9,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 
 - **Multimodal Context Storage**: Store and retrieve both text and images
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
-- **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 15 powerful operators
+- **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 16 powerful operators
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
 - **Full-Text Search**: Optional linguistic search with stemming, ranking, and boolean queries (FTS5/tsvector)
@@ -164,7 +164,7 @@ For combined FTS + semantic search using Reciprocal Rank Fusion (RRF), see the [
 
 ## Metadata Filtering
 
-For comprehensive metadata filtering including 15 operators, nested JSON paths, and performance optimization, see the [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
+For comprehensive metadata filtering including 16 operators, nested JSON paths, and performance optimization, see the [Metadata Guide](docs/metadata-addition-updating-and-filtering.md).
 
 ## Database Backends
 

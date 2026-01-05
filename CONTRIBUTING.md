@@ -270,7 +270,7 @@ The server uses a clean repository pattern to separate concerns:
 - **ImageRepository**: Manages multimodal attachments and image replacement for updates
 - **StatisticsRepository**: Provides metrics and thread statistics
 - **StorageBackend**: Thread-safe connection pooling with retry logic
-- **MetadataQueryBuilder**: Secure SQL generation for metadata filtering with 15 operators
+- **MetadataQueryBuilder**: Secure SQL generation for metadata filtering with 16 operators
 - **MetadataFilter**: Type-safe filter specifications with validation
 
 All SQL operations are encapsulated in repository classes, keeping the server layer clean.
@@ -329,7 +329,7 @@ image_attachments (binary storage)
 3. **Flexible Metadata System**
    - Metadata field accepts any JSON-serializable structure
    - No hardcoded fields except source - maximum flexibility
-   - 15 powerful operators for filtering (eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, starts_with, ends_with, is_null, is_not_null)
+   - 16 powerful operators for filtering (eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, starts_with, ends_with, is_null, is_not_null, array_contains)
    - Use cases: task tracking, agent coordination, knowledge base, debugging, analytics
    - Case-sensitive and case-insensitive string operations
 
