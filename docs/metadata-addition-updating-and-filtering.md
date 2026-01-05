@@ -389,7 +389,7 @@ search_context(
 ```
 
 **Characteristics:**
-- 15 powerful operators
+- 16 powerful operators
 - Numeric comparisons and range queries
 - Pattern matching for strings
 - Field existence checks
