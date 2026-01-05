@@ -993,3 +993,663 @@ class TestNestedJSONMetadata:
         assert stored_metadata['simple_bool'] is True
         assert stored_metadata['nested']['level1']['level2'] == 'deep_value'
         assert stored_metadata['array'] == [1, 2, 3]
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures('initialized_server')
+class TestArrayContainsOperator:
+    """Tests for the ARRAY_CONTAINS operator."""
+
+    test_thread_id: str
+
+    async def _setup_test_data(self) -> None:
+        """Set up test data with array metadata fields."""
+        self.test_thread_id = f'test_array_contains_{int(time.time() * 1000)}'
+
+        # Entry with string array
+        await store_context(
+            thread_id=self.test_thread_id,
+            source='agent',
+            text='Python and FastAPI project',
+            metadata={
+                'technologies': ['python', 'fastapi', 'postgresql'],
+                'tags': ['backend', 'api', 'production'],
+            },
+            ctx=None,
+        )
+
+        # Entry with different technologies
+        await store_context(
+            thread_id=self.test_thread_id,
+            source='agent',
+            text='JavaScript frontend',
+            metadata={
+                'technologies': ['javascript', 'react', 'typescript'],
+                'tags': ['frontend', 'ui'],
+            },
+            ctx=None,
+        )
+
+        # Entry with numeric array
+        await store_context(
+            thread_id=self.test_thread_id,
+            source='agent',
+            text='Priority levels test',
+            metadata={
+                'priority_levels': [1, 3, 5, 7, 9],
+                'scores': [85.5, 90.0, 78.3],
+            },
+            ctx=None,
+        )
+
+        # Entry with nested array
+        await store_context(
+            thread_id=self.test_thread_id,
+            source='agent',
+            text='Nested references',
+            metadata={
+                'references': {
+                    'context_ids': [100, 200, 300],
+                    'youtrack': ['AI-100', 'AI-200'],
+                },
+            },
+            ctx=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_array_contains_string_value(self) -> None:
+        """Test array_contains with string value."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'technologies', 'operator': 'array_contains', 'value': 'python'},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 1
+        assert 'Python and FastAPI' in result['results'][0]['text_content']
+
+    @pytest.mark.asyncio
+    async def test_array_contains_case_insensitive(self) -> None:
+        """Test array_contains with case-insensitive string matching."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'technologies', 'operator': 'array_contains', 'value': 'PYTHON', 'case_sensitive': False},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 1
+        assert 'Python and FastAPI' in result['results'][0]['text_content']
+
+    @pytest.mark.asyncio
+    async def test_array_contains_case_sensitive_no_match(self) -> None:
+        """Test array_contains with case-sensitive string (no match expected)."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'technologies', 'operator': 'array_contains', 'value': 'PYTHON', 'case_sensitive': True},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 0
+
+    @pytest.mark.asyncio
+    async def test_array_contains_integer_value(self) -> None:
+        """Test array_contains with integer value."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'priority_levels', 'operator': 'array_contains', 'value': 5},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 1
+        assert 'Priority levels' in result['results'][0]['text_content']
+
+    @pytest.mark.asyncio
+    async def test_array_contains_float_value(self) -> None:
+        """Test array_contains with float value."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'scores', 'operator': 'array_contains', 'value': 90.0},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 1
+        assert 'Priority levels' in result['results'][0]['text_content']
+
+    @pytest.mark.asyncio
+    async def test_array_contains_nested_path(self) -> None:
+        """Test array_contains with nested JSON path."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'references.context_ids', 'operator': 'array_contains', 'value': 200},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 1
+        assert 'Nested references' in result['results'][0]['text_content']
+
+    @pytest.mark.asyncio
+    async def test_array_contains_nested_string_array(self) -> None:
+        """Test array_contains with nested string array."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'references.youtrack', 'operator': 'array_contains', 'value': 'AI-100'},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 1
+        assert 'Nested references' in result['results'][0]['text_content']
+
+    @pytest.mark.asyncio
+    async def test_array_contains_no_match(self) -> None:
+        """Test array_contains returns empty when element not found."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'technologies', 'operator': 'array_contains', 'value': 'rust'},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 0
+
+    @pytest.mark.asyncio
+    async def test_array_contains_combined_with_other_filters(self) -> None:
+        """Test array_contains combined with other metadata filters."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'technologies', 'operator': 'array_contains', 'value': 'python'},
+                {'key': 'tags', 'operator': 'array_contains', 'value': 'production'},
+            ],
+            ctx=None,
+        )
+
+        assert len(result['results']) == 1
+        assert 'Python and FastAPI' in result['results'][0]['text_content']
+
+    @pytest.mark.asyncio
+    async def test_array_contains_non_existent_field_returns_empty(self) -> None:
+        """Test array_contains on non-existent field returns empty (graceful handling)."""
+        await self._setup_test_data()
+
+        result = await search_context(
+            thread_id=self.test_thread_id,
+            metadata_filters=[
+                {'key': 'nonexistent', 'operator': 'array_contains', 'value': 'test'},
+            ],
+            ctx=None,
+        )
+
+        # Should return empty, not error
+        assert 'results' in result
+        assert len(result['results']) == 0
+
+    @pytest.mark.asyncio
+    async def test_array_contains_scalar_field_returns_empty(self) -> None:
+        """Test array_contains on scalar string field returns empty (graceful handling, not error).
+
+        Regression test: PostgreSQL jsonb_array_elements_text() throws
+        "cannot extract elements from a scalar" on non-array fields.
+        The documented behavior is to return empty results gracefully.
+        """
+        test_thread_id = f'test_array_contains_scalar_{int(time.time() * 1000)}'
+        await store_context(
+            thread_id=test_thread_id,
+            source='agent',
+            text='Entry with scalar category',
+            metadata={
+                'category': 'backend',  # Scalar string, NOT an array
+                'technologies': ['python', 'fastapi'],  # This IS an array
+            },
+            ctx=None,
+        )
+
+        # This should return empty results, NOT throw an error
+        result = await search_context(
+            thread_id=test_thread_id,
+            metadata_filters=[
+                {'key': 'category', 'operator': 'array_contains', 'value': 'backend'},
+            ],
+            ctx=None,
+        )
+
+        # Should return empty results, not error
+        assert 'results' in result
+        assert len(result['results']) == 0
+
+        # Verify the array field still works correctly
+        result2 = await search_context(
+            thread_id=test_thread_id,
+            metadata_filters=[
+                {'key': 'technologies', 'operator': 'array_contains', 'value': 'python'},
+            ],
+            ctx=None,
+        )
+        assert len(result2['results']) == 1
+
+    @pytest.mark.asyncio
+    async def test_array_contains_object_field_returns_empty(self) -> None:
+        """Test array_contains on object field returns empty (graceful handling)."""
+        test_thread_id = f'test_array_contains_object_{int(time.time() * 1000)}'
+        await store_context(
+            thread_id=test_thread_id,
+            source='agent',
+            text='Entry with object config field',
+            metadata={
+                'config': {'timeout': 30, 'retries': 3},  # Object, NOT an array
+            },
+            ctx=None,
+        )
+
+        result = await search_context(
+            thread_id=test_thread_id,
+            metadata_filters=[
+                {'key': 'config', 'operator': 'array_contains', 'value': 30},
+            ],
+            ctx=None,
+        )
+
+        assert 'results' in result
+        assert len(result['results']) == 0
+
+    @pytest.mark.asyncio
+    async def test_array_contains_number_field_returns_empty(self) -> None:
+        """Test array_contains on number field returns empty (graceful handling)."""
+        test_thread_id = f'test_array_contains_number_{int(time.time() * 1000)}'
+        await store_context(
+            thread_id=test_thread_id,
+            source='agent',
+            text='Entry with number priority field',
+            metadata={
+                'priority': 5,  # Number scalar, NOT an array
+            },
+            ctx=None,
+        )
+
+        result = await search_context(
+            thread_id=test_thread_id,
+            metadata_filters=[
+                {'key': 'priority', 'operator': 'array_contains', 'value': 5},
+            ],
+            ctx=None,
+        )
+
+        assert 'results' in result
+        assert len(result['results']) == 0
+
+    @pytest.mark.asyncio
+    async def test_array_contains_null_field_returns_empty(self) -> None:
+        """Test array_contains on null field returns empty (graceful handling)."""
+        test_thread_id = f'test_array_contains_null_{int(time.time() * 1000)}'
+        await store_context(
+            thread_id=test_thread_id,
+            source='agent',
+            text='Entry with null field',
+            metadata={
+                'tags': None,  # Explicit null, NOT an array
+            },
+            ctx=None,
+        )
+
+        result = await search_context(
+            thread_id=test_thread_id,
+            metadata_filters=[
+                {'key': 'tags', 'operator': 'array_contains', 'value': 'test'},
+            ],
+            ctx=None,
+        )
+
+        assert 'results' in result
+        assert len(result['results']) == 0
+
+
+class TestArrayContainsValidation:
+    """Tests for ARRAY_CONTAINS operator validation."""
+
+    def test_array_contains_rejects_list_value(self) -> None:
+        """Test that array_contains rejects list values."""
+        with pytest.raises(ValueError, match='requires a single value'):
+            MetadataFilter(
+                key='technologies',
+                operator=MetadataOperator.ARRAY_CONTAINS,
+                value=['python', 'fastapi'],
+            )
+
+    def test_array_contains_rejects_none_value(self) -> None:
+        """Test that array_contains rejects None value."""
+        with pytest.raises(ValueError, match='requires a non-null value'):
+            MetadataFilter(
+                key='technologies',
+                operator=MetadataOperator.ARRAY_CONTAINS,
+                value=None,
+            )
+
+    def test_array_contains_accepts_string_value(self) -> None:
+        """Test that array_contains accepts string value."""
+        f = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='python',
+        )
+        assert f.value == 'python'
+
+    def test_array_contains_accepts_integer_value(self) -> None:
+        """Test that array_contains accepts integer value."""
+        f = MetadataFilter(
+            key='priority_levels',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=5,
+        )
+        assert f.value == 5
+
+    def test_array_contains_accepts_float_value(self) -> None:
+        """Test that array_contains accepts float value."""
+        f = MetadataFilter(
+            key='scores',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=85.5,
+        )
+        assert f.value == 85.5
+
+    def test_array_contains_accepts_boolean_value(self) -> None:
+        """Test that array_contains accepts boolean value."""
+        f = MetadataFilter(
+            key='flags',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=True,
+        )
+        assert f.value is True
+
+
+class TestArrayContainsQueryBuilder:
+    """Tests for the ARRAY_CONTAINS operator in MetadataQueryBuilder."""
+
+    def test_sqlite_array_contains_string(self) -> None:
+        """Test SQLite array_contains with string value."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='python',
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'EXISTS' in where_clause
+        assert 'json_each' in where_clause
+        assert '$.technologies' in where_clause
+        assert params == ['python']
+
+    def test_sqlite_array_contains_case_insensitive(self) -> None:
+        """Test SQLite array_contains with case-insensitive string."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='PYTHON',
+            case_sensitive=False,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'LOWER' in where_clause
+        assert 'json_each' in where_clause
+        assert params == ['PYTHON']
+
+    def test_sqlite_array_contains_integer(self) -> None:
+        """Test SQLite array_contains with integer value."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='priority_levels',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=5,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'EXISTS' in where_clause
+        assert 'json_each' in where_clause
+        assert params == [5]
+
+    def test_sqlite_array_contains_boolean(self) -> None:
+        """Test SQLite array_contains with boolean value."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='flags',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'EXISTS' in where_clause
+        assert 'json_each' in where_clause
+        # Boolean should be converted to 1
+        assert params == [1]
+
+    def test_postgresql_array_contains_string(self) -> None:
+        """Test PostgreSQL array_contains with string value."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='python',
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert '@>' in where_clause
+        # Uses ::jsonb cast instead of to_jsonb() to avoid asyncpg type resolution issues
+        assert '::jsonb' in where_clause
+        # Value is JSON-stringified for ::jsonb cast
+        assert params == ['"python"']
+
+    def test_postgresql_array_contains_case_insensitive(self) -> None:
+        """Test PostgreSQL array_contains with case-insensitive string."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='PYTHON',
+            case_sensitive=False,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'EXISTS' in where_clause
+        assert 'jsonb_array_elements_text' in where_clause
+        assert 'LOWER' in where_clause
+        assert params == ['PYTHON']
+
+    def test_postgresql_array_contains_nested_path(self) -> None:
+        """Test PostgreSQL array_contains with nested path."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='references.context_ids',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=200,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert '@>' in where_clause
+        # Uses ::jsonb cast instead of to_jsonb() to avoid asyncpg type resolution issues
+        assert '::jsonb' in where_clause
+        assert '{references,context_ids}' in where_clause
+        # Value is JSON-stringified for ::jsonb cast
+        assert params == ['200']
+
+    def test_sqlite_array_contains_nested_path(self) -> None:
+        """Test SQLite array_contains with nested path."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='references.context_ids',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=200,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert 'EXISTS' in where_clause
+        assert 'json_each' in where_clause
+        assert '$.references.context_ids' in where_clause
+        assert params == [200]
+
+
+class TestArrayContainsNonArrayHandling:
+    """Tests for array_contains graceful handling of non-array fields.
+
+    These tests verify that the SQL includes type checks to prevent errors
+    when array_contains is used on non-array fields.
+    """
+
+    def test_sqlite_array_contains_includes_type_check(self) -> None:
+        """Test SQLite array_contains SQL includes json_type check."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='category',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='backend',
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "json_type(metadata, '$.category') = 'array'" in where_clause
+        assert 'json_each' in where_clause
+        assert params == ['backend']
+
+    def test_sqlite_array_contains_case_insensitive_includes_type_check(self) -> None:
+        """Test SQLite case-insensitive array_contains SQL includes json_type check."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='PYTHON',
+            case_sensitive=False,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "json_type(metadata, '$.technologies') = 'array'" in where_clause
+        assert 'LOWER' in where_clause
+        assert 'json_each' in where_clause
+        assert params == ['PYTHON']
+
+    def test_sqlite_array_contains_boolean_includes_type_check(self) -> None:
+        """Test SQLite array_contains with boolean includes json_type check."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        filter_spec = MetadataFilter(
+            key='flags',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "json_type(metadata, '$.flags') = 'array'" in where_clause
+        assert 'json_each' in where_clause
+        assert params == [1]
+
+    def test_postgresql_array_contains_includes_type_check(self) -> None:
+        """Test PostgreSQL array_contains SQL includes jsonb_typeof check."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='category',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='backend',
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata->'category') = 'array'" in where_clause
+        assert 'CASE WHEN' in where_clause
+        assert 'ELSE FALSE END' in where_clause
+        assert '@>' in where_clause
+
+    def test_postgresql_array_contains_case_insensitive_includes_type_check(self) -> None:
+        """Test PostgreSQL case-insensitive array_contains SQL includes jsonb_typeof check."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='PYTHON',
+            case_sensitive=False,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata->'technologies') = 'array'" in where_clause
+        assert 'jsonb_array_elements_text' in where_clause
+        assert 'CASE WHEN' in where_clause
+        assert 'ELSE FALSE END' in where_clause
+        assert 'LOWER' in where_clause
+
+    def test_postgresql_nested_path_includes_type_check(self) -> None:
+        """Test PostgreSQL nested path array_contains SQL includes jsonb_typeof check."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='references.context_ids',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=200,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata#>'{references,context_ids}') = 'array'" in where_clause
+        assert 'CASE WHEN' in where_clause
+        assert 'ELSE FALSE END' in where_clause
+
+    def test_postgresql_nested_case_insensitive_includes_type_check(self) -> None:
+        """Test PostgreSQL nested case-insensitive array_contains SQL includes jsonb_typeof check."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='references.youtrack',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='AI-100',
+            case_sensitive=False,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata#>'{references,youtrack}') = 'array'" in where_clause
+        assert 'jsonb_array_elements_text' in where_clause
+        assert 'CASE WHEN' in where_clause
+        assert 'ELSE FALSE END' in where_clause
+        assert 'LOWER' in where_clause

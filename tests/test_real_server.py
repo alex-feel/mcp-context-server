@@ -496,6 +496,271 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_array_contains_operator(self) -> bool:
+        """Test the array_contains operator for metadata filtering.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Array Contains Operator'
+        print('Testing array_contains operator...')
+
+        # Store test context entries with array metadata
+        test_entries = [
+            {
+                'thread_id': f'{self.test_thread_id}_array_contains',
+                'source': 'agent',
+                'text': 'Python and FastAPI project',
+                'metadata': {
+                    'technologies': ['python', 'fastapi', 'postgresql'],
+                    'priority_levels': [1, 3, 5],
+                },
+            },
+            {
+                'thread_id': f'{self.test_thread_id}_array_contains',
+                'source': 'agent',
+                'text': 'JavaScript frontend',
+                'metadata': {
+                    'technologies': ['javascript', 'react', 'typescript'],
+                    'priority_levels': [2, 4, 6],
+                },
+            },
+            {
+                'thread_id': f'{self.test_thread_id}_array_contains',
+                'source': 'agent',
+                'text': 'Full stack project',
+                'metadata': {
+                    'technologies': ['python', 'javascript', 'docker'],
+                    'priority_levels': [1, 5, 10],
+                },
+            },
+        ]
+
+        try:
+            # Store all test entries
+            assert self.client is not None  # Type guard for Pyright
+            for entry in test_entries:
+                result = await self.client.call_tool('store_context', entry)
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    print(f'Failed to store test entry: {result_data}')
+                    self.test_results.append((test_name, False, 'Failed to store test entries'))
+                    return False
+
+            # Test 1: array_contains with string value
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': f'{self.test_thread_id}_array_contains',
+                    'metadata_filters': [{'key': 'technologies', 'operator': 'array_contains', 'value': 'python'}],
+                },
+            )
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 2:
+                print(f"array_contains string failed: expected 2, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'array_contains string filter failed'))
+                return False
+
+            # Test 2: array_contains with integer value
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': f'{self.test_thread_id}_array_contains',
+                    'metadata_filters': [{'key': 'priority_levels', 'operator': 'array_contains', 'value': 5}],
+                },
+            )
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 2:
+                print(f"array_contains integer failed: expected 2, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'array_contains integer filter failed'))
+                return False
+
+            # Test 3: array_contains with no match
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': f'{self.test_thread_id}_array_contains',
+                    'metadata_filters': [{'key': 'technologies', 'operator': 'array_contains', 'value': 'rust'}],
+                },
+            )
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 0:
+                print(f"array_contains no match failed: expected 0, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'array_contains no match test failed'))
+                return False
+
+            # Test 4: Combined array_contains filters
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': f'{self.test_thread_id}_array_contains',
+                    'metadata_filters': [
+                        {'key': 'technologies', 'operator': 'array_contains', 'value': 'python'},
+                        {'key': 'technologies', 'operator': 'array_contains', 'value': 'javascript'},
+                    ],
+                },
+            )
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 1:
+                print(f"Combined array_contains failed: expected 1, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'Combined array_contains filter failed'))
+                return False
+
+            print('[OK] All array_contains operator tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_array_contains_non_array_field(self) -> bool:
+        """Test array_contains gracefully handles non-array fields (returns empty, not error).
+
+        Regression test: PostgreSQL jsonb_array_elements_text() throws
+        "cannot extract elements from a scalar" on non-array fields.
+        The fix adds type checks to return empty results gracefully.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Array Contains Non-Array Field Handling'
+        print('Testing array_contains on non-array fields...')
+
+        # Store test context entries with SCALAR metadata (not arrays)
+        test_thread_id = f'{self.test_thread_id}_array_contains_scalar'
+        test_entries = [
+            {
+                'thread_id': test_thread_id,
+                'source': 'agent',
+                'text': 'Entry with scalar category',
+                'metadata': {
+                    'category': 'backend',  # Scalar string, NOT an array
+                    'technologies': ['python', 'fastapi'],  # This IS an array
+                },
+            },
+            {
+                'thread_id': test_thread_id,
+                'source': 'agent',
+                'text': 'Entry with object config',
+                'metadata': {
+                    'config': {'timeout': 30, 'retries': 3},  # Object, NOT an array
+                },
+            },
+            {
+                'thread_id': test_thread_id,
+                'source': 'agent',
+                'text': 'Entry with number priority',
+                'metadata': {
+                    'priority': 5,  # Number scalar, NOT an array
+                },
+            },
+        ]
+
+        try:
+            # Store all test entries
+            assert self.client is not None  # Type guard for Pyright
+            for entry in test_entries:
+                result = await self.client.call_tool('store_context', entry)
+                result_data = self._extract_content(result)
+                if not result_data.get('success'):
+                    print(f'Failed to store test entry: {result_data}')
+                    self.test_results.append((test_name, False, 'Failed to store test entries'))
+                    return False
+
+            # Test 1: array_contains on SCALAR string field should return empty (not error)
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': test_thread_id,
+                    'metadata_filters': [{'key': 'category', 'operator': 'array_contains', 'value': 'backend'}],
+                },
+            )
+            result_data = self._extract_content(result)
+            # Should return empty results, NOT an error
+            if 'error' in result_data:
+                print(f"array_contains on scalar field threw error: {result_data.get('error')}")
+                self.test_results.append(
+                    (test_name, False, 'array_contains on scalar field threw error instead of returning empty'),
+                )
+                return False
+            if len(result_data.get('results', [])) != 0:
+                print(f"array_contains on scalar field failed: expected 0, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'array_contains on scalar field should return empty'))
+                return False
+
+            # Test 2: array_contains on OBJECT field should return empty (not error)
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': test_thread_id,
+                    'metadata_filters': [{'key': 'config', 'operator': 'array_contains', 'value': 30}],
+                },
+            )
+            result_data = self._extract_content(result)
+            if 'error' in result_data:
+                print(f"array_contains on object field threw error: {result_data.get('error')}")
+                self.test_results.append(
+                    (test_name, False, 'array_contains on object field threw error instead of returning empty'),
+                )
+                return False
+            if len(result_data.get('results', [])) != 0:
+                print(f"array_contains on object field failed: expected 0, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'array_contains on object field should return empty'))
+                return False
+
+            # Test 3: array_contains on NUMBER field should return empty (not error)
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': test_thread_id,
+                    'metadata_filters': [{'key': 'priority', 'operator': 'array_contains', 'value': 5}],
+                },
+            )
+            result_data = self._extract_content(result)
+            if 'error' in result_data:
+                print(f"array_contains on number field threw error: {result_data.get('error')}")
+                self.test_results.append(
+                    (test_name, False, 'array_contains on number field threw error instead of returning empty'),
+                )
+                return False
+            if len(result_data.get('results', [])) != 0:
+                print(f"array_contains on number field failed: expected 0, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'array_contains on number field should return empty'))
+                return False
+
+            # Test 4: Verify array field STILL works correctly
+            result = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50,
+                    'thread_id': test_thread_id,
+                    'metadata_filters': [{'key': 'technologies', 'operator': 'array_contains', 'value': 'python'}],
+                },
+            )
+            result_data = self._extract_content(result)
+            if len(result_data.get('results', [])) != 1:
+                print(f"array_contains on array field failed: expected 1, got {len(result_data.get('results', []))}")
+                self.test_results.append((test_name, False, 'array_contains on array field should still work'))
+                return False
+
+            print('[OK] All array_contains non-array field tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_get_context_by_ids(self) -> bool:
         """Test retrieving specific contexts by IDs.
 
@@ -4897,6 +5162,8 @@ class MCPServerIntegrationTest:
             ('Search Context', self.test_search_context),
             ('Search Context Date Filtering', self.test_search_context_with_date_filtering),
             ('Metadata Filtering', self.test_metadata_filtering),
+            ('Array Contains Operator', self.test_array_contains_operator),
+            ('Array Contains Non-Array Field', self.test_array_contains_non_array_field),
             ('Get Context by IDs', self.test_get_context_by_ids),
             ('Delete Context', self.test_delete_context),
             ('Update Context', self.test_update_context),
