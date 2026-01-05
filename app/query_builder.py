@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -13,7 +14,7 @@ class MetadataQueryBuilder:
     """Build SQL WHERE clauses for metadata filtering with security validation.
 
     Provides safe SQL generation for JSON metadata filtering with support for
-    15 different operators and nested JSON paths.
+    16 different operators and nested JSON paths.
     """
 
     def __init__(
@@ -146,6 +147,8 @@ class MetadataQueryBuilder:
             self._add_is_null_condition(json_path)
         elif operator == MetadataOperator.IS_NOT_NULL:
             self._add_is_not_null_condition(json_path)
+        elif operator == MetadataOperator.ARRAY_CONTAINS and not isinstance(value, list) and value is not None:
+            self._add_array_contains_condition(json_path, value, case_sensitive)
 
         self._filter_count += 1
 
@@ -566,3 +569,109 @@ class MetadataQueryBuilder:
         escaped = escaped.replace('?', '\\?')
         escaped = escaped.replace('[', '\\[')
         return escaped.replace(']', '\\]')
+
+    def _add_array_contains_condition(
+        self,
+        json_path: str,
+        value: str | float | bool,
+        case_sensitive: bool,
+    ) -> None:
+        """Add a condition to check if a JSON array contains a specific element.
+
+        Uses EXISTS subquery with json_each() for SQLite, and @> containment operator
+        for PostgreSQL.
+
+        IMPORTANT: This method includes type checks to gracefully handle non-array fields.
+        Without these checks, jsonb_array_elements_text() throws "cannot extract elements
+        from a scalar" error on PostgreSQL when the field contains a scalar value.
+        The documented behavior is to return empty results (not error) for non-array fields.
+
+        Args:
+            json_path: JSON path to the array field (e.g., '$.technologies')
+            value: The element value to search for in the array
+            case_sensitive: Whether string comparison should be case-sensitive
+        """
+        placeholder = self._placeholder()
+        key_path = json_path[2:]  # Remove $. prefix
+
+        if self.backend_type == 'sqlite':
+            # SQLite: Use EXISTS with json_each() table-valued function
+            # json_each expands the array into rows, each with a 'value' column
+            # IMPORTANT: Add json_type check to gracefully handle non-array fields.
+            # json_type returns 'array' for arrays, other values for scalars/objects.
+            # If field is not an array, condition evaluates to FALSE (no match, no error).
+            if isinstance(value, str) and not case_sensitive:
+                self.conditions.append(
+                    f"(json_type(metadata, '{json_path}') = 'array' AND "
+                    f"EXISTS (SELECT 1 FROM json_each(metadata, '{json_path}') "
+                    f'WHERE LOWER(json_each.value) = LOWER({placeholder})))',
+                )
+            elif isinstance(value, bool):
+                # SQLite JSON stores booleans as integers (0/1)
+                # json_each.value returns them as 0 or 1
+                self.conditions.append(
+                    f"(json_type(metadata, '{json_path}') = 'array' AND "
+                    f"EXISTS (SELECT 1 FROM json_each(metadata, '{json_path}') "
+                    f'WHERE json_each.value = {placeholder}))',
+                )
+                self.parameters.append(1 if value else 0)
+                return  # Early return since we already added the parameter
+            else:
+                # Numbers and case-sensitive strings
+                self.conditions.append(
+                    f"(json_type(metadata, '{json_path}') = 'array' AND "
+                    f"EXISTS (SELECT 1 FROM json_each(metadata, '{json_path}') "
+                    f'WHERE json_each.value = {placeholder}))',
+                )
+            self.parameters.append(value)
+        else:  # postgresql
+            # PostgreSQL: Use @> containment operator for array containment check.
+            # IMPORTANT: We use json.dumps() + ::jsonb cast instead of to_jsonb() because:
+            # - to_jsonb() is polymorphic (anyelement) and requires type information
+            # - asyncpg sends integers/floats/booleans as type "unknown" to PostgreSQL
+            # - This causes "could not determine polymorphic type" error
+            # - By using json.dumps() in Python and ::jsonb cast in SQL, we avoid this issue
+            # This pattern is also used in context_repository.py for metadata patching.
+            # IMPORTANT: We wrap in CASE WHEN jsonb_typeof() = 'array' to gracefully handle
+            # non-array fields. Without this check, jsonb_array_elements_text() throws
+            # "cannot extract elements from a scalar" error on scalar fields.
+            if '.' in key_path:
+                # Nested path: use #> with array notation
+                path_parts = key_path.split('.')
+                array_path = '{' + ','.join(path_parts) + '}'
+                if isinstance(value, str) and not case_sensitive:
+                    # Case-insensitive: use EXISTS with jsonb_array_elements_text
+                    # Wrap in CASE to handle non-array fields gracefully
+                    self.conditions.append(
+                        f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
+                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements_text(metadata#>'{array_path}') AS elem "
+                        f'WHERE LOWER(elem) = LOWER({placeholder})) ELSE FALSE END)',
+                    )
+                    self.parameters.append(value)
+                else:
+                    # Case-sensitive or non-string: use @> operator with json.dumps() + ::jsonb
+                    # Wrap in CASE to handle non-array fields gracefully
+                    self.conditions.append(
+                        f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
+                        f"THEN metadata#>'{array_path}' @> {placeholder}::jsonb ELSE FALSE END)",
+                    )
+                    self.parameters.append(json.dumps(value))
+            else:
+                # Single-level path
+                if isinstance(value, str) and not case_sensitive:
+                    # Case-insensitive: use EXISTS with jsonb_array_elements_text
+                    # Wrap in CASE to handle non-array fields gracefully
+                    self.conditions.append(
+                        f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
+                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements_text(metadata->'{key_path}') AS elem "
+                        f'WHERE LOWER(elem) = LOWER({placeholder})) ELSE FALSE END)',
+                    )
+                    self.parameters.append(value)
+                else:
+                    # Case-sensitive or non-string: use @> operator with json.dumps() + ::jsonb
+                    # Wrap in CASE to handle non-array fields gracefully
+                    self.conditions.append(
+                        f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
+                        f"THEN metadata->'{key_path}' @> {placeholder}::jsonb ELSE FALSE END)",
+                    )
+                    self.parameters.append(json.dumps(value))

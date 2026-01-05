@@ -58,7 +58,7 @@ Search context entries with powerful filtering including metadata queries and da
 - `include_images` (bool, optional): Include image data in response
 - `explain_query` (bool, optional): Include query execution statistics
 
-**Metadata Filtering:** Supports simple key=value equality and advanced filtering with 15 operators. See [Metadata Guide](metadata-addition-updating-and-filtering.md).
+**Metadata Filtering:** Supports simple key=value equality and advanced filtering with 16 operators. See [Metadata Guide](metadata-addition-updating-and-filtering.md).
 
 **Date Filtering:** Supports ISO 8601 date filtering. See [Date Filtering](#date-filtering) section below.
 
@@ -445,6 +445,7 @@ metadata_filters=[
 - `exists`, `not_exists`: Field presence
 - `contains`, `starts_with`, `ends_with`: String operations
 - `is_null`, `is_not_null`: Null checks
+- `array_contains`: Check if array field contains element
 
 All string operators support `case_sensitive: true/false` option.
 

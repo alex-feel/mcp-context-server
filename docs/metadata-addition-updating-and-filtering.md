@@ -6,7 +6,7 @@ Metadata in the MCP Context Server provides a powerful way to enrich, organize, 
 
 **Key Capabilities:**
 - **Flexible Structure**: Store any JSON-serializable data (strings, numbers, booleans, arrays, nested objects)
-- **15 Operators**: From simple equality to advanced pattern matching and range queries
+- **16 Operators**: From simple equality to advanced pattern matching and range queries
 - **Performance Optimized**: Strategic indexing for common fields (status, priority, agent_name, task_name, completed)
 - **Case Control**: Case-sensitive and case-insensitive string operations
 - **Partial Updates**: RFC 7396 JSON Merge Patch for selective metadata modifications
@@ -332,7 +332,7 @@ update_context(context_id=123, metadata_patch={"tags": tags})
 
 ## Filtering by Metadata
 
-Metadata filtering enables powerful, flexible querying of context entries using structured JSON data. Unlike simple tag-based organization, metadata filtering supports complex queries with 15 operators, nested JSON paths, and performance-optimized indexes for common fields.
+Metadata filtering enables powerful, flexible querying of context entries using structured JSON data. Unlike simple tag-based organization, metadata filtering supports complex queries with 16 operators, nested JSON paths, and performance-optimized indexes for common fields.
 
 All search tools (`search_context`, `semantic_search_context`, `fts_search_context`, and `hybrid_search_context`) support identical metadata filtering syntax.
 
@@ -653,6 +653,69 @@ Check if field has a non-null value.
 ```
 
 **Note:** `exists` checks for field presence, `is_not_null` checks for non-null values. Use `exists` for missing fields, `is_not_null` for null values.
+
+### Array Operators
+
+#### `array_contains` - Array Contains Element
+
+Check if a JSON array field contains a specific element value.
+
+```python
+# Find entries where technologies array contains "python"
+{"key": "technologies", "operator": "array_contains", "value": "python"}
+
+# Find entries where priority_levels array contains 5
+{"key": "priority_levels", "operator": "array_contains", "value": 5}
+
+# Case-insensitive string matching
+{"key": "technologies", "operator": "array_contains", "value": "PYTHON", "case_sensitive": False}
+
+# Nested array path
+{"key": "references.context_ids", "operator": "array_contains", "value": 200}
+```
+
+**Value Requirements:**
+- Must be a single scalar value (string, number, or boolean)
+- Cannot be an array or null
+
+**Use Cases:**
+- Filter by technology stack: `{"key": "technologies", "operator": "array_contains", "value": "python"}`
+- Filter by tag in array: `{"key": "tags", "operator": "array_contains", "value": "urgent"}`
+- Filter by numeric value in array: `{"key": "priority_levels", "operator": "array_contains", "value": 5}`
+- Filter nested arrays: `{"key": "references.context_ids", "operator": "array_contains", "value": 2322}`
+
+**Example:**
+
+```python
+# metadata = {"technologies": ["python", "fastapi", "postgresql"]}
+
+# Find entries where technologies contains "python"
+search_context(
+    metadata_filters=[
+        {"key": "technologies", "operator": "array_contains", "value": "python"}
+    ]
+)
+
+# Case-insensitive search
+search_context(
+    metadata_filters=[
+        {"key": "technologies", "operator": "array_contains", "value": "PYTHON", "case_sensitive": False}
+    ]
+)
+
+# Nested path example
+# metadata = {"references": {"context_ids": [100, 200, 300]}}
+search_context(
+    metadata_filters=[
+        {"key": "references.context_ids", "operator": "array_contains", "value": 200}
+    ]
+)
+```
+
+**Notes:**
+- Returns empty results (not error) if the field is not an array or doesn't exist
+- Supports case-insensitive matching for string values (set `case_sensitive: false`)
+- Works with nested paths using dot notation
 
 ## Real-World Use Cases
 
