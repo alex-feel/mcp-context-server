@@ -1717,7 +1717,7 @@ async def search_context(
         Field(
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null',
+            'starts_with, ends_with, is_null, is_not_null, array_contains',
         ),
     ] = None,
     start_date: Annotated[
@@ -2391,7 +2391,7 @@ async def semantic_search_context(
         Field(
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null',
+            'starts_with, ends_with, is_null, is_not_null, array_contains',
         ),
     ] = None,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
@@ -2554,7 +2554,7 @@ async def fts_search_context(
         Field(
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null',
+            'starts_with, ends_with, is_null, is_not_null, array_contains',
         ),
     ] = None,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
@@ -2782,7 +2782,7 @@ async def hybrid_search_context(
         Field(
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null',
+            'starts_with, ends_with, is_null, is_not_null, array_contains',
         ),
     ] = None,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
