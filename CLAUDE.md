@@ -138,7 +138,7 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Handles model communication, vector dimension validation, and graceful degradation
 
 7. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
-   - **MetadataFilter**: Advanced filter specification with 15 operators (eq, ne, gt, lt, contains, etc.)
+   - **MetadataFilter**: Advanced filter specification with 16 operators (eq, ne, gt, lt, contains, etc.)
    - **QueryBuilder**: Backend-aware SQL generation with proper parameter binding and type casting
    - Supports nested JSON path queries (e.g., "user.preferences.theme")
    - Case-sensitive/insensitive string operations
@@ -162,7 +162,7 @@ The core concept is thread-based context scoping:
 - Context entries are tagged with `source`: 'user' or 'agent'
 - Agents can filter context by thread, source, tags, content type, or metadata
 - No hierarchical threads - flat structure for simplicity
-- Metadata filtering supports 15 operators for complex queries
+- Metadata filtering supports 16 operators for complex queries
 
 **Example Multi-Agent Workflow**:
 ```
