@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/alex-feel/mcp-context-server/compare/v0.14.1...v0.15.0) (2026-01-05)
+
+
+### Features
+
+* add array_contains operator with graceful non-array handling ([b23642a](https://github.com/alex-feel/mcp-context-server/commit/b23642a2933ac267fbbb9519062a252bef64d8c8))
+
 ## [0.14.1](https://github.com/alex-feel/mcp-context-server/compare/v0.14.0...v0.14.1) (2025-12-30)
 
 
