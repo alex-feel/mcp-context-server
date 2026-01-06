@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/alex-feel/mcp-context-server/compare/v0.15.1...v0.16.0) (2026-01-06)
+
+
+### Features
+
+* add configurable metadata field indexing with sync modes ([10ab4cb](https://github.com/alex-feel/mcp-context-server/commit/10ab4cb5924ae7230c146e39a8786a755b3f44fa))
+
 ## [0.15.1](https://github.com/alex-feel/mcp-context-server/compare/v0.15.0...v0.15.1) (2026-01-05)
 
 
