@@ -151,6 +151,53 @@ class StorageSettings(BaseSettings):
         alias='POSTGRESQL_SSL_MODE',
     )
 
+    # Default metadata fields for indexing (based on context-preservation-protocol requirements)
+    metadata_indexed_fields_raw: str = Field(
+        default='status,agent_name,task_name,project,report_type,references:object,technologies:array',
+        alias='METADATA_INDEXED_FIELDS',
+        description='Comma-separated list of metadata fields to index with optional type hints (field:type format)',
+    )
+
+    metadata_index_sync_mode: Literal['strict', 'auto', 'warn', 'additive'] = Field(
+        default='additive',
+        alias='METADATA_INDEX_SYNC_MODE',
+        description='How to handle index mismatches: strict (fail), auto (sync), warn (log), additive (add missing only)',
+    )
+
+    @property
+    def metadata_indexed_fields(self) -> dict[str, str]:
+        """Parse field:type pairs from METADATA_INDEXED_FIELDS into dict.
+
+        Returns:
+            Dictionary mapping field names to their type hints.
+            Supported types: 'string' (default), 'integer', 'boolean', 'float', 'array', 'object'
+
+        Example:
+            'status,priority:integer,completed:boolean' -> {'status': 'string', 'priority': 'integer', 'completed': 'boolean'}
+        """
+        if not self.metadata_indexed_fields_raw or not self.metadata_indexed_fields_raw.strip():
+            return {}
+
+        result: dict[str, str] = {}
+        valid_types = {'string', 'integer', 'boolean', 'float', 'array', 'object'}
+
+        for item in self.metadata_indexed_fields_raw.split(','):
+            item = item.strip()
+            if not item:
+                continue
+            if ':' in item:
+                field, type_hint = item.split(':', 1)
+                field = field.strip()
+                type_hint = type_hint.strip().lower()
+                # Validate type hint
+                if type_hint not in valid_types:
+                    logger.warning(f'Invalid type hint "{type_hint}" for field "{field}", defaulting to string')
+                    type_hint = 'string'
+                result[field] = type_hint
+            else:
+                result[item] = 'string'
+        return result
+
     @property
     def resolved_busy_timeout_ms(self) -> int:
         """Resolve busy timeout to a valid integer value for SQLite."""

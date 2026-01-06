@@ -7,7 +7,8 @@ Metadata in the MCP Context Server provides a powerful way to enrich, organize, 
 **Key Capabilities:**
 - **Flexible Structure**: Store any JSON-serializable data (strings, numbers, booleans, arrays, nested objects)
 - **16 Operators**: From simple equality to advanced pattern matching and range queries
-- **Performance Optimized**: Strategic indexing for common fields (status, priority, agent_name, task_name, completed)
+- **Performance Optimized**: Strategic indexing for common fields (status, agent_name, task_name, project, report_type)
+- **Configurable Indexing**: Customize indexed fields via `METADATA_INDEXED_FIELDS` environment variable
 - **Case Control**: Case-sensitive and case-insensitive string operations
 - **Partial Updates**: RFC 7396 JSON Merge Patch for selective metadata modifications
 - **Query Statistics**: Execution time and query plan analysis
@@ -52,15 +53,32 @@ The `metadata` field accepts any JSON-serializable structure with no predefined 
 
 ### Indexed Fields for Performance
 
-The following metadata fields are indexed for faster filtering:
+The following metadata fields are indexed by default for faster filtering:
 
-| Field | Type | Use Case | Example Values |
-|-------|------|----------|----------------|
-| `status` | string | State tracking | `"pending"`, `"active"`, `"completed"` |
-| `priority` | number | Range queries | `1-10`, `0`, `100` |
-| `agent_name` | string | Agent identification | `"planner"`, `"executor"`, `"reviewer"` |
-| `task_name` | string | Task identification | `"analyze-data"`, `"generate-report"` |
-| `completed` | boolean | Completion state | `true`, `false` |
+| Field | Type Hint | SQLite | PostgreSQL | Use Case |
+|-------|-----------|--------|------------|----------|
+| `status` | string | B-tree | B-tree | State tracking (`"pending"`, `"active"`, `"done"`) |
+| `agent_name` | string | B-tree | B-tree | Agent identification (`"planner"`, `"developer"`) |
+| `task_name` | string | B-tree | B-tree | Task identification (`"auth-impl"`, `"data-export"`) |
+| `project` | string | B-tree | B-tree | Project filtering (`"my-app"`, `"backend"`) |
+| `report_type` | string | B-tree | B-tree | Report categorization (`"research"`, `"implementation"`) |
+| `references` | object | Not indexed | GIN | Cross-references (uses containment queries) |
+| `technologies` | array | Not indexed | GIN | Technology stack (uses containment queries) |
+
+**Backend Differences:**
+- **SQLite**: Only scalar fields (string, integer, boolean, float) can be indexed using expression indexes. Array and object fields cannot be efficiently indexed.
+- **PostgreSQL**: Scalar fields use B-tree expression indexes. Array and object fields use GIN index for efficient containment queries (`@>` operator).
+
+**Configurable Indexing:**
+
+You can customize which metadata fields are indexed via environment variables:
+
+- `METADATA_INDEXED_FIELDS`: Comma-separated list of fields with optional type hints (e.g., `status,priority:integer,tags:array`)
+- `METADATA_INDEX_SYNC_MODE`: How to handle index mismatches at startup (`strict`, `auto`, `warn`, `additive`)
+
+Default: `status,agent_name,task_name,project,report_type,references:object,technologies:array`
+
+See [Environment Variables](#environment-variables) section for details.
 
 **Performance Note:** Using indexed fields in filters significantly improves query performance, especially with large datasets.
 
@@ -96,10 +114,12 @@ store_context(
     text="Implement user authentication",
     metadata={
         "status": "active",           # Indexed - fast filtering
-        "priority": 8,                # Indexed - range queries
-        "agent_name": "planner",      # Indexed - agent identification
+        "agent_name": "developer",    # Indexed - agent identification
         "task_name": "auth-impl",     # Indexed - task tracking
-        "completed": False,           # Indexed - completion state
+        "project": "backend-api",     # Indexed - project filtering
+        "report_type": "implementation",  # Indexed - report categorization
+        "technologies": ["python", "fastapi"],  # GIN indexed in PostgreSQL
+        "references": {"context_ids": [100, 101]},  # GIN indexed in PostgreSQL
         "assignee": "alice@example.com",  # Not indexed but still queryable
         "due_date": "2025-10-20"          # Not indexed but still queryable
     }
@@ -1038,14 +1058,27 @@ print(result["stats"])
 
 #### 1. Use Indexed Fields When Possible
 
-Indexed fields (`status`, `priority`, `agent_name`, `task_name`, `completed`) filter significantly faster:
+Default indexed fields (`status`, `agent_name`, `task_name`, `project`, `report_type`) filter significantly faster:
 
 ```python
 # Fast - uses indexed field
 {"key": "status", "operator": "eq", "value": "active"}
 
+# Fast - uses indexed field
+{"key": "project", "operator": "eq", "value": "my-app"}
+
 # Slower - non-indexed field
 {"key": "custom_field", "operator": "eq", "value": "value"}
+```
+
+For array/object fields (`technologies`, `references`), PostgreSQL provides efficient GIN-indexed containment queries:
+
+```python
+# Fast on PostgreSQL (GIN index) - find entries with specific technology
+{"key": "technologies", "operator": "array_contains", "value": "python"}
+
+# Slower on SQLite - requires full scan (no GIN support)
+{"key": "technologies", "operator": "array_contains", "value": "python"}
 ```
 
 #### 2. Filter on Thread ID First
@@ -1231,21 +1264,24 @@ metadata_filters=[
 Design your metadata schema to leverage indexed fields:
 
 ```python
-# Good - uses indexed fields
+# Good - uses default indexed fields
 metadata={
-    "status": "active",          # Indexed
-    "priority": 5,               # Indexed
-    "agent_name": "processor",   # Indexed
-    "task_name": "data-export",  # Indexed
-    "completed": False           # Indexed
+    "status": "active",          # Indexed (B-tree)
+    "agent_name": "processor",   # Indexed (B-tree)
+    "task_name": "data-export",  # Indexed (B-tree)
+    "project": "backend-api",    # Indexed (B-tree)
+    "report_type": "implementation",  # Indexed (B-tree)
+    "technologies": ["python"],  # GIN indexed in PostgreSQL
 }
 
 # Avoid - custom fields for frequently queried data
 metadata={
     "my_custom_status": "active",  # Not indexed
-    "my_priority_level": 5         # Not indexed
+    "my_priority_level": 5         # Not indexed (add via METADATA_INDEXED_FIELDS if needed)
 }
 ```
+
+**Tip:** If you need to index custom fields (like `priority` or `completed`), configure `METADATA_INDEXED_FIELDS` environment variable.
 
 ### 2. Choose the Right Filtering Method
 
@@ -1559,6 +1595,65 @@ stalled = await search_context(
    # Valid - alphanumeric, dots, underscores, hyphens only
    {"key": "status_field", "operator": "eq", "value": "active"}
    ```
+
+## Environment Variables
+
+### METADATA_INDEXED_FIELDS
+
+Configure which metadata fields are indexed for faster filtering.
+
+- **Type**: String (comma-separated list)
+- **Default**: `status,agent_name,task_name,project,report_type,references:object,technologies:array`
+- **Format**: `field1,field2:type,field3:type`
+
+**Supported Type Hints:**
+- `string` (default): Standard string index
+- `integer`: Cast to integer for numeric comparisons
+- `boolean`: Cast to boolean
+- `float`: Cast to numeric for decimal comparisons
+- `array`: Array field (PostgreSQL GIN only, skipped in SQLite)
+- `object`: Nested object field (PostgreSQL GIN only, skipped in SQLite)
+
+**Examples:**
+
+```bash
+# Default indexed fields
+METADATA_INDEXED_FIELDS=status,agent_name,task_name,project,report_type,references:object,technologies:array
+
+# Add priority with integer type hint for range queries
+METADATA_INDEXED_FIELDS=status,agent_name,task_name,project,report_type,priority:integer
+
+# Minimal indexing for simple use cases
+METADATA_INDEXED_FIELDS=status,agent_name
+```
+
+### METADATA_INDEX_SYNC_MODE
+
+Control how the server handles index mismatches at startup.
+
+- **Type**: String (enum)
+- **Default**: `additive`
+- **Options**: `strict`, `auto`, `warn`, `additive`
+
+| Mode | Missing Indexes | Extra Indexes | Behavior |
+|------|-----------------|---------------|----------|
+| `strict` | Fail startup | Fail startup | Requires exact match - use for production safety |
+| `auto` | Create | Drop | Full synchronization - may drop indexes |
+| `warn` | Log warning | Log warning | Continue startup with warnings |
+| `additive` | Create | Keep (log info) | Add missing, never drop - safest for upgrades |
+
+**Examples:**
+
+```bash
+# Default: Add missing indexes, keep existing ones
+METADATA_INDEX_SYNC_MODE=additive
+
+# Production: Fail if indexes don't match configuration
+METADATA_INDEX_SYNC_MODE=strict
+
+# Automatic cleanup: Sync indexes exactly to configuration
+METADATA_INDEX_SYNC_MODE=auto
+```
 
 ## Additional Resources
 

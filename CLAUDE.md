@@ -185,7 +185,8 @@ Performance optimizations:
 - WAL mode for better concurrency
 - Memory-mapped I/O (256MB)
 - Compound index on (thread_id, source) for common queries
-- Indexed metadata fields for optimal filtering: `status`, `priority`, `agent_name`, `task_name`, `completed`
+- Indexed metadata fields for optimal filtering: `status`, `agent_name`, `task_name`, `project`, `report_type`
+- Array/object fields (`technologies`, `references`) use PostgreSQL GIN index (not indexed in SQLite)
 
 ### Testing Strategy
 
@@ -483,6 +484,16 @@ Configuration via `.env` file or environment:
 - `ENABLE_HYBRID_SEARCH`: Enable hybrid search combining FTS and semantic with RRF fusion (default: false)
 - `HYBRID_RRF_K`: RRF smoothing constant for result fusion (default: 60)
 
+**Metadata Indexing Settings:**
+- `METADATA_INDEXED_FIELDS`: Comma-separated list of metadata fields to index with optional type hints.
+  Format: `field:type,field2:type2` where type is `string` (default), `integer`, `boolean`, `float`, `array`, or `object`.
+  Default: `status,agent_name,task_name,project,report_type,references:object,technologies:array`
+- `METADATA_INDEX_SYNC_MODE`: How to handle index mismatches on startup. Options:
+  - `strict`: Fail startup if indexes don't match configuration
+  - `auto`: Automatically add missing and drop extra indexes
+  - `warn`: Log warnings about mismatches but continue
+  - `additive` (default): Only add missing indexes, never drop existing ones
+
 **PostgreSQL Settings** (only when STORAGE_BACKEND=postgresql):
 - `POSTGRESQL_CONNECTION_STRING`: Full PostgreSQL connection string (if provided, overrides individual host/port/user/password/database settings)
 - `POSTGRESQL_HOST`: PostgreSQL server host (default: localhost)
@@ -607,6 +618,34 @@ All backends implement the `StorageBackend` protocol with these required methods
 3. **Easy Testing**: Switch to in-memory database for tests via backend factory
 4. **Future-Proof**: Add new backends by implementing the protocol
 5. **Type-Safe**: Protocol ensures all backends provide required functionality
+
+### Metadata Field Indexing by Backend
+
+The server supports configurable metadata field indexing via `METADATA_INDEXED_FIELDS` environment variable.
+Different backends have different capabilities for indexing JSON/JSONB fields:
+
+| Field | Type | SQLite | PostgreSQL | Notes |
+|-------|------|--------|------------|-------|
+| `status` | string | B-tree (json_extract) | B-tree (->>) | String scalar |
+| `agent_name` | string | B-tree (json_extract) | B-tree (->>) | String scalar |
+| `task_name` | string | B-tree (json_extract) | B-tree (->>) | String scalar |
+| `project` | string | B-tree (json_extract) | B-tree (->>) | String scalar |
+| `report_type` | string | B-tree (json_extract) | B-tree (->>) | String scalar |
+| `references` | object | **NOT INDEXED** | GIN (containment) | Nested object |
+| `technologies` | array | **NOT INDEXED** | GIN (containment) | Array field |
+
+**Important:** Array and nested object fields (`technologies`, `references`) cannot be efficiently indexed in SQLite.
+Queries filtering on these fields will require full table scans in SQLite.
+For high-performance array/object queries, use PostgreSQL which supports GIN indexes for JSONB containment operations.
+
+**PostgreSQL GIN query examples:**
+```sql
+-- Find entries with specific technology
+SELECT * FROM context_entries WHERE metadata @> '{"technologies": ["python"]}';
+
+-- Find entries referencing specific context ID
+SELECT * FROM context_entries WHERE metadata @> '{"references": {"context_ids": [2322]}}';
+```
 
 ## Docker Deployment
 

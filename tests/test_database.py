@@ -67,14 +67,13 @@ class TestDatabaseInitialization:
                 'idx_tags_tag',
                 'idx_thread_id',
                 'idx_thread_source',
-                # Metadata filtering indexes
+                # Metadata filtering indexes (configurable via METADATA_INDEXED_FIELDS)
                 'idx_metadata_status',
-                'idx_metadata_priority',
                 'idx_metadata_agent_name',
                 'idx_metadata_task_name',
+                'idx_metadata_project',
+                'idx_metadata_report_type',
                 'idx_thread_metadata_status',
-                'idx_thread_metadata_priority',
-                'idx_metadata_completed',
             }
             assert set(indexes) == expected_indexes
 
