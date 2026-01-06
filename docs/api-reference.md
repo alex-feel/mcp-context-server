@@ -31,12 +31,16 @@ The metadata field accepts any JSON-serializable structure, making the server ad
 - **Debugging Context**: Save `error_type`, `stack_trace`, `environment`, `version`
 - **Analytics**: Record `user_id`, `session_id`, `event_type`, `timestamp`
 
-**Performance Note:** The following metadata fields are indexed for faster filtering:
-- `status`: State information (e.g., 'pending', 'active', 'completed')
-- `priority`: Numeric value for range queries
+**Performance Note:** The following metadata fields are indexed by default for faster filtering:
+- `status`: State information (e.g., 'pending', 'active', 'done')
 - `agent_name`: Specific agent identifier
 - `task_name`: Task title for string searches
-- `completed`: Boolean flag for completion state
+- `project`: Project name for filtering
+- `report_type`: Report categorization (e.g., 'research', 'implementation')
+- `references`: Cross-references object (PostgreSQL GIN index only)
+- `technologies`: Technology stack array (PostgreSQL GIN index only)
+
+Indexed fields are configurable via `METADATA_INDEXED_FIELDS` environment variable. See [Metadata Guide](metadata-addition-updating-and-filtering.md#environment-variables) for details.
 
 **Returns:** Dictionary with success status and context_id
 

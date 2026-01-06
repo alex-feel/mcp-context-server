@@ -132,6 +132,10 @@ For more details on environment variable expansion, see: https://docs.claude.com
 - **EMBEDDING_MODEL**: Embedding model name for semantic search - defaults to embeddinggemma:latest
 - **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 768. **Note**: Changing this after initial setup requires database migration (see [Semantic Search Guide](docs/semantic-search.md#changing-embedding-dimensions))
 
+**Metadata Indexing Settings:**
+- **METADATA_INDEXED_FIELDS**: Comma-separated list of metadata fields to index with optional type hints - defaults to `status,agent_name,task_name,project,report_type,references:object,technologies:array`. Type hints: `string` (default), `integer`, `boolean`, `float`, `array`, `object`. Array/object types use PostgreSQL GIN indexes and are skipped in SQLite.
+- **METADATA_INDEX_SYNC_MODE**: How to handle index mismatches at startup - defaults to `additive`. Options: `strict` (fail if mismatch), `auto` (sync - add missing, drop extra), `warn` (log warnings), `additive` (add missing, never drop)
+
 **PostgreSQL Settings** (only when STORAGE_BACKEND=postgresql):
 - **POSTGRESQL_HOST**: PostgreSQL server host - defaults to localhost
 - **POSTGRESQL_PORT**: PostgreSQL server port - defaults to 5432

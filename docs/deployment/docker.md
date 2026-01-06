@@ -197,6 +197,15 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `POSTGRESQL_PASSWORD` | `postgres` | PostgreSQL password |
 | `POSTGRESQL_DATABASE` | `mcp_context` | PostgreSQL database name |
 
+**Metadata Indexing Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `METADATA_INDEXED_FIELDS` | `status,agent_name,...` | Comma-separated fields to index with optional type hints |
+| `METADATA_INDEX_SYNC_MODE` | `additive` | Index sync mode: `strict`, `auto`, `warn`, `additive` |
+
+See the [Metadata Guide](../metadata-addition-updating-and-filtering.md#environment-variables) for full details on configurable metadata indexing.
+
 ### External PostgreSQL Configuration
 
 For external PostgreSQL (Supabase, corporate databases), copy `deploy/docker/.env.example` to `deploy/docker/.env` and configure:
