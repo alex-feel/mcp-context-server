@@ -40,16 +40,12 @@ CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_
 
 -- Functional indexes for common metadata patterns (improves metadata filtering performance)
 -- These indexes extract specific JSON fields for faster querying
+-- Note: Index configuration is managed via METADATA_INDEXED_FIELDS environment variable
 
 -- Status-based filtering (most common use case)
 CREATE INDEX IF NOT EXISTS idx_metadata_status
 ON context_entries(json_extract(metadata, '$.status'))
 WHERE json_extract(metadata, '$.status') IS NOT NULL;
-
--- Priority-based filtering (numeric comparisons)
-CREATE INDEX IF NOT EXISTS idx_metadata_priority
-ON context_entries(json_extract(metadata, '$.priority'))
-WHERE json_extract(metadata, '$.priority') IS NOT NULL;
 
 -- Agent name filtering (identify specific agents)
 CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
@@ -61,14 +57,21 @@ CREATE INDEX IF NOT EXISTS idx_metadata_task_name
 ON context_entries(json_extract(metadata, '$.task_name'))
 WHERE json_extract(metadata, '$.task_name') IS NOT NULL;
 
+-- Project filtering (filter by project name)
+CREATE INDEX IF NOT EXISTS idx_metadata_project
+ON context_entries(json_extract(metadata, '$.project'))
+WHERE json_extract(metadata, '$.project') IS NOT NULL;
+
+-- Report type filtering (filter by report type)
+CREATE INDEX IF NOT EXISTS idx_metadata_report_type
+ON context_entries(json_extract(metadata, '$.report_type'))
+WHERE json_extract(metadata, '$.report_type') IS NOT NULL;
+
 -- Composite indexes for common filter combinations
 CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
 ON context_entries(thread_id, json_extract(metadata, '$.status'));
 
-CREATE INDEX IF NOT EXISTS idx_thread_metadata_priority
-ON context_entries(thread_id, json_extract(metadata, '$.priority'));
-
--- Boolean flag indexes
-CREATE INDEX IF NOT EXISTS idx_metadata_completed
-ON context_entries(json_extract(metadata, '$.completed'))
-WHERE json_extract(metadata, '$.completed') IS NOT NULL;
+-- NOTE: 'references' (object) and 'technologies' (array) are NOT indexed in SQLite
+-- Array/object fields cannot be efficiently indexed with expression indexes in SQLite
+-- Queries on these fields will use full table scan with json_each()
+-- For high-performance queries on these fields, use PostgreSQL with GIN index

@@ -64,17 +64,12 @@ CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_
 
 -- Functional indexes for common metadata patterns using JSONB operators
 -- These indexes extract specific JSON fields for faster querying
+-- Note: Index configuration is managed via METADATA_INDEXED_FIELDS environment variable
 
 -- Status-based filtering (most common use case)
 CREATE INDEX IF NOT EXISTS idx_metadata_status
 ON context_entries((metadata->>'status'))
 WHERE metadata->>'status' IS NOT NULL;
-
--- Priority-based filtering (numeric comparisons)
--- Using expression index for numeric extraction
-CREATE INDEX IF NOT EXISTS idx_metadata_priority
-ON context_entries(((metadata->>'priority')::INTEGER))
-WHERE metadata->>'priority' IS NOT NULL;
 
 -- Agent name filtering (identify specific agents)
 CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
@@ -86,20 +81,24 @@ CREATE INDEX IF NOT EXISTS idx_metadata_task_name
 ON context_entries((metadata->>'task_name'))
 WHERE metadata->>'task_name' IS NOT NULL;
 
+-- Project filtering (filter by project name)
+CREATE INDEX IF NOT EXISTS idx_metadata_project
+ON context_entries((metadata->>'project'))
+WHERE metadata->>'project' IS NOT NULL;
+
+-- Report type filtering (filter by report type)
+CREATE INDEX IF NOT EXISTS idx_metadata_report_type
+ON context_entries((metadata->>'report_type'))
+WHERE metadata->>'report_type' IS NOT NULL;
+
 -- Composite indexes for common filter combinations
 CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
 ON context_entries(thread_id, (metadata->>'status'));
 
-CREATE INDEX IF NOT EXISTS idx_thread_metadata_priority
-ON context_entries(thread_id, ((metadata->>'priority')::INTEGER));
-
--- Boolean flag indexes
-CREATE INDEX IF NOT EXISTS idx_metadata_completed
-ON context_entries(((metadata->>'completed')::BOOLEAN))
-WHERE metadata->>'completed' IS NOT NULL;
-
 -- GIN index for full JSONB search (enables containment queries)
 -- This allows efficient queries like: metadata @> '{"key": "value"}'
+-- NOTE: 'technologies' (array) and 'references' (object) fields use this GIN index
+-- for containment queries like: metadata @> '{"technologies": ["python"]}'
 CREATE INDEX IF NOT EXISTS idx_metadata_gin
 ON context_entries USING GIN (metadata jsonb_path_ops);
 

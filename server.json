@@ -375,6 +375,20 @@
           "name": "HYBRID_RRF_K"
         },
         {
+          "description": "Comma-separated list of metadata fields to index (field:type format)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "METADATA_INDEXED_FIELDS"
+        },
+        {
+          "description": "Index sync mode: strict (fail), auto (sync), warn (log), additive (default, add missing only)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "METADATA_INDEX_SYNC_MODE"
+        },
+        {
           "description": "Transport mode: stdio for local, http for Docker/remote",
           "isRequired": false,
           "format": "string",
@@ -853,6 +867,20 @@
           "format": "number",
           "isSecret": false,
           "name": "HYBRID_RRF_K"
+        },
+        {
+          "description": "Comma-separated list of metadata fields to index (field:type format)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "METADATA_INDEXED_FIELDS"
+        },
+        {
+          "description": "Index sync mode: strict (fail), auto (sync), warn (log), additive (default, add missing only)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "METADATA_INDEX_SYNC_MODE"
         },
         {
           "description": "Transport mode: stdio for local, http for Docker/remote",
