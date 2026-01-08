@@ -73,7 +73,6 @@ class TestDatabaseInitialization:
                 'idx_metadata_task_name',
                 'idx_metadata_project',
                 'idx_metadata_report_type',
-                'idx_thread_metadata_status',
             }
             assert set(indexes) == expected_indexes
 

@@ -319,6 +319,13 @@
           "name": "POSTGRESQL_SSL_MODE"
         },
         {
+          "description": "PostgreSQL schema name for table and index operations (default: public)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_SCHEMA"
+        },
+        {
           "description": "Enable semantic search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -811,6 +818,13 @@
           "format": "string",
           "isSecret": false,
           "name": "POSTGRESQL_SSL_MODE"
+        },
+        {
+          "description": "PostgreSQL schema name for table and index operations (default: public)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_SCHEMA"
         },
         {
           "description": "Enable semantic search functionality",

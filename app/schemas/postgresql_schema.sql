@@ -91,10 +91,6 @@ CREATE INDEX IF NOT EXISTS idx_metadata_report_type
 ON context_entries((metadata->>'report_type'))
 WHERE metadata->>'report_type' IS NOT NULL;
 
--- Composite indexes for common filter combinations
-CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
-ON context_entries(thread_id, (metadata->>'status'));
-
 -- GIN index for full JSONB search (enables containment queries)
 -- This allows efficient queries like: metadata @> '{"key": "value"}'
 -- NOTE: 'technologies' (array) and 'references' (object) fields use this GIN index

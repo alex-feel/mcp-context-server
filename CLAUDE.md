@@ -506,6 +506,7 @@ Configuration via `.env` file or environment:
 - `POSTGRESQL_POOL_TIMEOUT_S`: Pool connection timeout (default: 10.0)
 - `POSTGRESQL_COMMAND_TIMEOUT_S`: Command execution timeout (default: 60.0)
 - `POSTGRESQL_SSL_MODE`: SSL mode - disable, allow, prefer, require, verify-ca, verify-full (default: prefer)
+- `POSTGRESQL_SCHEMA`: PostgreSQL schema name for table and index operations (default: public). Required for Supabase or multi-schema environments where `current_schema()` may not return 'public'.
 
 Additional tuning parameters (see `app/settings.py` for full list):
 - Database connection pool settings

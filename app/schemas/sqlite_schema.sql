@@ -67,10 +67,6 @@ CREATE INDEX IF NOT EXISTS idx_metadata_report_type
 ON context_entries(json_extract(metadata, '$.report_type'))
 WHERE json_extract(metadata, '$.report_type') IS NOT NULL;
 
--- Composite indexes for common filter combinations
-CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
-ON context_entries(thread_id, json_extract(metadata, '$.status'));
-
 -- NOTE: 'references' (object) and 'technologies' (array) are NOT indexed in SQLite
 -- Array/object fields cannot be efficiently indexed with expression indexes in SQLite
 -- Queries on these fields will use full table scan with json_each()

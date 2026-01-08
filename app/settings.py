@@ -151,6 +151,13 @@ class StorageSettings(BaseSettings):
         alias='POSTGRESQL_SSL_MODE',
     )
 
+    # PostgreSQL schema setting
+    postgresql_schema: str = Field(
+        default='public',
+        alias='POSTGRESQL_SCHEMA',
+        description='PostgreSQL schema name for table and index operations',
+    )
+
     # Default metadata fields for indexing (based on context-preservation-protocol requirements)
     metadata_indexed_fields_raw: str = Field(
         default='status,agent_name,task_name,project,report_type,references:object,technologies:array',
