@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.16.1](https://github.com/alex-feel/mcp-context-server/compare/v0.16.0...v0.16.1) (2026-01-09)
+
+
+### Bug Fixes
+
+* add POSTGRESQL_SCHEMA setting and refactor metadata index management ([772f3aa](https://github.com/alex-feel/mcp-context-server/commit/772f3aa6c7d31945e69fd3ed31ddc69ae7da1454))
+* improve error handling and add timeout/retry logic ([319e08f](https://github.com/alex-feel/mcp-context-server/commit/319e08fdca103e2e835c9318984c10e931db6e75))
+* replace hardcoded public schema with POSTGRESQL_SCHEMA setting ([3e6511f](https://github.com/alex-feel/mcp-context-server/commit/3e6511fc927ff9c0c7c55480c4841cd6b31eddfb))
+
 ## [0.16.0](https://github.com/alex-feel/mcp-context-server/compare/v0.15.1...v0.16.0) (2026-01-06)
 
 
