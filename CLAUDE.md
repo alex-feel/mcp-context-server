@@ -479,6 +479,9 @@ Configuration via `.env` file or environment:
 - `OLLAMA_HOST`: Ollama API host URL (default: http://localhost:11434)
 - `EMBEDDING_MODEL`: Embedding model name (default: embeddinggemma:latest)
 - `EMBEDDING_DIM`: Embedding vector dimensions (default: 768)
+- `EMBEDDING_TIMEOUT_S`: Timeout in seconds for embedding generation API calls (default: 30.0)
+- `EMBEDDING_RETRY_MAX_ATTEMPTS`: Maximum number of retry attempts for embedding generation (default: 3)
+- `EMBEDDING_RETRY_BASE_DELAY_S`: Base delay in seconds between retry attempts with exponential backoff (default: 1.0)
 
 **Hybrid Search Settings:**
 - `ENABLE_HYBRID_SEARCH`: Enable hybrid search combining FTS and semantic with RRF fusion (default: false)

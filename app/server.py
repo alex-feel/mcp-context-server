@@ -157,6 +157,25 @@ def _reset_fts_migration_status() -> None:
     _fts_migration_status = FtsMigrationStatus()
 
 
+def format_exception_message(e: Exception) -> str:
+    """Format exception for error messages, handling empty str(e) cases.
+
+    Some Python exceptions have empty string representations, resulting in
+    uninformative error messages. This helper provides meaningful fallbacks.
+
+    Args:
+        e: The exception to format
+
+    Returns:
+        A non-empty error message string
+    """
+    msg = str(e)
+    if msg:
+        return msg
+    # Fallback for exceptions with empty __str__
+    return repr(e) or type(e).__name__ or 'Unknown error'
+
+
 def estimate_migration_time(records_count: int) -> int:
     """Estimate FTS migration time based on record count.
 
@@ -267,7 +286,7 @@ async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bo
 
     # Check EmbeddingGemma model
     try:
-        ollama_client = ollama.Client(host=settings.ollama_host)
+        ollama_client = ollama.Client(host=settings.ollama_host, timeout=5.0)
         ollama_client.show(settings.embedding_model)
         logger.debug(f'[OK] EmbeddingGemma model "{settings.embedding_model}" available')
     except Exception as e:
@@ -333,8 +352,9 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
     migration_path = Path(__file__).parent / 'migrations' / migration_filename
 
     if not migration_path.exists():
-        logger.warning(f'Semantic search migration file not found: {migration_path}')
-        return
+        error_msg = f'Semantic search migration file not found: {migration_path}'
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
         # Read migration SQL template
@@ -553,8 +573,9 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
     migration_path = Path(__file__).parent / 'migrations' / 'add_jsonb_merge_patch_postgresql.sql'
 
     if not migration_path.exists():
-        logger.warning(f'jsonb_merge_patch migration file not found: {migration_path}')
-        return
+        error_msg = f'jsonb_merge_patch migration file not found: {migration_path}'
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
         migration_sql = migration_path.read_text(encoding='utf-8')
@@ -596,6 +617,14 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
 
             await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
 
+            # Verify function was actually created after migration
+            verification_result = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+            if not verification_result:
+                raise RuntimeError(
+                    'jsonb_merge_patch migration applied but function verification failed. '
+                    'Check PostgreSQL permissions and error logs.',
+                )
+
             if function_exists:
                 logger.debug('jsonb_merge_patch function already exists, verified')
             else:
@@ -635,6 +664,14 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
 
                 await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
 
+                # Verify function was actually created after migration
+                verification_result = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+                if not verification_result:
+                    raise RuntimeError(
+                        'jsonb_merge_patch migration applied but function verification failed. '
+                        'Check PostgreSQL permissions and error logs.',
+                    )
+
                 if function_exists:
                     logger.debug('jsonb_merge_patch function already exists, verified')
                 else:
@@ -643,7 +680,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                 await temp_manager.shutdown()
     except Exception as e:
         logger.error(f'Failed to apply jsonb_merge_patch migration: {e}')
-        raise RuntimeError(f'jsonb_merge_patch migration failed: {e}') from e
+        raise RuntimeError(f'jsonb_merge_patch migration failed: {format_exception_message(e)}') from e
 
 
 async def apply_function_search_path_migration(backend: StorageBackend | None = None) -> None:
@@ -678,8 +715,9 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
     migration_path = Path(__file__).parent / 'migrations' / 'fix_function_search_path_postgresql.sql'
 
     if not migration_path.exists():
-        logger.warning(f'Function search_path migration file not found: {migration_path}')
-        return
+        error_msg = f'Function search_path migration file not found: {migration_path}'
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
         migration_sql = migration_path.read_text(encoding='utf-8')
@@ -1239,8 +1277,9 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         # Read SQLite migration template (consistent with PostgreSQL approach)
         migration_path = Path(__file__).parent / 'migrations' / 'add_fts_sqlite.sql'
         if not migration_path.exists():
-            logger.warning(f'FTS migration file not found: {migration_path}')
-            return
+            error_msg = f'FTS migration file not found: {migration_path}'
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
         migration_sql = migration_path.read_text(encoding='utf-8')
 
@@ -1260,8 +1299,9 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         # Read PostgreSQL migration template
         migration_path = Path(__file__).parent / 'migrations' / 'add_fts_postgresql.sql'
         if not migration_path.exists():
-            logger.warning(f'FTS migration file not found: {migration_path}')
-            return
+            error_msg = f'FTS migration file not found: {migration_path}'
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
         migration_sql = migration_path.read_text(encoding='utf-8')
         migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts_language)
@@ -2804,7 +2844,7 @@ async def semantic_search_context(
             }
         except Exception as e:
             logger.error(f'Semantic search failed: {e}')
-            raise ToolError(f'Semantic search failed: {str(e)}') from e
+            raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
 
         # Enrich results with tags and optionally images
         for result in search_results:
@@ -2835,7 +2875,7 @@ async def semantic_search_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error in semantic search: {e}')
-        raise ToolError(f'Semantic search failed: {str(e)}') from e
+        raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
 
 
 async def fts_search_context(
@@ -3007,7 +3047,7 @@ async def fts_search_context(
             return error_response
         except Exception as e:
             logger.error(f'FTS search failed: {e}')
-            raise ToolError(f'FTS search failed: {str(e)}') from e
+            raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
 
         # Process results: parse metadata and enrich with tags
         for result in search_results:
@@ -3050,7 +3090,7 @@ async def fts_search_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error in FTS search: {e}')
-        raise ToolError(f'FTS search failed: {str(e)}') from e
+        raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
 
 
 async def hybrid_search_context(
@@ -3424,7 +3464,7 @@ async def hybrid_search_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error in hybrid search: {e}')
-        raise ToolError(f'Hybrid search failed: {str(e)}') from e
+        raise ToolError(f'Hybrid search failed: {format_exception_message(e)}') from e
 
 
 # Bulk Operation MCP Tools
@@ -3649,7 +3689,7 @@ async def store_context_batch(
         raise
     except Exception as e:
         logger.error(f'Error in batch store: {e}')
-        raise ToolError(f'Batch store failed: {str(e)}') from e
+        raise ToolError(f'Batch store failed: {format_exception_message(e)}') from e
 
 
 async def update_context_batch(
@@ -3921,7 +3961,7 @@ async def update_context_batch(
         raise
     except Exception as e:
         logger.error(f'Error in batch update: {e}')
-        raise ToolError(f'Batch update failed: {str(e)}') from e
+        raise ToolError(f'Batch update failed: {format_exception_message(e)}') from e
 
 
 async def delete_context_batch(
@@ -4021,7 +4061,7 @@ async def delete_context_batch(
         raise
     except Exception as e:
         logger.error(f'Error in batch delete: {e}')
-        raise ToolError(f'Batch delete failed: {str(e)}') from e
+        raise ToolError(f'Batch delete failed: {format_exception_message(e)}') from e
 
 
 # Main entry point
