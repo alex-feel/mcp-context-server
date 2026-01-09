@@ -209,7 +209,7 @@ async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bo
     Performs comprehensive checks for:
     - Python packages: ollama, numpy, sqlite_vec (SQLite) or pgvector (PostgreSQL)
     - Ollama service availability
-    - EmbeddingGemma model availability
+    - Embedding model availability
     - sqlite-vec extension loading (SQLite only)
 
     Args:
@@ -284,13 +284,13 @@ async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bo
         logger.warning(f'[X] Ollama service not accessible: {e}')
         return False
 
-    # Check EmbeddingGemma model
+    # Check embedding model
     try:
         ollama_client = ollama.Client(host=settings.ollama_host, timeout=5.0)
         ollama_client.show(settings.embedding_model)
-        logger.debug(f'[OK] EmbeddingGemma model "{settings.embedding_model}" available')
+        logger.debug(f'[OK] Embedding model "{settings.embedding_model}" available')
     except Exception as e:
-        logger.warning(f'[X] EmbeddingGemma model not available: {e}')
+        logger.warning(f'[X] Embedding model "{settings.embedding_model}" not available: {e}')
         logger.warning(f'  Run: ollama pull {settings.embedding_model}')
         return False
 

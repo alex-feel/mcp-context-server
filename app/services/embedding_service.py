@@ -1,5 +1,5 @@
 """
-Embedding service for semantic search using Ollama and EmbeddingGemma.
+Embedding service for semantic search using Ollama.
 
 This module provides embedding generation capabilities for semantic search,
 wrapping the Ollama API and providing async-compatible interfaces with
@@ -36,8 +36,8 @@ T = TypeVar('T')
 class EmbeddingService:
     """Service for embedding generation via Ollama.
 
-    This service handles embedding generation for semantic search using the
-    EmbeddingGemma model via Ollama. All operations are async-compatible.
+    This service handles embedding generation for semantic search using
+    the configured embedding model via Ollama. All operations are async-compatible.
 
     Features:
     - Configurable timeout for API calls
