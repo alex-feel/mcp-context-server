@@ -411,9 +411,14 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
     else:  # postgresql
 
         async def _check_existing_dimension_postgresql(conn: asyncpg.Connection) -> tuple[bool, int | None]:
+            # Use configured schema (default: 'public') instead of hardcoded value
+            # which may not match actual schema in Supabase environments
+            schema = settings.storage.postgresql_schema
             # Check if vector table exists
             row = await conn.fetchrow(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'vec_context_embeddings'",
+                'SELECT tablename FROM pg_tables WHERE schemaname = $1 AND tablename = $2',
+                schema,
+                'vec_context_embeddings',
             )
             table_exists = row is not None
 
@@ -443,10 +448,13 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
             f'Note: Changing dimensions will lose all existing embeddings.',
         )
 
-    # Template the migration SQL with configured dimension
+    # Template the migration SQL with configured dimension and schema
     migration_sql = migration_sql_template.replace(
         '{EMBEDDING_DIM}',
         str(settings.embedding_dim),
+    ).replace(
+        '{SCHEMA}',
+        settings.storage.postgresql_schema,
     )
 
     # Apply migration - backend-specific
@@ -530,14 +538,17 @@ async def _check_jsonb_merge_patch_exists(conn: asyncpg.Connection) -> bool:
     Returns:
         True if the function exists, False otherwise
     """
+    # Use configured schema (default: 'public') instead of hardcoded value
+    # which may not match actual schema in Supabase environments
+    schema = settings.storage.postgresql_schema
     result = await conn.fetchval('''
         SELECT EXISTS (
             SELECT 1 FROM pg_proc p
             JOIN pg_namespace n ON p.pronamespace = n.oid
-            WHERE n.nspname = 'public'
+            WHERE n.nspname = $1
               AND p.proname = 'jsonb_merge_patch'
         )
-    ''')
+    ''', schema)
     return bool(result)
 
 
@@ -578,7 +589,11 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
         raise RuntimeError(error_msg)
 
     try:
-        migration_sql = migration_path.read_text(encoding='utf-8')
+        migration_sql_template = migration_path.read_text(encoding='utf-8')
+
+        # Template the migration SQL with configured schema
+        schema = settings.storage.postgresql_schema
+        migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
         if backend is not None:
             # Check if function already exists before applying
@@ -720,7 +735,11 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
         raise RuntimeError(error_msg)
 
     try:
-        migration_sql = migration_path.read_text(encoding='utf-8')
+        migration_sql_template = migration_path.read_text(encoding='utf-8')
+
+        # Template the migration SQL with configured schema
+        schema = settings.storage.postgresql_schema
+        migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
         if backend is not None:
 
@@ -1577,9 +1596,15 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
         # Read schema from file
         if schema_path.exists():
-            schema_sql = schema_path.read_text(encoding='utf-8')
+            schema_sql_template = schema_path.read_text(encoding='utf-8')
         else:
             raise RuntimeError(f'Schema file not found: {schema_path}')
+
+        # Template the schema SQL with configured schema name (PostgreSQL only)
+        if backend_type == 'postgresql':
+            schema_sql = schema_sql_template.replace('{SCHEMA}', settings.storage.postgresql_schema)
+        else:
+            schema_sql = schema_sql_template
 
         # Apply schema - backend-specific approach
         if backend is not None:

@@ -367,7 +367,11 @@ class PostgreSQLBackend:
 
     async def _initialize_schema(self) -> None:
         """Initialize database schema if tables don't exist."""
-        schema_sql = load_schema(self.backend_type)
+        schema_sql_template = load_schema(self.backend_type)
+
+        # Template the schema SQL with configured schema name
+        # This replaces {SCHEMA} placeholders with the actual schema (default: 'public')
+        schema_sql = schema_sql_template.replace('{SCHEMA}', settings.storage.postgresql_schema)
 
         # Split schema into individual statements
         statements = []
