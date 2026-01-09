@@ -31,7 +31,6 @@ import asyncpg
 from fastmcp import Context
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -104,29 +103,76 @@ _repositories: RepositoryContainer | None = None
 _embedding_service: Any | None = None
 
 
-# Tool Annotations for MCP protocol hints
-# Read-only tools: do not modify environment
-READ_ONLY_ANNOTATIONS = ToolAnnotations(readOnlyHint=True)
-
-# Additive tools: create new entries (not destructive)
-ADDITIVE_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=False,
-)
-
-# Delete tools: destructive but idempotent (deleting twice is no-op)
-DELETE_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=True,
-)
-
-# Update tools: destructive and NOT idempotent (same update may have different effects)
-UPDATE_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=False,
-)
+# Tool annotations with human-readable titles for MCP protocol hints
+# Each tool has a title for display and behavior hints (readOnly, destructive, idempotent)
+TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
+    # Additive tools (create new entries)
+    'store_context': {
+        'title': 'Store Context',
+        'readOnlyHint': False,
+        'destructiveHint': False,
+    },
+    'store_context_batch': {
+        'title': 'Store Context (Batch)',
+        'readOnlyHint': False,
+        'destructiveHint': False,
+    },
+    # Read-only tools (no modifications)
+    'search_context': {
+        'title': 'Search Context',
+        'readOnlyHint': True,
+    },
+    'get_context_by_ids': {
+        'title': 'Get Context by IDs',
+        'readOnlyHint': True,
+    },
+    'list_threads': {
+        'title': 'List Threads',
+        'readOnlyHint': True,
+    },
+    'get_statistics': {
+        'title': 'Get Statistics',
+        'readOnlyHint': True,
+    },
+    'semantic_search_context': {
+        'title': 'Semantic Context Search',
+        'readOnlyHint': True,
+    },
+    'fts_search_context': {
+        'title': 'Full-Text Context Search',
+        'readOnlyHint': True,
+    },
+    'hybrid_search_context': {
+        'title': 'Hybrid Context Search',
+        'readOnlyHint': True,
+    },
+    # Update tools (destructive, not idempotent)
+    'update_context': {
+        'title': 'Update Context',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': False,
+    },
+    'update_context_batch': {
+        'title': 'Update Context (Batch)',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': False,
+    },
+    # Delete tools (destructive, idempotent)
+    'delete_context': {
+        'title': 'Delete Context',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': True,
+    },
+    'delete_context_batch': {
+        'title': 'Delete Context (Batch)',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': True,
+    },
+}
 
 
 @dataclass
@@ -1369,14 +1415,12 @@ def _is_tool_disabled(tool_name: str) -> bool:
 def _register_tool(
     func: Callable[..., Any],
     name: str | None = None,
-    annotations: ToolAnnotations | None = None,
 ) -> bool:
     """Register a tool only if it's not in the disabled list.
 
     Args:
         func: The tool function to register
         name: Optional explicit tool name (defaults to function name)
-        annotations: Optional ToolAnnotations for hints
 
     Returns:
         True if tool was registered, False if disabled
@@ -1387,11 +1431,9 @@ def _register_tool(
         logger.info(f'[!] {tool_name} not registered (in DISABLED_TOOLS)')
         return False
 
-    # Register with annotations if provided
-    if annotations is not None:
-        mcp.tool(annotations=annotations)(func)
-    else:
-        mcp.tool()(func)
+    # Get annotations from centralized mapping
+    annotations = TOOL_ANNOTATIONS.get(tool_name, {})
+    mcp.tool(annotations=annotations)(func)
 
     logger.info(f'[OK] {tool_name} registered')
     return True
@@ -1433,24 +1475,24 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         # 7) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
-        # 8) Register core tools with appropriate annotations
+        # 8) Register core tools (annotations from TOOL_ANNOTATIONS)
         # Additive tools (create new entries)
-        _register_tool(store_context, annotations=ADDITIVE_ANNOTATIONS)
-        _register_tool(store_context_batch, annotations=ADDITIVE_ANNOTATIONS)
+        _register_tool(store_context)
+        _register_tool(store_context_batch)
 
         # Read-only tools (no modifications)
-        _register_tool(search_context, annotations=READ_ONLY_ANNOTATIONS)
-        _register_tool(get_context_by_ids, annotations=READ_ONLY_ANNOTATIONS)
-        _register_tool(list_threads, annotations=READ_ONLY_ANNOTATIONS)
-        _register_tool(get_statistics, annotations=READ_ONLY_ANNOTATIONS)
+        _register_tool(search_context)
+        _register_tool(get_context_by_ids)
+        _register_tool(list_threads)
+        _register_tool(get_statistics)
 
         # Update tools (destructive, not idempotent)
-        _register_tool(update_context, annotations=UPDATE_ANNOTATIONS)
-        _register_tool(update_context_batch, annotations=UPDATE_ANNOTATIONS)
+        _register_tool(update_context)
+        _register_tool(update_context_batch)
 
         # Delete tools (destructive, idempotent)
-        _register_tool(delete_context, annotations=DELETE_ANNOTATIONS)
-        _register_tool(delete_context_batch, annotations=DELETE_ANNOTATIONS)
+        _register_tool(delete_context)
+        _register_tool(delete_context_batch)
 
         # 9) Initialize semantic search if enabled
         if settings.enable_semantic_search:
@@ -1462,7 +1504,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
                     _embedding_service = EmbeddingService()
                     # Register the semantic search tool dynamically (DISABLED_TOOLS takes priority)
-                    _register_tool(semantic_search_context, annotations=READ_ONLY_ANNOTATIONS)
+                    _register_tool(semantic_search_context)
                     logger.info('[OK] Semantic search enabled and available')
                 except Exception as e:
                     logger.error(f'Failed to initialize embedding service: {e}')
@@ -1485,7 +1527,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         if settings.enable_fts:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
             # The tool itself checks migration status and returns informative response
-            _register_tool(fts_search_context, annotations=READ_ONLY_ANNOTATIONS)
+            _register_tool(fts_search_context)
 
             # Check if FTS is available and log status
             fts_available = await _repositories.fts.is_available()
@@ -1504,7 +1546,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
             if semantic_available_for_hybrid or fts_available_for_hybrid:
                 # DISABLED_TOOLS takes priority over ENABLE_HYBRID_SEARCH
-                _register_tool(hybrid_search_context, annotations=READ_ONLY_ANNOTATIONS)
+                _register_tool(hybrid_search_context)
                 modes_available = []
                 if fts_available_for_hybrid:
                     modes_available.append('fts')
