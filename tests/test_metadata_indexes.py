@@ -307,7 +307,7 @@ class TestIndexDetection:
         """Test detection of existing metadata indexes in SQLite."""
         from app.server import _get_existing_metadata_indexes
 
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_schema)
+        existing, orphan_compound = await _get_existing_metadata_indexes(sqlite_backend_with_schema)
 
         # Should detect the indexes from sqlite_schema.sql
         assert 'status' in existing
@@ -315,24 +315,29 @@ class TestIndexDetection:
         assert 'task_name' in existing
         assert 'project' in existing
         assert 'report_type' in existing
+        # No orphan compound indexes in fresh schema
+        assert orphan_compound == set()
 
     @pytest.mark.asyncio
-    async def test_get_existing_metadata_indexes_excludes_composites(
+    async def test_get_existing_metadata_indexes_detects_compound_as_orphan(
         self, sqlite_backend_with_schema: StorageBackend,
     ) -> None:
-        """Test that composite indexes are excluded from detection."""
+        """Test that compound indexes (idx_thread_metadata_*) are detected as orphans."""
         from app.server import _get_existing_metadata_indexes
 
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_schema)
+        existing, orphan_compound = await _get_existing_metadata_indexes(sqlite_backend_with_schema)
 
-        # idx_thread_metadata_status is a composite index and should NOT be in results
-        assert 'thread_metadata_status' not in existing
-        # But 'status' should be there (from idx_metadata_status)
+        # Simple indexes should be detected
         assert 'status' in existing
+        assert 'agent_name' in existing
+
+        # No compound indexes in fresh schema
+        # Any idx_thread_metadata_* would be detected as orphan
+        assert orphan_compound == set()
 
     @pytest.mark.asyncio
     async def test_get_existing_metadata_indexes_empty_database(self, tmp_path: Path) -> None:
-        """Test detection returns empty set for database without metadata indexes."""
+        """Test detection returns empty sets for database without metadata indexes."""
         from app.backends import create_backend
         from app.server import _get_existing_metadata_indexes
 
@@ -355,8 +360,53 @@ class TestIndexDetection:
 
         await backend.execute_write(create_table)
 
-        existing = await _get_existing_metadata_indexes(backend)
+        existing, orphan_compound = await _get_existing_metadata_indexes(backend)
         assert existing == set()
+        assert orphan_compound == set()
+
+        await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_compound_indexes_detected_as_orphans(self, tmp_path: Path) -> None:
+        """Test that idx_thread_metadata_* indexes are detected as orphans."""
+        from app.backends import create_backend
+        from app.server import _get_existing_metadata_indexes
+
+        db_path = tmp_path / 'test_compound_orphan.db'
+        backend = create_backend(backend_type='sqlite', db_path=db_path)
+        await backend.initialize()
+
+        # Create table and a compound index manually (simulating old schema)
+        def setup_with_compound_index(conn: sqlite3.Connection) -> None:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS context_entries (
+                    id INTEGER PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    text_content TEXT,
+                    metadata JSON
+                )
+            ''')
+            # Create simple index
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_metadata_status
+                ON context_entries(json_extract(metadata, '$.status'))
+            ''')
+            # Create compound index (should be detected as orphan)
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
+                ON context_entries(thread_id, json_extract(metadata, '$.status'))
+            ''')
+
+        await backend.execute_write(setup_with_compound_index)
+
+        existing, orphan_compound = await _get_existing_metadata_indexes(backend)
+
+        # Simple index detected
+        assert 'status' in existing
+        # Compound index detected as orphan
+        assert 'status' in orphan_compound
 
         await backend.shutdown()
 
@@ -404,14 +454,14 @@ class TestIndexCreation:
         from app.server import _get_existing_metadata_indexes
 
         # Initially no indexes
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'test_field' not in existing
 
         # Create index
         await _create_metadata_index(sqlite_backend_with_table, 'test_field', 'string')
 
         # Verify index exists
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'test_field' in existing
 
     @pytest.mark.asyncio
@@ -426,7 +476,7 @@ class TestIndexCreation:
             await _create_metadata_index(sqlite_backend_with_table, 'technologies', 'array')
 
         # Index should NOT be created
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'technologies' not in existing
 
         # Log message should explain why
@@ -444,7 +494,7 @@ class TestIndexCreation:
             await _create_metadata_index(sqlite_backend_with_table, 'references', 'object')
 
         # Index should NOT be created
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'references' not in existing
 
         # Log message should explain why
@@ -459,14 +509,14 @@ class TestIndexCreation:
 
         # Create index first
         await _create_metadata_index(sqlite_backend_with_table, 'test_field', 'string')
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'test_field' in existing
 
         # Drop index
         await _drop_metadata_index(sqlite_backend_with_table, 'test_field')
 
         # Verify index no longer exists
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'test_field' not in existing
 
     @pytest.mark.asyncio
@@ -523,21 +573,17 @@ class TestSyncModes:
         from app.server import handle_metadata_indexes
 
         # Initially no indexes
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert len(existing) == 0
 
-        with (
-            env_var('METADATA_INDEXED_FIELDS', 'status,agent_name'),
-            env_var('METADATA_INDEX_SYNC_MODE', 'additive'),
-            patch('app.server.settings') as mock_settings,
-        ):
+        with patch('app.server.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string', 'agent_name': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'additive'
 
             await handle_metadata_indexes(sqlite_backend_with_table)
 
         # Indexes should be created
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'status' in existing
         assert 'agent_name' in existing
 
@@ -552,7 +598,7 @@ class TestSyncModes:
 
         # Create an extra index that's not in config
         await _create_metadata_index(sqlite_backend_with_table, 'extra_field', 'string')
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'extra_field' in existing
 
         with patch('app.server.settings') as mock_settings:
@@ -562,7 +608,7 @@ class TestSyncModes:
             await handle_metadata_indexes(sqlite_backend_with_table)
 
         # Extra index should still exist
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'extra_field' in existing
         assert 'status' in existing
 
@@ -585,7 +631,7 @@ class TestSyncModes:
             await handle_metadata_indexes(sqlite_backend_with_table)
 
         # Extra index should be dropped, configured indexes should exist
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'extra_field' not in existing
         assert 'status' in existing
         assert 'agent_name' in existing
@@ -683,7 +729,7 @@ class TestSyncModes:
             await handle_metadata_indexes(sqlite_backend_with_table)
 
         # Only 'status' should be created (array/object skipped)
-        existing = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'status' in existing
         assert 'technologies' not in existing
         assert 'references' not in existing
@@ -733,7 +779,7 @@ class TestMetadataIndexingIntegration:
             await handle_metadata_indexes(backend)
 
         # Should still have correct indexes
-        existing = await _get_existing_metadata_indexes(backend)
+        existing, _ = await _get_existing_metadata_indexes(backend)
         assert 'status' in existing
         assert 'agent_name' in existing
 

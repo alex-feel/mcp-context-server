@@ -12,10 +12,11 @@
 -- 3. jsonb_merge_patch(jsonb, jsonb) - RFC 7396 implementation
 --
 -- Reference: CVE-2018-1058, PostgreSQL Security Best Practices
+-- NOTE: Schema is templated and replaced during migration (see server.py)
 
 -- Fix update_updated_at_column (from postgresql_schema.sql)
 -- This function always exists after schema initialization
-ALTER FUNCTION public.update_updated_at_column()
+ALTER FUNCTION {SCHEMA}.update_updated_at_column()
 SET search_path = pg_catalog, pg_temp;
 
 -- Fix update_embedding_metadata_timestamp (from add_semantic_search_postgresql.sql)
@@ -26,10 +27,10 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
-        WHERE n.nspname = 'public'
+        WHERE n.nspname = '{SCHEMA}'
         AND p.proname = 'update_embedding_metadata_timestamp'
     ) THEN
-        ALTER FUNCTION public.update_embedding_metadata_timestamp()
+        ALTER FUNCTION {SCHEMA}.update_embedding_metadata_timestamp()
         SET search_path = pg_catalog, pg_temp;
     END IF;
 END $$;
@@ -42,10 +43,10 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
-        WHERE n.nspname = 'public'
+        WHERE n.nspname = '{SCHEMA}'
         AND p.proname = 'jsonb_merge_patch'
     ) THEN
-        ALTER FUNCTION public.jsonb_merge_patch(jsonb, jsonb)
+        ALTER FUNCTION {SCHEMA}.jsonb_merge_patch(jsonb, jsonb)
         SET search_path = pg_catalog, pg_temp;
     END IF;
 END $$;

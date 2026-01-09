@@ -151,6 +151,13 @@ class StorageSettings(BaseSettings):
         alias='POSTGRESQL_SSL_MODE',
     )
 
+    # PostgreSQL schema setting
+    postgresql_schema: str = Field(
+        default='public',
+        alias='POSTGRESQL_SCHEMA',
+        description='PostgreSQL schema name for table and index operations',
+    )
+
     # Default metadata fields for indexing (based on context-preservation-protocol requirements)
     metadata_indexed_fields_raw: str = Field(
         default='status,agent_name,task_name,project,report_type,references:object,technologies:array',
@@ -235,6 +242,29 @@ class AppSettings(CommonSettings):
     ollama_host: str = Field(default='http://localhost:11434', alias='OLLAMA_HOST')
     embedding_model: str = Field(default='embeddinggemma:latest', alias='EMBEDDING_MODEL')
     embedding_dim: int = Field(default=768, alias='EMBEDDING_DIM', gt=0, le=4096)
+
+    # Embedding service timeout and retry settings
+    embedding_timeout_s: float = Field(
+        default=30.0,
+        alias='EMBEDDING_TIMEOUT_S',
+        gt=0,
+        le=300,
+        description='Timeout in seconds for embedding generation API calls',
+    )
+    embedding_retry_max_attempts: int = Field(
+        default=3,
+        alias='EMBEDDING_RETRY_MAX_ATTEMPTS',
+        ge=1,
+        le=10,
+        description='Maximum number of retry attempts for embedding generation',
+    )
+    embedding_retry_base_delay_s: float = Field(
+        default=1.0,
+        alias='EMBEDDING_RETRY_BASE_DELAY_S',
+        gt=0,
+        le=30,
+        description='Base delay in seconds between retry attempts (with exponential backoff)',
+    )
 
     # Full-text search settings
     enable_fts: bool = Field(default=False, alias='ENABLE_FTS')

@@ -319,6 +319,13 @@
           "name": "POSTGRESQL_SSL_MODE"
         },
         {
+          "description": "PostgreSQL schema name for table and index operations (default: public)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_SCHEMA"
+        },
+        {
           "description": "Enable semantic search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -345,6 +352,27 @@
           "format": "number",
           "isSecret": false,
           "name": "EMBEDDING_DIM"
+        },
+        {
+          "description": "Timeout in seconds for embedding generation API calls",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum number of retry attempts for embedding generation",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_RETRY_MAX_ATTEMPTS"
+        },
+        {
+          "description": "Base delay in seconds between retry attempts (with exponential backoff)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_RETRY_BASE_DELAY_S"
         },
         {
           "description": "Enable full-text search functionality",
@@ -813,6 +841,13 @@
           "name": "POSTGRESQL_SSL_MODE"
         },
         {
+          "description": "PostgreSQL schema name for table and index operations (default: public)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "POSTGRESQL_SCHEMA"
+        },
+        {
           "description": "Enable semantic search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -839,6 +874,27 @@
           "format": "number",
           "isSecret": false,
           "name": "EMBEDDING_DIM"
+        },
+        {
+          "description": "Timeout in seconds for embedding generation API calls",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum number of retry attempts for embedding generation",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_RETRY_MAX_ATTEMPTS"
+        },
+        {
+          "description": "Base delay in seconds between retry attempts (with exponential backoff)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_RETRY_BASE_DELAY_S"
         },
         {
           "description": "Enable full-text search functionality",

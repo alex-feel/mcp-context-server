@@ -31,7 +31,6 @@ import asyncpg
 from fastmcp import Context
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from mcp.types import ToolAnnotations
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -104,29 +103,76 @@ _repositories: RepositoryContainer | None = None
 _embedding_service: Any | None = None
 
 
-# Tool Annotations for MCP protocol hints
-# Read-only tools: do not modify environment
-READ_ONLY_ANNOTATIONS = ToolAnnotations(readOnlyHint=True)
-
-# Additive tools: create new entries (not destructive)
-ADDITIVE_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=False,
-)
-
-# Delete tools: destructive but idempotent (deleting twice is no-op)
-DELETE_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=True,
-)
-
-# Update tools: destructive and NOT idempotent (same update may have different effects)
-UPDATE_ANNOTATIONS = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=False,
-)
+# Tool annotations with human-readable titles for MCP protocol hints
+# Each tool has a title for display and behavior hints (readOnly, destructive, idempotent)
+TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
+    # Additive tools (create new entries)
+    'store_context': {
+        'title': 'Store Context',
+        'readOnlyHint': False,
+        'destructiveHint': False,
+    },
+    'store_context_batch': {
+        'title': 'Store Context (Batch)',
+        'readOnlyHint': False,
+        'destructiveHint': False,
+    },
+    # Read-only tools (no modifications)
+    'search_context': {
+        'title': 'Search Context',
+        'readOnlyHint': True,
+    },
+    'get_context_by_ids': {
+        'title': 'Get Context by IDs',
+        'readOnlyHint': True,
+    },
+    'list_threads': {
+        'title': 'List Threads',
+        'readOnlyHint': True,
+    },
+    'get_statistics': {
+        'title': 'Get Statistics',
+        'readOnlyHint': True,
+    },
+    'semantic_search_context': {
+        'title': 'Semantic Context Search',
+        'readOnlyHint': True,
+    },
+    'fts_search_context': {
+        'title': 'Full-Text Context Search',
+        'readOnlyHint': True,
+    },
+    'hybrid_search_context': {
+        'title': 'Hybrid Context Search',
+        'readOnlyHint': True,
+    },
+    # Update tools (destructive, not idempotent)
+    'update_context': {
+        'title': 'Update Context',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': False,
+    },
+    'update_context_batch': {
+        'title': 'Update Context (Batch)',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': False,
+    },
+    # Delete tools (destructive, idempotent)
+    'delete_context': {
+        'title': 'Delete Context',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': True,
+    },
+    'delete_context_batch': {
+        'title': 'Delete Context (Batch)',
+        'readOnlyHint': False,
+        'destructiveHint': True,
+        'idempotentHint': True,
+    },
+}
 
 
 @dataclass
@@ -155,6 +201,25 @@ def _reset_fts_migration_status() -> None:
     """Reset FTS migration status to default (not in progress)."""
     global _fts_migration_status
     _fts_migration_status = FtsMigrationStatus()
+
+
+def format_exception_message(e: Exception) -> str:
+    """Format exception for error messages, handling empty str(e) cases.
+
+    Some Python exceptions have empty string representations, resulting in
+    uninformative error messages. This helper provides meaningful fallbacks.
+
+    Args:
+        e: The exception to format
+
+    Returns:
+        A non-empty error message string
+    """
+    msg = str(e)
+    if msg:
+        return msg
+    # Fallback for exceptions with empty __str__
+    return repr(e) or type(e).__name__ or 'Unknown error'
 
 
 def estimate_migration_time(records_count: int) -> int:
@@ -190,7 +255,7 @@ async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bo
     Performs comprehensive checks for:
     - Python packages: ollama, numpy, sqlite_vec (SQLite) or pgvector (PostgreSQL)
     - Ollama service availability
-    - EmbeddingGemma model availability
+    - Embedding model availability
     - sqlite-vec extension loading (SQLite only)
 
     Args:
@@ -265,13 +330,13 @@ async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bo
         logger.warning(f'[X] Ollama service not accessible: {e}')
         return False
 
-    # Check EmbeddingGemma model
+    # Check embedding model
     try:
-        ollama_client = ollama.Client(host=settings.ollama_host)
+        ollama_client = ollama.Client(host=settings.ollama_host, timeout=5.0)
         ollama_client.show(settings.embedding_model)
-        logger.debug(f'[OK] EmbeddingGemma model "{settings.embedding_model}" available')
+        logger.debug(f'[OK] Embedding model "{settings.embedding_model}" available')
     except Exception as e:
-        logger.warning(f'[X] EmbeddingGemma model not available: {e}')
+        logger.warning(f'[X] Embedding model "{settings.embedding_model}" not available: {e}')
         logger.warning(f'  Run: ollama pull {settings.embedding_model}')
         return False
 
@@ -333,8 +398,9 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
     migration_path = Path(__file__).parent / 'migrations' / migration_filename
 
     if not migration_path.exists():
-        logger.warning(f'Semantic search migration file not found: {migration_path}')
-        return
+        error_msg = f'Semantic search migration file not found: {migration_path}'
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
         # Read migration SQL template
@@ -391,9 +457,14 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
     else:  # postgresql
 
         async def _check_existing_dimension_postgresql(conn: asyncpg.Connection) -> tuple[bool, int | None]:
+            # Use configured schema (default: 'public') instead of hardcoded value
+            # which may not match actual schema in Supabase environments
+            schema = settings.storage.postgresql_schema
             # Check if vector table exists
             row = await conn.fetchrow(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename = 'vec_context_embeddings'",
+                'SELECT tablename FROM pg_tables WHERE schemaname = $1 AND tablename = $2',
+                schema,
+                'vec_context_embeddings',
             )
             table_exists = row is not None
 
@@ -423,10 +494,13 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
             f'Note: Changing dimensions will lose all existing embeddings.',
         )
 
-    # Template the migration SQL with configured dimension
+    # Template the migration SQL with configured dimension and schema
     migration_sql = migration_sql_template.replace(
         '{EMBEDDING_DIM}',
         str(settings.embedding_dim),
+    ).replace(
+        '{SCHEMA}',
+        settings.storage.postgresql_schema,
     )
 
     # Apply migration - backend-specific
@@ -510,14 +584,17 @@ async def _check_jsonb_merge_patch_exists(conn: asyncpg.Connection) -> bool:
     Returns:
         True if the function exists, False otherwise
     """
+    # Use configured schema (default: 'public') instead of hardcoded value
+    # which may not match actual schema in Supabase environments
+    schema = settings.storage.postgresql_schema
     result = await conn.fetchval('''
         SELECT EXISTS (
             SELECT 1 FROM pg_proc p
             JOIN pg_namespace n ON p.pronamespace = n.oid
-            WHERE n.nspname = 'public'
+            WHERE n.nspname = $1
               AND p.proname = 'jsonb_merge_patch'
         )
-    ''')
+    ''', schema)
     return bool(result)
 
 
@@ -553,11 +630,16 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
     migration_path = Path(__file__).parent / 'migrations' / 'add_jsonb_merge_patch_postgresql.sql'
 
     if not migration_path.exists():
-        logger.warning(f'jsonb_merge_patch migration file not found: {migration_path}')
-        return
+        error_msg = f'jsonb_merge_patch migration file not found: {migration_path}'
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
-        migration_sql = migration_path.read_text(encoding='utf-8')
+        migration_sql_template = migration_path.read_text(encoding='utf-8')
+
+        # Template the migration SQL with configured schema
+        schema = settings.storage.postgresql_schema
+        migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
         if backend is not None:
             # Check if function already exists before applying
@@ -595,6 +677,14 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                         await conn.execute(stmt)
 
             await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
+
+            # Verify function was actually created after migration
+            verification_result = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+            if not verification_result:
+                raise RuntimeError(
+                    'jsonb_merge_patch migration applied but function verification failed. '
+                    'Check PostgreSQL permissions and error logs.',
+                )
 
             if function_exists:
                 logger.debug('jsonb_merge_patch function already exists, verified')
@@ -635,6 +725,14 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
 
                 await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
 
+                # Verify function was actually created after migration
+                verification_result = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+                if not verification_result:
+                    raise RuntimeError(
+                        'jsonb_merge_patch migration applied but function verification failed. '
+                        'Check PostgreSQL permissions and error logs.',
+                    )
+
                 if function_exists:
                     logger.debug('jsonb_merge_patch function already exists, verified')
                 else:
@@ -643,7 +741,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                 await temp_manager.shutdown()
     except Exception as e:
         logger.error(f'Failed to apply jsonb_merge_patch migration: {e}')
-        raise RuntimeError(f'jsonb_merge_patch migration failed: {e}') from e
+        raise RuntimeError(f'jsonb_merge_patch migration failed: {format_exception_message(e)}') from e
 
 
 async def apply_function_search_path_migration(backend: StorageBackend | None = None) -> None:
@@ -678,11 +776,16 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
     migration_path = Path(__file__).parent / 'migrations' / 'fix_function_search_path_postgresql.sql'
 
     if not migration_path.exists():
-        logger.warning(f'Function search_path migration file not found: {migration_path}')
-        return
+        error_msg = f'Function search_path migration file not found: {migration_path}'
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
     try:
-        migration_sql = migration_path.read_text(encoding='utf-8')
+        migration_sql_template = migration_path.read_text(encoding='utf-8')
+
+        # Template the migration SQL with configured schema
+        schema = settings.storage.postgresql_schema
+        migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
         if backend is not None:
 
@@ -806,54 +909,78 @@ WHERE metadata->>'{field}' IS NOT NULL;
 '''
 
 
-async def _get_existing_metadata_indexes(backend: StorageBackend) -> set[str]:
+async def _get_existing_metadata_indexes(backend: StorageBackend) -> tuple[set[str], set[str]]:
     """Query database for existing metadata field indexes.
 
     Args:
         backend: The storage backend to query.
 
     Returns:
-        Set of field names that have indexes (extracted from idx_metadata_{field} pattern).
-        Excludes composite indexes (idx_thread_metadata_*) and GIN index (idx_metadata_gin).
+        A tuple of (simple_indexes, orphan_compound_indexes):
+        - simple_indexes: Field names from idx_metadata_{field} pattern
+        - orphan_compound_indexes: Field names from idx_thread_metadata_{field} pattern
+          (ALL compound indexes are considered orphans since they are not dynamically managed)
+
+        Excludes GIN index (idx_metadata_gin).
     """
     if backend.backend_type == 'sqlite':
 
-        def _query_sqlite_indexes(conn: sqlite3.Connection) -> set[str]:
+        def _query_sqlite_indexes(conn: sqlite3.Connection) -> tuple[set[str], set[str]]:
+            # Query both idx_metadata_* and idx_thread_metadata_* patterns
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master "
-                "WHERE type='index' AND name LIKE 'idx_metadata_%' AND tbl_name='context_entries'",
+                "WHERE type='index' AND tbl_name='context_entries' "
+                "AND (name LIKE 'idx_metadata_%' OR name LIKE 'idx_thread_metadata_%')",
             )
-            indexes: set[str] = set()
+            simple_indexes: set[str] = set()
+            orphan_compound_indexes: set[str] = set()
             for row in cursor:
                 name = row[0]
-                # Extract field name: idx_metadata_status -> status
-                # Skip composite indexes like idx_thread_metadata_status
-                if name.startswith('idx_metadata_') and not name.startswith('idx_thread_metadata_'):
+                if name.startswith('idx_thread_metadata_'):
+                    # ALL compound indexes are orphans (not dynamically managed)
+                    # Extract field: idx_thread_metadata_priority -> priority
+                    field = name[20:]  # len('idx_thread_metadata_') = 20
+                    orphan_compound_indexes.add(field)
+                elif name.startswith('idx_metadata_'):
+                    # Simple index - extract field name
                     field = name[13:]  # len('idx_metadata_') = 13
                     # Skip GIN index marker (PostgreSQL only, shouldn't appear in SQLite)
                     if field != 'gin':
-                        indexes.add(field)
-            return indexes
+                        simple_indexes.add(field)
+            return simple_indexes, orphan_compound_indexes
 
         return await backend.execute_read(_query_sqlite_indexes)
 
     # postgresql
 
-    async def _query_postgresql_indexes(conn: asyncpg.Connection) -> set[str]:
+    async def _query_postgresql_indexes(conn: asyncpg.Connection) -> tuple[set[str], set[str]]:
+        # Query both patterns with schema qualification for proper isolation
+        # Use configured schema (default: 'public') instead of current_schema()
+        # which may return wrong schema in Supabase environments
+        schema = settings.storage.postgresql_schema
         rows = await conn.fetch(
             "SELECT indexname FROM pg_indexes "
-            "WHERE tablename = 'context_entries' AND indexname LIKE 'idx_metadata_%'",
+            "WHERE tablename = 'context_entries' "
+            "AND schemaname = $1 "
+            "AND (indexname LIKE 'idx_metadata_%' OR indexname LIKE 'idx_thread_metadata_%')",
+            schema,
         )
-        indexes: set[str] = set()
+        simple_indexes: set[str] = set()
+        orphan_compound_indexes: set[str] = set()
         for row in rows:
             name = row['indexname']
-            # Extract field name, skip composite and GIN indexes
-            if name.startswith('idx_metadata_') and not name.startswith('idx_thread_metadata_'):
-                field = name[13:]
+            if name.startswith('idx_thread_metadata_'):
+                # ALL compound indexes are orphans (not dynamically managed)
+                # Extract field: idx_thread_metadata_priority -> priority
+                field = name[20:]  # len('idx_thread_metadata_') = 20
+                orphan_compound_indexes.add(field)
+            elif name.startswith('idx_metadata_'):
+                # Simple index - extract field name
+                field = name[13:]  # len('idx_metadata_') = 13
                 # Skip GIN index (idx_metadata_gin)
                 if field != 'gin':
-                    indexes.add(field)
-        return indexes
+                    simple_indexes.add(field)
+        return simple_indexes, orphan_compound_indexes
 
     return await backend.execute_read(cast(Any, _query_postgresql_indexes))
 
@@ -909,17 +1036,21 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
         await backend.execute_write(cast(Any, _create_postgresql_index))
 
 
-async def _drop_metadata_index(backend: StorageBackend, field: str) -> None:
+async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compound: bool = False) -> None:
     """Drop expression index for a metadata field.
 
     Args:
         backend: Storage backend.
         field: Metadata field name.
+        is_compound: If True, drops compound index (idx_thread_metadata_{field}),
+                     otherwise drops simple index (idx_metadata_{field}).
     """
-    logger.info(f'Dropping metadata index: idx_metadata_{field}')
+    index_name = f'idx_thread_metadata_{field}' if is_compound else f'idx_metadata_{field}'
+
+    logger.info(f'Dropping metadata index: {index_name}')
 
     if backend.backend_type == 'sqlite':
-        sql = f'DROP INDEX IF EXISTS idx_metadata_{field};'
+        sql = f'DROP INDEX IF EXISTS {index_name};'
 
         def _drop_sqlite_index(conn: sqlite3.Connection) -> None:
             conn.execute(sql)
@@ -927,9 +1058,13 @@ async def _drop_metadata_index(backend: StorageBackend, field: str) -> None:
         await backend.execute_write(_drop_sqlite_index)
 
     else:  # postgresql
-        sql = f'DROP INDEX IF EXISTS idx_metadata_{field};'
-
+        # Use schema-qualified DROP to ensure correct index is dropped
+        # This handles multi-schema environments like Supabase
         async def _drop_postgresql_index(conn: asyncpg.Connection) -> None:
+            # Use configured schema for qualified drop
+            # This ensures correct schema is used in Supabase environments
+            schema = settings.storage.postgresql_schema
+            sql = f'DROP INDEX IF EXISTS {schema}.{index_name};'
             await conn.execute(sql)
 
         await backend.execute_write(cast(Any, _drop_postgresql_index))
@@ -943,7 +1078,7 @@ async def handle_metadata_indexes(backend: StorageBackend) -> None:
 
     Sync Modes:
         - strict: Fail startup if indexes don't match configuration exactly
-        - auto: Automatically add missing and drop extra indexes
+        - auto: Automatically add missing and drop extra indexes (including orphan compound indexes)
         - warn: Log warnings about mismatches but continue startup
         - additive: Only add missing indexes, never drop (default)
 
@@ -959,10 +1094,10 @@ async def handle_metadata_indexes(backend: StorageBackend) -> None:
 
     logger.debug(f'Handling metadata indexes: mode={sync_mode}, fields={list(configured_fields.keys())}')
 
-    # Get existing indexes from database
-    existing_indexes = await _get_existing_metadata_indexes(backend)
+    # Get existing indexes from database (returns tuple of simple indexes and orphan compound indexes)
+    existing_simple_indexes, orphan_compound_indexes = await _get_existing_metadata_indexes(backend)
 
-    # Calculate differences
+    # Calculate differences for simple indexes
     # For SQLite, exclude array/object fields from configured set (they can't be indexed)
     if backend_type == 'sqlite':
         configured_set = {
@@ -974,28 +1109,35 @@ async def handle_metadata_indexes(backend: StorageBackend) -> None:
             field for field, type_hint in configured_fields.items() if type_hint not in ('array', 'object')
         }
 
-    missing = configured_set - existing_indexes
-    extra = existing_indexes - configured_set
+    missing = configured_set - existing_simple_indexes
+    extra = existing_simple_indexes - configured_set
 
     # Log current state
     if missing:
         logger.info(f'Missing metadata indexes: {missing}')
     if extra:
         logger.info(f'Extra metadata indexes not in config: {extra}')
+    if orphan_compound_indexes:
+        logger.info(f'Orphan compound indexes from old schema: {orphan_compound_indexes}')
 
     # Handle based on sync mode
     if sync_mode == 'strict':
-        if missing or extra:
+        if missing or extra or orphan_compound_indexes:
             raise RuntimeError(
                 f'Metadata index mismatch (METADATA_INDEX_SYNC_MODE=strict). '
-                f'Missing: {missing or "none"}, Extra: {extra or "none"}. '
+                f'Missing: {missing or "none"}, Extra: {extra or "none"}, '
+                f'Orphan compound: {orphan_compound_indexes or "none"}. '
                 f'Update METADATA_INDEXED_FIELDS or run with different sync mode.',
             )
 
     elif sync_mode == 'auto':
-        # Drop extra indexes
+        # Drop extra simple indexes
         for field in extra:
             await _drop_metadata_index(backend, field)
+
+        # Drop orphan compound indexes (from old schema versions)
+        for field in orphan_compound_indexes:
+            await _drop_metadata_index(backend, field, is_compound=True)
 
         # Create missing indexes
         for field in missing:
@@ -1013,6 +1155,11 @@ async def handle_metadata_indexes(backend: StorageBackend) -> None:
                 f'Extra metadata indexes not in config: {extra}. '
                 f'Consider cleanup or updating METADATA_INDEXED_FIELDS.',
             )
+        if orphan_compound_indexes:
+            logger.warning(
+                f'Orphan compound indexes from old schema: {orphan_compound_indexes}. '
+                f'Use METADATA_INDEX_SYNC_MODE=auto to remove them.',
+            )
 
     elif sync_mode == 'additive':
         # Only create missing indexes, never drop
@@ -1023,6 +1170,11 @@ async def handle_metadata_indexes(backend: StorageBackend) -> None:
         if extra:
             logger.info(
                 f'Extra metadata indexes detected: {extra}. '
+                f'Use METADATA_INDEX_SYNC_MODE=auto to remove them.',
+            )
+        if orphan_compound_indexes:
+            logger.info(
+                f'Orphan compound indexes detected: {orphan_compound_indexes}. '
                 f'Use METADATA_INDEX_SYNC_MODE=auto to remove them.',
             )
 
@@ -1190,8 +1342,9 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         # Read SQLite migration template (consistent with PostgreSQL approach)
         migration_path = Path(__file__).parent / 'migrations' / 'add_fts_sqlite.sql'
         if not migration_path.exists():
-            logger.warning(f'FTS migration file not found: {migration_path}')
-            return
+            error_msg = f'FTS migration file not found: {migration_path}'
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
         migration_sql = migration_path.read_text(encoding='utf-8')
 
@@ -1211,8 +1364,9 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         # Read PostgreSQL migration template
         migration_path = Path(__file__).parent / 'migrations' / 'add_fts_postgresql.sql'
         if not migration_path.exists():
-            logger.warning(f'FTS migration file not found: {migration_path}')
-            return
+            error_msg = f'FTS migration file not found: {migration_path}'
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
         migration_sql = migration_path.read_text(encoding='utf-8')
         migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts_language)
@@ -1261,14 +1415,12 @@ def _is_tool_disabled(tool_name: str) -> bool:
 def _register_tool(
     func: Callable[..., Any],
     name: str | None = None,
-    annotations: ToolAnnotations | None = None,
 ) -> bool:
     """Register a tool only if it's not in the disabled list.
 
     Args:
         func: The tool function to register
         name: Optional explicit tool name (defaults to function name)
-        annotations: Optional ToolAnnotations for hints
 
     Returns:
         True if tool was registered, False if disabled
@@ -1279,11 +1431,9 @@ def _register_tool(
         logger.info(f'[!] {tool_name} not registered (in DISABLED_TOOLS)')
         return False
 
-    # Register with annotations if provided
-    if annotations is not None:
-        mcp.tool(annotations=annotations)(func)
-    else:
-        mcp.tool()(func)
+    # Get annotations from centralized mapping
+    annotations = TOOL_ANNOTATIONS.get(tool_name, {})
+    mcp.tool(annotations=annotations)(func)
 
     logger.info(f'[OK] {tool_name} registered')
     return True
@@ -1325,24 +1475,24 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         # 7) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
-        # 8) Register core tools with appropriate annotations
+        # 8) Register core tools (annotations from TOOL_ANNOTATIONS)
         # Additive tools (create new entries)
-        _register_tool(store_context, annotations=ADDITIVE_ANNOTATIONS)
-        _register_tool(store_context_batch, annotations=ADDITIVE_ANNOTATIONS)
+        _register_tool(store_context)
+        _register_tool(store_context_batch)
 
         # Read-only tools (no modifications)
-        _register_tool(search_context, annotations=READ_ONLY_ANNOTATIONS)
-        _register_tool(get_context_by_ids, annotations=READ_ONLY_ANNOTATIONS)
-        _register_tool(list_threads, annotations=READ_ONLY_ANNOTATIONS)
-        _register_tool(get_statistics, annotations=READ_ONLY_ANNOTATIONS)
+        _register_tool(search_context)
+        _register_tool(get_context_by_ids)
+        _register_tool(list_threads)
+        _register_tool(get_statistics)
 
         # Update tools (destructive, not idempotent)
-        _register_tool(update_context, annotations=UPDATE_ANNOTATIONS)
-        _register_tool(update_context_batch, annotations=UPDATE_ANNOTATIONS)
+        _register_tool(update_context)
+        _register_tool(update_context_batch)
 
         # Delete tools (destructive, idempotent)
-        _register_tool(delete_context, annotations=DELETE_ANNOTATIONS)
-        _register_tool(delete_context_batch, annotations=DELETE_ANNOTATIONS)
+        _register_tool(delete_context)
+        _register_tool(delete_context_batch)
 
         # 9) Initialize semantic search if enabled
         if settings.enable_semantic_search:
@@ -1354,7 +1504,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
                     _embedding_service = EmbeddingService()
                     # Register the semantic search tool dynamically (DISABLED_TOOLS takes priority)
-                    _register_tool(semantic_search_context, annotations=READ_ONLY_ANNOTATIONS)
+                    _register_tool(semantic_search_context)
                     logger.info('[OK] Semantic search enabled and available')
                 except Exception as e:
                     logger.error(f'Failed to initialize embedding service: {e}')
@@ -1377,7 +1527,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         if settings.enable_fts:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
             # The tool itself checks migration status and returns informative response
-            _register_tool(fts_search_context, annotations=READ_ONLY_ANNOTATIONS)
+            _register_tool(fts_search_context)
 
             # Check if FTS is available and log status
             fts_available = await _repositories.fts.is_available()
@@ -1396,7 +1546,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
             if semantic_available_for_hybrid or fts_available_for_hybrid:
                 # DISABLED_TOOLS takes priority over ENABLE_HYBRID_SEARCH
-                _register_tool(hybrid_search_context, annotations=READ_ONLY_ANNOTATIONS)
+                _register_tool(hybrid_search_context)
                 modes_available = []
                 if fts_available_for_hybrid:
                     modes_available.append('fts')
@@ -1488,9 +1638,15 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
         # Read schema from file
         if schema_path.exists():
-            schema_sql = schema_path.read_text(encoding='utf-8')
+            schema_sql_template = schema_path.read_text(encoding='utf-8')
         else:
             raise RuntimeError(f'Schema file not found: {schema_path}')
+
+        # Template the schema SQL with configured schema name (PostgreSQL only)
+        if backend_type == 'postgresql':
+            schema_sql = schema_sql_template.replace('{SCHEMA}', settings.storage.postgresql_schema)
+        else:
+            schema_sql = schema_sql_template
 
         # Apply schema - backend-specific approach
         if backend is not None:
@@ -2755,7 +2911,7 @@ async def semantic_search_context(
             }
         except Exception as e:
             logger.error(f'Semantic search failed: {e}')
-            raise ToolError(f'Semantic search failed: {str(e)}') from e
+            raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
 
         # Enrich results with tags and optionally images
         for result in search_results:
@@ -2786,7 +2942,7 @@ async def semantic_search_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error in semantic search: {e}')
-        raise ToolError(f'Semantic search failed: {str(e)}') from e
+        raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
 
 
 async def fts_search_context(
@@ -2958,7 +3114,7 @@ async def fts_search_context(
             return error_response
         except Exception as e:
             logger.error(f'FTS search failed: {e}')
-            raise ToolError(f'FTS search failed: {str(e)}') from e
+            raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
 
         # Process results: parse metadata and enrich with tags
         for result in search_results:
@@ -3001,7 +3157,7 @@ async def fts_search_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error in FTS search: {e}')
-        raise ToolError(f'FTS search failed: {str(e)}') from e
+        raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
 
 
 async def hybrid_search_context(
@@ -3375,7 +3531,7 @@ async def hybrid_search_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error in hybrid search: {e}')
-        raise ToolError(f'Hybrid search failed: {str(e)}') from e
+        raise ToolError(f'Hybrid search failed: {format_exception_message(e)}') from e
 
 
 # Bulk Operation MCP Tools
@@ -3600,7 +3756,7 @@ async def store_context_batch(
         raise
     except Exception as e:
         logger.error(f'Error in batch store: {e}')
-        raise ToolError(f'Batch store failed: {str(e)}') from e
+        raise ToolError(f'Batch store failed: {format_exception_message(e)}') from e
 
 
 async def update_context_batch(
@@ -3872,7 +4028,7 @@ async def update_context_batch(
         raise
     except Exception as e:
         logger.error(f'Error in batch update: {e}')
-        raise ToolError(f'Batch update failed: {str(e)}') from e
+        raise ToolError(f'Batch update failed: {format_exception_message(e)}') from e
 
 
 async def delete_context_batch(
@@ -3972,7 +4128,7 @@ async def delete_context_batch(
         raise
     except Exception as e:
         logger.error(f'Error in batch delete: {e}')
-        raise ToolError(f'Batch delete failed: {str(e)}') from e
+        raise ToolError(f'Batch delete failed: {format_exception_message(e)}') from e
 
 
 # Main entry point

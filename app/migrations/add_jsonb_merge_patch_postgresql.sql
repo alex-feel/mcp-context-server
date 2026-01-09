@@ -15,7 +15,8 @@
 -- This function replaces the shallow || - pattern which only handles top-level keys.
 -- The new implementation correctly handles deeply nested structures.
 -- SET search_path for security (CVE-2018-1058 mitigation)
-CREATE OR REPLACE FUNCTION jsonb_merge_patch(
+-- NOTE: Schema is templated and replaced during migration (see server.py)
+CREATE OR REPLACE FUNCTION {SCHEMA}.jsonb_merge_patch(
     target jsonb,
     patch jsonb
 )

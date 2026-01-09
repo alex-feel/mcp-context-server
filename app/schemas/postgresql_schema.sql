@@ -1,9 +1,10 @@
 -- PostgreSQL Schema for MCP Context Server
 -- Converted from SQLite schema with PostgreSQL-specific optimizations
+-- NOTE: Schema is templated and replaced during initialization (see server.py)
 
 -- Function to automatically update updated_at timestamp
 -- SET search_path for security (CVE-2018-1058 mitigation)
-CREATE OR REPLACE FUNCTION update_updated_at_column()
+CREATE OR REPLACE FUNCTION {SCHEMA}.update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = CURRENT_TIMESTAMP;
@@ -29,7 +30,7 @@ DROP TRIGGER IF EXISTS update_context_entries_updated_at ON context_entries;
 CREATE TRIGGER update_context_entries_updated_at
     BEFORE UPDATE ON context_entries
     FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
+    EXECUTE FUNCTION {SCHEMA}.update_updated_at_column();
 
 -- Standard indexes
 CREATE INDEX IF NOT EXISTS idx_thread_id ON context_entries(thread_id);
@@ -90,10 +91,6 @@ WHERE metadata->>'project' IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_metadata_report_type
 ON context_entries((metadata->>'report_type'))
 WHERE metadata->>'report_type' IS NOT NULL;
-
--- Composite indexes for common filter combinations
-CREATE INDEX IF NOT EXISTS idx_thread_metadata_status
-ON context_entries(thread_id, (metadata->>'status'));
 
 -- GIN index for full JSONB search (enables containment queries)
 -- This allows efficient queries like: metadata @> '{"key": "value"}'

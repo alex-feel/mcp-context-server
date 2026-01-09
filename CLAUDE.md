@@ -5,77 +5,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Reference
 
 ```bash
-# Essential commands
+# Build and run
 uv sync                                    # Install dependencies
+uv run mcp-context-server                  # Start server (aliases: mcp-context, python -m app.server)
+uvx mcp-context-server                     # Run from PyPI
+
+# Testing
 uv run pytest                              # Run all tests
 uv run pytest tests/test_server.py -v      # Run specific test file
 uv run pytest tests/test_server.py::TestStoreContext::test_store_text_context -v  # Single test
-uv run pre-commit run --all-files          # Lint + type check
-uv run mcp-context-server                  # Start server
+uv run pytest --cov=app --cov-report=html  # Run with coverage
+uv run pytest -m "not integration"         # Skip slow tests for quick feedback
+
+# Code quality
+uv run pre-commit run --all-files          # Lint + type check (Ruff, mypy, pyright)
+uv run ruff check --fix .                  # Ruff linter with autofix
 ```
 
-## Common Development Commands
-
-### Building and Running
-
-```bash
-# Install dependencies and package
-uv sync
-
-# Run the MCP server (multiple options)
-uv run mcp-context-server      # Full name entry point
-uv run mcp-context             # Short alias
-uv run python -m app.server    # As Python module
-
-# Run from anywhere with uvx
-uvx mcp-context-server           # From PyPI (published version)
-uvx --from . mcp-context-server  # From local directory
-
-# Test server starts correctly
-uv run python -m app.server
-```
-
-### Testing
-
-```bash
-# Run all tests
-uv run pytest
-
-# Run specific test file
-uv run pytest tests/test_server.py -v
-
-# Run a single test
-uv run pytest tests/test_server.py::TestStoreContext::test_store_text_context -v
-
-# Run with coverage
-uv run pytest --cov=app --cov-report=html
-
-# Run integration tests only
-uv run pytest -m integration
-
-# Skip slow/integration tests for quick feedback
-uv run pytest -m "not integration"
-
-# Run real server integration test
-uv run python run_integration_test.py
-
-# Note: Integration tests use SQLite-only temporary databases for speed
-# PostgreSQL backend is fully supported in production, but tests don't require PostgreSQL setup
-```
-
-### Code Quality and Linting
-
-```bash
-# Run all pre-commit hooks (Ruff, mypy, pyright)
-uv run pre-commit run --all-files
-
-# Run Ruff linter with autofix
-uv run ruff check --fix .
-
-# Run type checking separately
-uv run mypy app
-uv run pyright app
-```
+Note: Integration tests use SQLite-only temporary databases. PostgreSQL is production-only.
 
 ## High-Level Architecture
 
@@ -199,42 +146,19 @@ The codebase uses a comprehensive multi-layered testing approach:
 - **Backend-agnostic implementation**: Repository code works identically with both backends
 - **Real server tests required**: When writing unit tests, always add corresponding real server integration tests in `tests/test_real_server.py` to verify tool behavior via the actual MCP protocol
 
-#### Test Database Protection:
-- **Automatic Isolation**: All tests use `prevent_default_db_pollution` fixture (session-scoped, autouse)
-  - Prevents accidental use of `~/.mcp/context_storage.db` during testing
-  - Sets `MCP_TEST_MODE=1` and temporary `DB_PATH` for all tests
-  - Raises `RuntimeError` if default database is accessed
-- **Fixture Selection**:
-  - Use `mock_server_dependencies` + `initialized_server` for integration tests with real database
-  - Use `test_db` for direct SQLite operations without server layer
-  - Use `async_db_initialized` for async database operations
-  - All fixtures create SQLite temporary databases (no PostgreSQL fixtures in test suite)
+#### Key Test Fixtures (`conftest.py`):
 
-#### Test Fixtures (`conftest.py`):
-- **`test_settings`**: Creates test-specific AppSettings with temp database
-- **`temp_db_path`**: Provides temporary database file path
-- **`test_db`**: SQLite connection with schema initialization (for direct DB tests)
-- **`initialized_server`**: Full server initialization with database (for integration tests)
-- **`async_db_initialized`**: Async storage backend with proper lifecycle management
-- **`async_db_with_embeddings`**: Async backend with semantic search migration applied (for embedding tests)
-- **`mock_context`**: Mock FastMCP Context for unit tests
-- **`sample_image_data`**: Base64 encoded test PNG image
-- **`multiple_context_entries`**: Pre-populated database entries for testing
-- **`mock_server_dependencies`**: Patches server settings for isolated testing
-- **`embedding_dim`**: Dynamic embedding dimension from settings (for semantic search tests)
+| Fixture | Use Case |
+|---------|----------|
+| `test_db` | Direct SQLite operations without server layer |
+| `mock_server_dependencies` | Server tool testing with mocked settings |
+| `initialized_server` | Full integration tests with real database |
+| `async_db_initialized` | Async storage backend tests |
+| `async_db_with_embeddings` | Semantic search tests |
 
-**Conditional Skip Markers** (for optional dependencies):
-- `@requires_ollama`: Skip if ollama package not installed
-- `@requires_sqlite_vec`: Skip if sqlite-vec package not installed
-- `@requires_numpy`: Skip if numpy package not installed
-- `@requires_semantic_search`: Skip if any semantic search dependency missing
+**Skip Markers**: `@requires_ollama`, `@requires_sqlite_vec`, `@requires_numpy`, `@requires_semantic_search`
 
-**Fixture Selection Guide**:
-- Direct SQLite testing → use `test_db`
-- Server tool testing (mocked) → use `mock_server_dependencies`
-- Full integration testing → use `initialized_server` or `async_db_initialized`
-- Semantic search testing → use `async_db_with_embeddings` with `@requires_semantic_search`
-- All fixtures use SQLite temporary databases for consistency and speed
+All fixtures create SQLite temporary databases. `prevent_default_db_pollution` (autouse) prevents accidental production DB access.
 
 ### Key Implementation Details
 
@@ -297,16 +221,6 @@ The `semantic_search_context` tool is an optional feature that enables vector si
 - Performance tuning: Adjust `EMBEDDING_DIM` and indexing strategies
 - Backend-specific optimizations: Edit `EmbeddingRepository` methods
 
-**Migration System**:
-- **Location**: `app/migrations/` directory
-- **Backend-Specific Migrations**:
-  - `add_semantic_search.sql` - SQLite migration (adds embeddings table with vec0 virtual table)
-  - `add_semantic_search_postgresql.sql` - PostgreSQL migration (enables pgvector, adds vector column)
-- **Application**: Migrations are applied automatically on server startup if semantic search is enabled
-- **Idempotency**: All migrations use `IF NOT EXISTS` or `CREATE EXTENSION IF NOT EXISTS` for safe re-runs
-- **Manual Migration** (if needed): Execute migration SQL directly against database
-- **Note**: All migrations are version-controlled and tracked in `app/migrations/`. The server automatically detects and applies pending migrations on startup.
-
 ### Full-Text Search (FTS) Implementation
 
 The `fts_search_context` tool is an optional feature that enables linguistic search with stemming, ranking, and boolean queries:
@@ -331,17 +245,15 @@ The `fts_search_context` tool is an optional feature that enables linguistic sea
 
 ### Search API Response Structure
 
-All search tools use a standardized response format:
-- `results`: Array of matching entries (replaces legacy `entries` key)
-- `count`: Number of results returned
-- `stats`: Query execution statistics (only when `explain_query=True`)
+All search tools return: `results` (array), `count` (int), `stats` (only when `explain_query=True`).
 
-**Migration System**:
-- **Location**: `app/migrations/` directory
-- **Backend-Specific Migrations**:
-  - `add_fts.sql` - SQLite migration (creates FTS5 virtual table with triggers)
-  - `add_fts_postgresql.sql` - PostgreSQL migration (adds tsvector column with GIN index)
-- **Language Change**: Changing `FTS_LANGUAGE` requires migration (FTS table rebuild)
+### Migration System
+
+All migrations in `app/migrations/` are applied automatically on startup and are idempotent:
+- **Semantic Search**: `add_semantic_search.sql` (SQLite), `add_semantic_search_postgresql.sql` (PostgreSQL)
+- **FTS**: `add_fts.sql` (SQLite), `add_fts_postgresql.sql` (PostgreSQL)
+
+Note: Changing `FTS_LANGUAGE` requires FTS table rebuild.
 
 ### Hybrid Search Implementation
 
@@ -358,15 +270,12 @@ The `hybrid_search_context` tool combines FTS and semantic search with Reciproca
 - Also requires at least one of `ENABLE_FTS=true` or `ENABLE_SEMANTIC_SEARCH=true`
 - `HYBRID_RRF_K` controls fusion smoothing (higher = more weight to lower-ranked documents)
 
-## Package Configuration
+## Package and Release
 
-The project uses `uv` as the package manager with `tool.uv.package = true` in pyproject.toml. Key configuration details:
-
-- **Build Backend**: Hatchling for Python package building
-- **Entry Points**: Defined in `[project.scripts]` - both `mcp-context-server` and `mcp-context` aliases
-- **Dependencies**: Minimal core dependencies (fastmcp, pydantic, python-dotenv, asyncpg)
-- **Optional Dependencies**: `semantic-search` group for Ollama, numpy, sqlite-vec, pgvector
-- **Python Version**: Requires Python 3.12+ for modern type hints and StrEnum
+- **Package Manager**: uv with Hatchling build backend
+- **Entry Points**: `mcp-context-server`, `mcp-context` (see `pyproject.toml`)
+- **Python**: 3.12+ required
+- **Optional**: `uv sync --extra semantic-search` for vector search dependencies
 
 ## Release Process
 
@@ -378,75 +287,32 @@ The project uses [Release Please](https://github.com/googleapis/release-please) 
 ### Publish Workflow
 
 On `release:published` event, three jobs run in parallel:
-
-| Job | Target | Artifact |
-|-----|--------|----------|
-| `publish-to-pypi` | PyPI | `mcp-context-server` package |
-| `publish-to-mcp-registry` | MCP Registry | Server metadata |
-| `publish-docker-image` | GHCR | `ghcr.io/alex-feel/mcp-context-server` |
-
-### Docker Image Details
-
-- **Registry**: `ghcr.io/alex-feel/mcp-context-server`
-- **Platforms**: `linux/amd64`, `linux/arm64`
-- **Tags**: `0.14.0`, `0.14`, `0`, `sha-xxx`, `latest`
-- **Security**: SLSA provenance, SBOM, build attestations
+- **PyPI**: `mcp-context-server` package
+- **MCP Registry**: Server metadata via `server.json`
+- **GHCR**: Docker image `ghcr.io/alex-feel/mcp-context-server` (amd64/arm64)
 
 ## MCP Registry and server.json Maintenance
 
-The `server.json` file enables MCP client discovery and configuration of this server. It must comply with the official [MCP Registry specification](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md).
-
-### Official Specification
-
-- **Schema URL**: `https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/server-json/server.schema.json`
-- **Specification**: [MCP Registry Generic Server JSON Reference](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md)
-- **Purpose**: Provides standardized metadata for MCP client auto-configuration
-
-### Valid Environment Variable Fields
-
-Environment variables in `server.json` support ONLY these fields:
-
-**Required Fields:**
-- `name` - Variable identifier (e.g., `LOG_LEVEL`)
-- `description` - Description of the input
-- `format` - Specifies the input format
-- `isRequired` - Boolean requirement flag
-
-**Optional Fields:**
-- `isSecret` - Sensitivity indicator (default: false)
-- `default` - Default value
-- `choices` - Array of allowed values
+The `server.json` file enables MCP client discovery. Must comply with [MCP Registry specification](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md).
 
 ### Synchronization with app/settings.py
 
 All environment variables in `server.json` must match Field definitions in `app/settings.py`:
 
-**When adding a new environment variable:**
-1. Add Field to appropriate class in `app/settings.py` with `alias` parameter
+1. Add Field to appropriate class with `alias` parameter
 2. Add corresponding entry to `server.json` environmentVariables array
-3. Verify synchronization using validation commands below
 
-**Example Field in settings.py:**
 ```python
-log_level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(
-    default='ERROR',
-    alias='LOG_LEVEL',
-)
+# settings.py
+log_level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(default='ERROR', alias='LOG_LEVEL')
 ```
 
-**Corresponding server.json entry:**
 ```json
-{
-    "description": "Log level",
-    "isRequired": false,
-    "format": "string",
-    "isSecret": false,
-    "name": "LOG_LEVEL"
-}
+// server.json
+{"name": "LOG_LEVEL", "description": "Log level", "format": "string", "isRequired": false, "isSecret": false}
 ```
 
-**Automated version updates:**
-- Release Please automatically updates `server.json` version during releases
+Release Please automatically updates `server.json` version during releases.
 
 ## Environment Variables
 
@@ -479,6 +345,9 @@ Configuration via `.env` file or environment:
 - `OLLAMA_HOST`: Ollama API host URL (default: http://localhost:11434)
 - `EMBEDDING_MODEL`: Embedding model name (default: embeddinggemma:latest)
 - `EMBEDDING_DIM`: Embedding vector dimensions (default: 768)
+- `EMBEDDING_TIMEOUT_S`: Timeout in seconds for embedding generation API calls (default: 30.0)
+- `EMBEDDING_RETRY_MAX_ATTEMPTS`: Maximum number of retry attempts for embedding generation (default: 3)
+- `EMBEDDING_RETRY_BASE_DELAY_S`: Base delay in seconds between retry attempts with exponential backoff (default: 1.0)
 
 **Hybrid Search Settings:**
 - `ENABLE_HYBRID_SEARCH`: Enable hybrid search combining FTS and semantic with RRF fusion (default: false)
@@ -506,6 +375,7 @@ Configuration via `.env` file or environment:
 - `POSTGRESQL_POOL_TIMEOUT_S`: Pool connection timeout (default: 10.0)
 - `POSTGRESQL_COMMAND_TIMEOUT_S`: Command execution timeout (default: 60.0)
 - `POSTGRESQL_SSL_MODE`: SSL mode - disable, allow, prefer, require, verify-ca, verify-full (default: prefer)
+- `POSTGRESQL_SCHEMA`: PostgreSQL schema name for table and index operations (default: public). Required for Supabase or multi-schema environments where `current_schema()` may not return 'public'.
 
 Additional tuning parameters (see `app/settings.py` for full list):
 - Database connection pool settings
@@ -553,25 +423,6 @@ uv run mcp-context-server
 
 **That's it!** No manual database setup, no extension installation - everything works automatically.
 
-**Configuration (via environment variables):**
-```bash
-STORAGE_BACKEND=postgresql
-POSTGRESQL_HOST=localhost         # Default
-POSTGRESQL_PORT=5432              # Default
-POSTGRESQL_USER=postgres          # Default
-POSTGRESQL_PASSWORD=postgres      # Change in production!
-POSTGRESQL_DATABASE=mcp_context   # Default
-
-# Optional: Connection pool settings
-POSTGRESQL_POOL_MIN=2
-POSTGRESQL_POOL_MAX=20
-POSTGRESQL_POOL_TIMEOUT_S=10.0
-POSTGRESQL_COMMAND_TIMEOUT_S=60.0
-
-# Optional: SSL/TLS settings
-POSTGRESQL_SSL_MODE=prefer  # Options: disable, allow, prefer, require, verify-ca, verify-full
-```
-
 **Features:**
 - Concurrent write support via MVCC (10x+ throughput vs SQLite)
 - Production-grade connection pooling with asyncpg
@@ -599,25 +450,6 @@ Supabase is fully compatible via PostgreSQL connection - see README.md for detai
 - Two connection methods: Direct (IPv6 required) or Session Pooler (IPv4 compatible)
 - Enable pgvector via Dashboard → Extensions for semantic search
 - "getaddrinfo failed" error = switch from Direct to Session Pooler
-
-### StorageBackend Protocol
-
-All backends implement the `StorageBackend` protocol with these required methods:
-- `initialize()`: Set up connection pools and resources
-- `shutdown()`: Clean up connections and release resources
-- `get_connection(readonly: bool)`: Get a database connection (context manager)
-- `execute_write(operation, *args, **kwargs)`: Execute write operation with retry logic
-- `execute_read(operation, *args, **kwargs)`: Execute read operation
-- `get_metrics()`: Return backend health metrics
-- `backend_type` property: Return backend identifier ('sqlite', 'postgresql')
-
-### Backend Benefits
-
-1. **Database-Agnostic Repositories**: Repository code works with any backend without modification
-2. **Runtime Selection**: Choose backend via environment variable - no code changes needed
-3. **Easy Testing**: Switch to in-memory database for tests via backend factory
-4. **Future-Proof**: Add new backends by implementing the protocol
-5. **Type-Safe**: Protocol ensures all backends provide required functionality
 
 ### Metadata Field Indexing by Backend
 
@@ -684,32 +516,19 @@ The project includes Helm chart support for Kubernetes deployments:
 
 ## Debugging and Troubleshooting
 
-### Common Debug Commands
-
 ```bash
-# Check if server starts correctly
-uv run python -m app.server
+# View server logs with debug level
+set LOG_LEVEL=DEBUG && uv run mcp-context-server  # Windows cmd
+$env:LOG_LEVEL="DEBUG"; uv run mcp-context-server # Windows PowerShell
 
 # Test database connectivity
 uv run python -c "from app.server import init_database; init_database()"
 
-# Check database location and size (Windows)
-dir %USERPROFILE%\.mcp\context_storage.db
-
-# View server logs with debug level (Windows - cmd.exe)
-set LOG_LEVEL=DEBUG && uv run mcp-context-server
-
-# View server logs with debug level (Windows - PowerShell)
-$env:LOG_LEVEL="DEBUG"; uv run mcp-context-server
-
-# Test a specific tool function
-uv run pytest tests/test_server.py::TestStoreContext -v
-
-# Check database metrics via Python
+# Check database metrics
 uv run python -c "from app.server import init_database, _backend; init_database(); print(_backend.get_metrics())"
 ```
 
-### Common Issues and Solutions
+### Common Issues
 
 1. **Module Import Errors**: Run `uv sync` to ensure dependencies are installed
 2. **Database Lock Errors**: WAL mode should prevent these, but check for stale processes
@@ -721,18 +540,7 @@ uv run python -c "from app.server import init_database, _backend; init_database(
 
 ## Code Quality Standards
 
-### Ruff Configuration
-
-The project enforces strict code quality with extensive Ruff rules:
-- **Line Length**: 127 characters maximum
-- **Target Python**: 3.12+
-- **Quote Style**: Single quotes for code, double for docstrings
-- **Imports**: Forced single-line for clarity
-- **Enabled Rule Sets**: FAST (FastAPI), ANN (annotations), ASYNC, B (bugbear), PT (pytest), UP (pyupgrade), FURB (refurb), and many more
-
-### Type Checking
-
-Both mypy and pyright are configured:
+- **Ruff**: 127 char lines, Python 3.12+, single quotes, extensive rule sets (see `pyproject.toml`)
 - **mypy**: Strict mode for `app/`, relaxed for `tests/`
 - **pyright**: Standard mode globally, strict for `app/`
 - **Important**: Never use `from __future__ import annotations` in server.py (breaks FastMCP)
