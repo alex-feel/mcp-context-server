@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Annotated
 from typing import Any
 from typing import Literal
+from typing import TypedDict
 from typing import cast
 
 import asyncpg
@@ -37,9 +38,12 @@ from starlette.responses import JSONResponse
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.embeddings import EmbeddingProvider
+from app.embeddings import create_embedding_provider
 from app.logger_config import config_logger
 from app.repositories import RepositoryContainer
 from app.repositories.fts_repository import FtsRepository
+from app.settings import EmbeddingSettings
 from app.settings import get_settings
 from app.types import BulkDeleteResponseDict
 from app.types import BulkStoreResponseDict
@@ -99,8 +103,8 @@ MAX_TOTAL_SIZE_MB = settings.storage.max_total_size_mb
 _backend: StorageBackend | None = None
 _repositories: RepositoryContainer | None = None
 
-# Global embedding service (only if semantic search enabled and available)
-_embedding_service: Any | None = None
+# Global embedding provider (only if semantic search enabled and available)
+_embedding_provider: EmbeddingProvider | None = None
 
 
 # Tool annotations with human-readable titles for MCP protocol hints
@@ -135,15 +139,15 @@ TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
         'readOnlyHint': True,
     },
     'semantic_search_context': {
-        'title': 'Semantic Context Search',
+        'title': 'Semantic Search Context',
         'readOnlyHint': True,
     },
     'fts_search_context': {
-        'title': 'Full-Text Context Search',
+        'title': 'Full-Text Search Context',
         'readOnlyHint': True,
     },
     'hybrid_search_context': {
-        'title': 'Hybrid Context Search',
+        'title': 'Hybrid Search Context',
         'readOnlyHint': True,
     },
     # Update tools (destructive, not idempotent)
@@ -248,39 +252,41 @@ def estimate_migration_time(records_count: int) -> int:
     return 1200  # 20 minutes for very large datasets
 
 
-# Dependency check functions for semantic search
-async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bool:
-    """Check all semantic search dependencies.
+# TypedDict for provider dependency check results
+class ProviderCheckResult(TypedDict):
+    """Result of provider dependency check."""
 
-    Performs comprehensive checks for:
-    - Python packages: ollama, numpy, sqlite_vec (SQLite) or pgvector (PostgreSQL)
-    - Ollama service availability
-    - Embedding model availability
+    available: bool
+    reason: str | None
+    install_instructions: str | None
+
+
+# Dependency check functions for semantic search
+async def check_vector_storage_dependencies(backend_type: str = 'sqlite') -> bool:
+    """Check vector storage dependencies for semantic search (provider-AGNOSTIC).
+
+    Performs checks for:
+    - Python packages: numpy, sqlite_vec (SQLite) or pgvector (PostgreSQL)
     - sqlite-vec extension loading (SQLite only)
+
+    Provider-specific checks (API keys, service availability, model availability)
+    are handled by check_provider_dependencies().
 
     Args:
         backend_type: Either 'sqlite' or 'postgresql'
 
     Returns:
-        True if all dependencies are available, False otherwise
+        True if vector storage dependencies are available, False otherwise
     """
-    logger.info('Checking semantic search dependencies...')
+    logger.info('Checking vector storage dependencies...')
 
-    # Check ollama package
-    try:
-        import ollama
-
-        logger.debug('[OK] ollama package available')
-    except ImportError as e:
-        logger.warning(f'[X] ollama package not available: {e}')
-        return False
-
-    # Check numpy package
+    # Check numpy package (required for vector operations)
     try:
         import importlib.util
 
         if importlib.util.find_spec('numpy') is None:
             logger.warning('[X] numpy package not available')
+            logger.warning('  Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)')
             return False
         logger.debug('[OK] numpy package available')
     except ImportError as e:
@@ -294,54 +300,14 @@ async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bo
 
             if sqlite_vec_util.find_spec('sqlite_vec') is None:
                 logger.warning('[X] sqlite_vec package not available')
+                logger.warning('  Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)')
                 return False
             logger.debug('[OK] sqlite_vec package available')
         except ImportError as e:
             logger.warning(f'[X] sqlite_vec package not available: {e}')
             return False
 
-    # Check pgvector package (PostgreSQL only)
-    if backend_type == 'postgresql':
-        try:
-            import importlib.util as pgvector_util
-
-            if pgvector_util.find_spec('pgvector') is None:
-                logger.warning('[X] pgvector package not available')
-                logger.warning('  Install with: uv sync --extra semantic-search')
-                return False
-            logger.debug('[OK] pgvector package available')
-        except ImportError as e:
-            logger.warning(f'[X] pgvector package not available: {e}')
-            logger.warning('  Install with: uv sync --extra semantic-search')
-            return False
-
-    # Check Ollama service
-    try:
-        import httpx
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(settings.ollama_host, timeout=1.0)
-            if response.status_code == 200:
-                logger.debug('[OK] Ollama service running')
-            else:
-                logger.warning(f'[X] Ollama service returned status {response.status_code}')
-                return False
-    except Exception as e:
-        logger.warning(f'[X] Ollama service not accessible: {e}')
-        return False
-
-    # Check embedding model
-    try:
-        ollama_client = ollama.Client(host=settings.ollama_host, timeout=5.0)
-        ollama_client.show(settings.embedding_model)
-        logger.debug(f'[OK] Embedding model "{settings.embedding_model}" available')
-    except Exception as e:
-        logger.warning(f'[X] Embedding model "{settings.embedding_model}" not available: {e}')
-        logger.warning(f'  Run: ollama pull {settings.embedding_model}')
-        return False
-
-    # Check sqlite-vec extension loading (SQLite only)
-    if backend_type == 'sqlite':
+        # Check sqlite-vec extension loading
         try:
             import sqlite3
 
@@ -357,8 +323,332 @@ async def check_semantic_search_dependencies(backend_type: str = 'sqlite') -> bo
             logger.warning(f'[X] sqlite-vec extension failed to load: {e}')
             return False
 
-    logger.info('[OK] All semantic search dependencies available')
+    # Check pgvector package (PostgreSQL only)
+    if backend_type == 'postgresql':
+        try:
+            import importlib.util as pgvector_util
+
+            if pgvector_util.find_spec('pgvector') is None:
+                logger.warning('[X] pgvector package not available')
+                logger.warning('  Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)')
+                return False
+            logger.debug('[OK] pgvector package available')
+        except ImportError as e:
+            logger.warning(f'[X] pgvector package not available: {e}')
+            return False
+
+    logger.info('[OK] All vector storage dependencies available')
     return True
+
+
+async def check_provider_dependencies(
+    provider: str,
+    embedding_settings: EmbeddingSettings,
+) -> ProviderCheckResult:
+    """Check provider-specific dependencies based on EMBEDDING_PROVIDER setting.
+
+    Dispatches to provider-specific check functions based on the selected provider.
+    Each provider has different requirements:
+    - ollama: Requires Ollama service running and model available
+    - openai: Requires OPENAI_API_KEY
+    - azure: Requires AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, deployment name
+    - huggingface: Requires HUGGINGFACEHUB_API_TOKEN
+    - voyage: Requires VOYAGE_API_KEY
+
+    Args:
+        provider: Provider name from EMBEDDING_PROVIDER setting
+        embedding_settings: EmbeddingSettings instance with provider configuration
+
+    Returns:
+        ProviderCheckResult with available, reason, and install_instructions
+    """
+    check_functions: dict[
+        str,
+        Callable[[EmbeddingSettings], Any],
+    ] = {
+        'ollama': _check_ollama_dependencies,
+        'openai': _check_openai_dependencies,
+        'azure': _check_azure_dependencies,
+        'huggingface': _check_huggingface_dependencies,
+        'voyage': _check_voyage_dependencies,
+    }
+
+    if provider not in check_functions:
+        return ProviderCheckResult(
+            available=False,
+            reason=f"Unknown provider: '{provider}'",
+            install_instructions=None,
+        )
+
+    logger.info(f'Checking {provider} provider dependencies...')
+    result = await check_functions[provider](embedding_settings)
+    return cast(ProviderCheckResult, result)
+
+
+async def _check_ollama_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+    """Check Ollama-specific dependencies.
+
+    Checks:
+    1. langchain-ollama package is installed
+    2. Ollama service is running at OLLAMA_HOST
+    3. Embedding model is available
+
+    Args:
+        embedding_settings: EmbeddingSettings with ollama_host and model
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra embeddings-ollama'
+
+    # 1. Check langchain-ollama package
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec('langchain_ollama') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-ollama package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-ollama package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-ollama package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check Ollama service is running
+    try:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(embedding_settings.ollama_host, timeout=2.0)
+            if response.status_code != 200:
+                return ProviderCheckResult(
+                    available=False,
+                    reason=f'Ollama service returned status {response.status_code}',
+                    install_instructions='Start Ollama service: ollama serve',
+                )
+        logger.debug(f'[OK] Ollama service running at {embedding_settings.ollama_host}')
+    except Exception as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'Ollama service not accessible at {embedding_settings.ollama_host}: {e}',
+            install_instructions='Start Ollama service: ollama serve',
+        )
+
+    # 3. Check embedding model is available
+    try:
+        import ollama
+
+        ollama_client = ollama.Client(host=embedding_settings.ollama_host, timeout=5.0)
+        ollama_client.show(embedding_settings.model)
+        logger.debug(f'[OK] Embedding model "{embedding_settings.model}" available')
+    except Exception as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'Embedding model "{embedding_settings.model}" not available: {e}',
+            install_instructions=f'Download model: ollama pull {embedding_settings.model}',
+        )
+
+    logger.info('[OK] All Ollama provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
+async def _check_openai_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+    """Check OpenAI-specific dependencies.
+
+    Checks:
+    1. langchain-openai package is installed
+    2. OPENAI_API_KEY is set
+
+    Args:
+        embedding_settings: EmbeddingSettings with openai_api_key
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra embeddings-openai'
+
+    # 1. Check langchain-openai package
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec('langchain_openai') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-openai package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-openai package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-openai package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check API key is set
+    if embedding_settings.openai_api_key is None:
+        return ProviderCheckResult(
+            available=False,
+            reason='OPENAI_API_KEY environment variable is not set',
+            install_instructions='Set environment variable: export OPENAI_API_KEY=your-key',
+        )
+    logger.debug('[OK] OPENAI_API_KEY is set')
+
+    logger.info('[OK] All OpenAI provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
+async def _check_azure_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+    """Check Azure OpenAI-specific dependencies.
+
+    Checks:
+    1. langchain-openai package is installed (Azure uses same package)
+    2. AZURE_OPENAI_API_KEY is set
+    3. AZURE_OPENAI_ENDPOINT is set
+    4. AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME is set
+
+    Args:
+        embedding_settings: EmbeddingSettings with Azure configuration
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra embeddings-azure'
+
+    # 1. Check langchain-openai package
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec('langchain_openai') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-openai package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-openai package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-openai package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check required environment variables
+    missing_vars = []
+    if embedding_settings.azure_openai_api_key is None:
+        missing_vars.append('AZURE_OPENAI_API_KEY')
+    if embedding_settings.azure_openai_endpoint is None:
+        missing_vars.append('AZURE_OPENAI_ENDPOINT')
+    if embedding_settings.azure_openai_deployment_name is None:
+        missing_vars.append('AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME')
+
+    if missing_vars:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'Required environment variables not set: {", ".join(missing_vars)}',
+            install_instructions=f'Set environment variables: {", ".join(missing_vars)}',
+        )
+    logger.debug('[OK] All Azure configuration variables are set')
+
+    logger.info('[OK] All Azure OpenAI provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
+async def _check_huggingface_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+    """Check HuggingFace-specific dependencies.
+
+    Checks:
+    1. langchain-huggingface package is installed
+    2. HUGGINGFACEHUB_API_TOKEN is set
+
+    Args:
+        embedding_settings: EmbeddingSettings with huggingface_api_key
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra embeddings-huggingface'
+
+    # 1. Check langchain-huggingface package
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec('langchain_huggingface') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-huggingface package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-huggingface package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-huggingface package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check API token is set
+    if embedding_settings.huggingface_api_key is None:
+        return ProviderCheckResult(
+            available=False,
+            reason='HUGGINGFACEHUB_API_TOKEN environment variable is not set',
+            install_instructions='Set environment variable: export HUGGINGFACEHUB_API_TOKEN=your-token',
+        )
+    logger.debug('[OK] HUGGINGFACEHUB_API_TOKEN is set')
+
+    logger.info('[OK] All HuggingFace provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
+async def _check_voyage_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+    """Check Voyage AI-specific dependencies.
+
+    Checks:
+    1. langchain-voyageai package is installed
+    2. VOYAGE_API_KEY is set
+
+    Args:
+        embedding_settings: EmbeddingSettings with voyage_api_key
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra embeddings-voyage'
+
+    # 1. Check langchain-voyageai package
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec('langchain_voyageai') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-voyageai package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-voyageai package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-voyageai package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check API key is set
+    if embedding_settings.voyage_api_key is None:
+        return ProviderCheckResult(
+            available=False,
+            reason='VOYAGE_API_KEY environment variable is not set',
+            install_instructions='Set environment variable: export VOYAGE_API_KEY=your-key',
+        )
+    logger.debug('[OK] VOYAGE_API_KEY is set')
+
+    logger.info('[OK] All Voyage AI provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
 
 
 async def apply_semantic_search_migration(backend: StorageBackend | None = None) -> None:
@@ -480,16 +770,16 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         table_exists, existing_dim = await manager.execute_read(cast(Any, _check_existing_dimension_postgresql))
 
     # Validate dimension compatibility
-    if table_exists and existing_dim is not None and existing_dim != settings.embedding_dim:
+    if table_exists and existing_dim is not None and existing_dim != settings.embedding.dim:
         db_path = str(DB_PATH).replace('\\', '/')
         raise RuntimeError(
             f'Embedding dimension mismatch detected!\n'
             f'  Existing database dimension: {existing_dim}\n'
-            f'  Configured EMBEDDING_DIM: {settings.embedding_dim}\n\n'
+            f'  Configured EMBEDDING_DIM: {settings.embedding.dim}\n\n'
             f'To change embedding dimensions, you must:\n'
             f'  1. Back up your database: {db_path}\n'
             f'  2. Delete or rename the database file\n'
-            f'  3. Restart the server to create new tables with dimension {settings.embedding_dim}\n'
+            f'  3. Restart the server to create new tables with dimension {settings.embedding.dim}\n'
             f'  4. Re-import your context data (embeddings will be regenerated)\n\n'
             f'Note: Changing dimensions will lose all existing embeddings.',
         )
@@ -497,7 +787,7 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
     # Template the migration SQL with configured dimension and schema
     migration_sql = migration_sql_template.replace(
         '{EMBEDDING_DIM}',
-        str(settings.embedding_dim),
+        str(settings.embedding.dim),
     ).replace(
         '{SCHEMA}',
         settings.storage.postgresql_schema,
@@ -517,7 +807,8 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
                 logger.debug('sqlite-vec extension loaded for migration')
             except ImportError:
                 raise RuntimeError(
-                    'sqlite-vec package required for semantic search migration. Install with: uv sync --extra semantic-search',
+                    'sqlite-vec package required for semantic search migration. '
+                    'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                 ) from None
             except AttributeError:
                 raise RuntimeError(
@@ -569,7 +860,7 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
     # Check table existence (not row existence) to determine if migration was applied
     if not table_exists:
         logger.info(
-            f'Semantic search migration applied successfully with dimension: {settings.embedding_dim}',
+            f'Semantic search migration applied successfully with dimension: {settings.embedding.dim}',
         )
     else:
         logger.info('Semantic search migration: tables already exist, skipping')
@@ -1417,9 +1708,9 @@ def _validate_pool_timeout_for_embedding() -> None:
 
     # Calculate minimum required timeout
     # Formula: timeout * retries + exponential_backoff_delays + 10% margin
-    timeout = settings.embedding_timeout_s
-    retries = settings.embedding_retry_max_attempts
-    base_delay = settings.embedding_retry_base_delay_s
+    timeout = settings.embedding.timeout_s
+    retries = settings.embedding.retry_max_attempts
+    base_delay = settings.embedding.retry_base_delay_s
 
     # Calculate total backoff delays (with 10% jitter estimate)
     # Backoff formula: base_delay * (2 ** attempt) for each retry
@@ -1501,7 +1792,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
     Yields:
         None: Control is yielded back to FastMCP during server operation
     """
-    global _backend, _repositories, _embedding_service
+    global _backend, _repositories, _embedding_provider
 
     # Startup
     try:
@@ -1547,29 +1838,66 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
         # 10) Initialize semantic search if enabled
         if settings.enable_semantic_search:
-            semantic_available = await check_semantic_search_dependencies(_backend.backend_type)
+            # Step 1: Check vector storage dependencies (provider-agnostic)
+            vector_deps_available = await check_vector_storage_dependencies(_backend.backend_type)
 
-            if semantic_available:
-                try:
-                    from app.services.embedding_service import EmbeddingService
+            if vector_deps_available:
+                # Step 2: Check provider-specific dependencies based on EMBEDDING_PROVIDER
+                provider = settings.embedding.provider
+                provider_check = await check_provider_dependencies(provider, settings.embedding)
 
-                    _embedding_service = EmbeddingService()
-                    # Register the semantic search tool dynamically (DISABLED_TOOLS takes priority)
-                    _register_tool(semantic_search_context)
-                    logger.info('[OK] Semantic search enabled and available')
-                except Exception as e:
-                    logger.error(f'Failed to initialize embedding service: {e}')
-                    _embedding_service = None
-                    logger.warning('[!] Semantic search enabled but initialization failed - feature disabled')
-                    logger.info('[!] semantic_search_context not registered (initialization failed)')
+                if provider_check['available']:
+                    # Step 3: Create and initialize provider
+                    try:
+                        _embedding_provider = create_embedding_provider()
+                        await _embedding_provider.initialize()
+
+                        # Verify provider is available
+                        if await _embedding_provider.is_available():
+                            _register_tool(semantic_search_context)
+                            logger.info(
+                                f'[OK] Semantic search enabled with provider: {_embedding_provider.provider_name}',
+                            )
+                        else:
+                            logger.warning(
+                                f'[!] Embedding provider {_embedding_provider.provider_name} '
+                                'initialized but not available',
+                            )
+                            await _embedding_provider.shutdown()
+                            _embedding_provider = None
+                            logger.info('[!] semantic_search_context not registered (provider not available)')
+                    except ImportError as e:
+                        logger.error(f'Failed to import embedding provider: {e}')
+                        _embedding_provider = None
+                        logger.warning('[!] Semantic search enabled but provider dependencies not installed')
+                        logger.info('[!] semantic_search_context not registered (dependencies not installed)')
+                    except Exception as e:
+                        logger.error(f'Failed to initialize embedding provider: {e}')
+                        _embedding_provider = None
+                        logger.warning('[!] Semantic search enabled but initialization failed - feature disabled')
+                        logger.info('[!] semantic_search_context not registered (initialization failed)')
+                else:
+                    # Provider-specific dependencies not met
+                    _embedding_provider = None
+                    logger.warning(
+                        f'[!] Semantic search enabled but {provider} provider dependencies not met',
+                    )
+                    logger.warning(f'  Reason: {provider_check["reason"]}')
+                    if provider_check['install_instructions']:
+                        logger.warning(f'  Fix: {provider_check["install_instructions"]}')
+                    logger.info('[!] semantic_search_context not registered (provider dependencies not met)')
             else:
-                _embedding_service = None
-                logger.warning('[!] Semantic search enabled but dependencies not met - feature disabled')
-                logger.warning('  Install dependencies: uv sync --extra semantic-search')
-                logger.warning(f'  Download model: ollama pull {settings.embedding_model}')
-                logger.info('[!] semantic_search_context not registered (dependencies not met)')
+                # Vector storage dependencies not met
+                _embedding_provider = None
+                logger.warning(
+                    '[!] Semantic search enabled but vector storage dependencies not met - feature disabled',
+                )
+                logger.warning(
+                    '  Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
+                )
+                logger.info('[!] semantic_search_context not registered (vector storage dependencies not met)')
         else:
-            _embedding_service = None
+            _embedding_provider = None
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
@@ -1592,7 +1920,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
 
         # 12) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.enable_hybrid_search:
-            semantic_available_for_hybrid = settings.enable_semantic_search and _embedding_service is not None
+            semantic_available_for_hybrid = settings.enable_semantic_search and _embedding_provider is not None
             fts_available_for_hybrid = settings.enable_fts
 
             if semantic_available_for_hybrid or fts_available_for_hybrid:
@@ -1633,9 +1961,16 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f'Error during shutdown: {e}')
     finally:
+        # Shutdown embedding provider if initialized
+        if _embedding_provider is not None:
+            try:
+                await _embedding_provider.shutdown()
+            except Exception as e:
+                logger.error(f'Error shutting down embedding provider: {e}')
+
         _backend = None
         _repositories = None
-        _embedding_service = None
+        _embedding_provider = None
     logger.info('MCP Context Server shutdown complete')
 
 
@@ -2151,13 +2486,13 @@ async def store_context(
 
         # Generate embedding if semantic search is available (non-blocking)
         embedding_generated = False
-        if _embedding_service is not None:
+        if _embedding_provider is not None:
             try:
-                embedding = await _embedding_service.generate_embedding(text)
+                embedding = await _embedding_provider.embed_query(text)
                 await repos.embeddings.store(
                     context_id=context_id,
                     embedding=embedding,
-                    model=settings.embedding_model,
+                    model=settings.embedding.model,
                 )
                 embedding_generated = True
                 logger.debug(f'Generated embedding for context {context_id}')
@@ -2662,9 +2997,9 @@ async def update_context(
                     updated_fields.append('content_type')
 
             # Regenerate embedding if text was changed and semantic search is available (non-blocking)
-            if text is not None and _embedding_service is not None:
+            if text is not None and _embedding_provider is not None:
                 try:
-                    new_embedding = await _embedding_service.generate_embedding(text)
+                    new_embedding = await _embedding_provider.embed_query(text)
 
                     # Check if embedding exists
                     embedding_exists = await repos.embeddings.exists(context_id)
@@ -2679,7 +3014,7 @@ async def update_context(
                         await repos.embeddings.store(
                             context_id=context_id,
                             embedding=new_embedding,
-                            model=settings.embedding_model,
+                            model=settings.embedding.model,
                         )
                         logger.debug(f'Created embedding for context {context_id}')
 
@@ -2783,14 +3118,14 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 
         # Add semantic search metrics if available
         if settings.enable_semantic_search:
-            if _embedding_service is not None:
+            if _embedding_provider is not None:
                 embedding_stats = await repos.embeddings.get_statistics()
                 stats['semantic_search'] = {
                     'enabled': True,
                     'available': True,
                     'backend': embedding_stats['backend'],
-                    'model': settings.embedding_model,
-                    'dimensions': settings.embedding_dim,
+                    'model': settings.embedding.model,
+                    'dimensions': settings.embedding.dim,
                     'embedding_count': embedding_stats['total_embeddings'],
                     'coverage_percentage': embedding_stats['coverage_percentage'],
                 }
@@ -2909,12 +3244,20 @@ async def semantic_search_context(
     validate_date_range(start_date, end_date)
 
     # Check if semantic search is available
-    if _embedding_service is None:
-        raise ToolError(
+    if _embedding_provider is None:
+        from app.embeddings.factory import PROVIDER_INSTALL_INSTRUCTIONS
+
+        provider = settings.embedding.provider
+        install_cmd = PROVIDER_INSTALL_INSTRUCTIONS.get(provider, 'uv sync --extra embeddings-ollama')
+
+        error_msg = (
             'Semantic search is not available. '
-            'Ensure ENABLE_SEMANTIC_SEARCH=true and all dependencies are installed. '
-            f'Run: uv sync --extra semantic-search && ollama pull {settings.embedding_model}',
+            f'Ensure ENABLE_SEMANTIC_SEARCH=true and {provider} provider is properly configured. '
+            f'Install provider: {install_cmd}'
         )
+        if provider == 'ollama':
+            error_msg += f'. Download model: ollama pull {settings.embedding.model}'
+        raise ToolError(error_msg)
 
     try:
         if ctx:
@@ -2925,7 +3268,7 @@ async def semantic_search_context(
 
         # Generate embedding for query
         try:
-            query_embedding = await _embedding_service.generate_embedding(query)
+            query_embedding = await _embedding_provider.embed_query(query)
         except Exception as e:
             logger.error(f'Failed to generate query embedding: {e}')
             raise ToolError(f'Failed to generate embedding for query: {str(e)}') from e
@@ -2956,7 +3299,7 @@ async def semantic_search_context(
                 'query': query,
                 'results': [],
                 'count': 0,
-                'model': settings.embedding_model,
+                'model': settings.embedding.model,
                 'error': e.message,
                 'validation_errors': e.validation_errors,
             }
@@ -2983,7 +3326,7 @@ async def semantic_search_context(
             'query': query,
             'results': search_results,
             'count': len(search_results),
-            'model': settings.embedding_model,
+            'model': settings.embedding.model,
         }
         if explain_query:
             response['stats'] = search_stats
@@ -3331,7 +3674,7 @@ async def hybrid_search_context(
 
     # Determine available search modes
     fts_available = settings.enable_fts
-    semantic_available = settings.enable_semantic_search and _embedding_service is not None
+    semantic_available = settings.enable_semantic_search and _embedding_provider is not None
 
     # Filter requested modes to available ones
     available_modes: list[str] = []
@@ -3345,7 +3688,10 @@ async def hybrid_search_context(
         if 'fts' in search_modes and not fts_available:
             unavailable_reasons.append('FTS requires ENABLE_FTS=true')
         if 'semantic' in search_modes and not semantic_available:
-            unavailable_reasons.append('Semantic search requires ENABLE_SEMANTIC_SEARCH=true and Ollama')
+            unavailable_reasons.append(
+                f'Semantic search requires ENABLE_SEMANTIC_SEARCH=true and '
+                f'{settings.embedding.provider} provider properly configured',
+            )
         raise ToolError(
             f'No search modes available. Requested: {search_modes}. '
             f'Issues: {"; ".join(unavailable_reasons)}',
@@ -3426,7 +3772,7 @@ async def hybrid_search_context(
         async def run_semantic_search() -> None:
             nonlocal semantic_results, semantic_error, semantic_stats
             try:
-                if _embedding_service is None:
+                if _embedding_provider is None:
                     semantic_error = 'Embedding service not available'
                     return
 
@@ -3435,7 +3781,7 @@ async def hybrid_search_context(
 
                 # Generate embedding for query
                 try:
-                    query_embedding = await _embedding_service.generate_embedding(query)
+                    query_embedding = await _embedding_provider.embed_query(query)
                 except Exception as e:
                     semantic_error = f'Failed to generate embedding: {e}'
                     return
@@ -3760,13 +4106,13 @@ async def store_context_batch(
                         await repos.images.store_images(ctx_id, original_entry['images'])
 
                     # Generate embedding if semantic search enabled (non-blocking)
-                    if _embedding_service is not None:
+                    if _embedding_provider is not None:
                         try:
-                            embedding = await _embedding_service.generate_embedding(original_entry['text_content'])
+                            embedding = await _embedding_provider.embed_query(original_entry['text_content'])
                             await repos.embeddings.store(
                                 context_id=ctx_id,
                                 embedding=embedding,
-                                model=settings.embedding_model,
+                                model=settings.embedding.model,
                             )
                         except Exception as emb_err:
                             logger.warning(f'Failed to generate embedding for context {ctx_id}: {emb_err}')
@@ -4024,9 +4370,9 @@ async def update_context_batch(
                         updated_fields.extend(['images', 'content_type'])
 
                 # Regenerate embedding if text changed and semantic search available
-                if update.get('text') is not None and _embedding_service is not None:
+                if update.get('text') is not None and _embedding_provider is not None:
                     try:
-                        new_embedding = await _embedding_service.generate_embedding(update['text'])
+                        new_embedding = await _embedding_provider.embed_query(update['text'])
                         embedding_exists = await repos.embeddings.exists(context_id)
                         if embedding_exists:
                             await repos.embeddings.update(context_id=context_id, embedding=new_embedding)
@@ -4034,7 +4380,7 @@ async def update_context_batch(
                             await repos.embeddings.store(
                                 context_id=context_id,
                                 embedding=new_embedding,
-                                model=settings.embedding_model,
+                                model=settings.embedding.model,
                             )
                         updated_fields.append('embedding')
                     except Exception as emb_err:

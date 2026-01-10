@@ -1,0 +1,144 @@
+"""
+Azure OpenAI embedding provider using LangChain integration.
+
+This provider uses langchain-openai package for Azure OpenAI Service.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class AzureEmbeddingProvider:
+    """Azure OpenAI embedding provider using LangChain integration.
+
+    Implements the EmbeddingProvider protocol for Azure OpenAI models.
+    Uses LangChain's AzureOpenAIEmbeddings for native async support.
+
+    Environment Variables:
+        EMBEDDING_PROVIDER: Must be 'azure'
+        AZURE_OPENAI_API_KEY: Azure OpenAI API key (required)
+        AZURE_OPENAI_ENDPOINT: Azure OpenAI endpoint URL (required)
+        AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: Deployment name (required)
+        AZURE_OPENAI_API_VERSION: API version (default: 2024-02-01)
+        EMBEDDING_DIM: Vector dimensions (default: 1536)
+    """
+
+    def __init__(self) -> None:
+        """Initialize provider configuration from settings."""
+        settings = get_settings()
+        self._dimension = settings.embedding.dim
+        self._api_key = settings.embedding.azure_openai_api_key
+        self._endpoint = settings.embedding.azure_openai_endpoint
+        self._deployment = settings.embedding.azure_openai_deployment_name
+        self._api_version = settings.embedding.azure_openai_api_version
+        self._embeddings: Any = None
+
+    async def initialize(self) -> None:
+        """Initialize LangChain AzureOpenAIEmbeddings client.
+
+        Raises:
+            ImportError: If langchain-openai is not installed
+            ValueError: If required Azure settings are not configured
+        """
+        try:
+            from langchain_openai import AzureOpenAIEmbeddings
+        except ImportError as e:
+            raise ImportError(
+                'langchain-openai package required. '
+                'Install with: uv sync --extra embeddings-azure',
+            ) from e
+
+        # Validate required settings
+        if self._api_key is None:
+            raise ValueError('AZURE_OPENAI_API_KEY is required for Azure embedding provider.')
+
+        if self._endpoint is None:
+            raise ValueError('AZURE_OPENAI_ENDPOINT is required for Azure embedding provider.')
+
+        if self._deployment is None:
+            raise ValueError('AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME is required for Azure embedding provider.')
+
+        # Build kwargs dict for AzureOpenAIEmbeddings
+        kwargs: dict[str, Any] = {
+            'openai_api_key': self._api_key,
+            'azure_endpoint': self._endpoint,
+            'deployment': self._deployment,
+            'openai_api_version': self._api_version,
+        }
+        self._embeddings = AzureOpenAIEmbeddings(**kwargs)
+        logger.info(f'Initialized Azure OpenAI embedding provider: {self._deployment}')
+
+    async def shutdown(self) -> None:
+        """Cleanup resources."""
+        self._embeddings = None
+        logger.info('Azure OpenAI embedding provider shut down')
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Generate single embedding using async method."""
+        if self._embeddings is None:
+            raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        embedding = await self._embeddings.aembed_query(text)
+        embedding = self._convert_to_python_floats(embedding)
+
+        if len(embedding) != self._dimension:
+            raise ValueError(
+                f'Dimension mismatch: expected {self._dimension}, '
+                f'got {len(embedding)}. Check EMBEDDING_DIM setting.',
+            )
+
+        return embedding
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Generate batch embeddings using async method."""
+        if self._embeddings is None:
+            raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        embeddings = await self._embeddings.aembed_documents(texts)
+
+        result: list[list[float]] = []
+        for i, emb in enumerate(embeddings):
+            emb = self._convert_to_python_floats(emb)
+            if len(emb) != self._dimension:
+                raise ValueError(
+                    f'Embedding {i} dimension mismatch: '
+                    f'expected {self._dimension}, got {len(emb)}',
+                )
+            result.append(emb)
+
+        return result
+
+    async def is_available(self) -> bool:
+        """Check if Azure OpenAI API is available."""
+        if self._embeddings is None:
+            return False
+
+        try:
+            await self._embeddings.aembed_query('test')
+            return True
+        except Exception as e:
+            logger.warning(f'Azure OpenAI embedding not available: {e}')
+            return False
+
+    def get_dimension(self) -> int:
+        """Return configured embedding dimension."""
+        return self._dimension
+
+    @property
+    def provider_name(self) -> str:
+        """Return provider identifier."""
+        return 'azure'
+
+    @staticmethod
+    def _convert_to_python_floats(embedding: list[Any]) -> list[float]:
+        """Convert numpy types to Python float if needed."""
+        return [
+            x.item() if hasattr(x, 'item') else float(x)
+            for x in embedding
+        ]

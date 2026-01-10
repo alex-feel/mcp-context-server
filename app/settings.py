@@ -72,6 +72,171 @@ class AuthSettings(CommonSettings):
     )
 
 
+class EmbeddingSettings(CommonSettings):
+    """Embedding provider settings following LangChain conventions.
+
+    All environment variable names follow LangChain documentation conventions
+    for maximum compatibility and user familiarity.
+    """
+
+    # Provider selection
+    provider: Literal['ollama', 'openai', 'azure', 'huggingface', 'voyage'] = Field(
+        default='ollama',
+        alias='EMBEDDING_PROVIDER',
+        description='Embedding provider: ollama (default), openai, azure, huggingface, voyage',
+    )
+
+    # Common settings
+    model: str = Field(
+        default='embeddinggemma:latest',
+        alias='EMBEDDING_MODEL',
+        description='Embedding model name',
+    )
+    dim: int = Field(
+        default=768,
+        alias='EMBEDDING_DIM',
+        gt=0,
+        le=4096,
+        description='Embedding vector dimensions',
+    )
+
+    # Timeout and retry settings
+    timeout_s: float = Field(
+        default=30.0,
+        alias='EMBEDDING_TIMEOUT_S',
+        gt=0,
+        le=300,
+        description='Timeout in seconds for embedding generation API calls',
+    )
+    retry_max_attempts: int = Field(
+        default=3,
+        alias='EMBEDDING_RETRY_MAX_ATTEMPTS',
+        ge=1,
+        le=10,
+        description='Maximum number of retry attempts for embedding generation',
+    )
+    retry_base_delay_s: float = Field(
+        default=1.0,
+        alias='EMBEDDING_RETRY_BASE_DELAY_S',
+        gt=0,
+        le=30,
+        description='Base delay in seconds between retry attempts (with exponential backoff)',
+    )
+
+    # Ollama-specific (matches OLLAMA_HOST convention)
+    ollama_host: str = Field(
+        default='http://localhost:11434',
+        alias='OLLAMA_HOST',
+        description='Ollama server URL',
+    )
+
+    # OpenAI-specific (matches LangChain docs: OPENAI_API_KEY)
+    openai_api_key: SecretStr | None = Field(
+        default=None,
+        alias='OPENAI_API_KEY',
+        description='OpenAI API key',
+    )
+    openai_api_base: str | None = Field(
+        default=None,
+        alias='OPENAI_API_BASE',
+        description='Custom base URL for OpenAI-compatible APIs',
+    )
+    openai_organization: str | None = Field(
+        default=None,
+        alias='OPENAI_ORGANIZATION',
+        description='OpenAI organization ID',
+    )
+
+    # Azure OpenAI-specific (matches LangChain docs)
+    azure_openai_api_key: SecretStr | None = Field(
+        default=None,
+        alias='AZURE_OPENAI_API_KEY',
+        description='Azure OpenAI API key',
+    )
+    azure_openai_endpoint: str | None = Field(
+        default=None,
+        alias='AZURE_OPENAI_ENDPOINT',
+        description='Azure OpenAI endpoint URL',
+    )
+    azure_openai_api_version: str = Field(
+        default='2024-02-01',
+        alias='AZURE_OPENAI_API_VERSION',
+        description='Azure OpenAI API version',
+    )
+    azure_openai_deployment_name: str | None = Field(
+        default=None,
+        alias='AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME',
+        description='Azure OpenAI embedding deployment name',
+    )
+
+    # HuggingFace-specific (matches LangChain docs)
+    huggingface_api_key: SecretStr | None = Field(
+        default=None,
+        alias='HUGGINGFACEHUB_API_TOKEN',
+        description='HuggingFace Hub API token',
+    )
+
+    # Voyage AI-specific (matches LangChain docs: VOYAGE_API_KEY)
+    voyage_api_key: SecretStr | None = Field(
+        default=None,
+        alias='VOYAGE_API_KEY',
+        description='Voyage AI API key',
+    )
+    voyage_truncation: bool | None = Field(
+        default=None,
+        alias='VOYAGE_TRUNCATION',
+        description='Whether to truncate texts exceeding context length (default: auto)',
+    )
+    voyage_batch_size: int = Field(
+        default=7,
+        alias='VOYAGE_BATCH_SIZE',
+        ge=1,
+        le=128,
+        description='Number of texts per API call (default: 7)',
+    )
+
+    @field_validator('dim')
+    @classmethod
+    def validate_embedding_dim(cls, v: int) -> int:
+        """Validate embedding dimension is reasonable and warn about non-standard values."""
+        if v > 4096:
+            raise ValueError(
+                'EMBEDDING_DIM exceeds reasonable limit (4096). '
+                'Most embedding models use dimensions between 128-4096.',
+            )
+        if v % 64 != 0:
+            logger.warning(
+                f'EMBEDDING_DIM={v} is not a multiple of 64. '
+                f'Most embedding models use dimensions divisible by 64.',
+            )
+        return v
+
+
+class LangSmithSettings(CommonSettings):
+    """LangSmith tracing settings for cost tracking and observability."""
+
+    tracing: bool = Field(
+        default=False,
+        alias='LANGSMITH_TRACING',
+        description='Enable LangSmith tracing for cost tracking and observability',
+    )
+    api_key: SecretStr | None = Field(
+        default=None,
+        alias='LANGSMITH_API_KEY',
+        description='LangSmith API key for tracing',
+    )
+    endpoint: str = Field(
+        default='https://api.smith.langchain.com',
+        alias='LANGSMITH_ENDPOINT',
+        description='LangSmith API endpoint',
+    )
+    project: str = Field(
+        default='mcp-context-server',
+        alias='LANGSMITH_PROJECT',
+        description='LangSmith project name for grouping traces',
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage-related settings with environment variable mapping."""
 
@@ -239,32 +404,6 @@ class AppSettings(CommonSettings):
 
     # Semantic search settings
     enable_semantic_search: bool = Field(default=False, alias='ENABLE_SEMANTIC_SEARCH')
-    ollama_host: str = Field(default='http://localhost:11434', alias='OLLAMA_HOST')
-    embedding_model: str = Field(default='embeddinggemma:latest', alias='EMBEDDING_MODEL')
-    embedding_dim: int = Field(default=768, alias='EMBEDDING_DIM', gt=0, le=4096)
-
-    # Embedding service timeout and retry settings
-    embedding_timeout_s: float = Field(
-        default=30.0,
-        alias='EMBEDDING_TIMEOUT_S',
-        gt=0,
-        le=300,
-        description='Timeout in seconds for embedding generation API calls',
-    )
-    embedding_retry_max_attempts: int = Field(
-        default=3,
-        alias='EMBEDDING_RETRY_MAX_ATTEMPTS',
-        ge=1,
-        le=10,
-        description='Maximum number of retry attempts for embedding generation',
-    )
-    embedding_retry_base_delay_s: float = Field(
-        default=1.0,
-        alias='EMBEDDING_RETRY_BASE_DELAY_S',
-        gt=0,
-        le=30,
-        description='Base delay in seconds between retry attempts (with exponential backoff)',
-    )
 
     # Full-text search settings
     enable_fts: bool = Field(default=False, alias='ENABLE_FTS')
@@ -290,20 +429,11 @@ class AppSettings(CommonSettings):
     # Auth settings
     auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
 
-    @field_validator('embedding_dim')
-    @classmethod
-    def validate_embedding_dim(cls, v: int) -> int:
-        """Validate embedding dimension is reasonable and warn about non-standard values."""
-        if v > 4096:
-            raise ValueError(
-                'EMBEDDING_DIM exceeds reasonable limit (4096). Most Ollama embedding models use dimensions between 128-1024.',
-            )
-        if v % 64 != 0:
-            logger.warning(
-                f'EMBEDDING_DIM={v} is not a multiple of 64. '
-                f'Most Ollama embedding models use dimensions divisible by 64 (e.g., 128, 256, 384, 512, 768, 1024).',
-            )
-        return v
+    # Embedding provider settings (new structured settings for Phase 2+)
+    embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())
+
+    # LangSmith tracing settings
+    langsmith: LangSmithSettings = Field(default_factory=lambda: LangSmithSettings())
 
     @field_validator('fts_language')
     @classmethod

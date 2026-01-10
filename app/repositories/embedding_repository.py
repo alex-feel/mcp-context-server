@@ -73,14 +73,14 @@ class EmbeddingRepository(BaseRepository):
         self,
         context_id: int,
         embedding: list[float],
-        model: str = 'embeddinggemma:latest',
+        model: str,
     ) -> None:
         """Store embedding for a context entry.
 
         Args:
             context_id: ID of the context entry
-            embedding: 768-dimensional embedding vector
-            model: Model identifier
+            embedding: Embedding vector (dimension depends on provider/model configuration)
+            model: Model identifier (from settings.embedding.model)
         """
         if self.backend.backend_type == 'sqlite':
 
@@ -89,7 +89,8 @@ class EmbeddingRepository(BaseRepository):
                     import sqlite_vec
                 except ImportError as e:
                     raise RuntimeError(
-                        'sqlite_vec package is required for semantic search. Install with: uv sync --extra semantic-search',
+                        'sqlite_vec package is required for semantic search. '
+                        'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                     ) from e
 
                 embedding_blob = sqlite_vec.serialize_float32(embedding)
@@ -181,7 +182,8 @@ class EmbeddingRepository(BaseRepository):
                     import sqlite_vec
                 except ImportError as e:
                     raise RuntimeError(
-                        'sqlite_vec package is required for semantic search. Install with: uv sync --extra semantic-search',
+                        'sqlite_vec package is required for semantic search. '
+                        'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                     ) from e
 
                 query_blob = sqlite_vec.serialize_float32(query_embedding)
@@ -531,7 +533,8 @@ class EmbeddingRepository(BaseRepository):
                     import sqlite_vec
                 except ImportError as e:
                     raise RuntimeError(
-                        'sqlite_vec package is required for semantic search. Install with: uv sync --extra semantic-search',
+                        'sqlite_vec package is required for semantic search. '
+                        'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                     ) from e
 
                 embedding_blob = sqlite_vec.serialize_float32(embedding)
