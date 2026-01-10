@@ -142,7 +142,7 @@ class StorageSettings(BaseSettings):
     # PostgreSQL connection pool settings
     postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN')
     postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX')
-    postgresql_pool_timeout_s: float = Field(default=10.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
+    postgresql_pool_timeout_s: float = Field(default=120.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
     postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
 
     # PostgreSQL SSL settings

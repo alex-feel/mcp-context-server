@@ -478,10 +478,33 @@ class PostgreSQLBackend:
                 await self.circuit_breaker.record_failure()
                 raise
 
+    async def _validate_connection_state(self, conn: asyncpg.Connection) -> bool:
+        """Validate connection is in healthy state before critical operations.
+
+        Executes a lightweight query to verify the connection protocol state
+        is synchronized with the server. This catches corrupted connections
+        before they cause protocol errors in batch operations.
+
+        Args:
+            conn: The asyncpg connection to validate
+
+        Returns:
+            True if connection is healthy, False otherwise
+        """
+        try:
+            # Lightweight query to verify protocol state
+            await conn.fetchval('SELECT 1')
+            return True
+        except Exception as e:
+            logger.warning(f'Connection validation failed: {e}')
+            await self.circuit_breaker.record_failure()
+            return False
+
     async def execute_write(
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
         *args: Any,
+        validate_connection: bool = False,
         **kwargs: Any,
     ) -> T:
         """Execute a write operation with retry logic and transaction management.
@@ -490,6 +513,8 @@ class PostgreSQLBackend:
             operation: Async callable that performs the write operation.
                       Signature: async def operation(conn: asyncpg.Connection, *args, **kwargs) -> T
             *args: Positional arguments to pass to operation
+            validate_connection: If True, validate connection state before operation.
+                                Use for batch operations that are sensitive to protocol state.
             **kwargs: Keyword arguments to pass to operation
 
         Returns:
@@ -497,6 +522,7 @@ class PostgreSQLBackend:
 
         Raises:
             RuntimeError: If backend is shut down or circuit breaker is open
+            asyncpg.exceptions.ConnectionDoesNotExistError: If connection validation fails
 
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
@@ -509,12 +535,19 @@ class PostgreSQLBackend:
 
         for attempt in range(self.retry_config.max_retries):
             try:
-                async with self.get_connection(readonly=False) as conn, conn.transaction():
-                    # Cast to async callable since PostgreSQLBackend only uses async operations
-                    async_operation = cast(Callable[..., Awaitable[T]], operation)
-                    result = await async_operation(conn, *args, **kwargs)
-                    self.metrics.total_queries += 1
-                    return result
+                async with self.get_connection(readonly=False) as conn:
+                    # Validate connection state before critical operations
+                    if validate_connection and not await self._validate_connection_state(conn):
+                        raise asyncpg.exceptions.ConnectionDoesNotExistError(
+                            'Connection validation failed - connection may be corrupted',
+                        )
+
+                    async with conn.transaction():
+                        # Cast to async callable since PostgreSQLBackend only uses async operations
+                        async_operation = cast(Callable[..., Awaitable[T]], operation)
+                        result = await async_operation(conn, *args, **kwargs)
+                        self.metrics.total_queries += 1
+                        return result
 
             except asyncpg.exceptions.SerializationError as e:
                 # Transient error - retry with backoff
@@ -547,6 +580,23 @@ class PostgreSQLBackend:
                 logger.warning(
                     f'Connection error on write, retrying in {delay:.2f}s '
                     f'(attempt {attempt + 1}/{self.retry_config.max_retries})',
+                )
+                await asyncio.sleep(delay)
+
+            except asyncpg.exceptions.InternalClientError as e:
+                # Protocol state corruption - retry with fresh connection
+                last_error = e
+                delay = min(
+                    self.retry_config.base_delay * (self.retry_config.backoff_factor**attempt),
+                    self.retry_config.max_delay,
+                )
+
+                if self.retry_config.jitter:
+                    delay += random.uniform(0, delay * 0.3)
+
+                logger.warning(
+                    f'Protocol state error on write, retrying in {delay:.2f}s '
+                    f'(attempt {attempt + 1}/{self.retry_config.max_retries}): {e}',
                 )
                 await asyncio.sleep(delay)
 

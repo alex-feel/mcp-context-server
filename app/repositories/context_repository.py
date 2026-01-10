@@ -882,6 +882,9 @@ class ContextRepository(BaseRepository):
 
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
         async def _patch_metadata_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
+            # Import settings here to avoid circular import and ensure schema is retrieved at call time
+            from app.settings import get_settings
+
             # Verify entry exists before attempting update
             row = await conn.fetchrow(
                 f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
@@ -904,12 +907,16 @@ class ContextRepository(BaseRepository):
             #
             # This approach provides identical behavior to SQLite's json_patch() function,
             # ensuring consistent RFC 7396 semantics across both backends.
+            #
+            # IMPORTANT: Use schema-qualified function name to ensure the function is found
+            # regardless of PostgreSQL search_path configuration (critical for Supabase).
+            schema = get_settings().storage.postgresql_schema
             p1 = self._placeholder(1)
             p2 = self._placeholder(2)
             result = await conn.execute(
                 f'''
                 UPDATE context_entries
-                SET metadata = jsonb_merge_patch(COALESCE(metadata, '{{}}'::jsonb), {p1}::jsonb),
+                SET metadata = {schema}.jsonb_merge_patch(COALESCE(metadata, '{{}}'::jsonb), {p1}::jsonb),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = {p2}
                 ''',
@@ -1106,7 +1113,7 @@ class ContextRepository(BaseRepository):
 
             return results
 
-        return await self.backend.execute_write(_store_batch_postgresql)
+        return await self.backend.execute_write(_store_batch_postgresql, validate_connection=True)
 
     async def update_contexts_batch(
         self,
@@ -1255,7 +1262,7 @@ class ContextRepository(BaseRepository):
 
             return results
 
-        return await self.backend.execute_write(_update_batch_postgresql)
+        return await self.backend.execute_write(_update_batch_postgresql, validate_connection=True)
 
     async def delete_contexts_batch(
         self,
@@ -1367,4 +1374,4 @@ class ContextRepository(BaseRepository):
             logger.info(f'Batch delete: removed {deleted_count} entries using criteria: {criteria_used}')
             return deleted_count, criteria_used
 
-        return await self.backend.execute_write(_delete_batch_postgresql)
+        return await self.backend.execute_write(_delete_batch_postgresql, validate_connection=True)

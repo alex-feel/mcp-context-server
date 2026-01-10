@@ -1400,6 +1400,54 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts_language}')
 
 
+def _validate_pool_timeout_for_embedding() -> None:
+    """Validate POSTGRESQL_POOL_TIMEOUT_S is sufficient for embedding operations.
+
+    Logs INFO-level warning if pool timeout is less than calculated minimum
+    based on embedding timeout and retry configuration. This helps operators
+    identify potential timeout issues during high-load semantic search operations.
+
+    The calculation considers:
+    - EMBEDDING_TIMEOUT_S * EMBEDDING_RETRY_MAX_ATTEMPTS (total timeout across retries)
+    - Exponential backoff delays between retry attempts
+    - 10% safety margin for network/processing overhead
+    """
+    if not settings.enable_semantic_search:
+        return  # Skip validation if semantic search is disabled
+
+    # Calculate minimum required timeout
+    # Formula: timeout * retries + exponential_backoff_delays + 10% margin
+    timeout = settings.embedding_timeout_s
+    retries = settings.embedding_retry_max_attempts
+    base_delay = settings.embedding_retry_base_delay_s
+
+    # Calculate total backoff delays (with 10% jitter estimate)
+    # Backoff formula: base_delay * (2 ** attempt) for each retry
+    total_backoff = 0.0
+    for attempt in range(retries - 1):  # No delay after last attempt
+        delay = base_delay * (2**attempt)
+        jitter = delay * 0.1  # Max jitter estimate
+        total_backoff += delay + jitter
+
+    # Total maximum embedding time
+    total_embedding_time = (timeout * retries) + total_backoff
+
+    # Add 10% safety margin
+    minimum_pool_timeout = total_embedding_time * 1.1
+
+    pool_timeout = settings.storage.postgresql_pool_timeout_s
+
+    if pool_timeout < minimum_pool_timeout:
+        logger.info(
+            f'POSTGRESQL_POOL_TIMEOUT_S ({pool_timeout}s) is below recommended minimum '
+            f'({minimum_pool_timeout:.1f}s) for embedding operations. '
+            f'Calculation: EMBEDDING_TIMEOUT_S ({timeout}s) * EMBEDDING_RETRY_MAX_ATTEMPTS ({retries}) '
+            f'+ backoff ({total_backoff:.1f}s) + 10%% safety margin. '
+            f'Consider increasing POSTGRESQL_POOL_TIMEOUT_S to avoid connection timeout errors '
+            f'during high-load semantic search operations.',
+        )
+
+
 def _is_tool_disabled(tool_name: str) -> bool:
     """Check if a tool is in the disabled list.
 
@@ -1472,10 +1520,13 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_function_search_path_migration(backend=_backend)
         # 6) Apply FTS migration if enabled
         await apply_fts_migration(backend=_backend)
-        # 7) Initialize repositories with the backend
+        # 7) Validate pool timeout for embedding operations (PostgreSQL only)
+        if _backend.backend_type == 'postgresql':
+            _validate_pool_timeout_for_embedding()
+        # 8) Initialize repositories with the backend
         _repositories = RepositoryContainer(_backend)
 
-        # 8) Register core tools (annotations from TOOL_ANNOTATIONS)
+        # 9) Register core tools (annotations from TOOL_ANNOTATIONS)
         # Additive tools (create new entries)
         _register_tool(store_context)
         _register_tool(store_context_batch)
@@ -1494,7 +1545,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
         _register_tool(delete_context)
         _register_tool(delete_context_batch)
 
-        # 9) Initialize semantic search if enabled
+        # 10) Initialize semantic search if enabled
         if settings.enable_semantic_search:
             semantic_available = await check_semantic_search_dependencies(_backend.backend_type)
 
@@ -1522,7 +1573,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
-        # 10) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 11) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.enable_fts:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
@@ -1539,7 +1590,7 @@ async def lifespan(_: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
-        # 11) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 12) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.enable_hybrid_search:
             semantic_available_for_hybrid = settings.enable_semantic_search and _embedding_service is not None
             fts_available_for_hybrid = settings.enable_fts
