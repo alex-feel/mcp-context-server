@@ -47,10 +47,12 @@ Hybrid Search uses existing FTS and Semantic Search infrastructure. No additiona
 For full hybrid search capability:
 
 ```bash
-# Install semantic search dependencies
-uv sync --extra semantic-search
+# Install embedding provider dependencies (e.g., Ollama)
+uv sync --extra embeddings-ollama
 
-# Pull embedding model
+# Or use another provider: embeddings-openai, embeddings-azure, embeddings-huggingface, embeddings-voyage
+
+# Pull embedding model (for Ollama)
 ollama pull embeddinggemma:latest
 ```
 
@@ -99,7 +101,7 @@ Add to your `.mcp.json` file:
         "--python",
         "3.12",
         "--with",
-        "mcp-context-server[semantic-search]",
+        "mcp-context-server[embeddings-ollama]",
         "mcp-context-server"
       ],
       "env": {

@@ -38,11 +38,13 @@ claude mcp add context-server -- uvx --python 3.12 mcp-context-server
 # Or from GitHub (latest development version)
 claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
 
-# Or with semantic search (for setup instructions, see the docs/semantic-search.md)
-claude mcp add context-server -- uvx --python 3.12 --with mcp-context-server[semantic-search] mcp-context-server
+# Or with semantic search using Ollama (for setup instructions, see docs/semantic-search.md)
+claude mcp add context-server -- uvx --python 3.12 --with mcp-context-server[embeddings-ollama] mcp-context-server
 
-# Or from GitHub (latest development version) with semantic search (for setup instructions, see docs/semantic-search.md)
-claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[semantic-search] mcp-context-server
+# Or from GitHub (latest development version) with semantic search
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[embeddings-ollama] mcp-context-server
+
+# Available embedding providers: embeddings-ollama (default), embeddings-openai, embeddings-azure, embeddings-huggingface, embeddings-voyage
 ```
 
 For more details, see: https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server
@@ -128,9 +130,21 @@ For more details on environment variable expansion, see: https://docs.claude.com
 
 **Semantic Search Settings:**
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
-- **OLLAMA_HOST**: Ollama API host URL for embedding generation - defaults to http://localhost:11434
-- **EMBEDDING_MODEL**: Embedding model name for semantic search - defaults to embeddinggemma:latest
+- **EMBEDDING_PROVIDER**: Embedding provider - `ollama` (default), `openai`, `azure`, `huggingface`, or `voyage`
+- **EMBEDDING_MODEL**: Embedding model name - defaults to `embeddinggemma:latest` (provider-specific)
 - **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 768. **Note**: Changing this after initial setup requires database migration (see [Semantic Search Guide](docs/semantic-search.md#changing-embedding-dimensions))
+
+**Provider-Specific Settings** (see [Semantic Search Guide](docs/semantic-search.md) for complete details):
+- **OLLAMA_HOST**: Ollama API URL (default: http://localhost:11434)
+- **OPENAI_API_KEY**: OpenAI API key (for `openai` provider)
+- **AZURE_OPENAI_API_KEY**, **AZURE_OPENAI_ENDPOINT**, **AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME**: Azure OpenAI settings
+- **HUGGINGFACEHUB_API_TOKEN**: HuggingFace Hub token (for `huggingface` provider)
+- **VOYAGE_API_KEY**: Voyage AI API key (for `voyage` provider)
+
+**LangSmith Tracing** (optional observability):
+- **LANGSMITH_TRACING**: Enable LangSmith tracing (true/false) - defaults to false
+- **LANGSMITH_API_KEY**: LangSmith API key
+- **LANGSMITH_PROJECT**: Project name for grouping traces - defaults to `mcp-context-server`
 
 **Metadata Indexing Settings:**
 - **METADATA_INDEXED_FIELDS**: Comma-separated list of metadata fields to index with optional type hints - defaults to `status,agent_name,task_name,project,report_type,references:object,technologies:array`. Type hints: `string` (default), `integer`, `boolean`, `float`, `array`, `object`. Array/object types use PostgreSQL GIN indexes and are skipped in SQLite.
@@ -156,7 +170,7 @@ For a complete list of all configuration options, see [app/settings.py](app/sett
 
 ## Semantic Search
 
-For detailed instructions on enabling optional semantic search with Ollama and EmbeddingGemma, see the [Semantic Search Guide](docs/semantic-search.md).
+For detailed instructions on enabling optional semantic search with multiple embedding providers (Ollama, OpenAI, Azure, HuggingFace, Voyage), see the [Semantic Search Guide](docs/semantic-search.md).
 
 ## Full-Text Search
 
