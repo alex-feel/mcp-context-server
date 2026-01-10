@@ -6,6 +6,7 @@ verifying all 8 tools work correctly via FastMCP client.
 
 import asyncio
 import base64
+import importlib.util
 import os
 import sqlite3
 import sys
@@ -18,6 +19,12 @@ from typing import Any
 import pytest
 from anyio import Path as AsyncPath
 from fastmcp import Client
+
+# Conditional skip marker for tests requiring sqlite-vec package
+requires_sqlite_vec = pytest.mark.skipif(
+    importlib.util.find_spec('sqlite_vec') is None,
+    reason='sqlite-vec package not installed',
+)
 
 
 class MCPServerIntegrationTest:
@@ -5241,6 +5248,7 @@ class MCPServerIntegrationTest:
 # Pytest integration
 @pytest.mark.integration
 @pytest.mark.asyncio
+@requires_sqlite_vec
 async def test_real_server(tmp_path: Path) -> None:
     """Run integration tests against real server with temporary database.
 

@@ -580,14 +580,14 @@ class TestSemanticSearchNotAvailable:
         from app.server import semantic_search_context
 
         # Store original
-        original_service = server._embedding_service
+        original_service = server._embedding_provider
 
         try:
             # Clear the embedding service
-            server._embedding_service = None
+            server._embedding_provider = None
 
             with pytest.raises(ToolError, match='Semantic search is not available'):
                 await semantic_search_context(query='test query', limit=20)
         finally:
             # Restore original
-            server._embedding_service = original_service
+            server._embedding_provider = original_service

@@ -495,8 +495,8 @@ class TestSemanticSearchDateFiltering:
     async def test_semantic_search_with_start_date(self) -> None:
         """Test semantic_search_context with start_date filter."""
         # Mock embedding service
-        mock_embedding_service = MagicMock()
-        mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
+        mock_embedding_provider = MagicMock()
+        mock_embedding_provider.embed_query = AsyncMock(return_value=[0.1] * 768)
 
         # Mock search results (now returns tuple with stats)
         self.mock_repos.embeddings.search = AsyncMock(return_value=([
@@ -514,7 +514,7 @@ class TestSemanticSearchDateFiltering:
 
         with (
             patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_service', mock_embedding_service),
+            patch('app.server._embedding_provider', mock_embedding_provider),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_semantic_search = True
@@ -541,8 +541,8 @@ class TestSemanticSearchDateFiltering:
 
         Note: Date-only end_date is expanded to end-of-day (T23:59:59.999999).
         """
-        mock_embedding_service = MagicMock()
-        mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
+        mock_embedding_provider = MagicMock()
+        mock_embedding_provider.embed_query = AsyncMock(return_value=[0.1] * 768)
 
         self.mock_repos.embeddings.search = AsyncMock(
             return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
@@ -554,7 +554,7 @@ class TestSemanticSearchDateFiltering:
 
         with (
             patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_service', mock_embedding_service),
+            patch('app.server._embedding_provider', mock_embedding_provider),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_semantic_search = True
@@ -576,8 +576,8 @@ class TestSemanticSearchDateFiltering:
     @pytest.mark.asyncio
     async def test_semantic_search_with_date_range(self) -> None:
         """Test semantic_search_context with both start_date and end_date."""
-        mock_embedding_service = MagicMock()
-        mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
+        mock_embedding_provider = MagicMock()
+        mock_embedding_provider.embed_query = AsyncMock(return_value=[0.1] * 768)
 
         self.mock_repos.embeddings.search = AsyncMock(
             return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
@@ -590,7 +590,7 @@ class TestSemanticSearchDateFiltering:
 
         with (
             patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_service', mock_embedding_service),
+            patch('app.server._embedding_provider', mock_embedding_provider),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_semantic_search = True
@@ -614,10 +614,10 @@ class TestSemanticSearchDateFiltering:
     @pytest.mark.asyncio
     async def test_semantic_search_invalid_date_format_raises_error(self) -> None:
         """Test semantic_search_context with invalid date format raises ToolError."""
-        mock_embedding_service = MagicMock()
+        mock_embedding_provider = MagicMock()
 
         with (
-            patch('app.server._embedding_service', mock_embedding_service),
+            patch('app.server._embedding_provider', mock_embedding_provider),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_semantic_search = True
@@ -636,10 +636,10 @@ class TestSemanticSearchDateFiltering:
     @pytest.mark.asyncio
     async def test_semantic_search_invalid_date_range_raises_error(self) -> None:
         """Test semantic_search_context with start_date > end_date raises ToolError."""
-        mock_embedding_service = MagicMock()
+        mock_embedding_provider = MagicMock()
 
         with (
-            patch('app.server._embedding_service', mock_embedding_service),
+            patch('app.server._embedding_provider', mock_embedding_provider),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_semantic_search = True
@@ -659,8 +659,8 @@ class TestSemanticSearchDateFiltering:
     @pytest.mark.asyncio
     async def test_semantic_search_with_datetime_format(self) -> None:
         """Test semantic_search_context with full datetime format."""
-        mock_embedding_service = MagicMock()
-        mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
+        mock_embedding_provider = MagicMock()
+        mock_embedding_provider.embed_query = AsyncMock(return_value=[0.1] * 768)
 
         self.mock_repos.embeddings.search = AsyncMock(
             return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
@@ -672,7 +672,7 @@ class TestSemanticSearchDateFiltering:
 
         with (
             patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_service', mock_embedding_service),
+            patch('app.server._embedding_provider', mock_embedding_provider),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_semantic_search = True
@@ -696,8 +696,8 @@ class TestSemanticSearchDateFiltering:
     @pytest.mark.asyncio
     async def test_semantic_search_no_date_filter_passes_none(self) -> None:
         """Test semantic_search_context without date filter passes None to repository."""
-        mock_embedding_service = MagicMock()
-        mock_embedding_service.generate_embedding = AsyncMock(return_value=[0.1] * 768)
+        mock_embedding_provider = MagicMock()
+        mock_embedding_provider.embed_query = AsyncMock(return_value=[0.1] * 768)
 
         self.mock_repos.embeddings.search = AsyncMock(
             return_value=([], {'execution_time_ms': 1.0, 'filters_applied': 0, 'rows_returned': 0}),
@@ -706,7 +706,7 @@ class TestSemanticSearchDateFiltering:
 
         with (
             patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_service', mock_embedding_service),
+            patch('app.server._embedding_provider', mock_embedding_provider),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_semantic_search = True
