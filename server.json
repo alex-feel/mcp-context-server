@@ -403,6 +403,118 @@
           "name": "HYBRID_RRF_K"
         },
         {
+          "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_PROVIDER"
+        },
+        {
+          "description": "OpenAI API key for OpenAI embedding provider",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "OPENAI_API_KEY"
+        },
+        {
+          "description": "Custom base URL for OpenAI-compatible APIs",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "OPENAI_API_BASE"
+        },
+        {
+          "description": "OpenAI organization ID",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "OPENAI_ORGANIZATION"
+        },
+        {
+          "description": "Azure OpenAI API key",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "AZURE_OPENAI_API_KEY"
+        },
+        {
+          "description": "Azure OpenAI endpoint URL",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AZURE_OPENAI_ENDPOINT"
+        },
+        {
+          "description": "Azure OpenAI embedding deployment name",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME"
+        },
+        {
+          "description": "Azure OpenAI API version (default: 2024-02-01)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AZURE_OPENAI_API_VERSION"
+        },
+        {
+          "description": "HuggingFace Hub API token for HuggingFace embedding provider",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "HUGGINGFACEHUB_API_TOKEN"
+        },
+        {
+          "description": "Voyage AI API key for Voyage embedding provider",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "VOYAGE_API_KEY"
+        },
+        {
+          "description": "Voyage AI truncation mode (true/false)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "VOYAGE_TRUNCATION"
+        },
+        {
+          "description": "Voyage AI batch size for embedding requests",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "VOYAGE_BATCH_SIZE"
+        },
+        {
+          "description": "Enable LangSmith tracing",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "LANGSMITH_TRACING"
+        },
+        {
+          "description": "LangSmith API key",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "LANGSMITH_API_KEY"
+        },
+        {
+          "description": "LangSmith project name",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "LANGSMITH_PROJECT"
+        },
+        {
+          "description": "LangSmith API endpoint URL",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "LANGSMITH_ENDPOINT"
+        },
+        {
           "description": "Comma-separated list of metadata fields to index (field:type format)",
           "isRequired": false,
           "format": "string",
@@ -923,6 +1035,118 @@
           "format": "number",
           "isSecret": false,
           "name": "HYBRID_RRF_K"
+        },
+        {
+          "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "EMBEDDING_PROVIDER"
+        },
+        {
+          "description": "OpenAI API key for OpenAI embedding provider",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "OPENAI_API_KEY"
+        },
+        {
+          "description": "Custom base URL for OpenAI-compatible APIs",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "OPENAI_API_BASE"
+        },
+        {
+          "description": "OpenAI organization ID",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "OPENAI_ORGANIZATION"
+        },
+        {
+          "description": "Azure OpenAI API key",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "AZURE_OPENAI_API_KEY"
+        },
+        {
+          "description": "Azure OpenAI endpoint URL",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AZURE_OPENAI_ENDPOINT"
+        },
+        {
+          "description": "Azure OpenAI embedding deployment name",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME"
+        },
+        {
+          "description": "Azure OpenAI API version (default: 2024-02-01)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AZURE_OPENAI_API_VERSION"
+        },
+        {
+          "description": "HuggingFace Hub API token for HuggingFace embedding provider",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "HUGGINGFACEHUB_API_TOKEN"
+        },
+        {
+          "description": "Voyage AI API key for Voyage embedding provider",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "VOYAGE_API_KEY"
+        },
+        {
+          "description": "Voyage AI truncation mode (true/false)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "VOYAGE_TRUNCATION"
+        },
+        {
+          "description": "Voyage AI batch size for embedding requests",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "VOYAGE_BATCH_SIZE"
+        },
+        {
+          "description": "Enable LangSmith tracing",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "LANGSMITH_TRACING"
+        },
+        {
+          "description": "LangSmith API key",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "LANGSMITH_API_KEY"
+        },
+        {
+          "description": "LangSmith project name",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "LANGSMITH_PROJECT"
+        },
+        {
+          "description": "LangSmith API endpoint URL",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "LANGSMITH_ENDPOINT"
         },
         {
           "description": "Comma-separated list of metadata fields to index (field:type format)",

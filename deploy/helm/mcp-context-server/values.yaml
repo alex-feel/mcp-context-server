@@ -104,13 +104,19 @@ search:
     language: "english"
   semantic:
     enabled: false
+    # Embedding provider: ollama (default), openai, azure, huggingface, voyage
+    provider: "ollama"
     model: "embeddinggemma:latest"
     dim: 768
+    # Timeout and retry settings
+    timeout: 30
+    retryMaxAttempts: 3
+    retryBaseDelay: 1.0
   hybrid:
     enabled: false
     rrfK: 60
 
-# Ollama sidecar configuration
+# Ollama sidecar configuration (only used when search.semantic.provider=ollama)
 ollama:
   enabled: false
   image:
@@ -128,6 +134,33 @@ ollama:
     enabled: true
     size: 5Gi
     storageClassName: ""
+
+# LangSmith tracing (optional)
+langsmith:
+  enabled: false
+  # API key stored in secret
+  apiKey: ""
+  endpoint: "https://api.smith.langchain.com"
+  project: "mcp-context-server"
+  # Use existing secret
+  existingSecret: ""
+  existingSecretKey: "langsmith-api-key"
+
+# Provider-specific API keys (stored in secrets)
+embeddingSecrets:
+  # OpenAI
+  openaiApiKey: ""
+  # Azure OpenAI
+  azureOpenaiApiKey: ""
+  azureOpenaiEndpoint: ""
+  azureOpenaiDeployment: ""
+  azureOpenaiApiVersion: "2024-02-01"
+  # HuggingFace
+  huggingfaceApiToken: ""
+  # Voyage AI
+  voyageApiKey: ""
+  # Use existing secret for all provider keys
+  existingSecret: ""
 
 # Pod security context
 podSecurityContext:

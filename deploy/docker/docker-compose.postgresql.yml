@@ -24,12 +24,18 @@ services:
       - POSTGRESQL_DATABASE=mcp_context
       # Semantic search configuration
       - ENABLE_SEMANTIC_SEARCH=true
+      # Embedding provider selection (default: ollama)
+      - EMBEDDING_PROVIDER=ollama
       - OLLAMA_HOST=http://ollama:11434
       - EMBEDDING_MODEL=embeddinggemma:latest
       - EMBEDDING_DIM=768
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
+      # LangSmith tracing (optional, disabled by default)
+      # - LANGSMITH_TRACING=false
+      # - LANGSMITH_API_KEY=
+      # - LANGSMITH_PROJECT=mcp-context-server
     depends_on:
       postgres:
         condition: service_healthy

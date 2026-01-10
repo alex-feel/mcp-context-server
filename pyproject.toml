@@ -31,11 +31,54 @@ packages = ["app"]
 package = true
 
 [project.optional-dependencies]
-semantic-search = [
-    "ollama>=0.4.0",
-    "numpy>=1.24.0",
+# Embedding providers - install ONE based on EMBEDDING_PROVIDER setting
+# Each includes all necessary dependencies
+embeddings-ollama = [
+    "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
+    "langchain-ollama>=0.3.0",
+    "langsmith>=0.4.0",
+]
+embeddings-openai = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-openai>=0.3.0",
+    "langsmith>=0.4.0",
+]
+embeddings-azure = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-openai>=0.3.0",  # Azure uses same package as OpenAI
+    "langsmith>=0.4.0",
+]
+embeddings-huggingface = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-huggingface>=0.2.0",
+    "langsmith>=0.4.0",
+]
+embeddings-voyage = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-voyageai>=0.3.0",
+    "langsmith>=0.4.0",
+]
+
+# Convenience: all embedding providers (for testing/development)
+embeddings-all = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-ollama>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "langchain-huggingface>=0.2.0",
+    "langchain-voyageai>=0.3.0",
+    "langsmith>=0.4.0",
 ]
 
 [dependency-groups]
@@ -205,11 +248,6 @@ ignore_errors = true
 module = ['sqlite_vec', 'pgvector.asyncpg', 'ollama', 'numpy']
 ignore_missing_imports = true
 
-# Allow Any from optional dependencies in embedding_service
-[[tool.mypy.overrides]]
-module = 'app.services.embedding_service'
-disallow_any_unimported = false
-
 [tool.pyright]
 include = ["app", "tests"]
 exclude = [".venv", "**/__pycache__"]
@@ -224,17 +262,6 @@ reportUnnecessaryTypeIgnoreComment = false
 # Suppress optional dependency errors in app/backends (pgvector.asyncpg, sqlite_vec)
 [[tool.pyright.executionEnvironments]]
 root = "app/backends"
-reportMissingImports = false
-reportMissingModuleSource = false
-reportMissingTypeStubs = false
-reportUnknownVariableType = false
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
-
-# Suppress optional dependency errors in app/services (ollama, numpy)
-[[tool.pyright.executionEnvironments]]
-root = "app/services"
 reportMissingImports = false
 reportMissingModuleSource = false
 reportMissingTypeStubs = false
