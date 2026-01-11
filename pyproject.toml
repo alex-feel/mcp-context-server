@@ -245,8 +245,18 @@ ignore_errors = true
 
 # Handle optional dependencies for semantic search
 [[tool.mypy.overrides]]
-module = ['sqlite_vec', 'pgvector.asyncpg', 'ollama', 'numpy']
+module = [
+  'sqlite_vec',
+  'pgvector.asyncpg',
+  'ollama',
+  'numpy',
+  'langchain_openai',
+  'langchain_huggingface',
+  'langchain_voyageai',
+  'langchain_ollama',
+]
 ignore_missing_imports = true
+follow_imports = 'skip'
 
 [tool.pyright]
 include = ["app", "tests"]
@@ -269,6 +279,13 @@ reportUnknownVariableType = false
 reportUnknownMemberType = false
 reportUnknownArgumentType = false
 reportUnknownParameterType = false
+
+# Suppress optional dependency errors in app/embeddings/providers (langchain_*)
+[[tool.pyright.executionEnvironments]]
+root = "app/embeddings/providers"
+reportMissingImports = false
+reportUnknownVariableType = false
+reportAttributeAccessIssue = false
 
 # Suppress optional dependency errors in app/repositories (sqlite_vec, numpy)
 [[tool.pyright.executionEnvironments]]
