@@ -15,6 +15,7 @@ import sqlite3
 import tomllib
 from collections.abc import AsyncGenerator
 from collections.abc import Callable
+from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC
@@ -539,7 +540,7 @@ async def _check_azure_dependencies(embedding_settings: EmbeddingSettings) -> Pr
         )
 
     # 2. Check required environment variables
-    missing_vars = []
+    missing_vars: list[str] = []
     if embedding_settings.azure_openai_api_key is None:
         missing_vars.append('AZURE_OPENAI_API_KEY')
     if embedding_settings.azure_openai_endpoint is None:
@@ -826,8 +827,8 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         async def _apply_migration_postgresql(conn: asyncpg.Connection) -> None:
             # PostgreSQL: pgvector extension registration happens in backend initialization
             # Just execute the migration SQL statements
-            statements = []
-            current_stmt = []
+            statements: list[str] = []
+            current_stmt: list[str] = []
             in_function = False
 
             for line in migration_sql.split('\n'):
@@ -938,7 +939,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
 
             async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
                 # Parse SQL statements, handling dollar-quoted function bodies
-                statements = []
+                statements: list[str] = []
                 current_stmt: list[str] = []
                 in_function = False
 
@@ -990,7 +991,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                 function_exists = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
                 async def _apply_jsonb_merge_patch_temp(conn: asyncpg.Connection) -> None:
-                    statements = []
+                    statements: list[str] = []
                     current_stmt: list[str] = []
                     in_function = False
 
@@ -1082,7 +1083,7 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
 
             async def _apply_search_path_fix(conn: asyncpg.Connection) -> None:
                 # Parse SQL statements, handling dollar-quoted DO blocks
-                statements = []
+                statements: list[str] = []
                 current_stmt: list[str] = []
                 in_dollar_quote = False
 
@@ -1119,7 +1120,7 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
             try:
 
                 async def _apply_search_path_fix_temp(conn: asyncpg.Connection) -> None:
-                    statements = []
+                    statements: list[str] = []
                     current_stmt: list[str] = []
                     in_dollar_quote = False
 
@@ -2048,8 +2049,8 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
                 async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
                     # PostgreSQL: parse and execute statements individually
-                    statements = []
-                    current_stmt = []
+                    statements: list[str] = []
+                    current_stmt: list[str] = []
                     in_function = False
 
                     for line in schema_sql.split('\n'):
@@ -2094,8 +2095,8 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
                     async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
                         # PostgreSQL: parse and execute statements individually
-                        statements = []
-                        current_stmt = []
+                        statements: list[str] = []
+                        current_stmt: list[str] = []
                         in_function = False
 
                         for line in schema_sql.split('\n'):
@@ -3684,7 +3685,7 @@ async def hybrid_search_context(
         available_modes.append('semantic')
 
     if not available_modes:
-        unavailable_reasons = []
+        unavailable_reasons: list[str] = []
         if 'fts' in search_modes and not fts_available:
             unavailable_reasons.append('FTS requires ENABLE_FTS=true')
         if 'semantic' in search_modes and not semantic_available:
@@ -3828,7 +3829,7 @@ async def hybrid_search_context(
                 semantic_error = str(e)
 
         # Run searches in parallel
-        tasks = []
+        tasks: list[Coroutine[Any, Any, None]] = []
         if 'fts' in available_modes:
             tasks.append(run_fts_search())
         if 'semantic' in available_modes:
@@ -4483,7 +4484,7 @@ async def delete_context_batch(
             )
 
         if ctx:
-            criteria_summary = []
+            criteria_summary: list[str] = []
             if context_ids:
                 criteria_summary.append(f'{len(context_ids)} IDs')
             if thread_ids:

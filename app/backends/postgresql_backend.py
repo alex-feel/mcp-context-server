@@ -374,8 +374,8 @@ class PostgreSQLBackend:
         schema_sql = schema_sql_template.replace('{SCHEMA}', settings.storage.postgresql_schema)
 
         # Split schema into individual statements
-        statements = []
-        current_statement = []
+        statements: list[str] = []
+        current_statement: list[str] = []
         in_function = False
 
         for line in schema_sql.split('\n'):

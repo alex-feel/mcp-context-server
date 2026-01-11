@@ -274,11 +274,6 @@ reportUnnecessaryTypeIgnoreComment = false
 root = "app/backends"
 reportMissingImports = false
 reportMissingModuleSource = false
-reportMissingTypeStubs = false
-reportUnknownVariableType = false
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
 
 # Suppress optional dependency errors in app/embeddings/providers (langchain_*)
 [[tool.pyright.executionEnvironments]]
@@ -291,23 +286,13 @@ reportAttributeAccessIssue = false
 [[tool.pyright.executionEnvironments]]
 root = "app/repositories"
 reportMissingImports = false
-reportMissingModuleSource = false
-reportMissingTypeStubs = false
-reportUnknownVariableType = false
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
 
 # Catch-all for remaining app files (e.g., server.py) - MUST come after more specific environments
 [[tool.pyright.executionEnvironments]]
 root = "app"
 reportMissingImports = false
-reportMissingModuleSource = false
-reportMissingTypeStubs = false
 reportUnknownVariableType = false
 reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
 
 # Relaxed checking for tests (simulate basic mode + suppress optional deps)
 [[tool.pyright.executionEnvironments]]
@@ -330,6 +315,7 @@ reportOptionalOperand = false
 reportMissingParameterType = false
 reportUnnecessaryComparison = false
 reportArgumentType = false
+reportAttributeAccessIssue = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"

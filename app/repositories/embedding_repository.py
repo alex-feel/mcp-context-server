@@ -93,7 +93,7 @@ class EmbeddingRepository(BaseRepository):
                         'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                     ) from e
 
-                embedding_blob = sqlite_vec.serialize_float32(embedding)
+                embedding_blob: bytes = cast(Any, sqlite_vec).serialize_float32(embedding)
                 query1 = (
                     f'INSERT INTO vec_context_embeddings(rowid, embedding) '
                     f'VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
@@ -186,9 +186,9 @@ class EmbeddingRepository(BaseRepository):
                         'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                     ) from e
 
-                query_blob = sqlite_vec.serialize_float32(query_embedding)
+                query_blob: bytes = cast(Any, sqlite_vec).serialize_float32(query_embedding)
 
-                filter_conditions = []
+                filter_conditions: list[str] = []
                 filter_params: list[Any] = []
 
                 # Count filters applied
@@ -537,7 +537,7 @@ class EmbeddingRepository(BaseRepository):
                         'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                     ) from e
 
-                embedding_blob = sqlite_vec.serialize_float32(embedding)
+                embedding_blob: bytes = cast(Any, sqlite_vec).serialize_float32(embedding)
                 query1 = (
                     f'UPDATE vec_context_embeddings SET embedding = {self._placeholder(1)} '
                     f'WHERE rowid = {self._placeholder(2)}'

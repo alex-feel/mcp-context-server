@@ -502,9 +502,9 @@ class SQLiteBackend:
             import sqlite_vec
 
             conn.enable_load_extension(True)
-            sqlite_vec.load(conn)
+            cast(Any, sqlite_vec).load(conn)
             conn.enable_load_extension(False)
-            conn._vec_loaded = True  # type: ignore[attr-defined]
+            cast(Any, conn)._vec_loaded = True
             logger.debug('sqlite-vec extension loaded successfully')
         except ImportError:
             logger.debug('sqlite-vec package not installed, skipping extension loading')
