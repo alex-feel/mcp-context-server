@@ -274,6 +274,7 @@ reportUnnecessaryTypeIgnoreComment = false
 root = "app/backends"
 reportMissingImports = false
 reportMissingModuleSource = false
+reportMissingTypeStubs = false
 
 # Suppress optional dependency errors in app/embeddings/providers (langchain_*)
 [[tool.pyright.executionEnvironments]]
@@ -286,11 +287,13 @@ reportAttributeAccessIssue = false
 [[tool.pyright.executionEnvironments]]
 root = "app/repositories"
 reportMissingImports = false
+reportMissingTypeStubs = false
 
 # Catch-all for remaining app files (e.g., server.py) - MUST come after more specific environments
 [[tool.pyright.executionEnvironments]]
 root = "app"
 reportMissingImports = false
+reportMissingTypeStubs = false
 reportUnknownVariableType = false
 reportUnknownMemberType = false
 
