@@ -19,14 +19,27 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # so we create our own temp database and enable semantic search
     import tempfile
 
-    temp_dir = tempfile.mkdtemp(prefix='mcp_server_wrapper_')
-    test_db = Path(temp_dir) / 'test_wrapper.db'
+    # Only create a temp DB if one wasn't provided by the parent process
+    if 'DB_PATH' not in os.environ:
+        temp_dir = tempfile.mkdtemp(prefix='mcp_server_wrapper_')
+        test_db = Path(temp_dir) / 'test_wrapper.db'
+        os.environ['DB_PATH'] = str(test_db)
+    else:
+        test_db = Path(os.environ['DB_PATH'])
 
-    os.environ['DB_PATH'] = str(test_db)
     os.environ['MCP_TEST_MODE'] = '1'
-    os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
-    os.environ['ENABLE_FTS'] = 'true'
-    os.environ['ENABLE_HYBRID_SEARCH'] = 'true'
+
+    # Only set these if not already set by parent process
+    # This allows tests to control these settings
+    if 'ENABLE_SEMANTIC_SEARCH' not in os.environ:
+        os.environ['ENABLE_SEMANTIC_SEARCH'] = 'true'
+    if 'ENABLE_FTS' not in os.environ:
+        os.environ['ENABLE_FTS'] = 'true'
+    if 'ENABLE_HYBRID_SEARCH' not in os.environ:
+        os.environ['ENABLE_HYBRID_SEARCH'] = 'true'
+
+    # DISABLED_TOOLS is passed through from parent process if set
+    # This allows tests to control which tools are disabled
 
     # Embedding configuration: Use CI values if set, otherwise use defaults
     # CI sets EMBEDDING_MODEL=all-minilm (46MB) and EMBEDDING_DIM=384 for fast tests
@@ -39,11 +52,13 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
         os.environ['EMBEDDING_DIM'] = '768'
 
     print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
-    print('[TEST SERVER] ENABLE_SEMANTIC_SEARCH=true', file=sys.stderr)
-    print('[TEST SERVER] ENABLE_FTS=true', file=sys.stderr)
-    print('[TEST SERVER] ENABLE_HYBRID_SEARCH=true', file=sys.stderr)
+    print(f'[TEST SERVER] ENABLE_SEMANTIC_SEARCH={os.environ.get("ENABLE_SEMANTIC_SEARCH")}', file=sys.stderr)
+    print(f'[TEST SERVER] ENABLE_FTS={os.environ.get("ENABLE_FTS")}', file=sys.stderr)
+    print(f'[TEST SERVER] ENABLE_HYBRID_SEARCH={os.environ.get("ENABLE_HYBRID_SEARCH")}', file=sys.stderr)
     print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]}', file=sys.stderr)
     print(f'[TEST SERVER] EMBEDDING_DIM={os.environ["EMBEDDING_DIM"]}', file=sys.stderr)
+    if 'DISABLED_TOOLS' in os.environ:
+        print(f'[TEST SERVER] DISABLED_TOOLS={os.environ["DISABLED_TOOLS"]}', file=sys.stderr)
 
     # Double-check we're not using the default database
     default_db = Path.home() / '.mcp' / 'context_storage.db'
