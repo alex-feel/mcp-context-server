@@ -80,9 +80,11 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Base64 image encoding/decoding with configurable size limits
    - `ContextEntry`, `ImageAttachment`, `StoreContextRequest` as main models
 
-6. **Services Layer** (`app/services/`):
-   - **EmbeddingService** (`embedding_service.py`): Generates embeddings via Ollama API for semantic search
-   - Handles model communication, vector dimension validation, and graceful degradation
+6. **Embeddings Layer** (`app/embeddings/`):
+   - **EmbeddingProvider Protocol** (`base.py`): Defines provider-agnostic interface with `embed_query()` and `embed_documents()` methods
+   - **EmbeddingFactory** (`factory.py`): Creates appropriate provider based on `EMBEDDING_PROVIDER` environment variable
+   - **Providers** (`providers/`): LangChain-based implementations for Ollama, OpenAI, Azure OpenAI, HuggingFace, Voyage AI
+   - All providers implement the same protocol for seamless switching between embedding services
 
 7. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
    - **MetadataFilter**: Advanced filter specification with 16 operators (eq, ne, gt, lt, contains, etc.)
@@ -209,16 +211,16 @@ All fixtures create SQLite temporary databases. `prevent_default_db_pollution` (
 The `semantic_search_context` tool is an optional feature that enables vector similarity search:
 
 **Architecture**:
-- **Embedding Service** (`app/services/embedding_service.py`): Generates embeddings via Ollama API
+- **Embedding Providers** (`app/embeddings/`): Multi-provider architecture supporting Ollama, OpenAI, Azure, HuggingFace, Voyage
 - **Embedding Repository** (`app/repositories/embedding_repository.py`): Manages vector storage and search
 - **Backend-Specific Implementation**:
   - **SQLite**: Uses `sqlite-vec` extension with BLOB storage and `vec_distance_l2()` function
   - **PostgreSQL**: Uses `pgvector` extension with native `vector` type and `<->` operator for L2 distance
 
 **When to Work With Semantic Search**:
-- Adding new embedding models: Modify `app/services/embedding_service.py`
-- Changing vector dimensions: Update migration files in `app/migrations/`
-- Performance tuning: Adjust `EMBEDDING_DIM` and indexing strategies
+- Adding new embedding providers: Create new provider in `app/embeddings/providers/`
+- Changing vector dimensions: Update `EMBEDDING_DIM` environment variable
+- Performance tuning: Adjust provider-specific settings in `app/settings.py`
 - Backend-specific optimizations: Edit `EmbeddingRepository` methods
 
 ### Full-Text Search (FTS) Implementation
@@ -275,7 +277,7 @@ The `hybrid_search_context` tool combines FTS and semantic search with Reciproca
 - **Package Manager**: uv with Hatchling build backend
 - **Entry Points**: `mcp-context-server`, `mcp-context` (see `pyproject.toml`)
 - **Python**: 3.12+ required
-- **Optional**: `uv sync --extra semantic-search` for vector search dependencies
+- **Optional**: `uv sync --extra embeddings-ollama` for semantic search (or `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`)
 
 ## Release Process
 
@@ -342,12 +344,19 @@ Configuration via `.env` file or environment:
 
 **Semantic Search Settings:**
 - `ENABLE_SEMANTIC_SEARCH`: Enable semantic search functionality (default: false)
-- `OLLAMA_HOST`: Ollama API host URL (default: http://localhost:11434)
-- `EMBEDDING_MODEL`: Embedding model name (default: embeddinggemma:latest)
+- `EMBEDDING_PROVIDER`: Embedding provider - `ollama` (default), `openai`, `azure`, `huggingface`, `voyage`
+- `EMBEDDING_MODEL`: Embedding model name (default: embeddinggemma:latest for Ollama)
 - `EMBEDDING_DIM`: Embedding vector dimensions (default: 768)
 - `EMBEDDING_TIMEOUT_S`: Timeout in seconds for embedding generation API calls (default: 30.0)
 - `EMBEDDING_RETRY_MAX_ATTEMPTS`: Maximum number of retry attempts for embedding generation (default: 3)
 - `EMBEDDING_RETRY_BASE_DELAY_S`: Base delay in seconds between retry attempts with exponential backoff (default: 1.0)
+
+**Provider-Specific Settings:**
+- `OLLAMA_HOST`: Ollama API host URL (default: http://localhost:11434)
+- `OPENAI_API_KEY`: OpenAI API key (required for openai provider)
+- `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME`: Azure OpenAI settings
+- `HUGGINGFACEHUB_API_TOKEN`: HuggingFace API token (required for huggingface provider)
+- `VOYAGE_API_KEY`: Voyage AI API key (required for voyage provider)
 
 **Hybrid Search Settings:**
 - `ENABLE_HYBRID_SEARCH`: Enable hybrid search combining FTS and semantic with RRF fusion (default: false)
@@ -535,7 +544,7 @@ uv run python -c "from app.server import init_database, _backend; init_database(
 3. **Type Checking Errors**: Use `uv run mypy app` to identify type issues
 4. **MCP Connection Issues**: Verify server is running and check `.mcp.json` config
 5. **Windows Path Issues**: Use `Path` objects or raw strings (r"path\to\file") in Python code
-6. **Semantic Search Not Available**: Ensure `ENABLE_SEMANTIC_SEARCH=true` and install optional dependencies with `uv sync --extra semantic-search`
+6. **Semantic Search Not Available**: Ensure `ENABLE_SEMANTIC_SEARCH=true` and install an embedding provider: `uv sync --extra embeddings-ollama` (see docs/semantic-search.md for all providers)
 7. **Full-Text Search Not Available**: Ensure `ENABLE_FTS=true`. The feature works without additional dependencies. Check logs for migration status on startup.
 
 ## Code Quality Standards
@@ -558,6 +567,8 @@ uv run python -c "from app.server import init_database, _backend; init_database(
    - `StorageSettings`: Database and backend configuration
    - `TransportSettings`: HTTP transport settings (host, port, transport mode)
    - `AuthSettings`: Authentication settings (tokens, client IDs)
+   - `EmbeddingSettings`: Embedding provider configuration (provider selection, API keys, model settings)
+   - `LangSmithSettings`: LangSmith tracing configuration (optional observability)
 4. **Use `Field(alias='ENV_VAR_NAME')`** to map settings attributes to environment variable names
 5. **Update `server.json`** when adding new environment variables (for MCP registry)
 
