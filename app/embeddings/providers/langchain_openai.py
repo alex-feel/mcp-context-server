@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.embeddings.retry import with_retry_and_timeout
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -61,9 +62,13 @@ class OpenAIEmbeddingProvider:
             )
 
         # Build kwargs for OpenAIEmbeddings
+        # Disable internal retry (max_retries=0) - universal wrapper handles retries
+        # Disable internal timeout (timeout=None) - universal wrapper handles timeout
         kwargs: dict[str, Any] = {
             'model': self._model,
             'api_key': self._api_key.get_secret_value(),
+            'max_retries': 0,
+            'timeout': None,
         }
 
         if self._api_base:
@@ -90,13 +95,17 @@ class OpenAIEmbeddingProvider:
             Embedding vector as list of floats
 
         Raises:
-            RuntimeError: If provider not initialized or embedding fails
+            RuntimeError: If provider not initialized
             ValueError: If embedding dimension mismatch
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embedding = await self._embeddings.aembed_query(text)
+        async def _embed() -> list[Any]:
+            result: list[Any] = await self._embeddings.aembed_query(text)
+            return result
+
+        embedding = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_query')
         embedding = self._convert_to_python_floats(embedding)
 
         # Validate dimension
@@ -118,13 +127,17 @@ class OpenAIEmbeddingProvider:
             List of embedding vectors
 
         Raises:
-            RuntimeError: If provider not initialized or embedding fails
+            RuntimeError: If provider not initialized
             ValueError: If any embedding dimension mismatch
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embeddings = await self._embeddings.aembed_documents(texts)
+        async def _embed() -> list[list[Any]]:
+            result: list[list[Any]] = await self._embeddings.aembed_documents(texts)
+            return result
+
+        embeddings = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_documents')
 
         result: list[list[float]] = []
         for i, emb in enumerate(embeddings):

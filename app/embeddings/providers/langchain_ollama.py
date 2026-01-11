@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.embeddings.retry import with_retry_and_timeout
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class OllamaEmbeddingProvider:
                 'Install with: uv sync --extra embeddings-ollama',
             ) from e
 
+        # OllamaEmbeddings has no built-in retry
+        # Universal wrapper handles all retry logic
         self._embeddings = OllamaEmbeddings(
             model=self._model,
             base_url=self._base_url,
@@ -71,13 +74,17 @@ class OllamaEmbeddingProvider:
             Embedding vector as list of floats
 
         Raises:
-            RuntimeError: If provider not initialized or embedding fails
+            RuntimeError: If provider not initialized
             ValueError: If embedding dimension mismatch
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embedding = await self._embeddings.aembed_query(text)
+        async def _embed() -> list[Any]:
+            result: list[Any] = await self._embeddings.aembed_query(text)
+            return result
+
+        embedding = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_query')
 
         # Convert numpy types to Python float if needed
         embedding = self._convert_to_python_floats(embedding)
@@ -101,13 +108,17 @@ class OllamaEmbeddingProvider:
             List of embedding vectors
 
         Raises:
-            RuntimeError: If provider not initialized or embedding fails
+            RuntimeError: If provider not initialized
             ValueError: If any embedding dimension mismatch
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embeddings = await self._embeddings.aembed_documents(texts)
+        async def _embed() -> list[list[Any]]:
+            result: list[list[Any]] = await self._embeddings.aembed_documents(texts)
+            return result
+
+        embeddings = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_documents')
 
         # Convert numpy types and validate dimensions
         result: list[list[float]] = []

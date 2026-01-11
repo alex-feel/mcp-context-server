@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.embeddings.retry import with_retry_and_timeout
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,8 @@ class HuggingFaceEmbeddingProvider:
                 'Set the environment variable or use a different provider.',
             )
 
+        # HuggingFaceEndpointEmbeddings has no built-in retry
+        # Universal wrapper handles all retry logic
         self._embeddings = HuggingFaceEndpointEmbeddings(
             model=self._model,
             huggingfacehub_api_token=self._api_token.get_secret_value(),
@@ -68,13 +71,31 @@ class HuggingFaceEmbeddingProvider:
         logger.info('HuggingFace embedding provider shut down')
 
     async def embed_query(self, text: str) -> list[float]:
-        """Generate single embedding using async method."""
+        """Generate single embedding using async method.
+
+        Args:
+            text: Text to embed
+
+        Returns:
+            Embedding vector as list of floats
+
+        Raises:
+            RuntimeError: If provider not initialized
+            ValueError: If embedding dimension mismatch
+        """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embedding = await self._embeddings.aembed_query(text)
+        async def _embed() -> list[Any]:
+            result: list[Any] = await self._embeddings.aembed_query(text)
+            return result
+
+        embedding = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_query')
+
+        # Convert numpy types to Python float if needed
         embedding = self._convert_to_python_floats(embedding)
 
+        # Validate dimension
         if len(embedding) != self._dimension:
             raise ValueError(
                 f'Dimension mismatch: expected {self._dimension}, '
@@ -84,12 +105,28 @@ class HuggingFaceEmbeddingProvider:
         return embedding
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Generate batch embeddings using async method."""
+        """Generate batch embeddings using async method.
+
+        Args:
+            texts: List of texts to embed
+
+        Returns:
+            List of embedding vectors
+
+        Raises:
+            RuntimeError: If provider not initialized
+            ValueError: If any embedding dimension mismatch
+        """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embeddings = await self._embeddings.aembed_documents(texts)
+        async def _embed() -> list[list[Any]]:
+            result: list[list[Any]] = await self._embeddings.aembed_documents(texts)
+            return result
 
+        embeddings = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_documents')
+
+        # Convert numpy types and validate dimensions
         result: list[list[float]] = []
         for i, emb in enumerate(embeddings):
             emb = self._convert_to_python_floats(emb)
