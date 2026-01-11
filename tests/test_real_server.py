@@ -1714,6 +1714,275 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_metadata_patch_rfc7396_full_compliance(self) -> bool:
+        """Comprehensive RFC 7396 JSON Merge Patch compliance tests.
+
+        This test validates the FULL RFC 7396 Appendix A test cases on a real
+        SQLite database using the json_patch() function.
+
+        RFC 7396 Specification: https://datatracker.ietf.org/doc/html/rfc7396
+
+        Returns:
+            bool: True if all RFC 7396 tests passed.
+        """
+        test_name = 'metadata_patch_rfc7396_full_compliance'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            rfc_thread = f'{self.test_thread_id}_rfc7396'
+
+            # RFC 7396 Test Cases from Appendix A
+            # (name, initial_metadata, patch, expected_result)
+            test_cases: list[tuple[str, dict[str, object], dict[str, object], dict[str, object]]] = [
+                ('Case1_simple_replace', {'a': 'b'}, {'a': 'c'}, {'a': 'c'}),
+                ('Case2_add_new_key', {'a': 'b'}, {'b': 'c'}, {'a': 'b', 'b': 'c'}),
+                ('Case3_delete_key', {'a': 'b'}, {'a': None}, {}),
+                ('Case4_delete_preserve', {'a': 'b', 'b': 'c'}, {'a': None}, {'b': 'c'}),
+                ('Case5_array_replace', {'a': ['b']}, {'a': 'c'}, {'a': 'c'}),
+                ('Case6_value_to_array', {'a': 'c'}, {'a': ['b']}, {'a': ['b']}),
+                ('Case7_nested_merge', {'a': {'b': 'c'}}, {'a': {'b': 'd', 'c': None}}, {'a': {'b': 'd'}}),
+                ('Case8_array_objects', {'a': [{'b': 'c'}]}, {'a': [1]}, {'a': [1]}),
+                ('Case13_preserve_null', {'e': None}, {'a': 1}, {'a': 1, 'e': None}),
+                ('Case15_deep_nested', {}, {'a': {'bb': {'ccc': None}}}, {'a': {'bb': {}}}),
+            ]
+
+            for case_name, initial, patch, expected in test_cases:
+                # Create context with initial metadata
+                store_result = await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': rfc_thread,
+                        'source': 'agent',
+                        'text': f'RFC 7396 test: {case_name}',
+                        'metadata': initial,
+                    },
+                )
+                store_data = self._extract_content(store_result)
+                if not store_data.get('success'):
+                    self.test_results.append((test_name, False, f'{case_name}: Store failed'))
+                    return False
+
+                context_id = store_data.get('context_id')
+
+                # Apply patch
+                patch_result = await self.client.call_tool(
+                    'update_context',
+                    {
+                        'context_id': context_id,
+                        'metadata_patch': patch,
+                    },
+                )
+                patch_data = self._extract_content(patch_result)
+                if not patch_data.get('success'):
+                    self.test_results.append((test_name, False, f'{case_name}: Patch failed'))
+                    return False
+
+                # Verify result
+                verify_result = await self.client.call_tool(
+                    'get_context_by_ids',
+                    {'context_ids': [context_id]},
+                )
+                verify_data = self._extract_content(verify_result)
+                result_metadata = verify_data['results'][0].get('metadata', {})
+
+                if result_metadata != expected:
+                    error_msg = f'{case_name}: Expected {expected}, got {result_metadata}'
+                    self.test_results.append((test_name, False, error_msg))
+                    return False
+
+            self.test_results.append((test_name, True, 'All RFC 7396 test cases passed'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_patch_successive_patches(self) -> bool:
+        """Test applying multiple successive patches to the same entry.
+
+        Verifies that patches accumulate correctly and don't interfere with
+        each other when applied in sequence.
+
+        Returns:
+            bool: True if all successive patch tests passed.
+        """
+        test_name = 'metadata_patch_successive_patches'
+        assert self.client is not None
+        try:
+            successive_thread = f'{self.test_thread_id}_successive'
+
+            # Create initial entry with some metadata
+            store_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': successive_thread,
+                    'source': 'agent',
+                    'text': 'Entry for successive patch testing',
+                    'metadata': {'version': 1, 'status': 'created'},
+                },
+            )
+            store_data = self._extract_content(store_result)
+            if not store_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to create test entry'))
+                return False
+
+            context_id = store_data.get('context_id')
+
+            # Patch 1: Add new field
+            patch1_result = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'author': 'agent-1'}},
+            )
+            if not self._extract_content(patch1_result).get('success'):
+                self.test_results.append((test_name, False, 'Patch 1 failed'))
+                return False
+
+            # Patch 2: Update existing field
+            patch2_result = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'status': 'updated'}},
+            )
+            if not self._extract_content(patch2_result).get('success'):
+                self.test_results.append((test_name, False, 'Patch 2 failed'))
+                return False
+
+            # Patch 3: Increment version
+            patch3_result = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'version': 2}},
+            )
+            if not self._extract_content(patch3_result).get('success'):
+                self.test_results.append((test_name, False, 'Patch 3 failed'))
+                return False
+
+            # Patch 4: Delete a field
+            patch4_result = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'status': None}},
+            )
+            if not self._extract_content(patch4_result).get('success'):
+                self.test_results.append((test_name, False, 'Patch 4 failed'))
+                return False
+
+            # Verify final state
+            verify_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            verify_data = self._extract_content(verify_result)
+            final_metadata = verify_data['results'][0].get('metadata', {})
+
+            expected = {'version': 2, 'author': 'agent-1'}  # status was deleted
+            if final_metadata != expected:
+                self.test_results.append(
+                    (test_name, False, f'Final state mismatch. Expected {expected}, got {final_metadata}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'All successive patches accumulated correctly'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_patch_type_conversions(self) -> bool:
+        """Test type conversion scenarios in metadata_patch.
+
+        RFC 7396 allows values to change types - objects can become arrays,
+        scalars can become objects, etc.
+
+        Returns:
+            bool: True if all type conversion tests passed.
+        """
+        test_name = 'metadata_patch_type_conversions'
+        assert self.client is not None
+        try:
+            type_thread = f'{self.test_thread_id}_types'
+
+            # Test: Object to scalar
+            store1 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': type_thread,
+                    'source': 'agent',
+                    'text': 'Object to scalar test',
+                    'metadata': {'config': {'nested': 'value', 'deep': {'key': 1}}},
+                },
+            )
+            store1_data = self._extract_content(store1)
+            if not store1_data.get('success'):
+                self.test_results.append((test_name, False, 'Failed to store object'))
+                return False
+
+            context_id = store1_data.get('context_id')
+
+            # Replace object with scalar
+            patch1 = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'config': 'simple_string'}},
+            )
+            if not self._extract_content(patch1).get('success'):
+                self.test_results.append((test_name, False, 'Object to scalar patch failed'))
+                return False
+
+            verify1 = await self.client.call_tool('get_context_by_ids', {'context_ids': [context_id]})
+            verify1_data = self._extract_content(verify1)
+            if verify1_data['results'][0].get('metadata', {}).get('config') != 'simple_string':
+                self.test_results.append((test_name, False, 'Object to scalar conversion failed'))
+                return False
+
+            # Test: Scalar to object
+            patch2 = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'config': {'new_nested': 'value'}}},
+            )
+            if not self._extract_content(patch2).get('success'):
+                self.test_results.append((test_name, False, 'Scalar to object patch failed'))
+                return False
+
+            verify2 = await self.client.call_tool('get_context_by_ids', {'context_ids': [context_id]})
+            verify2_data = self._extract_content(verify2)
+            if verify2_data['results'][0].get('metadata', {}).get('config') != {'new_nested': 'value'}:
+                self.test_results.append((test_name, False, 'Scalar to object conversion failed'))
+                return False
+
+            # Test: Object to array
+            patch3 = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'config': ['item1', 'item2']}},
+            )
+            if not self._extract_content(patch3).get('success'):
+                self.test_results.append((test_name, False, 'Object to array patch failed'))
+                return False
+
+            verify3 = await self.client.call_tool('get_context_by_ids', {'context_ids': [context_id]})
+            verify3_data = self._extract_content(verify3)
+            if verify3_data['results'][0].get('metadata', {}).get('config') != ['item1', 'item2']:
+                self.test_results.append((test_name, False, 'Object to array conversion failed'))
+                return False
+
+            # Test: Array to object
+            patch4 = await self.client.call_tool(
+                'update_context',
+                {'context_id': context_id, 'metadata_patch': {'config': {'back_to': 'object'}}},
+            )
+            if not self._extract_content(patch4).get('success'):
+                self.test_results.append((test_name, False, 'Array to object patch failed'))
+                return False
+
+            verify4 = await self.client.call_tool('get_context_by_ids', {'context_ids': [context_id]})
+            verify4_data = self._extract_content(verify4)
+            if verify4_data['results'][0].get('metadata', {}).get('config') != {'back_to': 'object'}:
+                self.test_results.append((test_name, False, 'Array to object conversion failed'))
+                return False
+
+            self.test_results.append((test_name, True, 'All type conversion tests passed'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_search_context_with_date_filtering(self) -> bool:
         """Test search_context with start_date and end_date parameters.
 
@@ -5175,6 +5444,9 @@ class MCPServerIntegrationTest:
             ('Delete Context', self.test_delete_context),
             ('Update Context', self.test_update_context),
             ('Metadata Patch Deep Merge', self.test_metadata_patch_deep_merge),
+            ('Metadata Patch RFC 7396 Full Compliance', self.test_metadata_patch_rfc7396_full_compliance),
+            ('Metadata Patch Successive Patches', self.test_metadata_patch_successive_patches),
+            ('Metadata Patch Type Conversions', self.test_metadata_patch_type_conversions),
             ('List Threads', self.test_list_threads),
             ('Get Statistics', self.test_get_statistics),
             ('Store Context Batch', self.test_store_context_batch),
