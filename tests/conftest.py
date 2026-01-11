@@ -647,7 +647,7 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
     migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search_sqlite.sql'
     migration_sql = migration_path.read_text(encoding='utf-8')
     # Replace the template with actual dimension
-    migration_sql = migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding_dim))
+    migration_sql = migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding.dim))
 
     def _apply_migration(conn: sqlite3.Connection) -> None:
         # Load sqlite-vec extension before executing migration
@@ -661,7 +661,7 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
         except ImportError as e:
             raise RuntimeError(
                 'sqlite_vec package is required for embedding tests. '
-                'Install with: uv sync --extra semantic-search',
+                'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
             ) from e
 
         conn.executescript(migration_sql)
@@ -695,4 +695,4 @@ def embedding_dim() -> int:
         int: The embedding dimension from settings.
     """
     from app.settings import get_settings
-    return get_settings().embedding_dim
+    return get_settings().embedding.dim

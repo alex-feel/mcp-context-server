@@ -665,7 +665,7 @@ class FtsRepository(BaseRepository):
             # First quote hyphenated words, then add wildcards
             quoted = self._quote_hyphenated_words_sqlite(query)
             words = quoted.split()
-            result_words = []
+            result_words: list[str] = []
             for word in words:
                 if word.startswith('"') and word.endswith('"'):
                     # Hyphenated word already quoted, add wildcard after

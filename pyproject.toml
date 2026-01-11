@@ -31,11 +31,54 @@ packages = ["app"]
 package = true
 
 [project.optional-dependencies]
-semantic-search = [
-    "ollama>=0.4.0",
-    "numpy>=1.24.0",
+# Embedding providers - install ONE based on EMBEDDING_PROVIDER setting
+# Each includes all necessary dependencies
+embeddings-ollama = [
+    "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
+    "langchain-ollama>=0.3.0",
+    "langsmith>=0.4.0",
+]
+embeddings-openai = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-openai>=0.3.0",
+    "langsmith>=0.4.0",
+]
+embeddings-azure = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-openai>=0.3.0",  # Azure uses same package as OpenAI
+    "langsmith>=0.4.0",
+]
+embeddings-huggingface = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-huggingface>=0.2.0",
+    "langsmith>=0.4.0",
+]
+embeddings-voyage = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-voyageai>=0.3.0",
+    "langsmith>=0.4.0",
+]
+
+# Convenience: all embedding providers (for testing/development)
+embeddings-all = [
+    "numpy>=2.4.1",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.0",
+    "langchain-ollama>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "langchain-huggingface>=0.2.0",
+    "langchain-voyageai>=0.3.0",
+    "langsmith>=0.4.0",
 ]
 
 [dependency-groups]
@@ -202,13 +245,18 @@ ignore_errors = true
 
 # Handle optional dependencies for semantic search
 [[tool.mypy.overrides]]
-module = ['sqlite_vec', 'pgvector.asyncpg', 'ollama', 'numpy']
+module = [
+  'sqlite_vec',
+  'pgvector.asyncpg',
+  'ollama',
+  'numpy',
+  'langchain_openai',
+  'langchain_huggingface',
+  'langchain_voyageai',
+  'langchain_ollama',
+]
 ignore_missing_imports = true
-
-# Allow Any from optional dependencies in embedding_service
-[[tool.mypy.overrides]]
-module = 'app.services.embedding_service'
-disallow_any_unimported = false
+follow_imports = 'skip'
 
 [tool.pyright]
 include = ["app", "tests"]
@@ -227,43 +275,27 @@ root = "app/backends"
 reportMissingImports = false
 reportMissingModuleSource = false
 reportMissingTypeStubs = false
-reportUnknownVariableType = false
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
 
-# Suppress optional dependency errors in app/services (ollama, numpy)
+# Suppress optional dependency errors in app/embeddings/providers (langchain_*)
 [[tool.pyright.executionEnvironments]]
-root = "app/services"
+root = "app/embeddings/providers"
 reportMissingImports = false
-reportMissingModuleSource = false
-reportMissingTypeStubs = false
 reportUnknownVariableType = false
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
+reportAttributeAccessIssue = false
 
 # Suppress optional dependency errors in app/repositories (sqlite_vec, numpy)
 [[tool.pyright.executionEnvironments]]
 root = "app/repositories"
 reportMissingImports = false
-reportMissingModuleSource = false
 reportMissingTypeStubs = false
-reportUnknownVariableType = false
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
 
 # Catch-all for remaining app files (e.g., server.py) - MUST come after more specific environments
 [[tool.pyright.executionEnvironments]]
 root = "app"
 reportMissingImports = false
-reportMissingModuleSource = false
 reportMissingTypeStubs = false
 reportUnknownVariableType = false
 reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportUnknownParameterType = false
 
 # Relaxed checking for tests (simulate basic mode + suppress optional deps)
 [[tool.pyright.executionEnvironments]]
@@ -286,6 +318,7 @@ reportOptionalOperand = false
 reportMissingParameterType = false
 reportUnnecessaryComparison = false
 reportArgumentType = false
+reportAttributeAccessIssue = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"

@@ -62,7 +62,7 @@ BEGIN
                     WHEN patch_key IS NULL THEN target_value
                     -- Key in both or only in patch: recursively merge
                     -- This handles nested objects correctly via recursive call
-                    ELSE jsonb_merge_patch(target_value, patch_value)
+                    ELSE {SCHEMA}.jsonb_merge_patch(target_value, patch_value)
                 END
             )
             FROM jsonb_each(target) AS t(target_key, target_value)

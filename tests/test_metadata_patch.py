@@ -755,3 +755,214 @@ class TestRFC7396DeepMergeSemantics:
                 context_id=7401,
                 patch={'a': {'b': None}},
             )
+
+
+class TestMetadataPatchRFC7396AppendixA:
+    """Test RFC 7396 Appendix A official test cases at unit level.
+
+    These tests verify that the correct patch data is passed to the repository.
+    Actual RFC 7396 semantics are tested at integration level in test_real_server.py.
+
+    RFC 7396 Specification: https://datatracker.ietf.org/doc/html/rfc7396#appendix-A
+    """
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case1_simple_value_replacement(self, mock_context, mock_repositories):
+        """RFC 7396 Case #1: Simple value replacement {"a":"b"} + {"a":"c"} = {"a":"c"}."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7301,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': 'c'},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7301,
+                patch={'a': 'c'},
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case2_add_new_key(self, mock_context, mock_repositories):
+        """RFC 7396 Case #2: Add new key {"a":"b"} + {"b":"c"} = {"a":"b","b":"c"}."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7302,
+                text=None,
+                metadata=None,
+                metadata_patch={'b': 'c'},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7302,
+                patch={'b': 'c'},
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case3_delete_key_with_null(self, mock_context, mock_repositories):
+        """RFC 7396 Case #3: Delete key with null {"a":"b"} + {"a":null} = {}."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7303,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': None},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7303,
+                patch={'a': None},
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case4_delete_one_preserve_other(self, mock_context, mock_repositories):
+        """RFC 7396 Case #4: Delete one key, preserve another {"a":"b","b":"c"} + {"a":null} = {"b":"c"}."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7304,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': None},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7304,
+                patch={'a': None},
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case5_array_replacement(self, mock_context, mock_repositories):
+        """RFC 7396 Case #5: Array replacement {"a":["b"]} + {"a":"c"} = {"a":"c"}."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7305,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': 'c'},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7305,
+                patch={'a': 'c'},
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case6_replace_value_with_array(self, mock_context, mock_repositories):
+        """RFC 7396 Case #6: Replace value with array {"a":"c"} + {"a":["b"]} = {"a":["b"]}."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7306,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': ['b']},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7306,
+                patch={'a': ['b']},
+            )
+
+    @pytest.mark.asyncio
+    async def test_rfc7396_case8_array_of_objects_replacement(self, mock_context, mock_repositories):
+        """RFC 7396 Case #8: Array of objects replacement {"a":[{"b":"c"}]} + {"a":[1]} = {"a":[1]}."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=7308,
+                text=None,
+                metadata=None,
+                metadata_patch={'a': [1]},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+            mock_repositories.context.patch_metadata.assert_called_once_with(
+                context_id=7308,
+                patch={'a': [1]},
+            )
+
+
+class TestMetadataPatchTypeConversions:
+    """Test type conversion scenarios for metadata_patch.
+
+    RFC 7396 allows changing value types - objects can become arrays,
+    strings can become objects, etc.
+    """
+
+    @pytest.mark.asyncio
+    async def test_patch_object_to_scalar(self, mock_context, mock_repositories):
+        """Test replacing object value with scalar."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=9001,
+                text=None,
+                metadata=None,
+                metadata_patch={'config': 'simple_value'},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+
+    @pytest.mark.asyncio
+    async def test_patch_scalar_to_object(self, mock_context, mock_repositories):
+        """Test replacing scalar value with object."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=9002,
+                text=None,
+                metadata=None,
+                metadata_patch={'status': {'code': 200, 'message': 'OK'}},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+
+    @pytest.mark.asyncio
+    async def test_patch_array_to_object(self, mock_context, mock_repositories):
+        """Test replacing array value with object."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=9003,
+                text=None,
+                metadata=None,
+                metadata_patch={'items': {'count': 3, 'data': [1, 2, 3]}},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True
+
+    @pytest.mark.asyncio
+    async def test_patch_object_to_array(self, mock_context, mock_repositories):
+        """Test replacing object value with array."""
+        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+            result = await update_context(
+                context_id=9004,
+                text=None,
+                metadata=None,
+                metadata_patch={'items': ['a', 'b', 'c']},
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+            assert result['success'] is True

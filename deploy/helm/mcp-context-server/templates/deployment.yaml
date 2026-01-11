@@ -41,21 +41,82 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "mcp-context-server.fullname" . }}
-          {{- if and .Values.storage.postgresql.enabled (not .Values.storage.postgresql.existingSecret) .Values.storage.postgresql.password }}
           env:
+            {{- /* PostgreSQL password */}}
+            {{- if and .Values.storage.postgresql.enabled (not .Values.storage.postgresql.existingSecret) .Values.storage.postgresql.password }}
             - name: POSTGRESQL_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "mcp-context-server.fullname" . }}
                   key: postgresql-password
-          {{- else if and .Values.storage.postgresql.enabled .Values.storage.postgresql.existingSecret }}
-          env:
+            {{- else if and .Values.storage.postgresql.enabled .Values.storage.postgresql.existingSecret }}
             - name: POSTGRESQL_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.storage.postgresql.existingSecret }}
                   key: {{ .Values.storage.postgresql.existingSecretKey }}
-          {{- end }}
+            {{- end }}
+            {{- /* Embedding provider API keys */}}
+            {{- if .Values.search.semantic.enabled }}
+            {{- if eq .Values.search.semantic.provider "openai" }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.embeddingSecrets.existingSecret }}
+                  name: {{ .Values.embeddingSecrets.existingSecret }}
+                  key: openai-api-key
+                  {{- else }}
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: openai-api-key
+                  {{- end }}
+            {{- else if eq .Values.search.semantic.provider "azure" }}
+            - name: AZURE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.embeddingSecrets.existingSecret }}
+                  name: {{ .Values.embeddingSecrets.existingSecret }}
+                  key: azure-openai-api-key
+                  {{- else }}
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: azure-openai-api-key
+                  {{- end }}
+            {{- else if eq .Values.search.semantic.provider "huggingface" }}
+            - name: HUGGINGFACEHUB_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.embeddingSecrets.existingSecret }}
+                  name: {{ .Values.embeddingSecrets.existingSecret }}
+                  key: huggingface-api-token
+                  {{- else }}
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: huggingface-api-token
+                  {{- end }}
+            {{- else if eq .Values.search.semantic.provider "voyage" }}
+            - name: VOYAGE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.embeddingSecrets.existingSecret }}
+                  name: {{ .Values.embeddingSecrets.existingSecret }}
+                  key: voyage-api-key
+                  {{- else }}
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: voyage-api-key
+                  {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- /* LangSmith API key */}}
+            {{- if .Values.langsmith.enabled }}
+            - name: LANGSMITH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.langsmith.existingSecret }}
+                  name: {{ .Values.langsmith.existingSecret }}
+                  key: {{ .Values.langsmith.existingSecretKey }}
+                  {{- else }}
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: langsmith-api-key
+                  {{- end }}
+            {{- end }}
           {{- if .Values.probes.liveness.enabled }}
           livenessProbe:
             httpGet:

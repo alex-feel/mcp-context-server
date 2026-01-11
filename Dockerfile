@@ -17,7 +17,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --extra semantic-search --no-dev
+    uv sync --locked --no-install-project --extra embeddings-ollama --no-dev
 
 # Copy application code
 COPY app/ ./app/
@@ -25,7 +25,7 @@ COPY pyproject.toml uv.lock README.md ./
 
 # Install project
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra semantic-search --no-dev
+    uv sync --locked --extra embeddings-ollama --no-dev
 
 # ============================================
 # RUNTIME STAGE

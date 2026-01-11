@@ -187,7 +187,7 @@ class TestServerConfigurationSettings:
             from app.settings import AppSettings
 
             settings = AppSettings()
-            assert settings.embedding_dim == 768
+            assert settings.embedding.dim == 768
 
 
 class TestServerStorageSettings:

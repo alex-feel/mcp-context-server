@@ -49,7 +49,7 @@ class TestEmbeddingRepository:
 
         # Store embedding
         embedding = [0.1] * embedding_dim
-        await embedding_repo.store(context_id=context_id, embedding=embedding)
+        await embedding_repo.store(context_id=context_id, embedding=embedding, model='test-model')
 
         # Verify stored
         exists = await embedding_repo.exists(context_id)
@@ -108,7 +108,7 @@ class TestEmbeddingRepository:
             )
             # Create embeddings with varying values
             embedding = [0.1 * (i + 1)] * embedding_dim
-            await embedding_repo.store(context_id, embedding)
+            await embedding_repo.store(context_id, embedding, model='test-model')
 
         # Search for similar embeddings
         query_embedding = [0.1] * embedding_dim
@@ -149,7 +149,7 @@ class TestEmbeddingRepository:
                 text_content=f'Target entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * embedding_dim)
+            await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
 
         for i in range(5):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -159,7 +159,7 @@ class TestEmbeddingRepository:
                 text_content=f'Other entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * embedding_dim)
+            await embedding_repo.store(context_id, [0.2] * embedding_dim, model='test-model')
 
         # Search with thread filter
         results, _ = await embedding_repo.search(
@@ -193,7 +193,7 @@ class TestEmbeddingRepository:
                 text_content=f'User entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * embedding_dim)
+            await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
 
         for i in range(3):
             context_id, _ = await repos.context.store_with_deduplication(
@@ -203,7 +203,7 @@ class TestEmbeddingRepository:
                 text_content=f'Agent entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * embedding_dim)
+            await embedding_repo.store(context_id, [0.2] * embedding_dim, model='test-model')
 
         # Search with source filter
         results, _ = await embedding_repo.search(
@@ -236,7 +236,7 @@ class TestEmbeddingRepository:
             text_content='Entry to update',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * embedding_dim)
+        await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
 
         # Update embedding
         new_embedding = [0.5] * embedding_dim
@@ -271,7 +271,7 @@ class TestEmbeddingRepository:
             text_content='Entry to delete',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * embedding_dim)
+        await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
 
         # Verify exists
         assert await embedding_repo.exists(context_id) is True
@@ -317,7 +317,7 @@ class TestEmbeddingRepository:
                 text_content=f'Entry {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim)
+            await embedding_repo.store(context_id, [0.1 * (i + 1)] * embedding_dim, model='test-model')
 
         # Create entries without embeddings
         for i in range(3):
@@ -359,7 +359,7 @@ class TestEmbeddingRepository:
                 text_content=f'Target {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.1] * embedding_dim)
+            await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
 
         # Create entry in target thread without embedding
         await repos.context.store_with_deduplication(
@@ -379,7 +379,7 @@ class TestEmbeddingRepository:
                 text_content=f'Other {i}',
                 metadata=None,
             )
-            await embedding_repo.store(context_id, [0.2] * embedding_dim)
+            await embedding_repo.store(context_id, [0.2] * embedding_dim, model='test-model')
 
         # Get statistics for target thread only
         stats = await embedding_repo.get_statistics(thread_id='target-stats')
@@ -409,7 +409,7 @@ class TestEmbeddingRepository:
             text_content='Entry for dimension',
             metadata=None,
         )
-        await embedding_repo.store(context_id, [0.1] * embedding_dim)
+        await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
 
         # Get dimension
         dimension = await embedding_repo.get_table_dimension()

@@ -29,11 +29,28 @@ data:
   {{- end }}
   ENABLE_SEMANTIC_SEARCH: {{ .Values.search.semantic.enabled | quote }}
   {{- if .Values.search.semantic.enabled }}
+  EMBEDDING_PROVIDER: {{ .Values.search.semantic.provider | quote }}
   EMBEDDING_MODEL: {{ .Values.search.semantic.model | quote }}
   EMBEDDING_DIM: {{ .Values.search.semantic.dim | quote }}
+  EMBEDDING_TIMEOUT_S: {{ .Values.search.semantic.timeout | quote }}
+  EMBEDDING_RETRY_MAX_ATTEMPTS: {{ .Values.search.semantic.retryMaxAttempts | quote }}
+  EMBEDDING_RETRY_BASE_DELAY_S: {{ .Values.search.semantic.retryBaseDelay | quote }}
+  {{- if eq .Values.search.semantic.provider "ollama" }}
   {{- if .Values.ollama.enabled }}
   OLLAMA_HOST: "http://localhost:11434"
   {{- end }}
+  {{- end }}
+  {{- if eq .Values.search.semantic.provider "azure" }}
+  AZURE_OPENAI_ENDPOINT: {{ .Values.embeddingSecrets.azureOpenaiEndpoint | quote }}
+  AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: {{ .Values.embeddingSecrets.azureOpenaiDeployment | quote }}
+  AZURE_OPENAI_API_VERSION: {{ .Values.embeddingSecrets.azureOpenaiApiVersion | quote }}
+  {{- end }}
+  {{- end }}
+  # LangSmith tracing (optional)
+  {{- if .Values.langsmith.enabled }}
+  LANGSMITH_TRACING: "true"
+  LANGSMITH_ENDPOINT: {{ .Values.langsmith.endpoint | quote }}
+  LANGSMITH_PROJECT: {{ .Values.langsmith.project | quote }}
   {{- end }}
   ENABLE_HYBRID_SEARCH: {{ .Values.search.hybrid.enabled | quote }}
   {{- if .Values.search.hybrid.enabled }}

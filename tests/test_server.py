@@ -62,7 +62,7 @@ class TestStoreContext:
         assert 'Context stored with 0 images' in result['message']
 
         # Verify context.info was called
-        assert mock_context.info.called is True  # type: ignore[attr-defined]
+        assert mock_context.info.called is True
 
     @pytest.mark.asyncio
     async def test_store_multimodal_context(
