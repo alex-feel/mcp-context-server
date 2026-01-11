@@ -994,6 +994,117 @@ class TestFtsGracefulDegradation:
             assert 'seconds' in result['suggestion'].lower()
 
 
+class TestResetFtsMigrationStatus:
+    """Tests for _reset_fts_migration_status()."""
+
+    def test_resets_to_default(self) -> None:
+        """Test global status reset to defaults."""
+        from datetime import UTC
+        from datetime import datetime
+
+        # First, set the global status to a non-default value
+        import app.server as server
+        from app.server import FtsMigrationStatus
+        from app.server import _reset_fts_migration_status
+
+        original_status = server._fts_migration_status
+
+        try:
+            # Set migration in progress
+            server._fts_migration_status = FtsMigrationStatus(
+                in_progress=True,
+                started_at=datetime.now(tz=UTC),
+                estimated_seconds=120,
+                backend='sqlite',
+                old_language='english',
+                new_language='german',
+                records_count=1000,
+            )
+
+            # Verify it's set
+            assert server._fts_migration_status.in_progress is True
+            assert server._fts_migration_status.estimated_seconds == 120
+
+            # Reset to defaults
+            _reset_fts_migration_status()
+
+            # Verify it's back to defaults (capture status to avoid mypy narrowing issues)
+            reset_status = server._fts_migration_status
+            assert reset_status.in_progress is False
+            assert reset_status.started_at is None
+            assert reset_status.estimated_seconds is None
+            assert reset_status.backend is None
+            assert reset_status.old_language is None
+            assert reset_status.new_language is None
+            assert reset_status.records_count is None
+        finally:
+            # Restore original status
+            server._fts_migration_status = original_status
+
+    def test_reset_creates_new_instance(self) -> None:
+        """Test that reset creates a fresh FtsMigrationStatus instance."""
+        from datetime import UTC
+        from datetime import datetime
+
+        import app.server as server
+        from app.server import FtsMigrationStatus
+        from app.server import _reset_fts_migration_status
+
+        original_status = server._fts_migration_status
+
+        try:
+            # Set migration in progress
+            old_instance = FtsMigrationStatus(
+                in_progress=True,
+                started_at=datetime.now(tz=UTC),
+                estimated_seconds=60,
+            )
+            server._fts_migration_status = old_instance
+
+            # Get reference to old instance
+            pre_reset_id = id(server._fts_migration_status)
+
+            # Reset
+            _reset_fts_migration_status()
+
+            # Should be a new instance (capture to avoid mypy narrowing)
+            new_status = server._fts_migration_status
+            post_reset_id = id(new_status)
+            assert pre_reset_id != post_reset_id
+
+            # But it should be equivalent to default
+            default = FtsMigrationStatus()
+            assert new_status.in_progress == default.in_progress
+            assert new_status.started_at == default.started_at
+        finally:
+            server._fts_migration_status = original_status
+
+    def test_reset_idempotent(self) -> None:
+        """Test that calling reset multiple times is safe."""
+        import app.server as server
+        from app.server import _reset_fts_migration_status
+
+        original_status = server._fts_migration_status
+
+        try:
+            # Call reset multiple times
+            _reset_fts_migration_status()
+            status_1 = server._fts_migration_status
+
+            _reset_fts_migration_status()
+            status_2 = server._fts_migration_status
+
+            _reset_fts_migration_status()
+            status_3 = server._fts_migration_status
+
+            # All should have default values
+            assert status_1.in_progress is False
+            assert status_2.in_progress is False
+            assert status_3.in_progress is False
+        finally:
+            server._fts_migration_status = original_status
+
+
 class TestInternalColumnsNotExposed:
     """Test that internal database columns are not exposed in API responses.
 

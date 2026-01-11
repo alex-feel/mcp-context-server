@@ -238,3 +238,271 @@ class TestServerStorageSettings:
 
             settings = AppSettings()
             assert settings.storage.max_total_size_mb == 100
+
+
+class TestLifespanErrorHandling:
+    """Tests for lifespan() error handling."""
+
+    @pytest.mark.asyncio
+    async def test_startup_failure_shuts_down_backend(self, tmp_path: Path) -> None:
+        """Verify backend shutdown on startup failure."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+
+        env = {
+            'DB_PATH': str(tmp_path / 'test.db'),
+            'MCP_TEST_MODE': '1',
+            'STORAGE_BACKEND': 'sqlite',
+            'ENABLE_SEMANTIC_SEARCH': 'false',
+            'ENABLE_FTS': 'false',
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            # Mock backend that will fail during init_database
+            mock_backend = MagicMock()
+            mock_backend.initialize = AsyncMock()
+            mock_backend.shutdown = AsyncMock()
+            mock_backend.backend_type = 'sqlite'
+
+            with (
+                patch('app.server.create_backend', return_value=mock_backend),
+                patch('app.server.init_database', side_effect=RuntimeError('Database init failed')),
+            ):
+                from app.server import lifespan
+
+                # Mock FastMCP instance
+                mock_mcp = MagicMock()
+
+                # Call lifespan and expect it to raise
+                with pytest.raises(RuntimeError, match='Database init failed'):
+                    async with lifespan(mock_mcp):
+                        pass
+
+                # Verify backend was shut down on failure
+                mock_backend.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_migration_failure_propagates(self, tmp_path: Path) -> None:
+        """Verify migration errors not swallowed."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+
+        env = {
+            'DB_PATH': str(tmp_path / 'test.db'),
+            'MCP_TEST_MODE': '1',
+            'STORAGE_BACKEND': 'sqlite',
+            'ENABLE_SEMANTIC_SEARCH': 'false',
+            'ENABLE_FTS': 'false',
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            mock_backend = MagicMock()
+            mock_backend.initialize = AsyncMock()
+            mock_backend.shutdown = AsyncMock()
+            mock_backend.backend_type = 'sqlite'
+
+            with (
+                patch('app.server.create_backend', return_value=mock_backend),
+                patch('app.server.init_database', new=AsyncMock()),
+                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
+                patch(
+                    'app.server.apply_semantic_search_migration',
+                    side_effect=RuntimeError('Migration failed'),
+                ),
+            ):
+                from app.server import lifespan
+
+                mock_mcp = MagicMock()
+
+                # Migration failure should propagate
+                with pytest.raises(RuntimeError, match='Migration failed'):
+                    async with lifespan(mock_mcp):
+                        pass
+
+    @pytest.mark.asyncio
+    async def test_embedding_provider_failure_graceful(self) -> None:
+        """Verify semantic search disabled but server starts on provider failure."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+
+        import app.server as server
+        from app.server import lifespan
+
+        mock_backend = MagicMock()
+        mock_backend.initialize = AsyncMock()
+        mock_backend.shutdown = AsyncMock()
+        mock_backend.backend_type = 'sqlite'
+
+        # Create properly mocked repository container
+        mock_repos = MagicMock()
+        mock_repos.fts.is_available = AsyncMock(return_value=False)
+        mock_repos.context = MagicMock()
+        mock_repos.embedding = MagicMock()
+
+        # Mock settings
+        mock_settings = MagicMock()
+        mock_settings.enable_semantic_search = True
+        mock_settings.enable_fts = False
+        mock_settings.enable_hybrid_search = False
+        mock_settings.embedding.provider = 'ollama'
+
+        # Store and restore globals
+        original_backend = server._backend
+        original_repos = server._repositories
+        original_provider = server._embedding_provider
+
+        try:
+            with (
+                patch('app.server.settings', mock_settings),
+                patch('app.server.create_backend', return_value=mock_backend),
+                patch('app.server.init_database', new=AsyncMock()),
+                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
+                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
+                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
+                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
+                patch('app.server.apply_fts_migration', new=AsyncMock()),
+                patch('app.server._register_tool', return_value=True),
+                patch('app.server.RepositoryContainer', return_value=mock_repos),
+                patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
+                patch(
+                    'app.server.check_provider_dependencies',
+                    new=AsyncMock(return_value={'available': True, 'reason': None, 'install_instructions': None}),
+                ),
+                patch('app.server.create_embedding_provider', side_effect=ImportError('Provider not installed')),
+            ):
+                mock_mcp = MagicMock()
+
+                # Server should start successfully despite provider failure
+                async with lifespan(mock_mcp):
+                    # Verify embedding provider is None (graceful degradation)
+                    assert server._embedding_provider is None
+        finally:
+            server._backend = original_backend
+            server._repositories = original_repos
+            server._embedding_provider = original_provider
+
+    @pytest.mark.asyncio
+    async def test_shutdown_logs_errors(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify shutdown errors logged not raised."""
+        import logging
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+
+        import app.server as server
+        from app.server import lifespan
+
+        caplog.set_level(logging.ERROR)
+
+        mock_backend = MagicMock()
+        mock_backend.initialize = AsyncMock()
+        # Shutdown will raise an error
+        mock_backend.shutdown = AsyncMock(side_effect=RuntimeError('Shutdown failed'))
+        mock_backend.backend_type = 'sqlite'
+
+        # Create properly mocked repository container
+        mock_repos = MagicMock()
+        mock_repos.fts.is_available = AsyncMock(return_value=False)
+
+        # Mock settings
+        mock_settings = MagicMock()
+        mock_settings.enable_semantic_search = False
+        mock_settings.enable_fts = False
+        mock_settings.enable_hybrid_search = False
+
+        original_backend = server._backend
+        original_repos = server._repositories
+        original_provider = server._embedding_provider
+
+        try:
+            with (
+                patch('app.server.settings', mock_settings),
+                patch('app.server.create_backend', return_value=mock_backend),
+                patch('app.server.init_database', new=AsyncMock()),
+                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
+                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
+                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
+                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
+                patch('app.server.apply_fts_migration', new=AsyncMock()),
+                patch('app.server._register_tool', return_value=True),
+                patch('app.server.RepositoryContainer', return_value=mock_repos),
+            ):
+                mock_mcp = MagicMock()
+
+                # Should NOT raise despite shutdown error
+                async with lifespan(mock_mcp):
+                    pass
+
+                # Verify error was logged
+                assert any('shutdown' in r.message.lower() for r in caplog.records)
+        finally:
+            server._backend = original_backend
+            server._repositories = original_repos
+            server._embedding_provider = original_provider
+
+    @pytest.mark.asyncio
+    async def test_embedding_provider_shutdown_on_exit(self) -> None:
+        """Verify embedding provider shutdown called on exit."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+
+        import app.server as server
+        from app.server import lifespan
+
+        mock_backend = MagicMock()
+        mock_backend.initialize = AsyncMock()
+        mock_backend.shutdown = AsyncMock()
+        mock_backend.backend_type = 'sqlite'
+
+        # Create properly mocked repository container
+        mock_repos = MagicMock()
+        mock_repos.fts.is_available = AsyncMock(return_value=False)
+
+        # Create mock embedding provider
+        mock_embedding_provider = MagicMock()
+        mock_embedding_provider.initialize = AsyncMock()
+        mock_embedding_provider.shutdown = AsyncMock()
+        mock_embedding_provider.is_available = AsyncMock(return_value=True)
+        mock_embedding_provider.provider_name = 'test-provider'
+
+        # Mock settings
+        mock_settings = MagicMock()
+        mock_settings.enable_semantic_search = True
+        mock_settings.enable_fts = False
+        mock_settings.enable_hybrid_search = False
+        mock_settings.embedding.provider = 'ollama'
+
+        original_backend = server._backend
+        original_repos = server._repositories
+        original_provider = server._embedding_provider
+
+        try:
+            with (
+                patch('app.server.settings', mock_settings),
+                patch('app.server.create_backend', return_value=mock_backend),
+                patch('app.server.init_database', new=AsyncMock()),
+                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
+                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
+                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
+                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
+                patch('app.server.apply_fts_migration', new=AsyncMock()),
+                patch('app.server._register_tool', return_value=True),
+                patch('app.server.RepositoryContainer', return_value=mock_repos),
+                patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
+                patch(
+                    'app.server.check_provider_dependencies',
+                    new=AsyncMock(return_value={'available': True, 'reason': None, 'install_instructions': None}),
+                ),
+                patch('app.server.create_embedding_provider', return_value=mock_embedding_provider),
+            ):
+                mock_mcp = MagicMock()
+
+                async with lifespan(mock_mcp):
+                    # Verify embedding provider was set
+                    assert server._embedding_provider is not None
+
+                # Verify embedding provider shutdown was called
+                mock_embedding_provider.shutdown.assert_awaited_once()
+        finally:
+            server._backend = original_backend
+            server._repositories = original_repos
+            server._embedding_provider = original_provider

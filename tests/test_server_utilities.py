@@ -591,3 +591,248 @@ class TestSemanticSearchNotAvailable:
         finally:
             # Restore original
             server._embedding_provider = original_service
+
+
+class TestFormatExceptionMessage:
+    """Tests for format_exception_message()."""
+
+    def test_formats_exception_with_message(self) -> None:
+        """Test exception with non-empty str()."""
+        from app.server import format_exception_message
+
+        error = ValueError('Something went wrong')
+        result = format_exception_message(error)
+
+        assert result == 'Something went wrong'
+
+    def test_handles_empty_str_exception(self) -> None:
+        """Test exception with empty str() falls back to repr."""
+        from typing import override
+
+        from app.server import format_exception_message
+
+        # Create an exception subclass that returns empty string
+        class EmptyStrError(Exception):
+            @override
+            def __str__(self) -> str:
+                return ''
+
+        error = EmptyStrError()
+        result = format_exception_message(error)
+
+        # Should fall back to repr
+        assert 'EmptyStrError' in result
+
+    def test_handles_exception_with_repr(self) -> None:
+        """Test exception uses repr when str is empty."""
+        from typing import override
+
+        from app.server import format_exception_message
+
+        class CustomError(Exception):
+            @override
+            def __str__(self) -> str:
+                return ''
+
+            @override
+            def __repr__(self) -> str:
+                return 'CustomError(custom repr)'
+
+        error = CustomError()
+        result = format_exception_message(error)
+
+        assert result == 'CustomError(custom repr)'
+
+    def test_standard_exceptions(self) -> None:
+        """Test formatting of standard Python exceptions."""
+        from app.server import format_exception_message
+
+        # Test various standard exceptions
+        exceptions = [
+            (ValueError('value error'), 'value error'),
+            (TypeError('type error'), 'type error'),
+            (RuntimeError('runtime error'), 'runtime error'),
+            (KeyError('missing_key'), "'missing_key'"),
+        ]
+
+        for error, expected in exceptions:
+            result = format_exception_message(error)
+            assert expected in result
+
+
+class TestEstimateMigrationTime:
+    """Tests for estimate_migration_time()."""
+
+    def test_small_dataset(self) -> None:
+        """Test <= 1000 records returns 2 seconds."""
+        from app.server import estimate_migration_time
+
+        assert estimate_migration_time(0) == 2
+        assert estimate_migration_time(500) == 2
+        assert estimate_migration_time(1000) == 2
+
+    def test_medium_dataset(self) -> None:
+        """Test 1000-10000 records returns 15 seconds."""
+        from app.server import estimate_migration_time
+
+        assert estimate_migration_time(1001) == 15
+        assert estimate_migration_time(5000) == 15
+        assert estimate_migration_time(10000) == 15
+
+    def test_large_dataset(self) -> None:
+        """Test 10000-100000 records returns 120 seconds."""
+        from app.server import estimate_migration_time
+
+        assert estimate_migration_time(10001) == 120
+        assert estimate_migration_time(50000) == 120
+        assert estimate_migration_time(100000) == 120
+
+    def test_very_large_dataset(self) -> None:
+        """Test 100000-1000000 records returns 600 seconds."""
+        from app.server import estimate_migration_time
+
+        assert estimate_migration_time(100001) == 600
+        assert estimate_migration_time(500000) == 600
+        assert estimate_migration_time(1000000) == 600
+
+    def test_massive_dataset(self) -> None:
+        """Test > 1000000 records returns 1200 seconds."""
+        from app.server import estimate_migration_time
+
+        assert estimate_migration_time(1000001) == 1200
+        assert estimate_migration_time(5000000) == 1200
+        assert estimate_migration_time(10000000) == 1200
+
+
+class TestValidatePoolTimeoutForEmbedding:
+    """Tests for _validate_pool_timeout_for_embedding()."""
+
+    def test_logs_warning_when_timeout_too_short(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test warning logged when pool timeout insufficient."""
+        import logging
+
+        from app.server import _validate_pool_timeout_for_embedding
+
+        caplog.set_level(logging.INFO)  # Function logs at INFO level
+
+        # Create settings where pool timeout < embedding timeout + retry delays
+        mock_storage_settings = MagicMock()
+        mock_storage_settings.postgresql_pool_timeout_s = 5.0  # Short timeout
+
+        mock_embedding_settings = MagicMock()
+        mock_embedding_settings.timeout_s = 30.0  # Long embedding timeout
+        mock_embedding_settings.retry_max_attempts = 3
+        mock_embedding_settings.retry_base_delay_s = 1.0
+
+        mock_settings = MagicMock()
+        mock_settings.storage = mock_storage_settings
+        mock_settings.embedding = mock_embedding_settings
+        mock_settings.enable_semantic_search = True
+
+        with patch('app.server.settings', mock_settings):
+            _validate_pool_timeout_for_embedding()
+
+        # Should have logged a message about timeout
+        assert any('timeout' in record.message.lower() for record in caplog.records)
+
+    def test_no_warning_when_timeout_sufficient(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test no warning when pool timeout adequate."""
+        import logging
+
+        from app.server import _validate_pool_timeout_for_embedding
+
+        caplog.set_level(logging.INFO)
+
+        # Create settings where pool timeout > embedding timeout + retry delays
+        mock_storage_settings = MagicMock()
+        mock_storage_settings.postgresql_pool_timeout_s = 120.0  # Long timeout
+
+        mock_embedding_settings = MagicMock()
+        mock_embedding_settings.timeout_s = 30.0
+        mock_embedding_settings.retry_max_attempts = 3
+        mock_embedding_settings.retry_base_delay_s = 1.0
+
+        mock_settings = MagicMock()
+        mock_settings.storage = mock_storage_settings
+        mock_settings.embedding = mock_embedding_settings
+        mock_settings.enable_semantic_search = True
+
+        with patch('app.server.settings', mock_settings):
+            _validate_pool_timeout_for_embedding()
+
+        # Should not have logged message about timeout being too short
+        timeout_messages = [r for r in caplog.records if 'below recommended' in r.message.lower()]
+        assert len(timeout_messages) == 0
+
+    def test_skipped_when_semantic_search_disabled(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test no-op when ENABLE_SEMANTIC_SEARCH=false."""
+        import logging
+
+        from app.server import _validate_pool_timeout_for_embedding
+
+        caplog.set_level(logging.WARNING)
+
+        mock_settings = MagicMock()
+        mock_settings.enable_semantic_search = False
+
+        with patch('app.server.settings', mock_settings):
+            _validate_pool_timeout_for_embedding()
+
+        # Should not have logged anything about timeout
+        timeout_warnings = [r for r in caplog.records if 'timeout' in r.message.lower()]
+        assert len(timeout_warnings) == 0
+
+
+class TestGetServerVersion:
+    """Tests for _get_server_version()."""
+
+    def test_returns_version_string(self) -> None:
+        """Test version is returned as a string."""
+        from app.server import _get_server_version
+
+        version = _get_server_version()
+
+        assert isinstance(version, str)
+        assert len(version) > 0
+
+    def test_returns_version_from_package(self) -> None:
+        """Test version from installed package metadata."""
+        from app.server import SERVER_VERSION
+        from app.server import _get_server_version
+
+        # The cached version should match a fresh call
+        version = _get_server_version()
+
+        # Both should be valid version strings or 'unknown'
+        assert isinstance(version, str)
+        assert isinstance(SERVER_VERSION, str)
+
+    def test_fallback_to_pyproject_toml(self) -> None:
+        """Test fallback when package not installed."""
+        from importlib.metadata import PackageNotFoundError
+
+        from app.server import _get_server_version
+
+        # Raise PackageNotFoundError to force fallback to pyproject.toml
+        with patch('app.server.pkg_version', side_effect=PackageNotFoundError('mcp-context-server')):
+            version = _get_server_version()
+
+            # Should return a version string or 'unknown'
+            assert isinstance(version, str)
+            # Either a valid semver pattern or 'unknown'
+            assert version == 'unknown' or '.' in version
+
+    def test_returns_unknown_on_failure(self) -> None:
+        """Test 'unknown' when all methods fail."""
+        from importlib.metadata import PackageNotFoundError
+
+        from app.server import _get_server_version
+
+        # Mock both pkg_version and Path operations to fail
+        with (
+            patch('app.server.pkg_version', side_effect=PackageNotFoundError('mcp-context-server')),
+            patch('pathlib.Path.exists', return_value=False),
+        ):
+            version = _get_server_version()
+
+            assert version == 'unknown'
