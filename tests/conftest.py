@@ -7,11 +7,54 @@ mock contexts, and sample test data for comprehensive testing.
 
 from __future__ import annotations
 
+# ============================================================================
+# CRITICAL: These stdlib imports are safe and MUST come before the event loop
+# policy setup. They do NOT trigger httpx or langsmith imports.
+# ============================================================================
+import os
+import sys
+
+# ============================================================================
+# CRITICAL: Windows Event Loop Policy MUST Be Set BEFORE Any Async-Related Imports
+# ============================================================================
+# When embeddings-ollama is installed, importing app.server triggers:
+#   app.server -> app.embeddings -> app.embeddings.retry -> httpx
+# If LangSmith is also installed, it auto-instruments httpx at import time
+# using whatever event loop policy is active at that moment.
+#
+# On Windows, the default Proactor (IOCP) loop can hang when httpx/langsmith
+# leave pending I/O operations that never complete, causing
+# GetQueuedCompletionStatus to block indefinitely.
+#
+# The Selector event loop policy MUST be set BEFORE any of these imports occur.
+# ============================================================================
+if sys.platform == 'win32':
+    import asyncio
+
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# ============================================================================
+# CRITICAL: Disable LangSmith/LangChain Tracing BEFORE Importing Packages
+# ============================================================================
+# LangSmith auto-instruments httpx at import time if tracing is enabled.
+# These environment variables MUST be set BEFORE importing any packages
+# that might trigger LangSmith initialization.
+# ============================================================================
+os.environ['LANGSMITH_TRACING'] = 'false'
+os.environ['LANGCHAIN_TRACING_V2'] = 'false'
+os.environ['LANGSMITH_TEST_CACHE'] = ''
+
+# ============================================================================
+# Now Safe to Import Everything Else
+# ============================================================================
+# Note: E402 warnings for these imports are suppressed via pyproject.toml
+# extend-per-file-ignores because the imports MUST come after the event loop
+# policy and environment variable setup above.
+# ============================================================================
 import asyncio
 import base64
 import importlib.util
 import json
-import os
 import sqlite3
 import tempfile
 from collections.abc import AsyncGenerator

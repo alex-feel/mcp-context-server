@@ -104,8 +104,11 @@ src = ["app"]
 target-version = "py312"
 line-length = 127
 extend-include = ["tests/**/*.py"]
-# Per-file ignores: FastMCP tools use inline JSON structures instead of formal docstring sections
-extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501"] }
+# Per-file ignores:
+# - app/server.py: FastMCP tools use inline JSON structures instead of formal docstring sections
+# - tests/conftest.py: E402 required - Windows event loop policy and LangSmith env vars MUST be set
+#   BEFORE importing app.server (which triggers httpx import). See conftest.py comments for details.
+extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501"], "tests/conftest.py" = ["E402"] }
 
 [tool.ruff.lint]
 # Ignore specific rules
