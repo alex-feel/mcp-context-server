@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/alex-feel/mcp-context-server/compare/v0.16.1...v0.17.0) (2026-01-11)
+
+
+### Features
+
+* implement LangChain embeddings multi-provider architecture ([7382629](https://github.com/alex-feel/mcp-context-server/commit/7382629a74da6fb39d5e635096d7eea1c619e3c8))
+
+
+### Bug Fixes
+
+* add schema qualification to recursive jsonb_merge_patch call ([51bc48c](https://github.com/alex-feel/mcp-context-server/commit/51bc48c8ba86e4ae990b7bb3ef5efa15c8e1a6b7))
+* resolve critical PostgreSQL backend issues ([8186f90](https://github.com/alex-feel/mcp-context-server/commit/8186f90da0804f5adf858cf857d25e8b81468649))
+
 ## [0.16.1](https://github.com/alex-feel/mcp-context-server/compare/v0.16.0...v0.16.1) (2026-01-09)
 
 
