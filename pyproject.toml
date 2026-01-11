@@ -14,6 +14,7 @@ dependencies = [
     "typing_extensions==4.15.0",
     "asyncpg==0.31.0",
     "anyio>=4.12.0",
+    "tenacity==9.1.2",
 ]
 
 [build-system]
