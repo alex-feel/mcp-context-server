@@ -8,6 +8,9 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
 WORKDIR /app
 
+# Build argument for embedding provider (default: ollama for GHCR)
+ARG EMBEDDING_EXTRA=embeddings-ollama
+
 # uv build optimization settings
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -17,7 +20,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --extra embeddings-ollama --no-dev
+    uv sync --locked --no-install-project --extra ${EMBEDDING_EXTRA} --no-dev
 
 # Copy application code
 COPY app/ ./app/
@@ -25,7 +28,7 @@ COPY pyproject.toml uv.lock README.md ./
 
 # Install project
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra embeddings-ollama --no-dev
+    uv sync --locked --extra ${EMBEDDING_EXTRA} --no-dev
 
 # ============================================
 # RUNTIME STAGE

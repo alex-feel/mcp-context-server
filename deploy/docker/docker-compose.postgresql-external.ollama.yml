@@ -1,10 +1,10 @@
-# Docker Compose for MCP Context Server with external PostgreSQL + Ollama
+# Docker Compose for MCP Context Server with External PostgreSQL + Ollama Embeddings
 # PostgreSQL must be deployed separately (corporate server, Supabase, etc.)
 #
 # Setup:
-#   1. Copy .env.example to .env in this directory
+#   1. Copy .env-postgresql-external.ollama.example to .env in this directory
 #   2. Fill in your PostgreSQL connection details in .env
-#   3. Run: docker compose -f deploy/docker/docker-compose.postgresql-external.yml up -d
+#   3. Run: docker compose -f deploy/docker/docker-compose.postgresql-external.ollama.yml up -d
 
 services:
   mcp-context-server:

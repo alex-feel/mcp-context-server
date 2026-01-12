@@ -46,4 +46,4 @@ docs/
 
 # Environment files (secrets - should use Docker secrets/env vars instead)
 .env
-.env.*
+deploy/docker/.env
