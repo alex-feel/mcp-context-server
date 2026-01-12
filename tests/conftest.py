@@ -87,6 +87,61 @@ def is_ollama_available() -> bool:
     return importlib.util.find_spec('ollama') is not None
 
 
+def is_ollama_model_available(model: str | None = None) -> bool:
+    """Check if Ollama model is available for testing.
+
+    Performs two checks:
+    1. Ollama service is running
+    2. The specified model (or any candidate model) is installed
+
+    Args:
+        model: Specific model to check, or None to check candidate models
+
+    Returns:
+        True if model is available, False otherwise
+    """
+    try:
+        import httpx
+        import ollama
+    except ImportError:
+        return False
+
+    # Get Ollama host from settings or use default
+    try:
+        from app.settings import get_settings
+
+        host = get_settings().embedding.ollama_host
+    except Exception:
+        host = 'http://localhost:11434'
+
+    try:
+        # Check 1: Service is running (short timeout)
+        with httpx.Client(timeout=2.0) as client:
+            response = client.get(host)
+            if response.status_code != 200:
+                return False
+
+        # Check 2: Model is available
+        ollama_client = ollama.Client(host=host, timeout=5.0)
+
+        if model is not None:
+            # Check specific model
+            ollama_client.show(model)
+            return True
+        # Check candidate models (same priority as run_server.py)
+        candidate_models = ['all-minilm', 'qwen3-embedding:0.6b']
+        for candidate in candidate_models:
+            try:
+                ollama_client.show(candidate)
+                return True
+            except Exception:
+                continue
+        return False
+
+    except Exception:
+        return False
+
+
 def is_sqlite_vec_available() -> bool:
     """Check if sqlite-vec package is installed."""
     return importlib.util.find_spec('sqlite_vec') is not None
@@ -121,6 +176,11 @@ requires_numpy = pytest.mark.skipif(
 requires_semantic_search = pytest.mark.skipif(
     not are_semantic_search_deps_available(),
     reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
+)
+
+requires_ollama_model = pytest.mark.skipif(
+    not is_ollama_model_available(),
+    reason='Ollama model not available (service not running or no model installed)',
 )
 
 

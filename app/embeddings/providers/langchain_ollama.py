@@ -25,8 +25,8 @@ class OllamaEmbeddingProvider:
     Environment Variables:
         EMBEDDING_PROVIDER: Must be 'ollama' (default)
         OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
-        EMBEDDING_MODEL: Model name (default: embeddinggemma:latest)
-        EMBEDDING_DIM: Vector dimensions (default: 768)
+        EMBEDDING_MODEL: Model name (default: qwen3-embedding:0.6b)
+        EMBEDDING_DIM: Vector dimensions (default: 1024)
     """
 
     def __init__(self) -> None:

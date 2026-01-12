@@ -15,13 +15,13 @@ This feature is **optional** and supports multiple embedding providers via LangC
 
 The server supports 5 embedding providers:
 
-| Provider | Default Model | Dimensions | Cost | Best For |
-|----------|---------------|------------|------|----------|
-| **Ollama** (default) | embeddinggemma:latest | 768 | Free (local) | Development, privacy-focused |
-| **OpenAI** | text-embedding-3-small | 1536 | $0.02/1M tokens | Production, high quality |
-| **Azure OpenAI** | text-embedding-ada-002 | 1536 | Pay-as-you-go | Enterprise, compliance |
-| **HuggingFace** | sentence-transformers/all-MiniLM-L6-v2 | 384 | Free (API) | Open source, experimentation |
-| **Voyage AI** | voyage-3 | 1024 | $0.06/1M tokens | RAG optimization, long context |
+| Provider             | Default Model                          | Dimensions | Cost            | Best For                       |
+|----------------------|----------------------------------------|------------|-----------------|--------------------------------|
+| **Ollama** (default) | qwen3-embedding:0.6b                   | 1024       | Free (local)    | Development, privacy-focused   |
+| **OpenAI**           | text-embedding-3-small                 | 1536       | $0.02/1M tokens | Production, high quality       |
+| **Azure OpenAI**     | text-embedding-ada-002                 | 1536       | Pay-as-you-go   | Enterprise, compliance         |
+| **HuggingFace**      | sentence-transformers/all-MiniLM-L6-v2 | 384        | Free (API)      | Open source, experimentation   |
+| **Voyage AI**        | voyage-3                               | 1024       | $0.06/1M tokens | RAG optimization, long context |
 
 Select a provider via the `EMBEDDING_PROVIDER` environment variable.
 
@@ -34,13 +34,13 @@ Select a provider via the `EMBEDDING_PROVIDER` environment variable.
 
 ### Provider-Specific Requirements
 
-| Provider | Requirements |
-|----------|--------------|
-| Ollama | Ollama installed locally, ~1GB storage per model |
-| OpenAI | OpenAI API key, internet access |
-| Azure OpenAI | Azure subscription, deployed embedding model |
-| HuggingFace | HuggingFace API token (optional for some models) |
-| Voyage AI | Voyage AI API key |
+| Provider     | Requirements                                     |
+|--------------|--------------------------------------------------|
+| Ollama       | Ollama installed locally, ~1GB storage per model |
+| OpenAI       | OpenAI API key, internet access                  |
+| Azure OpenAI | Azure subscription, deployed embedding model     |
+| HuggingFace  | HuggingFace API token (optional for some models) |
+| Voyage AI    | Voyage AI API key                                |
 
 ## Installation
 
@@ -104,7 +104,7 @@ Ollama runs embedding models locally with no API costs.
 
 2. **Pull embedding model**:
    ```bash
-   ollama pull embeddinggemma:latest
+   ollama pull qwen3-embedding:0.6b
    ```
 
 3. **Verify installation**:
@@ -125,8 +125,8 @@ Ollama runs embedding models locally with no API costs.
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "ollama",
-        "EMBEDDING_MODEL": "embeddinggemma:latest",
-        "EMBEDDING_DIM": "768",
+        "EMBEDDING_MODEL": "qwen3-embedding:0.6b",
+        "EMBEDDING_DIM": "1024",
         "OLLAMA_HOST": "http://localhost:11434"
       }
     }
@@ -136,23 +136,23 @@ Ollama runs embedding models locally with no API costs.
 
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | `ollama` | Set to `ollama` |
-| `EMBEDDING_MODEL` | `embeddinggemma:latest` | Ollama model name |
-| `EMBEDDING_DIM` | `768` | Vector dimensions |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API URL |
+| Variable             | Default                  | Description       |
+|----------------------|--------------------------|-------------------|
+| `EMBEDDING_PROVIDER` | `ollama`                 | Set to `ollama`   |
+| `EMBEDDING_MODEL`    | `qwen3-embedding:0.6b`   | Ollama model name |
+| `EMBEDDING_DIM`      | `1024`                   | Vector dimensions |
+| `OLLAMA_HOST`        | `http://localhost:11434` | Ollama API URL    |
 
 **Docker Networking**: Use `host.docker.internal:11434` (Windows/macOS) or `172.17.0.1:11434` (Linux) when running in containers.
 
 #### Alternative Ollama Models
 
-| Model | Dimensions | Notes |
-|-------|------------|-------|
-| embeddinggemma:latest | 768 | Default, good general-purpose, 100+ languages |
-| nomic-embed-text | 768 | Strong performance, English-focused |
-| mxbai-embed-large | 1024 | Higher quality, slower |
-| all-minilm | 384 | Very fast, good for large-scale |
+| Model                | Dimensions | Notes                                              |
+|----------------------|------------|----------------------------------------------------|
+| qwen3-embedding:0.6b | 1024       | Default, MTEB-R 61.82, 32K context, 100+ languages |
+| nomic-embed-text     | 768        | Strong performance, English-focused                |
+| mxbai-embed-large    | 1024       | Higher quality, slower                             |
+| all-minilm           | 384        | Very fast, good for large-scale                    |
 
 ### OpenAI
 
@@ -190,22 +190,22 @@ OpenAI provides high-quality embeddings via API.
 
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `openai` |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI model name |
-| `EMBEDDING_DIM` | `1536` | Vector dimensions |
-| `OPENAI_API_KEY` | - | **Required**: OpenAI API key |
-| `OPENAI_API_BASE` | - | Custom base URL (optional) |
-| `OPENAI_ORGANIZATION` | - | Organization ID (optional) |
+| Variable              | Default                  | Description                  |
+|-----------------------|--------------------------|------------------------------|
+| `EMBEDDING_PROVIDER`  | -                        | Set to `openai`              |
+| `EMBEDDING_MODEL`     | `text-embedding-3-small` | OpenAI model name            |
+| `EMBEDDING_DIM`       | `1536`                   | Vector dimensions            |
+| `OPENAI_API_KEY`      | -                        | **Required**: OpenAI API key |
+| `OPENAI_API_BASE`     | -                        | Custom base URL (optional)   |
+| `OPENAI_ORGANIZATION` | -                        | Organization ID (optional)   |
 
 #### Available OpenAI Models
 
-| Model | Dimensions | Price | Notes |
-|-------|------------|-------|-------|
-| text-embedding-3-small | 1536 | $0.02/1M | Recommended, cost-effective |
-| text-embedding-3-large | 3072 | $0.13/1M | Higher quality |
-| text-embedding-ada-002 | 1536 | $0.10/1M | Legacy model |
+| Model                  | Dimensions | Price    | Notes                       |
+|------------------------|------------|----------|-----------------------------|
+| text-embedding-3-small | 1536       | $0.02/1M | Recommended, cost-effective |
+| text-embedding-3-large | 3072       | $0.13/1M | Higher quality              |
+| text-embedding-ada-002 | 1536       | $0.10/1M | Legacy model                |
 
 ### Azure OpenAI
 
@@ -253,15 +253,15 @@ Azure OpenAI provides enterprise-grade embeddings with compliance features.
 
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `azure` |
-| `EMBEDDING_MODEL` | - | Model name |
-| `EMBEDDING_DIM` | `1536` | Vector dimensions |
-| `AZURE_OPENAI_API_KEY` | - | **Required**: Azure API key |
-| `AZURE_OPENAI_ENDPOINT` | - | **Required**: Azure endpoint URL |
-| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` | - | **Required**: Deployment name |
-| `AZURE_OPENAI_API_VERSION` | `2024-02-01` | API version |
+| Variable                                 | Default      | Description                      |
+|------------------------------------------|--------------|----------------------------------|
+| `EMBEDDING_PROVIDER`                     | -            | Set to `azure`                   |
+| `EMBEDDING_MODEL`                        | -            | Model name                       |
+| `EMBEDDING_DIM`                          | `1536`       | Vector dimensions                |
+| `AZURE_OPENAI_API_KEY`                   | -            | **Required**: Azure API key      |
+| `AZURE_OPENAI_ENDPOINT`                  | -            | **Required**: Azure endpoint URL |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` | -            | **Required**: Deployment name    |
+| `AZURE_OPENAI_API_VERSION`               | `2024-02-01` | API version                      |
 
 ### HuggingFace
 
@@ -299,21 +299,21 @@ HuggingFace provides access to open-source embedding models.
 
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `huggingface` |
-| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model identifier |
-| `EMBEDDING_DIM` | `384` | Vector dimensions |
-| `HUGGINGFACEHUB_API_TOKEN` | - | HuggingFace API token (optional for some models) |
+| Variable                   | Default                                  | Description                                      |
+|----------------------------|------------------------------------------|--------------------------------------------------|
+| `EMBEDDING_PROVIDER`       | -                                        | Set to `huggingface`                             |
+| `EMBEDDING_MODEL`          | `sentence-transformers/all-MiniLM-L6-v2` | Model identifier                                 |
+| `EMBEDDING_DIM`            | `384`                                    | Vector dimensions                                |
+| `HUGGINGFACEHUB_API_TOKEN` | -                                        | HuggingFace API token (optional for some models) |
 
 #### Recommended HuggingFace Models
 
-| Model | Dimensions | Notes |
-|-------|------------|-------|
-| sentence-transformers/all-MiniLM-L6-v2 | 384 | Fast, good quality |
-| sentence-transformers/all-mpnet-base-v2 | 768 | Higher quality |
-| BAAI/bge-small-en-v1.5 | 384 | BGE series, excellent quality |
-| BAAI/bge-base-en-v1.5 | 768 | BGE series, balanced |
+| Model                                   | Dimensions | Notes                         |
+|-----------------------------------------|------------|-------------------------------|
+| sentence-transformers/all-MiniLM-L6-v2  | 384        | Fast, good quality            |
+| sentence-transformers/all-mpnet-base-v2 | 768        | Higher quality                |
+| BAAI/bge-small-en-v1.5                  | 384        | BGE series, excellent quality |
+| BAAI/bge-base-en-v1.5                   | 768        | BGE series, balanced          |
 
 ### Voyage AI
 
@@ -351,24 +351,24 @@ Voyage AI specializes in RAG-optimized embeddings with long context support.
 
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `voyage` |
-| `EMBEDDING_MODEL` | `voyage-3` | Voyage model name |
-| `EMBEDDING_DIM` | `1024` | Vector dimensions |
-| `VOYAGE_API_KEY` | - | **Required**: Voyage AI API key |
-| `VOYAGE_TRUNCATION` | `true` | Truncate long texts |
-| `VOYAGE_BATCH_SIZE` | `7` | Texts per API call (1-128) |
+| Variable             | Default    | Description                     |
+|----------------------|------------|---------------------------------|
+| `EMBEDDING_PROVIDER` | -          | Set to `voyage`                 |
+| `EMBEDDING_MODEL`    | `voyage-3` | Voyage model name               |
+| `EMBEDDING_DIM`      | `1024`     | Vector dimensions               |
+| `VOYAGE_API_KEY`     | -          | **Required**: Voyage AI API key |
+| `VOYAGE_TRUNCATION`  | `true`     | Truncate long texts             |
+| `VOYAGE_BATCH_SIZE`  | `7`        | Texts per API call (1-128)      |
 
 #### Available Voyage Models
 
-| Model | Dimensions | Context | Notes |
-|-------|------------|---------|-------|
-| voyage-3 | 1024 | 32K | Latest, recommended |
-| voyage-3-lite | 512 | 32K | Faster, lower cost |
-| voyage-code-3 | 1024 | 32K | Optimized for code |
-| voyage-finance-2 | 1024 | 32K | Financial domain |
-| voyage-law-2 | 1024 | 32K | Legal domain |
+| Model            | Dimensions | Context | Notes               |
+|------------------|------------|---------|---------------------|
+| voyage-3         | 1024       | 32K     | Latest, recommended |
+| voyage-3-lite    | 512        | 32K     | Faster, lower cost  |
+| voyage-code-3    | 1024       | 32K     | Optimized for code  |
+| voyage-finance-2 | 1024       | 32K     | Financial domain    |
+| voyage-law-2     | 1024       | 32K     | Legal domain        |
 
 ## LangSmith Tracing
 
@@ -399,12 +399,12 @@ LangSmith provides observability for embedding operations, including:
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LANGSMITH_TRACING` | `false` | Enable/disable tracing |
-| `LANGSMITH_API_KEY` | - | LangSmith API key |
-| `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` | API endpoint |
-| `LANGSMITH_PROJECT` | `mcp-context-server` | Project name for grouping traces |
+| Variable             | Default                           | Description                      |
+|----------------------|-----------------------------------|----------------------------------|
+| `LANGSMITH_TRACING`  | `false`                           | Enable/disable tracing           |
+| `LANGSMITH_API_KEY`  | -                                 | LangSmith API key                |
+| `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` | API endpoint                     |
+| `LANGSMITH_PROJECT`  | `mcp-context-server`              | Project name for grouping traces |
 
 ### Viewing Traces
 
@@ -418,11 +418,11 @@ LangSmith provides observability for embedding operations, including:
 
 All providers support these settings:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_TIMEOUT_S` | `30.0` | API timeout in seconds |
-| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `3` | Max retry attempts |
-| `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0` | Base delay between retries |
+| Variable                       | Default | Description                |
+|--------------------------------|---------|----------------------------|
+| `EMBEDDING_TIMEOUT_S`          | `30.0`  | API timeout in seconds     |
+| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `3`     | Max retry attempts         |
+| `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0`   | Base delay between retries |
 
 ### Full Configuration Example
 
@@ -497,13 +497,13 @@ SELECT * FROM pg_available_extensions WHERE name = 'vector';
 
 ### Common Dimensions by Model
 
-| Model | Dimension |
-|-------|-----------|
-| embeddinggemma:latest | 768 |
-| text-embedding-3-small | 1536 |
-| text-embedding-3-large | 3072 |
-| all-MiniLM-L6-v2 | 384 |
-| voyage-3 | 1024 |
+| Model                  | Dimension |
+|------------------------|-----------|
+| qwen3-embedding:0.6b   | 1024      |
+| text-embedding-3-small | 1536      |
+| text-embedding-3-large | 3072      |
+| all-MiniLM-L6-v2       | 384       |
+| voyage-3               | 1024      |
 
 ### Migration Procedure
 
@@ -511,8 +511,8 @@ When you change `EMBEDDING_DIM` and restart, you'll see:
 
 ```
 RuntimeError: Embedding dimension mismatch detected!
-  Existing database dimension: 768
-  Configured EMBEDDING_DIM: 1024
+  Existing database dimension: 1024
+  Configured EMBEDDING_DIM: 1536
 ```
 
 **Steps**:
@@ -690,7 +690,7 @@ If embedding generation fails, context is still stored (graceful degradation).
 
 ### Dimension Mismatch
 
-**Error**: `Embedding dimension mismatch: expected 1536, got 768`
+**Error**: `Embedding dimension mismatch: expected 1536, got 1024`
 
 **Cause**: Model produces different dimensions than configured
 
@@ -698,11 +698,11 @@ If embedding generation fails, context is still stored (graceful degradation).
 
 ### Model Not Found
 
-**Error**: `Model 'embeddinggemma:latest' not found`
+**Error**: `Model 'qwen3-embedding:0.6b' not found`
 
 **Solution** (Ollama):
 ```bash
-ollama pull embeddinggemma:latest
+ollama pull qwen3-embedding:0.6b
 ```
 
 ### Dependencies Not Installed
@@ -730,25 +730,25 @@ uv sync --extra embeddings-ollama
 
 ### Common Error Messages
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `Connection refused` | Provider not running | Start Ollama or check API credentials |
-| `API key invalid` | Wrong credentials | Verify API key is correct |
-| `Model not found` | Model not available | Pull model or check model name |
-| `Dimension mismatch` | Wrong EMBEDDING_DIM | Match dimension to model output |
-| `Rate limit exceeded` | API rate limiting | Reduce request rate or upgrade plan |
+| Error                 | Cause                | Solution                              |
+|-----------------------|----------------------|---------------------------------------|
+| `Connection refused`  | Provider not running | Start Ollama or check API credentials |
+| `API key invalid`     | Wrong credentials    | Verify API key is correct             |
+| `Model not found`     | Model not available  | Pull model or check model name        |
+| `Dimension mismatch`  | Wrong EMBEDDING_DIM  | Match dimension to model output       |
+| `Rate limit exceeded` | API rate limiting    | Reduce request rate or upgrade plan   |
 
 ## Performance Optimization
 
 ### Provider Selection by Use Case
 
-| Use Case | Recommended Provider |
-|----------|---------------------|
-| Development | Ollama (free, local) |
-| Production (general) | OpenAI (balanced) |
-| Enterprise | Azure OpenAI (compliance) |
-| Cost-sensitive | HuggingFace (free API) |
-| RAG optimization | Voyage AI (specialized) |
+| Use Case             | Recommended Provider      |
+|----------------------|---------------------------|
+| Development          | Ollama (free, local)      |
+| Production (general) | OpenAI (balanced)         |
+| Enterprise           | Azure OpenAI (compliance) |
+| Cost-sensitive       | HuggingFace (free API)    |
+| RAG optimization     | Voyage AI (specialized)   |
 
 ### Batch Size (Voyage AI)
 

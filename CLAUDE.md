@@ -397,8 +397,8 @@ Configuration via `.env` file or environment:
   Requires `ENABLE_EMBEDDING_GENERATION=true` or defaults. Controls tool availability only;
   embedding generation is controlled by `ENABLE_EMBEDDING_GENERATION`.
 - `EMBEDDING_PROVIDER`: Embedding provider - `ollama` (default), `openai`, `azure`, `huggingface`, `voyage`
-- `EMBEDDING_MODEL`: Embedding model name (default: embeddinggemma:latest for Ollama)
-- `EMBEDDING_DIM`: Embedding vector dimensions (default: 768)
+- `EMBEDDING_MODEL`: Embedding model name (default: qwen3-embedding:0.6b for Ollama)
+- `EMBEDDING_DIM`: Embedding vector dimensions (default: 1024)
 - `EMBEDDING_TIMEOUT_S`: Timeout in seconds for embedding generation API calls (default: 30.0)
 - `EMBEDDING_RETRY_MAX_ATTEMPTS`: Maximum number of retry attempts for embedding generation (default: 3)
 - `EMBEDDING_RETRY_BASE_DELAY_S`: Base delay in seconds between retry attempts with exponential backoff (default: 1.0)

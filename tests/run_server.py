@@ -11,6 +11,45 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+
+def is_ollama_model_available(model: str, host: str = 'http://localhost:11434') -> bool:
+    """Check if a specific Ollama model is available.
+
+    Performs two checks:
+    1. Ollama service is running at the specified host
+    2. The specified model is installed and available
+
+    Args:
+        model: Model name (e.g., 'qwen3-embedding:0.6b', 'all-minilm')
+        host: Ollama host URL (default: http://localhost:11434)
+
+    Returns:
+        True if model is available, False otherwise
+    """
+    try:
+        import httpx
+
+        # Check 1: Service is running (short timeout to not slow down tests)
+        with httpx.Client(timeout=2.0) as client:
+            response = client.get(host)
+            if response.status_code != 200:
+                return False
+
+        # Check 2: Model is available
+        import ollama
+
+        ollama_client = ollama.Client(host=host, timeout=5.0)
+        ollama_client.show(model)
+        return True
+
+    except ImportError:
+        # ollama or httpx package not installed
+        return False
+    except Exception:
+        # Service not running or model not available
+        return False
+
+
 # Force test mode for all test runs
 # Check if we're being run from pytest or in a test context
 if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
@@ -41,22 +80,72 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # DISABLED_TOOLS is passed through from parent process if set
     # This allows tests to control which tools are disabled
 
-    # Embedding configuration: Use CI values if set, otherwise use defaults
-    # CI sets EMBEDDING_MODEL=all-minilm (46MB) and EMBEDDING_DIM=384 for fast tests
-    # Local development typically uses: embeddinggemma:latest (768 dim)
-    # NOTE: We explicitly set defaults if not present to ensure consistent behavior
-    # across environments (subprocess may not inherit all parent env vars)
-    if 'EMBEDDING_MODEL' not in os.environ:
-        os.environ['EMBEDDING_MODEL'] = 'embeddinggemma:latest'
-    if 'EMBEDDING_DIM' not in os.environ:
-        os.environ['EMBEDDING_DIM'] = '768'
+    # Smart Embedding Configuration
+    # This implements the user's requirement: "Tests MUST enable embedding generation
+    # when model IS available, and only disable when model is NOT available"
+    #
+    # Priority order for model detection:
+    # 1. all-minilm (CI model - small, fast)
+    # 2. qwen3-embedding:0.6b (default production model)
+    #
+    # If EMBEDDING_MODEL is already set by parent (e.g., CI), check if it's available
+    # If not set, detect what's available and configure accordingly
+    embedding_model = os.environ.get('EMBEDDING_MODEL')
+    embedding_dim = os.environ.get('EMBEDDING_DIM')
+
+    if embedding_model is None:
+        # No model specified by parent - detect what's available
+        candidate_models = [
+            ('all-minilm', '384'),  # CI model (lightweight)
+            ('qwen3-embedding:0.6b', '1024'),  # Default production model
+        ]
+
+        model_available = False
+        for model, dim in candidate_models:
+            if is_ollama_model_available(model):
+                os.environ['EMBEDDING_MODEL'] = model
+                os.environ['EMBEDDING_DIM'] = dim
+                model_available = True
+                print(f'[TEST SERVER] Detected available model: {model} (dim={dim})', file=sys.stderr)
+                break
+
+        if not model_available:
+            # No model available - disable embedding generation
+            os.environ['ENABLE_EMBEDDING_GENERATION'] = 'false'
+            os.environ['ENABLE_SEMANTIC_SEARCH'] = 'false'
+            print('[TEST SERVER] No Ollama model available - disabling embedding generation', file=sys.stderr)
+    else:
+        # Model explicitly specified (e.g., by CI) - verify it's available
+        if not is_ollama_model_available(embedding_model):
+            os.environ['ENABLE_EMBEDDING_GENERATION'] = 'false'
+            os.environ['ENABLE_SEMANTIC_SEARCH'] = 'false'
+            print(
+                f'[TEST SERVER] Specified model "{embedding_model}" not available - disabling embedding generation',
+                file=sys.stderr,
+            )
+        else:
+            # Model is available, ensure DIM is set
+            if embedding_dim is None:
+                # Default dimensions for known models
+                known_dims = {
+                    'all-minilm': '384',
+                    'qwen3-embedding:0.6b': '1024',
+                }
+                os.environ['EMBEDDING_DIM'] = known_dims.get(embedding_model, '1024')
+            print(
+                f'[TEST SERVER] Using specified model: {embedding_model} (dim={os.environ.get("EMBEDDING_DIM")})',
+                file=sys.stderr,
+            )
 
     print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
+    enable_emb_gen = os.environ.get('ENABLE_EMBEDDING_GENERATION', 'true')
+    print(f'[TEST SERVER] ENABLE_EMBEDDING_GENERATION={enable_emb_gen}', file=sys.stderr)
     print(f'[TEST SERVER] ENABLE_SEMANTIC_SEARCH={os.environ.get("ENABLE_SEMANTIC_SEARCH")}', file=sys.stderr)
     print(f'[TEST SERVER] ENABLE_FTS={os.environ.get("ENABLE_FTS")}', file=sys.stderr)
     print(f'[TEST SERVER] ENABLE_HYBRID_SEARCH={os.environ.get("ENABLE_HYBRID_SEARCH")}', file=sys.stderr)
-    print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]}', file=sys.stderr)
-    print(f'[TEST SERVER] EMBEDDING_DIM={os.environ["EMBEDDING_DIM"]}', file=sys.stderr)
+    if 'EMBEDDING_MODEL' in os.environ:
+        print(f'[TEST SERVER] EMBEDDING_MODEL={os.environ["EMBEDDING_MODEL"]}', file=sys.stderr)
+        print(f'[TEST SERVER] EMBEDDING_DIM={os.environ.get("EMBEDDING_DIM", "not set")}', file=sys.stderr)
     if 'DISABLED_TOOLS' in os.environ:
         print(f'[TEST SERVER] DISABLED_TOOLS={os.environ["DISABLED_TOOLS"]}', file=sys.stderr)
 

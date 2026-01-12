@@ -131,8 +131,8 @@ For more details on environment variable expansion, see: https://docs.claude.com
 **Semantic Search Settings:**
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false
 - **EMBEDDING_PROVIDER**: Embedding provider - `ollama` (default), `openai`, `azure`, `huggingface`, or `voyage`
-- **EMBEDDING_MODEL**: Embedding model name - defaults to `embeddinggemma:latest` (provider-specific)
-- **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 768. **Note**: Changing this after initial setup requires database migration (see [Semantic Search Guide](docs/semantic-search.md#changing-embedding-dimensions))
+- **EMBEDDING_MODEL**: Embedding model name - defaults to `qwen3-embedding:0.6b` (provider-specific)
+- **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 1024. **Note**: Changing this after initial setup requires database migration (see [Semantic Search Guide](docs/semantic-search.md#changing-embedding-dimensions))
 
 **Provider-Specific Settings** (see [Semantic Search Guide](docs/semantic-search.md) for complete details):
 - **OLLAMA_HOST**: Ollama API URL (default: http://localhost:11434)

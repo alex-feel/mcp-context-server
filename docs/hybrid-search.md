@@ -53,7 +53,7 @@ uv sync --extra embeddings-ollama
 # Or use another provider: embeddings-openai, embeddings-azure, embeddings-huggingface, embeddings-voyage
 
 # Pull embedding model (for Ollama)
-ollama pull embeddinggemma:latest
+ollama pull qwen3-embedding:0.6b
 ```
 
 ## Configuration

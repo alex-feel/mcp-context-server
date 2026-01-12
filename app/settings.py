@@ -88,12 +88,12 @@ class EmbeddingSettings(CommonSettings):
 
     # Common settings
     model: str = Field(
-        default='embeddinggemma:latest',
+        default='qwen3-embedding:0.6b',
         alias='EMBEDDING_MODEL',
         description='Embedding model name',
     )
     dim: int = Field(
-        default=768,
+        default=1024,
         alias='EMBEDDING_DIM',
         gt=0,
         le=4096,

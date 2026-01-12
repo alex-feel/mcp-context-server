@@ -108,8 +108,8 @@ search:
     language: "english"
   semantic:
     enabled: true
-    model: "embeddinggemma:latest"
-    dim: 768
+    model: "qwen3-embedding:0.6b"
+    dim: 1024
   hybrid:
     enabled: true
     rrfK: 60

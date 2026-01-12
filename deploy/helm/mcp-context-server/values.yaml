@@ -106,8 +106,8 @@ search:
     enabled: false
     # Embedding provider: ollama (default), openai, azure, huggingface, voyage
     provider: "ollama"
-    model: "embeddinggemma:latest"
-    dim: 768
+    model: "qwen3-embedding:0.6b"
+    dim: 1024
     # Timeout and retry settings
     timeout: 30
     retryMaxAttempts: 3

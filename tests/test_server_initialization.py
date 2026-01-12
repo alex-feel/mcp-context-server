@@ -169,7 +169,7 @@ class TestServerConfigurationSettings:
             assert settings.hybrid_rrf_k == 60
 
     def test_embedding_dim_default(self, tmp_path: Path) -> None:
-        """Test default embedding dimension is 768."""
+        """Test default embedding dimension is 1024."""
         env = {
             'DB_PATH': str(tmp_path / 'test.db'),
             'MCP_TEST_MODE': '1',
@@ -187,7 +187,7 @@ class TestServerConfigurationSettings:
             from app.settings import AppSettings
 
             settings = AppSettings()
-            assert settings.embedding.dim == 768
+            assert settings.embedding.dim == 1024
 
 
 class TestServerStorageSettings:

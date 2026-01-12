@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-MODEL="${MODEL:-embeddinggemma:latest}"
+MODEL="${MODEL:-qwen3-embedding:0.6b}"
 
 # Start Ollama server in background on temporary internal port
 OLLAMA_HOST=127.0.0.1:11155 /bin/ollama serve &

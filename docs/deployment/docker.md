@@ -15,7 +15,7 @@ This guide covers deploying the MCP Context Server using Docker and Docker Compo
 
 - **Docker Engine**: 20.10+ or Docker Desktop
 - **Docker Compose**: V2 (included with Docker Desktop)
-- **Storage**: ~2GB for images and models (600MB for embeddinggemma with Ollama)
+- **Storage**: ~2GB for images and models (~600MB for qwen3-embedding:0.6b with Ollama)
 - **Network**: Port 8000 available for HTTP transport
 - **OpenAI API Key**: Required for OpenAI embedding configurations
 
@@ -41,13 +41,13 @@ Six Docker Compose configurations are provided, organized by embedding provider:
 
 **Choosing Between Ollama and OpenAI:**
 
-| Factor      | Ollama                   | OpenAI                            |
-|-------------|--------------------------|-----------------------------------|
-| Cost        | Free (self-hosted)       | Pay-per-use API                   |
-| Privacy     | Data stays local         | Data sent to OpenAI               |
-| Setup       | Automatic model download | Requires API key                  |
-| Performance | Depends on hardware      | Consistent cloud performance      |
-| Model       | embeddinggemma (768 dim) | text-embedding-3-small (1536 dim) |
+| Factor      | Ollama                          | OpenAI                            |
+|-------------|---------------------------------|-----------------------------------|
+| Cost        | Free (self-hosted)              | Pay-per-use API                   |
+| Privacy     | Data stays local                | Data sent to OpenAI               |
+| Setup       | Automatic model download        | Requires API key                  |
+| Performance | Depends on hardware             | Consistent cloud performance      |
+| Model       | qwen3-embedding:0.6b (1024 dim) | text-embedding-3-small (1536 dim) |
 
 ## Quick Start
 
@@ -201,7 +201,7 @@ Replace `localhost` with your server's IP or hostname for remote connections:
 
 **ollama:**
 - Custom Ollama image with automatic model pulling
-- Downloads `embeddinggemma:latest` on first start
+- Downloads `qwen3-embedding:0.6b` on first start
 - Health check waits for model availability
 
 **postgres (PostgreSQL configurations only):**
@@ -268,8 +268,8 @@ All Docker Compose files use environment variables for configuration. Key settin
 | Variable             | Default                 | Description                 |
 |----------------------|-------------------------|-----------------------------|
 | `EMBEDDING_PROVIDER` | `ollama`                | Embedding provider          |
-| `EMBEDDING_MODEL`    | `embeddinggemma:latest` | Ollama embedding model      |
-| `EMBEDDING_DIM`      | `768`                   | Embedding vector dimensions |
+| `EMBEDDING_MODEL`    | `qwen3-embedding:0.6b`  | Ollama embedding model      |
+| `EMBEDDING_DIM`      | `1024`                  | Embedding vector dimensions |
 | `OLLAMA_HOST`        | `http://ollama:11434`   | Ollama API endpoint         |
 
 **Embedding Settings (OpenAI):**
@@ -414,7 +414,7 @@ postgres              Up (healthy)   # PostgreSQL only
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama list
 
 # Expected output includes:
-# embeddinggemma:latest    622 MB
+# qwen3-embedding:0.6b    ~600 MB
 ```
 
 ### Test MCP Connection
@@ -439,7 +439,7 @@ curl -X POST http://localhost:8000/mcp \
 # Check download progress
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs -f ollama
 
-# The entrypoint shows: "Pulling model: embeddinggemma:latest..."
+# The entrypoint shows: "Pulling model: qwen3-embedding:0.6b..."
 # Wait for: "Model pulled successfully!"
 ```
 
@@ -501,7 +501,7 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml ps ollama
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama list
 
 # If model missing, trigger download
-docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull embeddinggemma:latest
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3-embedding:0.6b
 ```
 
 ### Issue 6: OpenAI API Key Missing
@@ -541,7 +541,7 @@ services:
   mcp-context-server:
     environment:
       - EMBEDDING_MODEL=nomic-embed-text
-      - EMBEDDING_DIM=768
+      - EMBEDDING_DIM=1024
 
   ollama:
     environment:

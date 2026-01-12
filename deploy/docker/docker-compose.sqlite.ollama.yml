@@ -29,8 +29,8 @@ services:
       # Embedding provider selection (default: ollama)
       - EMBEDDING_PROVIDER=ollama
       - OLLAMA_HOST=http://ollama:11434
-      - EMBEDDING_MODEL=embeddinggemma:latest
-      - EMBEDDING_DIM=768
+      - EMBEDDING_MODEL=qwen3-embedding:0.6b
+      - EMBEDDING_DIM=1024
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
       # LangSmith tracing (optional, disabled by default)
@@ -51,11 +51,11 @@ services:
     pull_policy: build
     environment:
       - OLLAMA_HOST=0.0.0.0
-      - MODEL=embeddinggemma:latest
+      - MODEL=qwen3-embedding:0.6b
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "ollama list | grep -q embeddinggemma || exit 1"]
+      test: ["CMD-SHELL", "ollama list | grep -q \"$${MODEL%%:*}\" || exit 1"]
       interval: 10s
       timeout: 30s
       retries: 30
