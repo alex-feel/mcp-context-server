@@ -178,7 +178,9 @@ async def store_context(
             except Exception as e:
                 raise ToolError(f'Failed to store images: {str(e)}') from e
 
-        # Generate embedding if semantic search is available (non-blocking)
+        # Generate embedding if embedding generation is enabled (BLOCKING when enabled)
+        # If ENABLE_EMBEDDING_GENERATION=true (provider is not None), embedding failures are errors
+        # This ensures no silent embedding gaps when user expects embeddings to be created
         embedding_generated = False
         store_embedding_provider = get_embedding_provider()
         if store_embedding_provider is not None:
@@ -192,8 +194,13 @@ async def store_context(
                 embedding_generated = True
                 logger.debug(f'Generated embedding for context {context_id}')
             except Exception as e:
-                logger.warning(f'Failed to generate/store embedding for context {context_id}: {e}')
-                # Non-blocking: continue even if embedding fails
+                logger.error(f'Failed to generate/store embedding for context {context_id}: {e}')
+                # BLOCKING: If embedding generation is enabled, failure is an error
+                # The context was stored, but embedding failed - this is a data integrity issue
+                raise ToolError(
+                    f'Context stored (id={context_id}) but embedding generation failed: {str(e)}. '
+                    f'The entry exists but cannot be found via semantic search.',
+                ) from e
 
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
@@ -544,7 +551,8 @@ async def update_context(
                     await repos.context.update_content_type(context_id, current_content_type)
                     updated_fields.append('content_type')
 
-            # Regenerate embedding if text was changed and semantic search is available (non-blocking)
+            # Regenerate embedding if text was changed and embedding generation is enabled (BLOCKING)
+            # If ENABLE_EMBEDDING_GENERATION=true (provider is not None), embedding failures are errors
             update_embedding_provider = get_embedding_provider()
             if text is not None and update_embedding_provider is not None:
                 try:
@@ -569,8 +577,12 @@ async def update_context(
 
                     updated_fields.append('embedding')
                 except Exception as e:
-                    logger.warning(f'Failed to update embedding for context {context_id}: {e}')
-                    # Non-blocking: continue even if embedding update fails
+                    logger.error(f'Failed to update embedding for context {context_id}: {e}')
+                    # BLOCKING: If embedding generation is enabled, failure is an error
+                    raise ToolError(
+                        f'Context updated but embedding regeneration failed: {str(e)}. '
+                        f'The text was updated but semantic search may return stale results.',
+                    ) from e
 
             logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
 

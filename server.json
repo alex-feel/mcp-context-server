@@ -333,6 +333,13 @@
           "name": "ENABLE_SEMANTIC_SEARCH"
         },
         {
+          "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_GENERATION"
+        },
+        {
           "description": "Ollama API host URL for embedding generation",
           "isRequired": false,
           "format": "string",
@@ -965,6 +972,13 @@
           "format": "boolean",
           "isSecret": false,
           "name": "ENABLE_SEMANTIC_SEARCH"
+        },
+        {
+          "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_GENERATION"
         },
         {
           "description": "Ollama API host URL for embedding generation",

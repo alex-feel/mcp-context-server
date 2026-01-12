@@ -405,6 +405,27 @@ class AppSettings(CommonSettings):
     # Semantic search settings
     enable_semantic_search: bool = Field(default=False, alias='ENABLE_SEMANTIC_SEARCH')
 
+    # Embedding generation settings
+    # CRITICAL: enable_embedding_generation default=True is INTENTIONAL and MUST NOT be changed.
+    #
+    # Rationale:
+    # 1. Embeddings are fundamental infrastructure - users should explicitly opt OUT, not opt IN
+    # 2. Fail-fast semantics prevent silent embedding gaps in stored content
+    # 3. Users who don't want embeddings MUST explicitly set ENABLE_EMBEDDING_GENERATION=false
+    # 4. This ensures no surprises - if embeddings are missing, user explicitly disabled them
+    # 5. ENABLE_SEMANTIC_SEARCH=true requires embeddings; if ENABLE_EMBEDDING_GENERATION=false
+    #    and ENABLE_SEMANTIC_SEARCH=true, semantic_search_context tool will NOT be registered
+    #
+    # DO NOT change this default without understanding the full architectural implications.
+    # This default=True is part of the breaking change in v1.0.0.
+    enable_embedding_generation: bool = Field(
+        default=True,
+        alias='ENABLE_EMBEDDING_GENERATION',
+        description='Enable embedding generation for stored context entries. '
+                    'If true and dependencies are not met, server will NOT start. '
+                    'Set to false to disable embeddings entirely.',
+    )
+
     # Full-text search settings
     enable_fts: bool = Field(default=False, alias='ENABLE_FTS')
     fts_language: str = Field(

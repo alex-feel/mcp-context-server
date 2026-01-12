@@ -215,73 +215,87 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, delete_context)
         register_tool(mcp, delete_context_batch)
 
-        # 10) Initialize semantic search if enabled
-        if settings.enable_semantic_search:
+        # 10) Initialize embedding generation if enabled (BEFORE semantic search)
+        # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
+        # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
+        if settings.enable_embedding_generation:
             # Step 1: Check vector storage dependencies (provider-agnostic)
             vector_deps_available = await check_vector_storage_dependencies(backend.backend_type)
 
-            if vector_deps_available:
-                # Step 2: Check provider-specific dependencies based on EMBEDDING_PROVIDER
-                provider = settings.embedding.provider
-                provider_check = await check_provider_dependencies(provider, settings.embedding)
+            if not vector_deps_available:
+                raise RuntimeError(
+                    'ENABLE_EMBEDDING_GENERATION=true but vector storage dependencies not available. '
+                    'Fix: Install provider dependencies (e.g., uv sync --extra embeddings-ollama) '
+                    'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
+                )
 
-                if provider_check['available']:
-                    # Step 3: Create and initialize provider
-                    try:
-                        embedding_provider = create_embedding_provider()
-                        await embedding_provider.initialize()
+            # Step 2: Check provider-specific dependencies based on EMBEDDING_PROVIDER
+            provider = settings.embedding.provider
+            provider_check = await check_provider_dependencies(provider, settings.embedding)
 
-                        # Verify provider is available
-                        if await embedding_provider.is_available():
-                            set_embedding_provider(embedding_provider)
-                            register_tool(mcp, semantic_search_context)
-                            logger.info(
-                                f'[OK] Semantic search enabled with provider: {embedding_provider.provider_name}',
-                            )
-                        else:
-                            logger.warning(
-                                f'[!] Embedding provider {embedding_provider.provider_name} '
-                                'initialized but not available',
-                            )
-                            await embedding_provider.shutdown()
-                            set_embedding_provider(None)
-                            logger.info('[!] semantic_search_context not registered (provider not available)')
-                    except ImportError as e:
-                        logger.error(f'Failed to import embedding provider: {e}')
-                        set_embedding_provider(None)
-                        logger.warning('[!] Semantic search enabled but provider dependencies not installed')
-                        logger.info('[!] semantic_search_context not registered (dependencies not installed)')
-                    except Exception as e:
-                        logger.error(f'Failed to initialize embedding provider: {e}')
-                        set_embedding_provider(None)
-                        logger.warning('[!] Semantic search enabled but initialization failed - feature disabled')
-                        logger.info('[!] semantic_search_context not registered (initialization failed)')
-                else:
-                    # Provider-specific dependencies not met
-                    set_embedding_provider(None)
-                    logger.warning(
-                        f'[!] Semantic search enabled but {provider} provider dependencies not met',
+            if not provider_check['available']:
+                install_hint = provider_check.get('install_instructions') or 'Check provider configuration'
+                raise RuntimeError(
+                    f'ENABLE_EMBEDDING_GENERATION=true but {provider} provider dependencies not met. '
+                    f'Reason: {provider_check["reason"]}. '
+                    f'Fix: {install_hint} '
+                    f'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
+                )
+
+            # Step 3: Create and initialize provider
+            try:
+                embedding_provider = create_embedding_provider()
+                await embedding_provider.initialize()
+
+                # Verify provider is available
+                if not await embedding_provider.is_available():
+                    await embedding_provider.shutdown()
+                    raise RuntimeError(
+                        f'ENABLE_EMBEDDING_GENERATION=true but {embedding_provider.provider_name} '
+                        'is not available (service may be down). '
+                        'Fix: Ensure the embedding service is running and accessible '
+                        'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
                     )
-                    logger.warning(f'  Reason: {provider_check["reason"]}')
-                    if provider_check['install_instructions']:
-                        logger.warning(f'  Fix: {provider_check["install_instructions"]}')
-                    logger.info('[!] semantic_search_context not registered (provider dependencies not met)')
-            else:
-                # Vector storage dependencies not met
-                set_embedding_provider(None)
-                logger.warning(
-                    '[!] Semantic search enabled but vector storage dependencies not met - feature disabled',
-                )
-                logger.warning(
-                    '  Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
-                )
-                logger.info('[!] semantic_search_context not registered (vector storage dependencies not met)')
+
+                set_embedding_provider(embedding_provider)
+                logger.info(f'[OK] Embedding generation enabled with provider: {embedding_provider.provider_name}')
+
+            except ImportError as e:
+                raise RuntimeError(
+                    f'ENABLE_EMBEDDING_GENERATION=true but provider import failed: {e}. '
+                    f'Fix: Install provider dependencies (e.g., uv sync --extra embeddings-{provider}) '
+                    f'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
+                ) from e
+            except RuntimeError:
+                raise  # Re-raise RuntimeError from above checks
+            except Exception as e:
+                raise RuntimeError(
+                    f'ENABLE_EMBEDDING_GENERATION=true but initialization failed: {e}. '
+                    f'Fix: Check provider configuration and service availability '
+                    f'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
+                ) from e
         else:
             set_embedding_provider(None)
+            logger.info('Embedding generation disabled (ENABLE_EMBEDDING_GENERATION=false)')
+
+        # 11) Register semantic search tool if enabled AND embedding provider is available
+        # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
+        if settings.enable_semantic_search:
+            if get_embedding_provider() is not None:
+                register_tool(mcp, semantic_search_context)
+                logger.info('[OK] semantic_search_context registered')
+            else:
+                # User explicitly set ENABLE_EMBEDDING_GENERATION=false but ENABLE_SEMANTIC_SEARCH=true
+                # This is a valid configuration - user wants no embeddings but enabled the flag
+                logger.warning(
+                    '[!] ENABLE_SEMANTIC_SEARCH=true but ENABLE_EMBEDDING_GENERATION=false - '
+                    'semantic_search_context NOT registered (no embedding provider available)',
+                )
+        else:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
-        # 11) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 12) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.enable_fts:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
@@ -298,7 +312,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
-        # 12) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 13) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.enable_hybrid_search:
             semantic_available_for_hybrid = (
                 settings.enable_semantic_search and get_embedding_provider() is not None

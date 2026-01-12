@@ -320,8 +320,12 @@ class TestLifespanErrorHandling:
                         pass
 
     @pytest.mark.asyncio
-    async def test_embedding_provider_failure_graceful(self) -> None:
-        """Verify semantic search disabled but server starts on provider failure."""
+    async def test_embedding_provider_failure_when_enabled_raises(self) -> None:
+        """Verify server fails to start when ENABLE_EMBEDDING_GENERATION=true but provider fails.
+
+        With the new architecture, ENABLE_EMBEDDING_GENERATION defaults to true.
+        If provider initialization fails, the server MUST NOT start - this is fail-fast semantics.
+        """
         from unittest.mock import AsyncMock
         from unittest.mock import MagicMock
 
@@ -339,8 +343,9 @@ class TestLifespanErrorHandling:
         mock_repos.context = MagicMock()
         mock_repos.embedding = MagicMock()
 
-        # Mock settings
+        # Mock settings - ENABLE_EMBEDDING_GENERATION=true (default)
         mock_settings = MagicMock()
+        mock_settings.enable_embedding_generation = True
         mock_settings.enable_semantic_search = True
         mock_settings.enable_fts = False
         mock_settings.enable_hybrid_search = False
@@ -372,9 +377,66 @@ class TestLifespanErrorHandling:
             ):
                 mock_mcp = MagicMock()
 
-                # Server should start successfully despite provider failure
+                # Server should FAIL when ENABLE_EMBEDDING_GENERATION=true but provider fails
+                with pytest.raises(RuntimeError, match='ENABLE_EMBEDDING_GENERATION=true'):
+                    async with lifespan(mock_mcp):
+                        pass
+        finally:
+            app.startup._backend = original_backend
+            app.startup._repositories = original_repos
+            app.startup._embedding_provider = original_provider
+
+    @pytest.mark.asyncio
+    async def test_embedding_provider_failure_graceful_when_disabled(self) -> None:
+        """Verify server starts when ENABLE_EMBEDDING_GENERATION=false."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import MagicMock
+
+        import app.startup
+        from app.server import lifespan
+
+        mock_backend = MagicMock()
+        mock_backend.initialize = AsyncMock()
+        mock_backend.shutdown = AsyncMock()
+        mock_backend.backend_type = 'sqlite'
+
+        # Create properly mocked repository container
+        mock_repos = MagicMock()
+        mock_repos.fts.is_available = AsyncMock(return_value=False)
+        mock_repos.context = MagicMock()
+        mock_repos.embedding = MagicMock()
+
+        # Mock settings - ENABLE_EMBEDDING_GENERATION=false (user explicitly disabled)
+        mock_settings = MagicMock()
+        mock_settings.enable_embedding_generation = False
+        mock_settings.enable_semantic_search = False  # Doesn't matter when embeddings disabled
+        mock_settings.enable_fts = False
+        mock_settings.enable_hybrid_search = False
+        mock_settings.embedding.provider = 'ollama'
+
+        # Store and restore globals
+        original_backend = app.startup._backend
+        original_repos = app.startup._repositories
+        original_provider = app.startup._embedding_provider
+
+        try:
+            with (
+                patch('app.server.settings', mock_settings),
+                patch('app.server.create_backend', return_value=mock_backend),
+                patch('app.server.init_database', new=AsyncMock()),
+                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
+                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
+                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
+                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
+                patch('app.server.apply_fts_migration', new=AsyncMock()),
+                patch('app.tools.register_tool', return_value=True),
+                patch('app.server.RepositoryContainer', return_value=mock_repos),
+            ):
+                mock_mcp = MagicMock()
+
+                # Server should start successfully when ENABLE_EMBEDDING_GENERATION=false
                 async with lifespan(mock_mcp):
-                    # Verify embedding provider is None (graceful degradation)
+                    # Verify embedding provider is None
                     assert app.startup._embedding_provider is None
         finally:
             app.startup._backend = original_backend
@@ -403,8 +465,9 @@ class TestLifespanErrorHandling:
         mock_repos = MagicMock()
         mock_repos.fts.is_available = AsyncMock(return_value=False)
 
-        # Mock settings
+        # Mock settings - disable embedding generation to avoid initialization
         mock_settings = MagicMock()
+        mock_settings.enable_embedding_generation = False
         mock_settings.enable_semantic_search = False
         mock_settings.enable_fts = False
         mock_settings.enable_hybrid_search = False
@@ -464,8 +527,9 @@ class TestLifespanErrorHandling:
         mock_embedding_provider.is_available = AsyncMock(return_value=True)
         mock_embedding_provider.provider_name = 'test-provider'
 
-        # Mock settings
+        # Mock settings - enable embedding generation
         mock_settings = MagicMock()
+        mock_settings.enable_embedding_generation = True
         mock_settings.enable_semantic_search = True
         mock_settings.enable_fts = False
         mock_settings.enable_hybrid_search = False

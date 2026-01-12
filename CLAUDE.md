@@ -383,8 +383,19 @@ Configuration via `.env` file or environment:
 - `ENABLE_FTS`: Enable full-text search functionality (default: false)
 - `FTS_LANGUAGE`: Language for stemming and text search (default: english). PostgreSQL supports 29 languages with full stemming. SQLite uses Porter stemmer (English) or unicode61 tokenizer (no stemming).
 
+**Embedding Generation Settings:**
+- `ENABLE_EMBEDDING_GENERATION`: Enable embedding generation for stored context entries (default: true).
+  **BREAKING CHANGE in v1.0.0:** When true (default) and embedding dependencies are not met, server will NOT start.
+  Set to false to explicitly disable embedding generation.
+  - `true` (default): Embeddings generated on store/update. Server fails if dependencies unavailable.
+  - `false`: No embeddings generated. Server starts without embedding dependencies.
+  - Note: `ENABLE_SEMANTIC_SEARCH=true` requires embeddings. If `ENABLE_EMBEDDING_GENERATION=false`,
+    the `semantic_search_context` tool will NOT be registered.
+
 **Semantic Search Settings:**
-- `ENABLE_SEMANTIC_SEARCH`: Enable semantic search functionality (default: false)
+- `ENABLE_SEMANTIC_SEARCH`: Enable semantic_search_context tool registration (default: false).
+  Requires `ENABLE_EMBEDDING_GENERATION=true` or defaults. Controls tool availability only;
+  embedding generation is controlled by `ENABLE_EMBEDDING_GENERATION`.
 - `EMBEDDING_PROVIDER`: Embedding provider - `ollama` (default), `openai`, `azure`, `huggingface`, `voyage`
 - `EMBEDDING_MODEL`: Embedding model name (default: embeddinggemma:latest for Ollama)
 - `EMBEDDING_DIM`: Embedding vector dimensions (default: 768)

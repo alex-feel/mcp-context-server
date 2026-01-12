@@ -204,7 +204,10 @@ async def store_context_batch(
                     if original_entry.get('images'):
                         await repos.images.store_images(ctx_id, original_entry['images'])
 
-                    # Generate embedding if semantic search enabled (non-blocking)
+                    # Generate embedding if embedding generation enabled
+                    # Behavior depends on atomic flag:
+                    # - atomic=True: Embedding failure fails the ENTIRE batch
+                    # - atomic=False: Embedding failure is reported per-item, context is stored
                     batch_store_embedding_provider = get_embedding_provider()
                     if batch_store_embedding_provider is not None:
                         try:
@@ -215,7 +218,24 @@ async def store_context_batch(
                                 model=settings.embedding.model,
                             )
                         except Exception as emb_err:
-                            logger.warning(f'Failed to generate embedding for context {ctx_id}: {emb_err}')
+                            logger.error(f'Failed to generate embedding for context {ctx_id}: {emb_err}')
+                            if atomic:
+                                # Atomic mode: Embedding failure fails the entire batch
+                                # Note: Context was already stored - in production, this would need
+                                # transaction support to rollback. For now, raise error with partial info.
+                                raise ToolError(
+                                    f'Batch operation failed at index {original_idx}: embedding generation failed '
+                                    f'for context {ctx_id}: {emb_err}. '
+                                    f'Some entries may have been stored without embeddings.',
+                                ) from emb_err
+                            # Non-atomic mode: Report per-item error, context was stored but no embedding
+                            results.append(BulkStoreResultItemDict(
+                                index=original_idx,
+                                success=False,
+                                context_id=ctx_id,
+                                error=f'Stored but embedding failed: {str(emb_err)}',
+                            ))
+                            continue  # Skip the success result below
 
                     results.append(BulkStoreResultItemDict(
                         index=original_idx,
@@ -468,7 +488,8 @@ async def update_context_batch(
                         await repos.context.update_content_type(context_id, 'multimodal')
                         updated_fields.extend(['images', 'content_type'])
 
-                # Regenerate embedding if text changed and semantic search available
+                # Regenerate embedding if text changed and embedding generation enabled
+                # Behavior depends on atomic flag (same as store_context_batch)
                 batch_update_embedding_provider = get_embedding_provider()
                 if update.get('text') is not None and batch_update_embedding_provider is not None:
                     try:
@@ -484,7 +505,23 @@ async def update_context_batch(
                             )
                         updated_fields.append('embedding')
                     except Exception as emb_err:
-                        logger.warning(f'Failed to update embedding for context {context_id}: {emb_err}')
+                        logger.error(f'Failed to update embedding for context {context_id}: {emb_err}')
+                        if atomic:
+                            # Atomic mode: Embedding failure fails the entire batch
+                            raise ToolError(
+                                f'Batch update failed at index {original_idx}: embedding regeneration failed '
+                                f'for context {context_id}: {emb_err}. '
+                                f'Some entries may have been updated without embedding changes.',
+                            ) from emb_err
+                        # Non-atomic mode: Report per-item error
+                        results.append(BulkUpdateResultItemDict(
+                            index=original_idx,
+                            context_id=context_id,
+                            success=False,
+                            updated_fields=updated_fields,  # Partial update succeeded
+                            error=f'Updated but embedding failed: {str(emb_err)}',
+                        ))
+                        continue  # Skip the success result below
 
                 results.append(BulkUpdateResultItemDict(
                     index=original_idx,
