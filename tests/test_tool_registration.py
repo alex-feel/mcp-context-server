@@ -30,9 +30,9 @@ requires_sqlite_vec = pytest.mark.skipif(
 
 
 class TestIsToolDisabled:
-    """Tests for _is_tool_disabled().
+    """Tests for is_tool_disabled().
 
-    Note: _is_tool_disabled uses settings.disabled_tools which is a property
+    Note: is_tool_disabled uses settings.disabled_tools which is a property
     computed from the environment at settings load time. We mock the settings
     object directly to test the function behavior.
     """
@@ -42,10 +42,10 @@ class TestIsToolDisabled:
         mock_settings = MagicMock()
         mock_settings.disabled_tools = {'delete_context', 'update_context'}
 
-        with patch('app.server.settings', mock_settings):
-            from app.server import _is_tool_disabled
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import is_tool_disabled
 
-            result = _is_tool_disabled('store_context')
+            result = is_tool_disabled('store_context')
             assert result is False
 
     def test_returns_true_when_in_list(self) -> None:
@@ -53,10 +53,10 @@ class TestIsToolDisabled:
         mock_settings = MagicMock()
         mock_settings.disabled_tools = {'delete_context', 'update_context'}
 
-        with patch('app.server.settings', mock_settings):
-            from app.server import _is_tool_disabled
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import is_tool_disabled
 
-            result = _is_tool_disabled('delete_context')
+            result = is_tool_disabled('delete_context')
             assert result is True
 
     def test_returns_false_when_list_empty(self) -> None:
@@ -64,10 +64,10 @@ class TestIsToolDisabled:
         mock_settings = MagicMock()
         mock_settings.disabled_tools = set()
 
-        with patch('app.server.settings', mock_settings):
-            from app.server import _is_tool_disabled
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import is_tool_disabled
 
-            result = _is_tool_disabled('store_context')
+            result = is_tool_disabled('store_context')
             assert result is False
 
     def test_case_insensitive_matching(self) -> None:
@@ -76,20 +76,20 @@ class TestIsToolDisabled:
         # Settings stores lowercase, function converts to lowercase
         mock_settings.disabled_tools = {'delete_context'}
 
-        with patch('app.server.settings', mock_settings):
-            from app.server import _is_tool_disabled
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import is_tool_disabled
 
             # Test various case combinations
-            assert _is_tool_disabled('Delete_Context') is True
-            assert _is_tool_disabled('DELETE_CONTEXT') is True
-            assert _is_tool_disabled('delete_context') is True
+            assert is_tool_disabled('Delete_Context') is True
+            assert is_tool_disabled('DELETE_CONTEXT') is True
+            assert is_tool_disabled('delete_context') is True
 
 
 class TestRegisterTool:
-    """Tests for _register_tool().
+    """Tests for register_tool().
 
-    Note: _register_tool uses the global mcp object from app.server module,
-    so we need to patch app.server.mcp for these tests.
+    Note: register_tool now takes mcp_instance as first parameter.
+    We pass a mock MCP instance and patch settings to test the function behavior.
     """
 
     def test_registers_when_not_disabled(self) -> None:
@@ -101,13 +101,10 @@ class TestRegisterTool:
         async def dummy_tool() -> dict[str, Any]:
             return {'success': True}
 
-        with (
-            patch('app.server.mcp', mock_mcp),
-            patch('app.server.settings', mock_settings),
-        ):
-            from app.server import _register_tool
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
 
-            result = _register_tool(dummy_tool)
+            result = register_tool(mock_mcp, dummy_tool)
 
             assert result is True
             mock_mcp.tool.assert_called_once()
@@ -121,13 +118,10 @@ class TestRegisterTool:
         async def dummy_tool() -> dict[str, Any]:
             return {'success': True}
 
-        with (
-            patch('app.server.mcp', mock_mcp),
-            patch('app.server.settings', mock_settings),
-        ):
-            from app.server import _register_tool
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
 
-            result = _register_tool(dummy_tool)
+            result = register_tool(mock_mcp, dummy_tool)
 
             assert result is False
             mock_mcp.tool.assert_not_called()
@@ -141,13 +135,10 @@ class TestRegisterTool:
         async def my_custom_tool() -> dict[str, Any]:
             return {'success': True}
 
-        with (
-            patch('app.server.mcp', mock_mcp),
-            patch('app.server.settings', mock_settings),
-        ):
-            from app.server import _register_tool
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
 
-            _register_tool(my_custom_tool)
+            register_tool(mock_mcp, my_custom_tool)
 
             # Check that the decorator was called
             mock_mcp.tool.assert_called_once()
@@ -161,14 +152,11 @@ class TestRegisterTool:
         async def my_func() -> dict[str, Any]:
             return {'success': True}
 
-        with (
-            patch('app.server.mcp', mock_mcp),
-            patch('app.server.settings', mock_settings),
-        ):
-            from app.server import _register_tool
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
 
             # Should be disabled because we pass name='explicit_name'
-            result = _register_tool(my_func, name='explicit_name')
+            result = register_tool(mock_mcp, my_func, name='explicit_name')
 
             assert result is False
 
@@ -183,14 +171,11 @@ class TestRegisterTool:
         async def store_context() -> dict[str, Any]:
             return {'success': True}
 
-        with (
-            patch('app.server.mcp', mock_mcp),
-            patch('app.server.settings', mock_settings),
-        ):
-            from app.server import TOOL_ANNOTATIONS
-            from app.server import _register_tool
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import TOOL_ANNOTATIONS
+            from app.tools import register_tool
 
-            _register_tool(store_context)
+            register_tool(mock_mcp, store_context)
 
             # Verify tool decorator was called with annotations from TOOL_ANNOTATIONS
             call_kwargs = mock_mcp.tool.call_args[1]
@@ -206,13 +191,10 @@ class TestRegisterTool:
         async def test_tool() -> dict[str, Any]:
             return {'success': True}
 
-        with (
-            patch('app.server.mcp', mock_mcp),
-            patch('app.server.settings', mock_settings),
-        ):
-            from app.server import _register_tool
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
 
-            result = _register_tool(test_tool)
+            result = register_tool(mock_mcp, test_tool)
 
             assert result is True
 
@@ -225,13 +207,10 @@ class TestRegisterTool:
         async def test_tool() -> dict[str, Any]:
             return {'success': True}
 
-        with (
-            patch('app.server.mcp', mock_mcp),
-            patch('app.server.settings', mock_settings),
-        ):
-            from app.server import _register_tool
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
 
-            result = _register_tool(test_tool)
+            result = register_tool(mock_mcp, test_tool)
 
             assert result is False
 
@@ -248,21 +227,21 @@ class TestDisabledToolsConfiguration:
             'delete_context_batch',
         }
 
-        with patch('app.server.settings', mock_settings):
-            from app.server import _is_tool_disabled
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import is_tool_disabled
 
-            assert _is_tool_disabled('delete_context') is True
-            assert _is_tool_disabled('update_context') is True
-            assert _is_tool_disabled('delete_context_batch') is True
-            assert _is_tool_disabled('store_context') is False
+            assert is_tool_disabled('delete_context') is True
+            assert is_tool_disabled('update_context') is True
+            assert is_tool_disabled('delete_context_batch') is True
+            assert is_tool_disabled('store_context') is False
 
     def test_empty_disabled_tools_enables_all(self) -> None:
         """Test all tools enabled when DISABLED_TOOLS empty."""
         mock_settings = MagicMock()
         mock_settings.disabled_tools = set()
 
-        with patch('app.server.settings', mock_settings):
-            from app.server import _is_tool_disabled
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import is_tool_disabled
 
             # All standard tools should be enabled
             tools = [
@@ -276,7 +255,7 @@ class TestDisabledToolsConfiguration:
             ]
 
             for tool in tools:
-                assert _is_tool_disabled(tool) is False
+                assert is_tool_disabled(tool) is False
 
     @pytest.mark.integration
     @pytest.mark.asyncio
@@ -383,7 +362,7 @@ class TestToolAnnotations:
 
     def test_all_13_tools_have_annotations(self) -> None:
         """Verify all MCP tools have annotation entries."""
-        from app.server import TOOL_ANNOTATIONS
+        from app.tools import TOOL_ANNOTATIONS
 
         expected_tools = [
             'store_context',
@@ -406,7 +385,7 @@ class TestToolAnnotations:
 
     def test_read_only_tools_have_readonly_hint(self) -> None:
         """Verify search tools have readOnlyHint=True."""
-        from app.server import TOOL_ANNOTATIONS
+        from app.tools import TOOL_ANNOTATIONS
 
         read_only_tools = [
             'search_context',
@@ -425,7 +404,7 @@ class TestToolAnnotations:
 
     def test_destructive_tools_have_destructive_hint(self) -> None:
         """Verify delete/update tools have destructiveHint=True."""
-        from app.server import TOOL_ANNOTATIONS
+        from app.tools import TOOL_ANNOTATIONS
 
         destructive_tools = [
             'update_context',
@@ -441,7 +420,7 @@ class TestToolAnnotations:
 
     def test_additive_tools_not_destructive(self) -> None:
         """Verify store tools have destructiveHint=False."""
-        from app.server import TOOL_ANNOTATIONS
+        from app.tools import TOOL_ANNOTATIONS
 
         additive_tools = [
             'store_context',
@@ -455,7 +434,7 @@ class TestToolAnnotations:
 
     def test_delete_tools_are_idempotent(self) -> None:
         """Verify delete tools have idempotentHint=True."""
-        from app.server import TOOL_ANNOTATIONS
+        from app.tools import TOOL_ANNOTATIONS
 
         delete_tools = [
             'delete_context',
@@ -469,7 +448,7 @@ class TestToolAnnotations:
 
     def test_update_tools_not_idempotent(self) -> None:
         """Verify update tools have idempotentHint=False."""
-        from app.server import TOOL_ANNOTATIONS
+        from app.tools import TOOL_ANNOTATIONS
 
         update_tools = [
             'update_context',
@@ -483,7 +462,7 @@ class TestToolAnnotations:
 
     def test_all_tools_have_title(self) -> None:
         """Verify all tools have a title for display."""
-        from app.server import TOOL_ANNOTATIONS
+        from app.tools import TOOL_ANNOTATIONS
 
         for tool, tool_annots in TOOL_ANNOTATIONS.items():
             assert 'title' in tool_annots, f'Tool {tool} missing title'

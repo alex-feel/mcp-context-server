@@ -325,7 +325,7 @@ class TestLifespanErrorHandling:
         from unittest.mock import AsyncMock
         from unittest.mock import MagicMock
 
-        import app.server as server
+        import app.startup
         from app.server import lifespan
 
         mock_backend = MagicMock()
@@ -347,9 +347,9 @@ class TestLifespanErrorHandling:
         mock_settings.embedding.provider = 'ollama'
 
         # Store and restore globals
-        original_backend = server._backend
-        original_repos = server._repositories
-        original_provider = server._embedding_provider
+        original_backend = app.startup._backend
+        original_repos = app.startup._repositories
+        original_provider = app.startup._embedding_provider
 
         try:
             with (
@@ -361,7 +361,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server._register_tool', return_value=True),
+                patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
                 patch(
@@ -375,11 +375,11 @@ class TestLifespanErrorHandling:
                 # Server should start successfully despite provider failure
                 async with lifespan(mock_mcp):
                     # Verify embedding provider is None (graceful degradation)
-                    assert server._embedding_provider is None
+                    assert app.startup._embedding_provider is None
         finally:
-            server._backend = original_backend
-            server._repositories = original_repos
-            server._embedding_provider = original_provider
+            app.startup._backend = original_backend
+            app.startup._repositories = original_repos
+            app.startup._embedding_provider = original_provider
 
     @pytest.mark.asyncio
     async def test_shutdown_logs_errors(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -388,7 +388,7 @@ class TestLifespanErrorHandling:
         from unittest.mock import AsyncMock
         from unittest.mock import MagicMock
 
-        import app.server as server
+        import app.startup
         from app.server import lifespan
 
         caplog.set_level(logging.ERROR)
@@ -409,9 +409,9 @@ class TestLifespanErrorHandling:
         mock_settings.enable_fts = False
         mock_settings.enable_hybrid_search = False
 
-        original_backend = server._backend
-        original_repos = server._repositories
-        original_provider = server._embedding_provider
+        original_backend = app.startup._backend
+        original_repos = app.startup._repositories
+        original_provider = app.startup._embedding_provider
 
         try:
             with (
@@ -423,7 +423,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server._register_tool', return_value=True),
+                patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
                 mock_mcp = MagicMock()
@@ -435,9 +435,9 @@ class TestLifespanErrorHandling:
                 # Verify error was logged
                 assert any('shutdown' in r.message.lower() for r in caplog.records)
         finally:
-            server._backend = original_backend
-            server._repositories = original_repos
-            server._embedding_provider = original_provider
+            app.startup._backend = original_backend
+            app.startup._repositories = original_repos
+            app.startup._embedding_provider = original_provider
 
     @pytest.mark.asyncio
     async def test_embedding_provider_shutdown_on_exit(self) -> None:
@@ -445,7 +445,7 @@ class TestLifespanErrorHandling:
         from unittest.mock import AsyncMock
         from unittest.mock import MagicMock
 
-        import app.server as server
+        import app.startup
         from app.server import lifespan
 
         mock_backend = MagicMock()
@@ -471,9 +471,9 @@ class TestLifespanErrorHandling:
         mock_settings.enable_hybrid_search = False
         mock_settings.embedding.provider = 'ollama'
 
-        original_backend = server._backend
-        original_repos = server._repositories
-        original_provider = server._embedding_provider
+        original_backend = app.startup._backend
+        original_repos = app.startup._repositories
+        original_provider = app.startup._embedding_provider
 
         try:
             with (
@@ -485,7 +485,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server._register_tool', return_value=True),
+                patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
                 patch(
@@ -498,11 +498,11 @@ class TestLifespanErrorHandling:
 
                 async with lifespan(mock_mcp):
                     # Verify embedding provider was set
-                    assert server._embedding_provider is not None
+                    assert app.startup._embedding_provider is not None
 
                 # Verify embedding provider shutdown was called
                 mock_embedding_provider.shutdown.assert_awaited_once()
         finally:
-            server._backend = original_backend
-            server._repositories = original_repos
-            server._embedding_provider = original_provider
+            app.startup._backend = original_backend
+            app.startup._repositories = original_repos
+            app.startup._embedding_provider = original_provider

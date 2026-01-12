@@ -215,22 +215,23 @@ class TestServerEnsureFunctions:
 
     @pytest.mark.asyncio
     async def test_ensure_backend_creates_new(self) -> None:
-        """Test that _ensure_backend creates a new backend when none exists."""
-        import app.server as server
+        """Test that ensure_backend creates a new backend when none exists."""
+        import app.startup
+        from app.startup import ensure_backend
 
         # Store original
-        original_backend = server._backend
+        original_backend = app.startup._backend
 
         try:
             # Clear the backend
-            server._backend = None
+            app.startup._backend = None
 
             # Mock create_backend and initialize
             mock_backend = MagicMock()
             mock_backend.initialize = AsyncMock()
 
-            with patch('app.server.create_backend', return_value=mock_backend) as mock_create:
-                backend = await server._ensure_backend()
+            with patch('app.startup.create_backend', return_value=mock_backend) as mock_create:
+                backend = await ensure_backend()
 
                 # Verify backend was created and initialized
                 mock_create.assert_called_once()
@@ -238,78 +239,81 @@ class TestServerEnsureFunctions:
                 assert backend == mock_backend
         finally:
             # Restore original
-            server._backend = original_backend
+            app.startup._backend = original_backend
 
     @pytest.mark.asyncio
     async def test_ensure_backend_returns_existing(self) -> None:
-        """Test that _ensure_backend returns existing backend."""
-        import app.server as server
+        """Test that ensure_backend returns existing backend."""
+        import app.startup
+        from app.startup import ensure_backend
 
         # Store original
-        original_backend = server._backend
+        original_backend = app.startup._backend
 
         try:
             # Set a mock backend
             mock_backend = MagicMock()
-            server._backend = mock_backend
+            app.startup._backend = mock_backend
 
-            with patch('app.server.create_backend') as mock_create:
-                backend = await server._ensure_backend()
+            with patch('app.startup.create_backend') as mock_create:
+                backend = await ensure_backend()
 
                 # Should return existing, not create new
                 mock_create.assert_not_called()
                 assert backend == mock_backend
         finally:
             # Restore original
-            server._backend = original_backend
+            app.startup._backend = original_backend
 
     @pytest.mark.asyncio
     async def test_ensure_repositories_creates_new(self) -> None:
-        """Test that _ensure_repositories creates new when none exists."""
-        import app.server as server
+        """Test that ensure_repositories creates new when none exists."""
+        import app.startup
         from app.repositories import RepositoryContainer
+        from app.startup import ensure_repositories
 
         # Store originals
-        original_backend = server._backend
-        original_repos = server._repositories
+        original_backend = app.startup._backend
+        original_repos = app.startup._repositories
 
         try:
             # Set up a mock backend
             mock_backend = MagicMock()
             mock_backend.backend_type = 'sqlite'
-            server._backend = mock_backend
-            server._repositories = None
+            app.startup._backend = mock_backend
+            app.startup._repositories = None
 
-            repos = await server._ensure_repositories()
+            repos = await ensure_repositories()
 
             # Verify repositories were created
             assert isinstance(repos, RepositoryContainer)
-            assert server._repositories is not None
+            assert app.startup._repositories is not None
         finally:
             # Restore originals
-            server._backend = original_backend
-            server._repositories = original_repos
+            app.startup._backend = original_backend
+            app.startup._repositories = original_repos
 
     @pytest.mark.asyncio
     async def test_ensure_repositories_returns_existing(self) -> None:
-        """Test that _ensure_repositories returns existing."""
-        import app.server as server
+        """Test that ensure_repositories returns existing."""
+        import app.startup
+        from app.startup import ensure_repositories
 
         # Store originals
-        original_repos = server._repositories
+        original_repos = app.startup._repositories
 
         try:
             # Set a mock repository container
             mock_repos = MagicMock()
-            server._repositories = mock_repos
+            app.startup._repositories = mock_repos
 
-            repos = await server._ensure_repositories()
+            repos = await ensure_repositories()
 
             # Should return existing
             assert repos == mock_repos
         finally:
             # Restore original
-            server._repositories = original_repos
+            app.startup._repositories = original_repos
 
 
 class TestStoreContextEdgeCases:
@@ -417,7 +421,7 @@ class TestStoreContextEdgeCases:
         from app.server import store_context
 
         # Mock the repository to return (None, False)
-        with patch('app.server._ensure_repositories') as mock_ensure:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(None, False))
             mock_ensure.return_value = mock_repos
@@ -576,21 +580,21 @@ class TestSemanticSearchNotAvailable:
         """Test that semantic_search_context raises error when service not available."""
         from fastmcp.exceptions import ToolError
 
-        import app.server as server
+        import app.startup
         from app.server import semantic_search_context
 
         # Store original
-        original_service = server._embedding_provider
+        original_service = app.startup._embedding_provider
 
         try:
             # Clear the embedding service
-            server._embedding_provider = None
+            app.startup._embedding_provider = None
 
             with pytest.raises(ToolError, match='Semantic search is not available'):
                 await semantic_search_context(query='test query', limit=20)
         finally:
             # Restore original
-            server._embedding_provider = original_service
+            app.startup._embedding_provider = original_service
 
 
 class TestFormatExceptionMessage:
@@ -598,7 +602,7 @@ class TestFormatExceptionMessage:
 
     def test_formats_exception_with_message(self) -> None:
         """Test exception with non-empty str()."""
-        from app.server import format_exception_message
+        from app.migrations import format_exception_message
 
         error = ValueError('Something went wrong')
         result = format_exception_message(error)
@@ -609,7 +613,7 @@ class TestFormatExceptionMessage:
         """Test exception with empty str() falls back to repr."""
         from typing import override
 
-        from app.server import format_exception_message
+        from app.migrations import format_exception_message
 
         # Create an exception subclass that returns empty string
         class EmptyStrError(Exception):
@@ -627,7 +631,7 @@ class TestFormatExceptionMessage:
         """Test exception uses repr when str is empty."""
         from typing import override
 
-        from app.server import format_exception_message
+        from app.migrations import format_exception_message
 
         class CustomError(Exception):
             @override
@@ -645,7 +649,7 @@ class TestFormatExceptionMessage:
 
     def test_standard_exceptions(self) -> None:
         """Test formatting of standard Python exceptions."""
-        from app.server import format_exception_message
+        from app.migrations import format_exception_message
 
         # Test various standard exceptions
         exceptions = [
@@ -665,7 +669,7 @@ class TestEstimateMigrationTime:
 
     def test_small_dataset(self) -> None:
         """Test <= 1000 records returns 2 seconds."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         assert estimate_migration_time(0) == 2
         assert estimate_migration_time(500) == 2
@@ -673,7 +677,7 @@ class TestEstimateMigrationTime:
 
     def test_medium_dataset(self) -> None:
         """Test 1000-10000 records returns 15 seconds."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         assert estimate_migration_time(1001) == 15
         assert estimate_migration_time(5000) == 15
@@ -681,7 +685,7 @@ class TestEstimateMigrationTime:
 
     def test_large_dataset(self) -> None:
         """Test 10000-100000 records returns 120 seconds."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         assert estimate_migration_time(10001) == 120
         assert estimate_migration_time(50000) == 120
@@ -689,7 +693,7 @@ class TestEstimateMigrationTime:
 
     def test_very_large_dataset(self) -> None:
         """Test 100000-1000000 records returns 600 seconds."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         assert estimate_migration_time(100001) == 600
         assert estimate_migration_time(500000) == 600
@@ -697,7 +701,7 @@ class TestEstimateMigrationTime:
 
     def test_massive_dataset(self) -> None:
         """Test > 1000000 records returns 1200 seconds."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         assert estimate_migration_time(1000001) == 1200
         assert estimate_migration_time(5000000) == 1200
@@ -705,13 +709,13 @@ class TestEstimateMigrationTime:
 
 
 class TestValidatePoolTimeoutForEmbedding:
-    """Tests for _validate_pool_timeout_for_embedding()."""
+    """Tests for validate_pool_timeout_for_embedding()."""
 
     def test_logs_warning_when_timeout_too_short(self, caplog: pytest.LogCaptureFixture) -> None:
         """Test warning logged when pool timeout insufficient."""
         import logging
 
-        from app.server import _validate_pool_timeout_for_embedding
+        from app.startup.validation import validate_pool_timeout_for_embedding
 
         caplog.set_level(logging.INFO)  # Function logs at INFO level
 
@@ -729,8 +733,8 @@ class TestValidatePoolTimeoutForEmbedding:
         mock_settings.embedding = mock_embedding_settings
         mock_settings.enable_semantic_search = True
 
-        with patch('app.server.settings', mock_settings):
-            _validate_pool_timeout_for_embedding()
+        with patch('app.startup.validation.settings', mock_settings):
+            validate_pool_timeout_for_embedding()
 
         # Should have logged a message about timeout
         assert any('timeout' in record.message.lower() for record in caplog.records)
@@ -739,7 +743,7 @@ class TestValidatePoolTimeoutForEmbedding:
         """Test no warning when pool timeout adequate."""
         import logging
 
-        from app.server import _validate_pool_timeout_for_embedding
+        from app.startup.validation import validate_pool_timeout_for_embedding
 
         caplog.set_level(logging.INFO)
 
@@ -757,8 +761,8 @@ class TestValidatePoolTimeoutForEmbedding:
         mock_settings.embedding = mock_embedding_settings
         mock_settings.enable_semantic_search = True
 
-        with patch('app.server.settings', mock_settings):
-            _validate_pool_timeout_for_embedding()
+        with patch('app.startup.validation.settings', mock_settings):
+            validate_pool_timeout_for_embedding()
 
         # Should not have logged message about timeout being too short
         timeout_messages = [r for r in caplog.records if 'below recommended' in r.message.lower()]
@@ -768,15 +772,15 @@ class TestValidatePoolTimeoutForEmbedding:
         """Test no-op when ENABLE_SEMANTIC_SEARCH=false."""
         import logging
 
-        from app.server import _validate_pool_timeout_for_embedding
+        from app.startup.validation import validate_pool_timeout_for_embedding
 
         caplog.set_level(logging.WARNING)
 
         mock_settings = MagicMock()
         mock_settings.enable_semantic_search = False
 
-        with patch('app.server.settings', mock_settings):
-            _validate_pool_timeout_for_embedding()
+        with patch('app.startup.validation.settings', mock_settings):
+            validate_pool_timeout_for_embedding()
 
         # Should not have logged anything about timeout
         timeout_warnings = [r for r in caplog.records if 'timeout' in r.message.lower()]

@@ -797,7 +797,7 @@ class TestFtsGracefulDegradation:
         Yields:
             None: Fixture provides no value, only cleanup behavior.
         """
-        from app.server import _reset_fts_migration_status
+        from app.migrations import reset_fts_migration_status as _reset_fts_migration_status
 
         _reset_fts_migration_status()
         yield
@@ -808,7 +808,7 @@ class TestFtsGracefulDegradation:
         from datetime import UTC
         from datetime import datetime
 
-        from app.server import FtsMigrationStatus
+        from app.migrations import FtsMigrationStatus
 
         status = FtsMigrationStatus(
             in_progress=True,
@@ -830,7 +830,7 @@ class TestFtsGracefulDegradation:
 
     def test_migration_status_defaults(self) -> None:
         """Test that FtsMigrationStatus dataclass has correct defaults."""
-        from app.server import FtsMigrationStatus
+        from app.migrations import FtsMigrationStatus
 
         status = FtsMigrationStatus()
 
@@ -844,7 +844,7 @@ class TestFtsGracefulDegradation:
 
     def test_estimate_migration_time_small_dataset(self) -> None:
         """Test migration time estimation for small dataset."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         # Small dataset: returns minimum time (around 2 seconds)
         estimated = estimate_migration_time(100)
@@ -853,7 +853,7 @@ class TestFtsGracefulDegradation:
 
     def test_estimate_migration_time_large_dataset(self) -> None:
         """Test migration time estimation for large dataset."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         # Large dataset: should scale appropriately
         estimated = estimate_migration_time(100000)
@@ -862,7 +862,7 @@ class TestFtsGracefulDegradation:
 
     def test_estimate_migration_time_zero_records(self) -> None:
         """Test migration time estimation for zero records."""
-        from app.server import estimate_migration_time
+        from app.migrations import estimate_migration_time
 
         # Zero records: returns minimum time (around 2 seconds)
         estimated = estimate_migration_time(0)
@@ -880,7 +880,7 @@ class TestFtsGracefulDegradation:
         from datetime import datetime
         from unittest.mock import patch
 
-        from app.server import FtsMigrationStatus
+        from app.migrations import FtsMigrationStatus
 
         # Create a migration in progress status
         migration_status = FtsMigrationStatus(
@@ -895,7 +895,7 @@ class TestFtsGracefulDegradation:
 
         # Mock the global status and settings variable (NOT get_settings function)
         with (
-            patch('app.server._fts_migration_status', migration_status),
+            patch('app.migrations.fts._fts_migration_status', migration_status),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_fts = True
@@ -929,7 +929,7 @@ class TestFtsGracefulDegradation:
         from datetime import timedelta
         from unittest.mock import patch
 
-        from app.server import FtsMigrationStatus
+        from app.migrations import FtsMigrationStatus
 
         # Create a migration that started 30 seconds ago with 120 second estimate
         start_time = datetime.now(tz=UTC) - timedelta(seconds=30)
@@ -944,7 +944,7 @@ class TestFtsGracefulDegradation:
         )
 
         with (
-            patch('app.server._fts_migration_status', migration_status),
+            patch('app.migrations.fts._fts_migration_status', migration_status),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_fts = True
@@ -966,7 +966,7 @@ class TestFtsGracefulDegradation:
         from datetime import datetime
         from unittest.mock import patch
 
-        from app.server import FtsMigrationStatus
+        from app.migrations import FtsMigrationStatus
 
         migration_status = FtsMigrationStatus(
             in_progress=True,
@@ -979,7 +979,7 @@ class TestFtsGracefulDegradation:
         )
 
         with (
-            patch('app.server._fts_migration_status', migration_status),
+            patch('app.migrations.fts._fts_migration_status', migration_status),
             patch('app.server.settings') as mock_settings,
         ):
             mock_settings.enable_fts = True
@@ -1003,15 +1003,15 @@ class TestResetFtsMigrationStatus:
         from datetime import datetime
 
         # First, set the global status to a non-default value
-        import app.server as server
-        from app.server import FtsMigrationStatus
-        from app.server import _reset_fts_migration_status
+        import app.migrations.fts as fts_module
+        from app.migrations import FtsMigrationStatus
+        from app.migrations import reset_fts_migration_status as _reset_fts_migration_status
 
-        original_status = server._fts_migration_status
+        original_status = fts_module._fts_migration_status
 
         try:
             # Set migration in progress
-            server._fts_migration_status = FtsMigrationStatus(
+            fts_module._fts_migration_status = FtsMigrationStatus(
                 in_progress=True,
                 started_at=datetime.now(tz=UTC),
                 estimated_seconds=120,
@@ -1022,14 +1022,14 @@ class TestResetFtsMigrationStatus:
             )
 
             # Verify it's set
-            assert server._fts_migration_status.in_progress is True
-            assert server._fts_migration_status.estimated_seconds == 120
+            assert fts_module._fts_migration_status.in_progress is True
+            assert fts_module._fts_migration_status.estimated_seconds == 120
 
             # Reset to defaults
             _reset_fts_migration_status()
 
             # Verify it's back to defaults (capture status to avoid mypy narrowing issues)
-            reset_status = server._fts_migration_status
+            reset_status = fts_module._fts_migration_status
             assert reset_status.in_progress is False
             assert reset_status.started_at is None
             assert reset_status.estimated_seconds is None
@@ -1039,18 +1039,18 @@ class TestResetFtsMigrationStatus:
             assert reset_status.records_count is None
         finally:
             # Restore original status
-            server._fts_migration_status = original_status
+            fts_module._fts_migration_status = original_status
 
     def test_reset_creates_new_instance(self) -> None:
         """Test that reset creates a fresh FtsMigrationStatus instance."""
         from datetime import UTC
         from datetime import datetime
 
-        import app.server as server
-        from app.server import FtsMigrationStatus
-        from app.server import _reset_fts_migration_status
+        import app.migrations.fts as fts_module
+        from app.migrations import FtsMigrationStatus
+        from app.migrations import reset_fts_migration_status as _reset_fts_migration_status
 
-        original_status = server._fts_migration_status
+        original_status = fts_module._fts_migration_status
 
         try:
             # Set migration in progress
@@ -1059,16 +1059,16 @@ class TestResetFtsMigrationStatus:
                 started_at=datetime.now(tz=UTC),
                 estimated_seconds=60,
             )
-            server._fts_migration_status = old_instance
+            fts_module._fts_migration_status = old_instance
 
             # Get reference to old instance
-            pre_reset_id = id(server._fts_migration_status)
+            pre_reset_id = id(fts_module._fts_migration_status)
 
             # Reset
             _reset_fts_migration_status()
 
             # Should be a new instance (capture to avoid mypy narrowing)
-            new_status = server._fts_migration_status
+            new_status = fts_module._fts_migration_status
             post_reset_id = id(new_status)
             assert pre_reset_id != post_reset_id
 
@@ -1077,32 +1077,32 @@ class TestResetFtsMigrationStatus:
             assert new_status.in_progress == default.in_progress
             assert new_status.started_at == default.started_at
         finally:
-            server._fts_migration_status = original_status
+            fts_module._fts_migration_status = original_status
 
     def test_reset_idempotent(self) -> None:
         """Test that calling reset multiple times is safe."""
-        import app.server as server
-        from app.server import _reset_fts_migration_status
+        import app.migrations.fts as fts_module
+        from app.migrations import reset_fts_migration_status as _reset_fts_migration_status
 
-        original_status = server._fts_migration_status
+        original_status = fts_module._fts_migration_status
 
         try:
             # Call reset multiple times
             _reset_fts_migration_status()
-            status_1 = server._fts_migration_status
+            status_1 = fts_module._fts_migration_status
 
             _reset_fts_migration_status()
-            status_2 = server._fts_migration_status
+            status_2 = fts_module._fts_migration_status
 
             _reset_fts_migration_status()
-            status_3 = server._fts_migration_status
+            status_3 = fts_module._fts_migration_status
 
             # All should have default values
             assert status_1.in_progress is False
             assert status_2.in_progress is False
             assert status_3.in_progress is False
         finally:
-            server._fts_migration_status = original_status
+            fts_module._fts_migration_status = original_status
 
 
 class TestInternalColumnsNotExposed:

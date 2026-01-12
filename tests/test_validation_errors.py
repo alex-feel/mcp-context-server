@@ -68,7 +68,7 @@ class TestStoreContextValidation:
     @pytest.mark.asyncio
     async def test_empty_thread_id(self, mock_repos):
         """Test that empty thread_id raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Test empty string
             with pytest.raises(ToolError) as exc_info:
                 await store_context(
@@ -90,7 +90,7 @@ class TestStoreContextValidation:
     @pytest.mark.asyncio
     async def test_empty_text(self, mock_repos):
         """Test that empty text raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Test empty string
             with pytest.raises(ToolError) as exc_info:
                 await store_context(
@@ -115,7 +115,7 @@ class TestStoreContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.store_with_deduplication.return_value = (1, False)
             # Valid source works fine
             result = await store_context(
@@ -130,7 +130,7 @@ class TestStoreContextValidation:
         """Test that oversized images raise ToolError."""
         import base64
 
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Create actual oversized binary data and encode it
             # 11MB of binary data (over the 10MB limit)
             oversized_data = b'\x00' * (11 * 1024 * 1024)
@@ -151,7 +151,7 @@ class TestStoreContextValidation:
     @pytest.mark.asyncio
     async def test_invalid_image_data(self, mock_repos):
         """Test that invalid base64 image data raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             invalid_image = {
                 'mime_type': 'image/png',
                 'data': 'not-valid-base64!@#$%',
@@ -173,7 +173,7 @@ class TestUpdateContextValidation:
     @pytest.mark.asyncio
     async def test_empty_text(self, mock_repos):
         """Test that empty text in update raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Test empty string
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
@@ -193,7 +193,7 @@ class TestUpdateContextValidation:
     @pytest.mark.asyncio
     async def test_no_fields_provided(self, mock_repos):
         """Test that updating with no fields raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(context_id=1)
             assert 'at least one' in str(exc_info.value).lower() or 'field' in str(exc_info.value).lower()
@@ -201,7 +201,7 @@ class TestUpdateContextValidation:
     @pytest.mark.asyncio
     async def test_nonexistent_context(self, mock_repos):
         """Test that updating non-existent context raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.check_entry_exists = AsyncMock(return_value=False)
 
             with pytest.raises(ToolError) as exc_info:
@@ -214,7 +214,7 @@ class TestUpdateContextValidation:
     @pytest.mark.asyncio
     async def test_invalid_image_structure(self, mock_repos):
         """Test that invalid image structure raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             invalid_images = cast(Any, [{'invalid': 'structure'}])
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
@@ -229,7 +229,7 @@ class TestUpdateContextValidation:
         """Test that oversized images in update raise ToolError."""
         import base64
 
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Create actual oversized binary data and encode it
             # 11MB of binary data (over the 10MB limit)
             oversized_data = b'\x00' * (11 * 1024 * 1024)
@@ -255,7 +255,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid source works fine
             result = await search_context(limit=50, source='user')
@@ -264,7 +264,7 @@ class TestSearchContextValidation:
     @pytest.mark.asyncio
     async def test_invalid_content_type(self, mock_repos):
         """Test that invalid content_type in search returns proper error."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
             # Should work with valid content types
             result = await search_context(limit=50, content_type='text')
             assert 'results' in result
@@ -278,7 +278,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid limits work fine
             result = await search_context(limit=1)
@@ -292,7 +292,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid offsets work fine
             result = await search_context(limit=50, offset=0)
@@ -306,7 +306,7 @@ class TestSearchContextValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies max limit works.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.return_value = ([], {})
             # Valid max limit works fine
             result = await search_context(limit=100)
@@ -322,7 +322,7 @@ class TestGetContextByIdsValidation:
 
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.get_by_ids.return_value = []
             # Valid non-empty list works fine
             result = await get_context_by_ids(context_ids=[1])
@@ -331,7 +331,7 @@ class TestGetContextByIdsValidation:
     @pytest.mark.asyncio
     async def test_invalid_ids(self, mock_repos):
         """Test that invalid context IDs are handled gracefully."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Non-existent IDs should return empty list, not error
             result = await get_context_by_ids(context_ids=[999999])
             assert result == []
@@ -339,7 +339,7 @@ class TestGetContextByIdsValidation:
     @pytest.mark.asyncio
     async def test_valid_integer_strings(self, mock_repos):
         """Test that valid integer IDs work correctly."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.get_by_ids = AsyncMock(
                 return_value=[
                     {
@@ -364,7 +364,7 @@ class TestDeleteContextValidation:
     @pytest.mark.asyncio
     async def test_no_parameters(self, mock_repos):
         """Test that delete with no parameters raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             with pytest.raises(ToolError) as exc_info:
                 await delete_context()
             assert 'at least one' in str(exc_info.value).lower() or 'provide' in str(exc_info.value).lower()
@@ -372,7 +372,7 @@ class TestDeleteContextValidation:
     @pytest.mark.asyncio
     async def test_successful_deletion_by_ids(self, mock_repos):
         """Test successful deletion by context IDs."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             result = await delete_context(context_ids=[1, 2, 3])
             assert result['deleted_count'] == 1
             assert result['success'] is True
@@ -380,7 +380,7 @@ class TestDeleteContextValidation:
     @pytest.mark.asyncio
     async def test_successful_deletion_by_thread(self, mock_repos):
         """Test successful deletion by thread ID."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             result = await delete_context(thread_id='test-thread')
             assert result['deleted_count'] == 1
             assert result['success'] is True
@@ -388,7 +388,7 @@ class TestDeleteContextValidation:
     @pytest.mark.asyncio
     async def test_deletion_error(self, mock_repos):
         """Test that repository errors during deletion raise ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.delete_by_ids.side_effect = Exception('Database error')
 
             with pytest.raises(ToolError) as exc_info:
@@ -402,7 +402,7 @@ class TestEdgeCasesAndCombinations:
     @pytest.mark.asyncio
     async def test_multiple_validation_errors_store(self, mock_repos):
         """Test multiple validation errors in store_context."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Empty thread_id and empty text - should fail on thread_id first
             with pytest.raises(ToolError) as exc_info:
                 await store_context(
@@ -417,7 +417,7 @@ class TestEdgeCasesAndCombinations:
     @pytest.mark.asyncio
     async def test_unicode_and_special_chars(self, mock_repos):
         """Test that Unicode and special characters are handled properly."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Should succeed with Unicode
             result = await store_context(
                 thread_id='test-🚀-thread',
@@ -430,7 +430,7 @@ class TestEdgeCasesAndCombinations:
     @pytest.mark.asyncio
     async def test_very_long_inputs(self, mock_repos):
         """Test that very long inputs are handled."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Very long text should succeed
             long_text = 'A' * 100000  # 100K characters
             result = await store_context(
@@ -443,7 +443,7 @@ class TestEdgeCasesAndCombinations:
     @pytest.mark.asyncio
     async def test_null_vs_empty_string(self, mock_repos):
         """Test distinction between null and empty string."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Empty string should raise error
             with pytest.raises(ToolError):
                 await store_context(
@@ -463,7 +463,7 @@ class TestEdgeCasesAndCombinations:
     @pytest.mark.asyncio
     async def test_search_with_all_filters(self, mock_repos):
         """Test search with all possible filters."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
             # Should succeed with all valid filters
             result = await search_context(
                 thread_id='test-thread',
@@ -483,7 +483,7 @@ class TestExceptionHandling:
     @pytest.mark.asyncio
     async def test_repository_exception_store(self, mock_repos):
         """Test repository exception in store_context raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.store_with_deduplication.side_effect = Exception('Database error')
 
             with pytest.raises(ToolError) as exc_info:
@@ -497,7 +497,7 @@ class TestExceptionHandling:
     @pytest.mark.asyncio
     async def test_repository_exception_update(self, mock_repos):
         """Test repository exception in update_context raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.update_context_entry.side_effect = Exception('Update failed')
 
             with pytest.raises(ToolError) as exc_info:
@@ -510,7 +510,7 @@ class TestExceptionHandling:
     @pytest.mark.asyncio
     async def test_repository_exception_search(self, mock_repos):
         """Test repository exception in search_context raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=mock_repos):
             mock_repos.context.search_contexts.side_effect = Exception('Search failed')
 
             with pytest.raises(ToolError) as exc_info:
@@ -520,7 +520,7 @@ class TestExceptionHandling:
     @pytest.mark.asyncio
     async def test_repository_exception_get_by_ids(self, mock_repos):
         """Test repository exception in get_context_by_ids raises ToolError."""
-        with patch('app.server._ensure_repositories', return_value=mock_repos):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.get_by_ids.side_effect = Exception('Fetch failed')
 
             with pytest.raises(ToolError) as exc_info:

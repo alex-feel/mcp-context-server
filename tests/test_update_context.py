@@ -60,7 +60,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_update_text_content_only(self, mock_context, mock_repositories):
         """Test updating only text content."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=123,
                 text='Updated text content',
@@ -89,7 +89,7 @@ class TestUpdateContext:
         metadata = {'status': 'completed', 'priority': 5}
         mock_repositories.context.update_context_entry.return_value = (True, ['metadata'])
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=456,
                 text=None,
@@ -117,7 +117,7 @@ class TestUpdateContext:
         """Test replacing tags."""
         tags = ['python', 'testing', 'async']
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=789,
                 text=None,
@@ -145,9 +145,9 @@ class TestUpdateContext:
         ]
 
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
-            patch('app.server.MAX_IMAGE_SIZE_MB', 10),
-            patch('app.server.MAX_TOTAL_SIZE_MB', 100),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.MAX_IMAGE_SIZE_MB', 10),
+            patch('app.tools.context.MAX_TOTAL_SIZE_MB', 100),
         ):
             result = await update_context(
                 context_id=111,
@@ -170,7 +170,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_remove_all_images_updates_content_type(self, mock_context, mock_repositories):
         """Test that providing empty images list removes images and sets content_type to text."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=222,
                 text=None,
@@ -194,7 +194,7 @@ class TestUpdateContext:
         """Test updating multiple fields in one call."""
         mock_repositories.context.update_context_entry.return_value = (True, ['text_content', 'metadata'])
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=333,
                 text='New text',
@@ -214,7 +214,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_no_fields_provided_error(self, mock_context, mock_repositories):
         """Test error when no fields are provided for update."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id=444,
@@ -231,7 +231,7 @@ class TestUpdateContext:
         """Test error when context entry doesn't exist."""
         mock_repositories.context.check_entry_exists.return_value = False
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id=999,
@@ -253,7 +253,7 @@ class TestUpdateContext:
             },
         ]
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id=555,
@@ -275,7 +275,7 @@ class TestUpdateContext:
             },
         ]
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id=666,
@@ -303,8 +303,8 @@ class TestUpdateContext:
         ]
 
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
-            patch('app.server.MAX_IMAGE_SIZE_MB', 10),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.MAX_IMAGE_SIZE_MB', 10),
         ):  # 10MB limit
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
@@ -334,9 +334,9 @@ class TestUpdateContext:
         ]
 
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
-            patch('app.server.MAX_IMAGE_SIZE_MB', 50),
-            patch('app.server.MAX_TOTAL_SIZE_MB', 100),  # Each image OK, Total exceeds
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.MAX_IMAGE_SIZE_MB', 50),
+            patch('app.tools.context.MAX_TOTAL_SIZE_MB', 100),  # Each image OK, Total exceeds
             pytest.raises(ToolError, match='[Tt]otal.*size.*exceeds'),
         ):
             await update_context(
@@ -354,7 +354,7 @@ class TestUpdateContext:
         mock_repositories.context.update_context_entry.return_value = (False, [])
 
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             pytest.raises(ToolError, match='Failed to update context entry'),
         ):
             await update_context(
@@ -373,7 +373,7 @@ class TestUpdateContext:
         mock_repositories.images.count_images_for_context.return_value = 2
         mock_repositories.context.get_content_type.return_value = 'text'  # Wrong content type
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=1111,
                 text='Updated text',
@@ -396,7 +396,7 @@ class TestUpdateContext:
         mock_repositories.tags.replace_tags_for_context.side_effect = Exception('Database error')
 
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             pytest.raises(ToolError, match='Update operation failed'),
         ):
             await update_context(
@@ -411,7 +411,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_context_logging(self, mock_context, mock_repositories):
         """Test that context logging is called appropriately."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             await update_context(
                 context_id=3333,
                 text='Test',
@@ -441,7 +441,7 @@ class TestUpdateContext:
         mock_repositories.tags.replace_tags_for_context.side_effect = track_tags
 
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             pytest.raises(ToolError, match='Update operation failed'),
         ):
             await update_context(
@@ -461,7 +461,7 @@ class TestUpdateContext:
     async def test_empty_text_validation_error(self, mock_repositories):
         """Test that empty text is properly validated in the function body."""
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             # Empty string is now validated in the function body, not by Pydantic
             pytest.raises(ToolError, match='text cannot be empty'),
         ):
@@ -479,7 +479,7 @@ class TestUpdateContext:
         in the function body which properly checks for non-whitespace content.
         """
         with (
-            patch('app.server._ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             # Whitespace-only strings are now caught in function validation
             pytest.raises(ToolError, match='text cannot be empty or contain only whitespace'),
         ):
@@ -491,7 +491,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_valid_single_character_text(self, mock_context, mock_repositories):
         """Test that single character text is valid."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=789,
                 text='x',  # Single character should pass
@@ -516,7 +516,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_basic_integration(self, mock_context, mock_repositories):
         """Test basic metadata_patch integration with repository."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=100,
                 text=None,
@@ -539,7 +539,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_with_text_update(self, mock_context, mock_repositories):
         """Test metadata_patch combined with text content update."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=200,
                 text='New content',
@@ -561,7 +561,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_mutual_exclusivity_error(self, mock_context, mock_repositories):
         """Test error when both metadata and metadata_patch are provided."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id=300,
@@ -580,7 +580,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_counts_as_valid_update(self, mock_context, mock_repositories):
         """Test that metadata_patch alone is a valid update (no 'no fields provided' error)."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             # Should NOT raise 'At least one field must be provided' error
             result = await update_context(
                 context_id=400,
@@ -599,7 +599,7 @@ class TestMetadataPatchIntegration:
         """Test handling of patch_metadata repository failure."""
         mock_repositories.context.patch_metadata.return_value = (False, [])
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
                     context_id=500,
@@ -616,7 +616,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_with_tags(self, mock_context, mock_repositories):
         """Test metadata_patch combined with tags update."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=600,
                 text=None,
@@ -637,7 +637,7 @@ class TestMetadataPatchIntegration:
         metadata = {'full': 'replacement', 'all_fields': True}
         mock_repositories.context.update_context_entry.return_value = (True, ['metadata'])
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=700,
                 text=None,
@@ -658,7 +658,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_empty_dict(self, mock_context, mock_repositories):
         """Test metadata_patch with empty dict (should still be valid update)."""
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=800,
                 text=None,
@@ -699,7 +699,7 @@ class TestMetadataPatchRFC7396Semantics:
         """
         nested_patch = {'a': {'b': 'd', 'c': None}}
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=7007,
                 text=None,
@@ -722,7 +722,7 @@ class TestMetadataPatchRFC7396Semantics:
 
         Verifies that adding new keys does not affect existing null values in target.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=7013,
                 text=None,
@@ -747,7 +747,7 @@ class TestMetadataPatchRFC7396Semantics:
         """
         deep_patch = {'a': {'bb': {'ccc': None}}}
 
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=7015,
                 text=None,
@@ -771,7 +771,7 @@ class TestMetadataPatchRFC7396Semantics:
         When patching {"a": {"b": "updated"}}, sibling keys in the nested object
         should be preserved. This test verifies the correct patch is passed.
         """
-        with patch('app.server._ensure_repositories', return_value=mock_repositories):
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id=7100,
                 text=None,

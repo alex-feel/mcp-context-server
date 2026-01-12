@@ -33,7 +33,7 @@ class TestCheckVectorStorageDependencies:
             mock_sqlite_vec = MagicMock()
 
             with patch.dict('sys.modules', {'sqlite_vec': mock_sqlite_vec}):
-                from app.server import check_vector_storage_dependencies
+                from app.migrations import check_vector_storage_dependencies
 
                 result = await check_vector_storage_dependencies(backend_type='sqlite')
                 assert result is True
@@ -48,7 +48,7 @@ class TestCheckVectorStorageDependencies:
             return MagicMock()
 
         with patch('importlib.util.find_spec', side_effect=find_spec_side_effect):
-            from app.server import check_vector_storage_dependencies
+            from app.migrations import check_vector_storage_dependencies
 
             result = await check_vector_storage_dependencies(backend_type='sqlite')
             assert result is False
@@ -63,7 +63,7 @@ class TestCheckVectorStorageDependencies:
             return MagicMock()
 
         with patch('importlib.util.find_spec', side_effect=find_spec_side_effect):
-            from app.server import check_vector_storage_dependencies
+            from app.migrations import check_vector_storage_dependencies
 
             result = await check_vector_storage_dependencies(backend_type='sqlite')
             assert result is False
@@ -77,7 +77,7 @@ class TestCheckVectorStorageDependencies:
             mock_sqlite_vec.load.side_effect = Exception('Extension load failed')
 
             with patch.dict('sys.modules', {'sqlite_vec': mock_sqlite_vec}):
-                from app.server import check_vector_storage_dependencies
+                from app.migrations import check_vector_storage_dependencies
 
                 result = await check_vector_storage_dependencies(backend_type='sqlite')
                 assert result is False
@@ -92,7 +92,7 @@ class TestCheckVectorStorageDependencies:
             return MagicMock()
 
         with patch('importlib.util.find_spec', side_effect=find_spec_side_effect):
-            from app.server import check_vector_storage_dependencies
+            from app.migrations import check_vector_storage_dependencies
 
             result = await check_vector_storage_dependencies(backend_type='postgresql')
             assert result is False
@@ -101,7 +101,7 @@ class TestCheckVectorStorageDependencies:
     async def test_postgresql_returns_true_when_available(self) -> None:
         """Test PostgreSQL backend returns True when pgvector available."""
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import check_vector_storage_dependencies
+            from app.migrations import check_vector_storage_dependencies
 
             result = await check_vector_storage_dependencies(backend_type='postgresql')
             assert result is True
@@ -115,7 +115,7 @@ class TestCheckProviderDependencies:
         """Test unknown provider name returns unavailable."""
         mock_settings = MagicMock()
 
-        from app.server import check_provider_dependencies
+        from app.migrations import check_provider_dependencies
 
         result = await check_provider_dependencies('unknown_provider', mock_settings)
 
@@ -130,7 +130,7 @@ class TestCheckProviderDependencies:
         mock_settings.model = 'test-model'
 
         with patch('importlib.util.find_spec', return_value=None):
-            from app.server import check_provider_dependencies
+            from app.migrations import check_provider_dependencies
 
             result = await check_provider_dependencies('ollama', mock_settings)
 
@@ -145,7 +145,7 @@ class TestCheckProviderDependencies:
         mock_settings.openai_api_key = None
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import check_provider_dependencies
+            from app.migrations import check_provider_dependencies
 
             result = await check_provider_dependencies('openai', mock_settings)
 
@@ -163,7 +163,7 @@ class TestOllamaDependencies:
         mock_settings = MagicMock()
 
         with patch('importlib.util.find_spec', return_value=None):
-            from app.server import _check_ollama_dependencies
+            from app.migrations.dependencies import _check_ollama_dependencies
 
             result = await _check_ollama_dependencies(mock_settings)
 
@@ -174,7 +174,7 @@ class TestOllamaDependencies:
     @pytest.mark.asyncio
     async def test_service_not_running(self) -> None:
         """Test when Ollama service unreachable."""
-        from app.server import _check_ollama_dependencies
+        from app.migrations.dependencies import _check_ollama_dependencies
 
         mock_settings = MagicMock()
         mock_settings.ollama_host = 'http://localhost:11434'
@@ -224,7 +224,7 @@ class TestOllamaDependencies:
                 patch('httpx.AsyncClient', return_value=mock_httpx_client),
                 patch.dict('sys.modules', {'ollama': mock_ollama}),
             ):
-                from app.server import _check_ollama_dependencies
+                from app.migrations.dependencies import _check_ollama_dependencies
 
                 result = await _check_ollama_dependencies(mock_settings)
 
@@ -256,7 +256,7 @@ class TestOllamaDependencies:
                 patch('httpx.AsyncClient', return_value=mock_httpx_client),
                 patch.dict('sys.modules', {'ollama': mock_ollama}),
             ):
-                from app.server import _check_ollama_dependencies
+                from app.migrations.dependencies import _check_ollama_dependencies
 
                 result = await _check_ollama_dependencies(mock_settings)
 
@@ -273,7 +273,7 @@ class TestOpenAIDependencies:
         mock_settings = MagicMock()
 
         with patch('importlib.util.find_spec', return_value=None):
-            from app.server import _check_openai_dependencies
+            from app.migrations.dependencies import _check_openai_dependencies
 
             result = await _check_openai_dependencies(mock_settings)
 
@@ -287,7 +287,7 @@ class TestOpenAIDependencies:
         mock_settings.openai_api_key = None
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_openai_dependencies
+            from app.migrations.dependencies import _check_openai_dependencies
 
             result = await _check_openai_dependencies(mock_settings)
 
@@ -301,7 +301,7 @@ class TestOpenAIDependencies:
         mock_settings.openai_api_key = 'test-api-key'
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_openai_dependencies
+            from app.migrations.dependencies import _check_openai_dependencies
 
             result = await _check_openai_dependencies(mock_settings)
 
@@ -317,7 +317,7 @@ class TestAzureDependencies:
         mock_settings = MagicMock()
 
         with patch('importlib.util.find_spec', return_value=None):
-            from app.server import _check_azure_dependencies
+            from app.migrations.dependencies import _check_azure_dependencies
 
             result = await _check_azure_dependencies(mock_settings)
 
@@ -333,7 +333,7 @@ class TestAzureDependencies:
         mock_settings.azure_openai_deployment_name = None
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_azure_dependencies
+            from app.migrations.dependencies import _check_azure_dependencies
 
             result = await _check_azure_dependencies(mock_settings)
 
@@ -349,7 +349,7 @@ class TestAzureDependencies:
         mock_settings.azure_openai_deployment_name = 'deployment'
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_azure_dependencies
+            from app.migrations.dependencies import _check_azure_dependencies
 
             result = await _check_azure_dependencies(mock_settings)
 
@@ -365,7 +365,7 @@ class TestAzureDependencies:
         mock_settings.azure_openai_deployment_name = 'test-deployment'
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_azure_dependencies
+            from app.migrations.dependencies import _check_azure_dependencies
 
             result = await _check_azure_dependencies(mock_settings)
 
@@ -381,7 +381,7 @@ class TestHuggingFaceDependencies:
         mock_settings = MagicMock()
 
         with patch('importlib.util.find_spec', return_value=None):
-            from app.server import _check_huggingface_dependencies
+            from app.migrations.dependencies import _check_huggingface_dependencies
 
             result = await _check_huggingface_dependencies(mock_settings)
 
@@ -395,7 +395,7 @@ class TestHuggingFaceDependencies:
         mock_settings.huggingface_api_key = None
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_huggingface_dependencies
+            from app.migrations.dependencies import _check_huggingface_dependencies
 
             result = await _check_huggingface_dependencies(mock_settings)
 
@@ -409,7 +409,7 @@ class TestHuggingFaceDependencies:
         mock_settings.huggingface_api_key = 'test-token'
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_huggingface_dependencies
+            from app.migrations.dependencies import _check_huggingface_dependencies
 
             result = await _check_huggingface_dependencies(mock_settings)
 
@@ -425,7 +425,7 @@ class TestVoyageDependencies:
         mock_settings = MagicMock()
 
         with patch('importlib.util.find_spec', return_value=None):
-            from app.server import _check_voyage_dependencies
+            from app.migrations.dependencies import _check_voyage_dependencies
 
             result = await _check_voyage_dependencies(mock_settings)
 
@@ -439,7 +439,7 @@ class TestVoyageDependencies:
         mock_settings.voyage_api_key = None
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_voyage_dependencies
+            from app.migrations.dependencies import _check_voyage_dependencies
 
             result = await _check_voyage_dependencies(mock_settings)
 
@@ -453,7 +453,7 @@ class TestVoyageDependencies:
         mock_settings.voyage_api_key = 'test-api-key'
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
-            from app.server import _check_voyage_dependencies
+            from app.migrations.dependencies import _check_voyage_dependencies
 
             result = await _check_voyage_dependencies(mock_settings)
 

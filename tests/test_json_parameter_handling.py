@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.server import deserialize_json_param
+from app.startup.validation import deserialize_json_param
 from app.types import JsonValue
 
 
@@ -80,7 +80,7 @@ class TestStoreContextParameterHandling:
         # Import the function directly within the test
         from app.server import store_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -104,7 +104,7 @@ class TestStoreContextParameterHandling:
         """Test store_context accepts tags as native list."""
         from app.server import store_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -127,7 +127,7 @@ class TestStoreContextParameterHandling:
         """Test store_context accepts metadata as JSON string."""
         from app.server import store_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -150,7 +150,7 @@ class TestStoreContextParameterHandling:
         """Test store_context accepts images as JSON string."""
         from app.server import store_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -176,7 +176,7 @@ class TestStoreContextParameterHandling:
         """Test store_context with all complex parameters as JSON strings."""
         from app.server import store_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -205,7 +205,7 @@ class TestSearchContextParameterHandling:
         """Test search_context accepts tags as JSON string."""
         from app.server import search_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.search.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
@@ -228,7 +228,7 @@ class TestSearchContextParameterHandling:
         """Test search_context accepts tags as native list."""
         from app.server import search_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.search.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
@@ -255,7 +255,7 @@ class TestGetContextByIdsParameterHandling:
         """Test get_context_by_ids accepts IDs as JSON string."""
         from app.server import get_context_by_ids
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.get_by_ids = AsyncMock(return_value=[])
             mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
@@ -275,7 +275,7 @@ class TestGetContextByIdsParameterHandling:
         """Test get_context_by_ids accepts IDs as native list."""
         from app.server import get_context_by_ids
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.get_by_ids = AsyncMock(return_value=[])
             mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
@@ -299,7 +299,7 @@ class TestDeleteContextParameterHandling:
         """Test delete_context accepts IDs as JSON string."""
         from app.server import delete_context
 
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.delete_by_ids = AsyncMock(return_value=3)
             mock_repos.context.delete_by_thread = AsyncMock(return_value=3)
@@ -318,8 +318,11 @@ class TestDeleteContextParameterHandling:
         """Test delete_context accepts IDs as native list."""
         from app.server import delete_context
 
-        with patch('app.server._backend') as mock_backend:
-            mock_backend.execute_write = AsyncMock(return_value=2)
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
+            mock_repos = MagicMock()
+            mock_repos.context.delete_by_ids = AsyncMock(return_value=2)
+            mock_repos.context.delete_by_thread = AsyncMock(return_value=2)
+            mock_ensure_repos.return_value = mock_repos
 
             # Send context_ids as native list
             result = await delete_context(

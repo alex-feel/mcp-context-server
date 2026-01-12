@@ -41,13 +41,19 @@ This server implements the [Model Context Protocol](https://modelcontextprotocol
 
 This is a FastMCP 2.0-based Model Context Protocol server that provides persistent context storage for LLM agents. The architecture consists of:
 
-1. **FastMCP Server Layer** (`app/server.py`):
-   - Exposes 13 MCP tools via JSON-RPC protocol: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context`, `store_context_batch`, `update_context_batch`, `delete_context_batch`
+1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
+   - Entry point with FastMCP instance, lifespan management, and main() function (~415 lines)
+   - Tool implementations in `app/tools/` package organized by domain:
+     - `context.py`: store_context, get_context_by_ids, update_context, delete_context
+     - `search.py`: search_context, semantic_search_context, fts_search_context, hybrid_search_context
+     - `discovery.py`: list_threads, get_statistics
+     - `batch.py`: store_context_batch, update_context_batch, delete_context_batch
+   - Dynamic tool registration via `register_tool()` from `app/tools/__init__.py`
    - Supports multiple transports: stdio (default), HTTP, streamable-http, SSE
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
-   - Dynamic tool registration during server lifespan with `DISABLED_TOOLS` support
-   - Uses `RepositoryContainer` for all database operations (no direct SQL)
-   - Database initialization in `init_database()`, repository management via `_ensure_repositories()`
+   - Global state and initialization in `app/startup/` package
+   - Database initialization via `init_database()` from `app.startup`
+   - Repository access via `ensure_repositories()` from `app.startup`
 
 2. **Authentication Layer** (`app/auth/`):
    - **SimpleTokenVerifier** (`simple_token.py`): Bearer token authentication for HTTP transport
@@ -103,6 +109,41 @@ This is a FastMCP 2.0-based Model Context Protocol server that provides persiste
    - Binary image storage (BLOB for SQLite, BYTEA for PostgreSQL) with ON DELETE CASCADE
    - WAL mode (SQLite) / MVCC (PostgreSQL) for concurrent access
    - All SQL operations encapsulated in repository classes
+
+### Modular Package Structure
+
+The server codebase is organized into focused packages:
+
+```
+app/
+├── server.py              # Entry point, lifespan, FastMCP (~415 lines)
+├── tools/                 # MCP tool implementations
+│   ├── __init__.py       # Tool registration, TOOL_ANNOTATIONS
+│   ├── context.py        # Core CRUD operations
+│   ├── search.py         # All search operations
+│   ├── discovery.py      # Thread listing, statistics
+│   └── batch.py          # Bulk operations
+├── startup/               # Server initialization
+│   ├── __init__.py       # Database init, global state
+│   └── validation.py     # Parameter validation utilities
+├── migrations/            # Database migrations
+│   ├── __init__.py       # Migration exports
+│   ├── dependencies.py   # Dependency checking
+│   ├── semantic.py       # Semantic search migrations
+│   ├── fts.py            # Full-text search migrations
+│   ├── metadata.py       # Metadata index management
+│   └── utils.py          # Shared utilities
+├── backends/              # Storage backends (unchanged)
+├── repositories/          # Data access layer (unchanged)
+├── embeddings/            # Embedding providers (unchanged)
+└── ...
+```
+
+**Import Patterns:**
+- Tools import from `app.startup` for global state and validation
+- Tools import from `app.migrations` for migration status
+- `app.server` imports from `app.tools` for registration
+- Backward compatibility re-exports maintained in `app.server`
 
 ### Thread-Based Context Management
 
@@ -589,30 +630,57 @@ db_path = settings.storage.db_path
 2. **Tool signatures must include `ctx: Context | None = None`** as the last parameter (hidden from MCP clients)
 3. **Return types must be serializable dicts/lists** - use TypedDicts from `app/types.py`
 4. **Use `Annotated` and `Field`** from `typing` and `pydantic` for parameter documentation
-5. **Tools are registered dynamically** via `_register_tool()` in `lifespan()`, not with `@mcp.tool()` decorator
+5. **Tools are registered dynamically** via `register_tool()` from `app.tools` in `lifespan()`, not with `@mcp.tool()` decorator
 
 ### Adding New MCP Tools
 
-Tools are registered dynamically during server lifespan (not at import time) to support `DISABLED_TOOLS`. Follow this pattern:
+Tools are organized in the `app/tools/` package by domain. Follow this pattern:
 
+**Step 1: Define the tool function in the appropriate tools module:**
 ```python
-# In app/server.py - define the tool function (no decorator)
+# In app/tools/<domain>.py (e.g., app/tools/context.py)
 async def my_new_tool(
     required_param: Annotated[str, Field(description='Description for MCP clients')],
     optional_param: Annotated[int | None, Field(description='Optional parameter')] = None,
     ctx: Context | None = None,  # ALWAYS last, hidden from MCP clients
 ) -> MyToolResponse:  # Use TypedDict from app/types.py
     """Tool docstring shown to MCP clients."""
-    repos = _ensure_repositories()
+    repos = await ensure_repositories()
     # Use repository methods for database operations
     result = await repos.context.some_method(required_param)
     return {'success': True, 'data': result}
-
-# In lifespan() - register with appropriate annotations
-_register_tool(my_new_tool, annotations=READ_ONLY_ANNOTATIONS)
 ```
 
-**Tool Annotation Categories** (defined at module level):
+**Step 2: Add tool annotations in `app/tools/__init__.py`:**
+```python
+TOOL_ANNOTATIONS = {
+    # ... existing tools ...
+    'my_new_tool': {
+        'title': 'My New Tool',
+        'readOnlyHint': True,  # or False for write operations
+    },
+}
+```
+
+**Step 3: Export from `app/tools/__init__.py`:**
+```python
+from app.tools.<domain> import my_new_tool
+
+__all__ = [
+    # ... existing exports ...
+    'my_new_tool',
+]
+```
+
+**Step 4: Register in `app/server.py` lifespan():**
+```python
+from app.tools import my_new_tool, register_tool
+
+# In lifespan():
+register_tool(mcp, my_new_tool)
+```
+
+**Tool Annotation Categories** (defined in `app/tools/__init__.py`):
 - `READ_ONLY_ANNOTATIONS`: Search/read tools (readOnlyHint=True)
 - `ADDITIVE_ANNOTATIONS`: Store tools (destructiveHint=False)
 - `UPDATE_ANNOTATIONS`: Update tools (destructiveHint=True, idempotentHint=False)
@@ -622,15 +690,18 @@ _register_tool(my_new_tool, annotations=READ_ONLY_ANNOTATIONS)
 1. Add TypedDict response type to `app/types.py`
 2. Add repository methods if database access needed
 3. Use `Literal["user", "agent"]` for source parameters
-4. Register in `lifespan()` with `_register_tool()` and appropriate annotations
-5. Add tests in `tests/test_server.py` or dedicated test file
-6. Add real server integration tests in `tests/test_real_server.py`
-7. Update server.json if tool adds new environment variables
+4. Add tool to appropriate domain file in `app/tools/`
+5. Add annotations to `TOOL_ANNOTATIONS` in `app/tools/__init__.py`
+6. Export from `app/tools/__init__.py`
+7. Register in `app/server.py` lifespan() using `register_tool()`
+8. Add tests in `tests/test_server.py` or dedicated test file
+9. Add real server integration tests in `tests/test_real_server.py`
+10. Update server.json if tool adds new environment variables
 
 ### Repository Pattern Implementation
 
 1. **All database operations go through repositories** - server.py should never contain SQL
-2. **Use `_ensure_repositories()` to get repository container** - ensures proper initialization
+2. **Use `ensure_repositories()` from `app.startup`** - ensures proper initialization
 3. **Repository methods return domain objects** - repositories handle all SQL and data mapping
 4. **Each repository focuses on a single concern** - context, tags, images, or statistics
 5. **Repository methods handle async/sync conversion** - repositories wrap sync DB calls with async

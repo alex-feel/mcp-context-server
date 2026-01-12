@@ -25,7 +25,7 @@ class TestApplySemanticSearchMigration:
     @pytest.mark.asyncio
     async def test_migration_skipped_when_disabled(self) -> None:
         """Verify no-op when ENABLE_SEMANTIC_SEARCH=false."""
-        from app.server import apply_semantic_search_migration
+        from app.migrations import apply_semantic_search_migration
 
         # Create mock backend
         mock_backend = MagicMock()
@@ -35,7 +35,7 @@ class TestApplySemanticSearchMigration:
         mock_settings = MagicMock()
         mock_settings.enable_semantic_search = False
 
-        with patch('app.server.settings', mock_settings):
+        with patch('app.migrations.semantic.settings', mock_settings):
             # Call should return early without doing anything
             await apply_semantic_search_migration(backend=mock_backend)
 
@@ -82,7 +82,7 @@ class TestApplySemanticSearchMigration:
             try:
                 # Patch the import inside the migration function
                 with patch('sqlite_vec.load'):
-                    from app.server import apply_semantic_search_migration
+                    from app.migrations import apply_semantic_search_migration
 
                     # The migration may fail due to missing vec0 module, but we can
                     # verify the flow was attempted. We expect RuntimeError with
@@ -141,7 +141,7 @@ class TestApplySemanticSearchMigration:
             try:
                 # Patch to avoid needing actual sqlite-vec
                 with patch('importlib.util.find_spec', return_value=MagicMock()):
-                    from app.server import apply_semantic_search_migration
+                    from app.migrations import apply_semantic_search_migration
 
                     # Expected to fail if vec0 not available, suppress the error
                     with contextlib.suppress(RuntimeError):
@@ -208,7 +208,7 @@ class TestApplySemanticSearchMigration:
             await backend.initialize()
 
             try:
-                from app.server import apply_semantic_search_migration
+                from app.migrations import apply_semantic_search_migration
 
                 with pytest.raises(RuntimeError, match='dimension mismatch'):
                     await apply_semantic_search_migration(backend=backend)
@@ -240,7 +240,7 @@ class TestApplySemanticSearchMigration:
                 return original_exists(self)
 
             with patch.object(Path, 'exists', mock_exists):
-                from app.server import apply_semantic_search_migration
+                from app.migrations import apply_semantic_search_migration
 
                 with pytest.raises(RuntimeError, match='migration file not found'):
                     await apply_semantic_search_migration(backend=mock_backend)
@@ -264,7 +264,7 @@ class TestApplyJsonbMergePatchMigration:
             mock_backend = MagicMock()
             mock_backend.backend_type = 'sqlite'
 
-            from app.server import apply_jsonb_merge_patch_migration
+            from app.migrations import apply_jsonb_merge_patch_migration
 
             await apply_jsonb_merge_patch_migration(backend=mock_backend)
 
@@ -287,7 +287,7 @@ class TestApplyJsonbMergePatchMigration:
             mock_backend.execute_read = AsyncMock(side_effect=[False, True])  # First: doesn't exist, Second: exists
             mock_backend.execute_write = AsyncMock()
 
-            from app.server import apply_jsonb_merge_patch_migration
+            from app.migrations import apply_jsonb_merge_patch_migration
 
             await apply_jsonb_merge_patch_migration(backend=mock_backend)
 
@@ -311,7 +311,7 @@ class TestApplyJsonbMergePatchMigration:
             mock_backend.execute_read = AsyncMock(return_value=True)
             mock_backend.execute_write = AsyncMock()
 
-            from app.server import apply_jsonb_merge_patch_migration
+            from app.migrations import apply_jsonb_merge_patch_migration
 
             # Should not raise
             await apply_jsonb_merge_patch_migration(backend=mock_backend)
@@ -340,7 +340,7 @@ class TestApplyJsonbMergePatchMigration:
                 return original_exists(self)
 
             with patch.object(Path, 'exists', mock_exists):
-                from app.server import apply_jsonb_merge_patch_migration
+                from app.migrations import apply_jsonb_merge_patch_migration
 
                 with pytest.raises(RuntimeError, match='migration file not found'):
                     await apply_jsonb_merge_patch_migration(backend=mock_backend)
@@ -366,7 +366,7 @@ class TestApplyFtsMigration:
             mock_backend.backend_type = 'sqlite'
             mock_repos = MagicMock()
 
-            from app.server import apply_fts_migration
+            from app.migrations import apply_fts_migration
 
             await apply_fts_migration(backend=mock_backend, repos=mock_repos)
 
@@ -400,8 +400,8 @@ class TestApplyFtsMigration:
             await backend.initialize()
 
             try:
+                from app.migrations import apply_fts_migration
                 from app.repositories.fts_repository import FtsRepository
-                from app.server import apply_fts_migration
 
                 fts_repo = FtsRepository(backend)
 
@@ -425,7 +425,7 @@ class TestApplyFtsMigration:
         Note: apply_fts_migration catches all exceptions and logs a warning,
         so we verify the warning is logged rather than expecting RuntimeError.
         """
-        from app.server import apply_fts_migration
+        from app.migrations import apply_fts_migration
 
         mock_backend = MagicMock()
         mock_backend.backend_type = 'sqlite'
@@ -450,7 +450,7 @@ class TestApplyFtsMigration:
             return original_exists(self)
 
         with (
-            patch('app.server.settings', mock_settings),
+            patch('app.migrations.semantic.settings', mock_settings),
             patch.object(Path, 'exists', mock_exists),
         ):
             # Function should not raise - it catches and logs
@@ -491,8 +491,8 @@ class TestApplyFtsMigration:
             await backend.initialize()
 
             try:
+                from app.migrations import apply_fts_migration
                 from app.repositories.fts_repository import FtsRepository
-                from app.server import apply_fts_migration
 
                 fts_repo = FtsRepository(backend)
 
@@ -530,7 +530,7 @@ class TestApplyFunctionSearchPathMigration:
             mock_backend = MagicMock()
             mock_backend.backend_type = 'sqlite'
 
-            from app.server import apply_function_search_path_migration
+            from app.migrations import apply_function_search_path_migration
 
             await apply_function_search_path_migration(backend=mock_backend)
 
@@ -551,7 +551,7 @@ class TestApplyFunctionSearchPathMigration:
             mock_backend.backend_type = 'postgresql'
             mock_backend.execute_write = AsyncMock()
 
-            from app.server import apply_function_search_path_migration
+            from app.migrations import apply_function_search_path_migration
 
             await apply_function_search_path_migration(backend=mock_backend)
 
@@ -579,7 +579,7 @@ class TestApplyFunctionSearchPathMigration:
                 return original_exists(self)
 
             with patch.object(Path, 'exists', mock_exists):
-                from app.server import apply_function_search_path_migration
+                from app.migrations import apply_function_search_path_migration
 
                 with pytest.raises(RuntimeError, match='migration file not found'):
                     await apply_function_search_path_migration(backend=mock_backend)
@@ -598,7 +598,7 @@ class TestApplyFunctionSearchPathMigration:
             mock_backend.backend_type = 'postgresql'
             mock_backend.execute_write = AsyncMock()
 
-            from app.server import apply_function_search_path_migration
+            from app.migrations import apply_function_search_path_migration
 
             # Run twice
             await apply_function_search_path_migration(backend=mock_backend)

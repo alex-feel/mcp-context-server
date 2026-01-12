@@ -8,15 +8,15 @@ from unittest.mock import patch
 
 import pytest
 
-import app.server
-from app.server import deserialize_json_param
+import app.tools
+from app.startup.validation import deserialize_json_param
 from app.types import JsonValue
 
-# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
-store_context = app.server.store_context
-search_context = app.server.search_context
-delete_context = app.server.delete_context
-get_context_by_ids = app.server.get_context_by_ids
+# Get the actual async functions from app.tools
+store_context = app.tools.store_context
+search_context = app.tools.search_context
+delete_context = app.tools.delete_context
+get_context_by_ids = app.tools.get_context_by_ids
 
 
 class TestJSONStringDeserialization:
@@ -81,7 +81,7 @@ class TestStoreContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_store_context_with_json_string_tags(self):
         """Test store_context with tags as JSON string (from Claude Code)."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -101,7 +101,7 @@ class TestStoreContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_store_context_with_json_string_metadata(self):
         """Test store_context with metadata as JSON string (from Claude Code)."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -121,7 +121,7 @@ class TestStoreContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_store_context_with_json_string_images(self):
         """Test store_context with images as JSON string (from Claude Code)."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -146,7 +146,7 @@ class TestStoreContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_store_context_with_native_types(self):
         """Test store_context still works with native Python types."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -170,7 +170,7 @@ class TestSearchContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_search_context_with_json_string_tags(self):
         """Test search_context with tags as JSON string (from Claude Code)."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.search.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.context.get_by_ids = AsyncMock(return_value=[])
@@ -192,7 +192,7 @@ class TestSearchContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_search_context_with_native_tags(self):
         """Test search_context still works with native Python list."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.search.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.context.get_by_ids = AsyncMock(return_value=[])
@@ -218,7 +218,7 @@ class TestDeleteContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_delete_context_with_json_string_ids(self):
         """Test delete_context with context_ids as JSON string (from Claude Code)."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.delete_by_ids = AsyncMock(return_value=3)
             mock_repos.context.delete_by_thread = AsyncMock(return_value=3)
@@ -235,7 +235,7 @@ class TestDeleteContextWithJSONStrings:
     @pytest.mark.asyncio
     async def test_delete_context_with_native_list(self):
         """Test delete_context still works with native Python list."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.delete_by_ids = AsyncMock(return_value=2)
             mock_repos.context.delete_by_thread = AsyncMock(return_value=2)
@@ -256,7 +256,7 @@ class TestGetContextByIdsWithJSONStrings:
     @pytest.mark.asyncio
     async def test_get_context_by_ids_with_json_string(self):
         """Test get_context_by_ids with context_ids as JSON string (from Claude Code)."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.context.get_by_ids = AsyncMock(return_value=[])
@@ -275,7 +275,7 @@ class TestGetContextByIdsWithJSONStrings:
     @pytest.mark.asyncio
     async def test_get_context_by_ids_with_native_list(self):
         """Test get_context_by_ids still works with native Python list."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.search_contexts = AsyncMock(return_value=([], {'filters_applied': 0}))
             mock_repos.context.get_by_ids = AsyncMock(return_value=[])
@@ -298,7 +298,7 @@ class TestMixedScenarios:
     @pytest.mark.asyncio
     async def test_all_json_strings_together(self):
         """Test with all parameters as JSON strings simultaneously."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -320,7 +320,7 @@ class TestMixedScenarios:
     @pytest.mark.asyncio
     async def test_partial_json_strings(self):
         """Test with some parameters as JSON strings and others as native types."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)
@@ -341,7 +341,7 @@ class TestMixedScenarios:
     @pytest.mark.asyncio
     async def test_invalid_json_string_handling(self):
         """Test that invalid JSON strings don't crash the server."""
-        with patch('app.server._ensure_repositories') as mock_ensure_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_ensure_repos:
             mock_repos = MagicMock()
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
             mock_repos.tags.store_tags = AsyncMock(return_value=None)

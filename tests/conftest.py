@@ -72,7 +72,7 @@ from anyio import Path as AsyncPath
 from dotenv import load_dotenv
 from fastmcp import Context
 
-import app.server
+import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.settings import AppSettings
@@ -471,8 +471,9 @@ def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> 
             # CRITICAL: Patch factory.get_settings to prevent lazy backend creation from reading environment
             patch('app.backends.factory.get_settings', return_value=test_settings),
             patch('app.server.DB_PATH', temp_db_path),
-            patch('app.server.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
-            patch('app.server.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
+            # Patch MAX_IMAGE_SIZE_MB and MAX_TOTAL_SIZE_MB where they are used (in app.tools.context)
+            patch('app.tools.context.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
+            patch('app.tools.context.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
         ):
             yield
     finally:
@@ -503,12 +504,11 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[StorageBack
     backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
     await backend.initialize()
 
-    # Set in server module
-    app.server._backend = backend
-    app.server.DB_PATH = temp_db_path
+    # Set in startup module (global state)
+    app.startup.set_backend(backend)
 
     # Initialize repositories
-    app.server._repositories = RepositoryContainer(backend)
+    app.startup.set_repositories(RepositoryContainer(backend))
 
     # Initialize the database schema using the backend
     # NOTE: We initialize schema directly instead of calling init_database() to avoid
@@ -526,21 +526,21 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[StorageBack
         yield backend
     finally:
         # Proper cleanup
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
+        cleanup_backend = app.startup.get_backend()
+        if cleanup_backend is not None:
             try:
                 # Shutdown the storage backend
-                await app.server._backend.shutdown()
+                await cleanup_backend.shutdown()
             except Exception as e:
                 # Log error but continue cleanup to prevent test suite hang
                 import logging
                 logging.getLogger(__name__).error(f'Error during backend shutdown: {e}')
             finally:
                 # Always clear the reference, even if shutdown failed
-                app.server._backend = None
+                app.startup.set_backend(None)
 
         # Reset repositories
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
+        app.startup.set_repositories(None)
 
 
 @pytest_asyncio.fixture
@@ -557,17 +557,17 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
 
     # CRITICAL: Aggressive pre-cleanup to prevent interference from previous tests
     # Shut down any existing backend from previous tests
-    if hasattr(app.server, '_backend') and app.server._backend is not None:
+    existing_backend = app.startup.get_backend()
+    if existing_backend is not None:
         try:
-            await app.server._backend.shutdown()
+            await existing_backend.shutdown()
         except Exception:
             pass
         finally:
-            app.server._backend = None
+            app.startup.set_backend(None)
 
     # Reset repositories
-    if hasattr(app.server, '_repositories'):
-        app.server._repositories = None
+    app.startup.set_repositories(None)
 
     # Small delay to let background tasks fully terminate
     await asyncio.sleep(0.05)
@@ -582,10 +582,10 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     # reading STORAGE_BACKEND from environment (user may have postgresql in .env)
     backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
     await backend.initialize()
-    app.server._backend = backend
+    app.startup.set_backend(backend)
 
     # Initialize repositories with the backend
-    app.server._repositories = RepositoryContainer(backend)
+    app.startup.set_repositories(RepositoryContainer(backend))
 
     # Initialize the database schema using the backend
     from app.schemas import load_schema
@@ -604,11 +604,12 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
         yield
     finally:
         # Proper async cleanup with timeout protection
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
+        cleanup_backend = app.startup.get_backend()
+        if cleanup_backend is not None:
             try:
                 # Shutdown the storage backend with timeout to prevent hangs
                 await asyncio.wait_for(
-                    app.server._backend.shutdown(),
+                    cleanup_backend.shutdown(),
                     timeout=5.0,
                 )
             except TimeoutError:
@@ -621,11 +622,10 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
                 logging.getLogger(__name__).error(f'Error during backend shutdown: {e}')
             finally:
                 # Always clear the reference, even if shutdown failed
-                app.server._backend = None
+                app.startup.set_backend(None)
 
         # Reset the repositories to ensure clean state
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
+        app.startup.set_repositories(None)
 
 
 @contextmanager
@@ -671,12 +671,11 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
     backend = create_backend(backend_type='sqlite', db_path=str(db_path))
     await backend.initialize()
 
-    # Set in server module
-    app.server._backend = backend
-    app.server.DB_PATH = db_path
+    # Set in startup module (global state)
+    app.startup.set_backend(backend)
 
     # Initialize repositories
-    app.server._repositories = RepositoryContainer(backend)
+    app.startup.set_repositories(RepositoryContainer(backend))
 
     # Initialize the base database schema
     schema_sql = load_schema('sqlite')
@@ -715,16 +714,16 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
         yield backend
     finally:
         # Proper cleanup
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
+        cleanup_backend = app.startup.get_backend()
+        if cleanup_backend is not None:
             try:
-                await app.server._backend.shutdown()
+                await cleanup_backend.shutdown()
             except Exception:
                 pass
             finally:
-                app.server._backend = None
+                app.startup.set_backend(None)
 
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
+        app.startup.set_repositories(None)
 
 
 @pytest.fixture

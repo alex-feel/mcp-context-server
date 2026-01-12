@@ -36,8 +36,20 @@ def mock_repos():
 
 @pytest.fixture
 def mock_server_dependencies(mock_repos):
-    """Mock server dependencies for testing."""
-    with patch('app.server._ensure_repositories', return_value=mock_repos):
+    """Mock server dependencies for testing.
+
+    Since tool functions are now in separate modules (app/tools/context.py,
+    app/tools/search.py, app/tools/discovery.py), we need to patch
+    ensure_repositories in each module where it's imported.
+
+    Yields:
+        MagicMock: The mock repository container.
+    """
+    with (
+        patch('app.tools.context.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.search.ensure_repositories', return_value=mock_repos),
+        patch('app.tools.discovery.ensure_repositories', return_value=mock_repos),
+    ):
         yield mock_repos
 
 
