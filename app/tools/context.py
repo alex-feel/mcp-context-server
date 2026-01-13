@@ -185,14 +185,37 @@ async def store_context(
         store_embedding_provider = get_embedding_provider()
         if store_embedding_provider is not None:
             try:
-                embedding = await store_embedding_provider.embed_query(text)
-                await repos.embeddings.store(
-                    context_id=context_id,
-                    embedding=embedding,
-                    model=settings.embedding.model,
-                )
-                embedding_generated = True
-                logger.debug(f'Generated embedding for context {context_id}')
+                # Import lazily to avoid linter removing unused import at module level
+                from app.startup import get_chunking_service
+
+                chunking_service = get_chunking_service()
+                logger.debug(
+                    f'[EMBEDDING] Chunking service state: service={chunking_service}, '
+                    f'enabled={chunking_service.is_enabled if chunking_service else "N/A"}')
+                if chunking_service is not None and chunking_service.is_enabled:
+                    # Chunked embedding generation for long documents
+                    chunks = chunking_service.split_text(text)
+                    chunk_texts = [chunk.text for chunk in chunks]
+                    logger.info(f'[EMBEDDING] Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
+                    embeddings = await store_embedding_provider.embed_documents(chunk_texts)
+                    logger.info(f'[EMBEDDING] Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
+                    await repos.embeddings.store_chunked(
+                        context_id=context_id,
+                        embeddings=embeddings,
+                        model=settings.embedding.model,
+                    )
+                    embedding_generated = True
+                    logger.debug(f'Generated {len(chunks)} chunk embeddings for context {context_id}')
+                else:
+                    # Single embedding (chunking disabled or not configured)
+                    embedding = await store_embedding_provider.embed_query(text)
+                    await repos.embeddings.store(
+                        context_id=context_id,
+                        embedding=embedding,
+                        model=settings.embedding.model,
+                    )
+                    embedding_generated = True
+                    logger.debug(f'Generated embedding for context {context_id}')
             except Exception as e:
                 logger.error(f'Failed to generate/store embedding for context {context_id}: {e}')
                 # BLOCKING: If embedding generation is enabled, failure is an error
@@ -556,24 +579,45 @@ async def update_context(
             update_embedding_provider = get_embedding_provider()
             if text is not None and update_embedding_provider is not None:
                 try:
-                    new_embedding = await update_embedding_provider.embed_query(text)
+                    # Import lazily to avoid linter removing unused import at module level
+                    from app.startup import get_chunking_service
 
-                    # Check if embedding exists
-                    embedding_exists = await repos.embeddings.exists(context_id)
-
-                    if embedding_exists:
-                        await repos.embeddings.update(
+                    chunking_service = get_chunking_service()
+                    if chunking_service is not None and chunking_service.is_enabled:
+                        # Chunked embedding regeneration for long documents
+                        # Delete existing chunks first
+                        await repos.embeddings.delete_all_chunks(context_id)
+                        # Generate and store new chunks
+                        chunks = chunking_service.split_text(text)
+                        chunk_texts = [chunk.text for chunk in chunks]
+                        embeddings = await update_embedding_provider.embed_documents(chunk_texts)
+                        await repos.embeddings.store_chunked(
                             context_id=context_id,
-                            embedding=new_embedding,
-                        )
-                        logger.debug(f'Updated embedding for context {context_id}')
-                    else:
-                        await repos.embeddings.store(
-                            context_id=context_id,
-                            embedding=new_embedding,
+                            embeddings=embeddings,
                             model=settings.embedding.model,
                         )
-                        logger.debug(f'Created embedding for context {context_id}')
+                        logger.debug(f'Regenerated {len(chunks)} chunk embeddings for context {context_id}')
+                    else:
+                        # Single embedding (chunking disabled or not configured)
+                        new_embedding = await update_embedding_provider.embed_query(text)
+
+                        # Check if embedding exists
+                        embedding_exists = await repos.embeddings.exists(context_id)
+
+                        if embedding_exists:
+                            await repos.embeddings.update(
+                                context_id=context_id,
+                                embeddings=[new_embedding],
+                                model=settings.embedding.model,
+                            )
+                            logger.debug(f'Updated embedding for context {context_id}')
+                        else:
+                            await repos.embeddings.store(
+                                context_id=context_id,
+                                embedding=new_embedding,
+                                model=settings.embedding.model,
+                            )
+                            logger.debug(f'Created embedding for context {context_id}')
 
                     updated_fields.append('embedding')
                 except Exception as e:

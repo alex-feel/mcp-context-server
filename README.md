@@ -32,19 +32,20 @@ There are two ways to add the MCP Context Server to Claude Code:
 ### Method 1: Using CLI Command
 
 ```bash
-# From PyPI (recommended)
-claude mcp add context-server -- uvx --python 3.12 mcp-context-server
+# From PyPI (recommended) - includes reranking enabled by default
+claude mcp add context-server -- uvx --python 3.12 --with mcp-context-server[reranking] mcp-context-server
 
 # Or from GitHub (latest development version)
-claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[reranking] mcp-context-server
 
 # Or with semantic search using Ollama (for setup instructions, see docs/semantic-search.md)
-claude mcp add context-server -- uvx --python 3.12 --with mcp-context-server[embeddings-ollama] mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
 
 # Or from GitHub (latest development version) with semantic search
-claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[embeddings-ollama] mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
 
 # Available embedding providers: embeddings-ollama (default), embeddings-openai, embeddings-azure, embeddings-huggingface, embeddings-voyage
+# Note: The `--extra reranking` is necessary to enable reranking.
 ```
 
 For more details, see: https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server
@@ -59,16 +60,18 @@ Add the following to your `.mcp.json` file in your project directory:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[reranking]", "mcp-context-server"],
       "env": {}
     }
   }
 }
 ```
 
+**Note:** The `--extra reranking` is necessary to enable reranking.
+
 For the latest development version from GitHub, use:
 ```json
-"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "mcp-context-server"]
+"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "--with", "mcp-context-server[reranking]", "mcp-context-server"]
 ```
 
 For configuration file locations and details, see: https://docs.claude.com/en/docs/claude-code/settings#settings-files
@@ -97,7 +100,7 @@ Example configuration with environment variables:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[reranking]", "mcp-context-server"],
       "env": {
         "LOG_LEVEL": "${LOG_LEVEL:-INFO}",
         "DB_PATH": "${DB_PATH:-~/.mcp/context_storage.db}",
@@ -127,6 +130,18 @@ For more details on environment variable expansion, see: https://docs.claude.com
 **Hybrid Search Settings:**
 - **ENABLE_HYBRID_SEARCH**: Enable hybrid search combining FTS and semantic search with RRF fusion (true/false) - defaults to false
 - **HYBRID_RRF_K**: RRF smoothing constant (1-1000) - defaults to 60. Higher values give more uniform treatment across ranks.
+
+**Chunking Settings** (for improved semantic search on long documents):
+- **ENABLE_CHUNKING**: Enable text chunking for embeddings (true/false) - defaults to true
+- **CHUNK_SIZE**: Target chunk size in characters - defaults to 1000
+- **CHUNK_OVERLAP**: Overlap between chunks in characters - defaults to 100
+- **CHUNK_AGGREGATION**: Chunk score aggregation: max (only 'max' supported in current version)
+
+**Reranking Settings** (for improved search precision):
+- **ENABLE_RERANKING**: Enable cross-encoder reranking (true/false) - defaults to true
+- **RERANKING_PROVIDER**: Reranking provider - defaults to flashrank
+- **RERANKING_MODEL**: Reranking model name - defaults to ms-marco-MiniLM-L-12-v2 (~34MB)
+- **RERANKING_OVERFETCH**: Multiplier for over-fetching before reranking - defaults to 4
 
 **Semantic Search Settings:**
 - **ENABLE_SEMANTIC_SEARCH**: Enable semantic search functionality (true/false) - defaults to false

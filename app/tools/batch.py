@@ -211,12 +211,30 @@ async def store_context_batch(
                     batch_store_embedding_provider = get_embedding_provider()
                     if batch_store_embedding_provider is not None:
                         try:
-                            embedding = await batch_store_embedding_provider.embed_query(original_entry['text_content'])
-                            await repos.embeddings.store(
-                                context_id=ctx_id,
-                                embedding=embedding,
-                                model=settings.embedding.model,
-                            )
+                            # Import lazily to avoid linter removing unused import at module level
+                            from app.startup import get_chunking_service
+
+                            chunking_service = get_chunking_service()
+                            if chunking_service is not None and chunking_service.is_enabled:
+                                # Chunked embedding generation for long documents
+                                chunks = chunking_service.split_text(original_entry['text_content'])
+                                chunk_texts = [chunk.text for chunk in chunks]
+                                embeddings = await batch_store_embedding_provider.embed_documents(chunk_texts)
+                                await repos.embeddings.store_chunked(
+                                    context_id=ctx_id,
+                                    embeddings=embeddings,
+                                    model=settings.embedding.model,
+                                )
+                            else:
+                                # Single embedding (chunking disabled or not configured)
+                                embedding = await batch_store_embedding_provider.embed_query(
+                                    original_entry['text_content'],
+                                )
+                                await repos.embeddings.store(
+                                    context_id=ctx_id,
+                                    embedding=embedding,
+                                    model=settings.embedding.model,
+                                )
                         except Exception as emb_err:
                             logger.error(f'Failed to generate embedding for context {ctx_id}: {emb_err}')
                             if atomic:
@@ -493,16 +511,39 @@ async def update_context_batch(
                 batch_update_embedding_provider = get_embedding_provider()
                 if update.get('text') is not None and batch_update_embedding_provider is not None:
                     try:
-                        new_embedding = await batch_update_embedding_provider.embed_query(update['text'])
-                        embedding_exists = await repos.embeddings.exists(context_id)
-                        if embedding_exists:
-                            await repos.embeddings.update(context_id=context_id, embedding=new_embedding)
-                        else:
-                            await repos.embeddings.store(
+                        # Import lazily to avoid linter removing unused import at module level
+                        from app.startup import get_chunking_service
+
+                        chunking_service = get_chunking_service()
+                        if chunking_service is not None and chunking_service.is_enabled:
+                            # Chunked embedding regeneration for long documents
+                            # Delete existing chunks first
+                            await repos.embeddings.delete_all_chunks(context_id)
+                            # Generate and store new chunks
+                            chunks = chunking_service.split_text(update['text'])
+                            chunk_texts = [chunk.text for chunk in chunks]
+                            embeddings = await batch_update_embedding_provider.embed_documents(chunk_texts)
+                            await repos.embeddings.store_chunked(
                                 context_id=context_id,
-                                embedding=new_embedding,
+                                embeddings=embeddings,
                                 model=settings.embedding.model,
                             )
+                        else:
+                            # Single embedding (chunking disabled or not configured)
+                            new_embedding = await batch_update_embedding_provider.embed_query(update['text'])
+                            embedding_exists = await repos.embeddings.exists(context_id)
+                            if embedding_exists:
+                                await repos.embeddings.update(
+                                    context_id=context_id,
+                                    embeddings=[new_embedding],
+                                    model=settings.embedding.model,
+                                )
+                            else:
+                                await repos.embeddings.store(
+                                    context_id=context_id,
+                                    embedding=new_embedding,
+                                    model=settings.embedding.model,
+                                )
                         updated_fields.append('embedding')
                     except Exception as emb_err:
                         logger.error(f'Failed to update embedding for context {context_id}: {emb_err}')

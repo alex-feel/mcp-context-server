@@ -3,19 +3,19 @@ Server initialization and lifecycle management for mcp-context-server.
 
 This package contains:
 - Database initialization (init_database)
-- Global state management (_backend, _repositories, _embedding_provider)
+- Global state management (_backend, _repositories, _embedding_provider, _reranking_provider)
 - Lazy initialization helpers (_ensure_backend, _ensure_repositories)
 - Configuration constants (DB_PATH, MAX_IMAGE_SIZE_MB, MAX_TOTAL_SIZE_MB)
 
 Global State Architecture:
-    The _backend, _repositories, and _embedding_provider variables are module-level
-    singletons that are initialized once during server lifespan and accessed by
-    MCP tool functions. Direct mutation is allowed from server.py's lifespan().
+    The _backend, _repositories, _embedding_provider, and _reranking_provider variables
+    are module-level singletons that are initialized once during server lifespan and
+    accessed by MCP tool functions. Direct mutation is allowed from server.py's lifespan().
 
 Usage:
     # In server.py lifespan():
     from app.startup import (
-        set_backend, set_repositories, set_embedding_provider,
+        set_backend, set_repositories, set_embedding_provider, set_reranking_provider,
         init_database, DB_PATH,
     )
 
@@ -26,8 +26,9 @@ Usage:
     set_repositories(RepositoryContainer(_backend))
 
     # In MCP tools (app/tools/*.py):
-    from app.startup import ensure_repositories
+    from app.startup import ensure_repositories, get_reranking_provider
     repos = await ensure_repositories()
+    reranking_provider = get_reranking_provider()
 """
 
 import logging
@@ -42,6 +43,8 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.embeddings import EmbeddingProvider
 from app.repositories import RepositoryContainer
+from app.reranking import RerankingProvider
+from app.services import ChunkingService
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -56,6 +59,8 @@ MAX_TOTAL_SIZE_MB = settings.storage.max_total_size_mb
 _backend: StorageBackend | None = None
 _repositories: RepositoryContainer | None = None
 _embedding_provider: EmbeddingProvider | None = None
+_reranking_provider: RerankingProvider | None = None
+_chunking_service: ChunkingService | None = None
 
 
 def set_backend(backend: StorageBackend | None) -> None:
@@ -85,6 +90,15 @@ def set_embedding_provider(provider: EmbeddingProvider | None) -> None:
     _embedding_provider = provider
 
 
+def set_reranking_provider(provider: RerankingProvider | None) -> None:
+    """Set the global reranking provider instance.
+
+    Called from server.py lifespan() during startup/shutdown.
+    """
+    global _reranking_provider
+    _reranking_provider = provider
+
+
 def get_backend() -> StorageBackend | None:
     """Get the current backend instance (read-only access)."""
     return _backend
@@ -98,6 +112,25 @@ def get_repositories() -> RepositoryContainer | None:
 def get_embedding_provider() -> EmbeddingProvider | None:
     """Get the current embedding provider instance (read-only access)."""
     return _embedding_provider
+
+
+def get_reranking_provider() -> RerankingProvider | None:
+    """Get the current reranking provider instance (read-only access)."""
+    return _reranking_provider
+
+
+def set_chunking_service(service: ChunkingService | None) -> None:
+    """Set the global chunking service instance.
+
+    Called from server.py lifespan() during startup/shutdown.
+    """
+    global _chunking_service
+    _chunking_service = service
+
+
+def get_chunking_service() -> ChunkingService | None:
+    """Get the current chunking service instance (read-only access)."""
+    return _chunking_service
 
 
 async def init_database(backend: StorageBackend | None = None) -> None:
@@ -278,16 +311,25 @@ __all__ = [
     '_backend',
     '_repositories',
     '_embedding_provider',
+    '_reranking_provider',
+    '_chunking_service',
     # Setters (for lifespan initialization)
     'set_backend',
     'set_repositories',
     'set_embedding_provider',
+    'set_reranking_provider',
+    'set_chunking_service',
     # Getters (read-only access)
     'get_backend',
     'get_repositories',
     'get_embedding_provider',
+    'get_reranking_provider',
+    'get_chunking_service',
     # Initialization functions
     'init_database',
     'ensure_backend',
     'ensure_repositories',
+    # Re-exported types
+    'RerankingProvider',
+    'ChunkingService',
 ]

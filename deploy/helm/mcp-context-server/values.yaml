@@ -115,6 +115,24 @@ search:
   hybrid:
     enabled: false
     rrfK: 60
+    rrfOverfetch: 2  # Multiplier for over-fetching before RRF fusion
+  # Text chunking for improved semantic search on long documents
+  chunking:
+    enabled: true
+    size: 1000       # Target chunk size in characters
+    overlap: 100     # Overlap between chunks in characters
+    aggregation: max # How to aggregate chunk scores (only 'max' supported)
+    dedupOverfetch: 5 # Multiplier for over-fetching before deduplication
+  # Cross-encoder reranking for improved search precision
+  reranking:
+    enabled: true
+    provider: flashrank
+    model: ms-marco-MiniLM-L-12-v2
+    maxLength: 512   # Maximum input length in tokens
+    overfetch: 4     # Multiplier for over-fetching before reranking
+    cacheDir: ""     # Custom cache directory for model files (empty = system default)
+  # Default sort order for search results
+  defaultSortBy: relevance  # Only 'relevance' supported in current version
 
 # Ollama sidecar configuration (only used when search.semantic.provider=ollama)
 ollama:

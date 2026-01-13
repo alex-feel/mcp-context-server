@@ -55,4 +55,26 @@ data:
   ENABLE_HYBRID_SEARCH: {{ .Values.search.hybrid.enabled | quote }}
   {{- if .Values.search.hybrid.enabled }}
   HYBRID_RRF_K: {{ .Values.search.hybrid.rrfK | quote }}
+  HYBRID_RRF_OVERFETCH: {{ .Values.search.hybrid.rrfOverfetch | quote }}
   {{- end }}
+  # Chunking settings
+  ENABLE_CHUNKING: {{ .Values.search.chunking.enabled | quote }}
+  {{- if .Values.search.chunking.enabled }}
+  CHUNK_SIZE: {{ .Values.search.chunking.size | quote }}
+  CHUNK_OVERLAP: {{ .Values.search.chunking.overlap | quote }}
+  CHUNK_AGGREGATION: {{ .Values.search.chunking.aggregation | quote }}
+  CHUNK_DEDUP_OVERFETCH: {{ .Values.search.chunking.dedupOverfetch | quote }}
+  {{- end }}
+  # Reranking settings
+  ENABLE_RERANKING: {{ .Values.search.reranking.enabled | quote }}
+  {{- if .Values.search.reranking.enabled }}
+  RERANKING_PROVIDER: {{ .Values.search.reranking.provider | quote }}
+  RERANKING_MODEL: {{ .Values.search.reranking.model | quote }}
+  RERANKING_MAX_LENGTH: {{ .Values.search.reranking.maxLength | quote }}
+  RERANKING_OVERFETCH: {{ .Values.search.reranking.overfetch | quote }}
+  {{- if .Values.search.reranking.cacheDir }}
+  RERANKING_CACHE_DIR: {{ .Values.search.reranking.cacheDir | quote }}
+  {{- end }}
+  {{- end }}
+  # Search default sort
+  SEARCH_DEFAULT_SORT_BY: {{ .Values.search.defaultSortBy | quote }}

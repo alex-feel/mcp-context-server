@@ -95,6 +95,9 @@ class HuggingFaceEmbeddingProvider:
         # Convert numpy types to Python float if needed
         embedding = self._convert_to_python_floats(embedding)
 
+        # Key operational event: shows embedding generation worked
+        logger.info(f'[EMBEDDING] Generated query embedding: text_len={len(text)}, dim={len(embedding)}')
+
         # Validate dimension
         if len(embedding) != self._dimension:
             raise ValueError(
@@ -125,6 +128,9 @@ class HuggingFaceEmbeddingProvider:
             return result
 
         embeddings = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_documents')
+
+        # Key operational event: shows embedding generation worked
+        logger.info(f'[EMBEDDING] Generated {len(embeddings)} embeddings for {len(texts)} texts')
 
         # Convert numpy types and validate dimensions
         result: list[list[float]] = []

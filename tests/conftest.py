@@ -157,6 +157,16 @@ def are_semantic_search_deps_available() -> bool:
     return is_ollama_available() and is_sqlite_vec_available() and is_numpy_available()
 
 
+def is_chunking_available() -> bool:
+    """Check if langchain-text-splitters package is installed."""
+    return importlib.util.find_spec('langchain_text_splitters') is not None
+
+
+def is_flashrank_available() -> bool:
+    """Check if flashrank package is installed."""
+    return importlib.util.find_spec('flashrank') is not None
+
+
 # Pytest markers for conditional skipping
 requires_ollama = pytest.mark.skipif(
     not is_ollama_available(),
@@ -181,6 +191,16 @@ requires_semantic_search = pytest.mark.skipif(
 requires_ollama_model = pytest.mark.skipif(
     not is_ollama_model_available(),
     reason='Ollama model not available (service not running or no model installed)',
+)
+
+requires_chunking = pytest.mark.skipif(
+    not is_chunking_available(),
+    reason='langchain-text-splitters package not installed (chunking feature)',
+)
+
+requires_flashrank = pytest.mark.skipif(
+    not is_flashrank_available(),
+    reason='flashrank package not installed (reranking feature)',
 )
 
 
@@ -746,12 +766,16 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
     await backend.execute_write(_init_schema)
 
     # Apply semantic search migration with correct dimension
-    migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search_sqlite.sql'
-    migration_sql = migration_path.read_text(encoding='utf-8')
+    semantic_migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search_sqlite.sql'
+    semantic_migration_sql = semantic_migration_path.read_text(encoding='utf-8')
     # Replace the template with actual dimension
-    migration_sql = migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding.dim))
+    semantic_migration_sql = semantic_migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding.dim))
 
-    def _apply_migration(conn: sqlite3.Connection) -> None:
+    # Apply chunking migration (creates embedding_chunks table for 1:N relationships)
+    chunking_migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
+    chunking_migration_sql = chunking_migration_path.read_text(encoding='utf-8')
+
+    def _apply_migrations(conn: sqlite3.Connection) -> None:
         # Load sqlite-vec extension before executing migration
         # The migration SQL uses vec0 module which requires sqlite-vec extension
         try:
@@ -766,9 +790,20 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
                 'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
             ) from e
 
-        conn.executescript(migration_sql)
+        # Apply semantic search migration first (creates vec_context_embeddings)
+        conn.executescript(semantic_migration_sql)
 
-    await backend.execute_write(_apply_migration)
+        # Apply chunking migration (creates embedding_chunks for 1:N relationships)
+        conn.executescript(chunking_migration_sql)
+
+        # Add chunk_count column to embedding_metadata (if not exists)
+        # SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check first
+        cursor = conn.execute('PRAGMA table_info(embedding_metadata)')
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'chunk_count' not in columns:
+            conn.execute('ALTER TABLE embedding_metadata ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1')
+
+    await backend.execute_write(_apply_migrations)
 
     try:
         yield backend

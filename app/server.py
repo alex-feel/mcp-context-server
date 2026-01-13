@@ -27,6 +27,7 @@ from app.migrations import FtsMigrationStatus
 from app.migrations import ProviderCheckResult
 
 # Import migration functions from the migrations package
+from app.migrations import apply_chunking_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
 from app.migrations import apply_jsonb_merge_patch_migration
@@ -43,10 +44,13 @@ from app.settings import get_settings
 from app.startup import DB_PATH
 from app.startup import get_backend
 from app.startup import get_embedding_provider
+from app.startup import get_reranking_provider
 from app.startup import init_database
 from app.startup import set_backend
+from app.startup import set_chunking_service
 from app.startup import set_embedding_provider
 from app.startup import set_repositories
+from app.startup import set_reranking_provider
 
 # Backward compatibility re-exports for validation utilities
 # Tests and external code may import these from app.server
@@ -189,14 +193,16 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_function_search_path_migration(backend=backend)
         # 6) Apply FTS migration if enabled
         await apply_fts_migration(backend=backend)
-        # 7) Validate pool timeout for embedding operations (PostgreSQL only)
+        # 7) Apply chunking migration (1:N embedding relationship)
+        await apply_chunking_migration(backend=backend)
+        # 8) Validate pool timeout for embedding operations (PostgreSQL only)
         if backend.backend_type == 'postgresql':
             validate_pool_timeout_for_embedding()
-        # 8) Initialize repositories with the backend
+        # 9) Initialize repositories with the backend
         repos = RepositoryContainer(backend)
         set_repositories(repos)
 
-        # 9) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
+        # 10) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
         # Additive tools (create new entries)
         register_tool(mcp, store_context)
         register_tool(mcp, store_context_batch)
@@ -215,7 +221,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, delete_context)
         register_tool(mcp, delete_context_batch)
 
-        # 10) Initialize embedding generation if enabled (BEFORE semantic search)
+        # 11) Initialize embedding generation if enabled (BEFORE semantic search)
         # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
         # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
         if settings.enable_embedding_generation:
@@ -278,7 +284,80 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_embedding_provider(None)
             logger.info('Embedding generation disabled (ENABLE_EMBEDDING_GENERATION=false)')
 
-        # 11) Register semantic search tool if enabled AND embedding provider is available
+        # 12) Initialize reranking provider if enabled
+        # Reranking improves search precision by re-scoring results with a cross-encoder
+        if settings.reranking.enabled:
+            try:
+                from app.reranking import create_reranking_provider
+
+                reranking_provider = create_reranking_provider()
+                await reranking_provider.initialize()
+
+                # Verify provider is available
+                if not await reranking_provider.is_available():
+                    await reranking_provider.shutdown()
+                    logger.warning(
+                        f'[!] Reranking provider {reranking_provider.provider_name} not available. '
+                        'Search results will not be reranked.',
+                    )
+                    set_reranking_provider(None)
+                else:
+                    set_reranking_provider(reranking_provider)
+                    logger.info(
+                        f'[OK] Reranking enabled with provider: {reranking_provider.provider_name} '
+                        f'(model: {reranking_provider.model_name})',
+                    )
+            except ImportError as e:
+                logger.warning(
+                    f'[!] Reranking dependencies not installed: {e}. '
+                    f'Install with: uv sync --extra reranking. '
+                    'Search results will not be reranked.',
+                )
+                set_reranking_provider(None)
+            except Exception as e:
+                logger.warning(
+                    f'[!] Failed to initialize reranking provider: {e}. '
+                    'Search results will not be reranked.',
+                )
+                set_reranking_provider(None)
+        else:
+            set_reranking_provider(None)
+            logger.info('Reranking disabled (ENABLE_RERANKING=false)')
+
+        # 13) Initialize chunking service if enabled
+        # Chunking splits long documents into smaller pieces for better semantic search quality
+        if settings.chunking.enabled:
+            try:
+                from app.services import ChunkingService
+
+                chunking_service = ChunkingService(
+                    enabled=settings.chunking.enabled,
+                    chunk_size=settings.chunking.size,
+                    chunk_overlap=settings.chunking.overlap,
+                )
+                set_chunking_service(chunking_service)
+                logger.info(
+                    f'[OK] Chunking enabled (size={settings.chunking.size}, '
+                    f'overlap={settings.chunking.overlap})',
+                )
+            except ImportError as e:
+                logger.warning(
+                    f'[!] Chunking dependencies not installed: {e}. '
+                    f'Install with: uv sync --extra embeddings-ollama. '
+                    'Text will be embedded as single chunks.',
+                )
+                set_chunking_service(None)
+            except Exception as e:
+                logger.warning(
+                    f'[!] Failed to initialize chunking service: {e}. '
+                    'Text will be embedded as single chunks.',
+                )
+                set_chunking_service(None)
+        else:
+            set_chunking_service(None)
+            logger.info('Chunking disabled (ENABLE_CHUNKING=false)')
+
+        # 14) Register semantic search tool if enabled AND embedding provider is available
         # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
         if settings.enable_semantic_search:
             if get_embedding_provider() is not None:
@@ -295,7 +374,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
-        # 12) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 15) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.enable_fts:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
@@ -312,7 +391,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
-        # 13) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 16) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.enable_hybrid_search:
             semantic_available_for_hybrid = (
                 settings.enable_semantic_search and get_embedding_provider() is not None
@@ -359,6 +438,14 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f'Error during shutdown: {e}')
     finally:
+        # Shutdown reranking provider if initialized
+        shutdown_reranking_provider = get_reranking_provider()
+        if shutdown_reranking_provider is not None:
+            try:
+                await shutdown_reranking_provider.shutdown()
+            except Exception as e:
+                logger.error(f'Error shutting down reranking provider: {e}')
+
         # Shutdown embedding provider if initialized
         shutdown_embedding_provider = get_embedding_provider()
         if shutdown_embedding_provider is not None:
@@ -370,6 +457,8 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         set_backend(None)
         set_repositories(None)
         set_embedding_provider(None)
+        set_reranking_provider(None)
+        set_chunking_service(None)
     logger.info('MCP Context Server shutdown complete')
 
 

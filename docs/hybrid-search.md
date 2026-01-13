@@ -47,14 +47,16 @@ Hybrid Search uses existing FTS and Semantic Search infrastructure. No additiona
 For full hybrid search capability:
 
 ```bash
-# Install embedding provider dependencies (e.g., Ollama)
-uv sync --extra embeddings-ollama
+# Install embedding provider and reranking dependencies (e.g., Ollama)
+uv sync --extra embeddings-ollama --extra reranking
 
 # Or use another provider: embeddings-openai, embeddings-azure, embeddings-huggingface, embeddings-voyage
 
 # Pull embedding model (for Ollama)
 ollama pull qwen3-embedding:0.6b
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 ## Configuration
 
@@ -101,7 +103,7 @@ Add to your `.mcp.json` file:
         "--python",
         "3.12",
         "--with",
-        "mcp-context-server[embeddings-ollama]",
+        "mcp-context-server[embeddings-ollama,reranking]",
         "mcp-context-server"
       ],
       "env": {
@@ -114,6 +116,8 @@ Add to your `.mcp.json` file:
   }
 }
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 ## How RRF Fusion Works
 
@@ -156,6 +160,46 @@ FTS Results:           Semantic Results:      After RRF Fusion:
 ```
 
 Doc B appears in both lists (FTS rank 2, semantic rank 1), so it scores highest after fusion.
+
+## Reranking Integration
+
+When both hybrid search and reranking are enabled (both are enabled by default), reranking is applied AFTER RRF fusion:
+
+1. FTS and semantic search run in parallel
+2. RRF fusion combines results
+3. Cross-encoder reranking refines final ordering
+
+This ensures documents found by both methods rank highest, then reranking optimizes relevance.
+
+### Over-Fetching Chain
+
+For a request with `limit=5`, the pipeline applies multiple over-fetch multipliers:
+
+```
+User requests: limit=5
+    |
+    v
+Reranking needs: 5 * 4 (RERANKING_OVERFETCH) = 20 candidates
+    |
+    v
+RRF needs: 20 * 2 (HYBRID_RRF_OVERFETCH) = 40 per method
+    |
+    v
+Semantic search: 40 * 5 (CHUNK_DEDUP_OVERFETCH) = 200 chunks
+    |
+    v
+After chunk dedup + RRF + rerank: 5 final results
+```
+
+### Configuration
+
+Reranking is controlled by these environment variables (see [Semantic Search Guide](semantic-search.md#cross-encoder-reranking) for details):
+
+| Variable               | Default | Description                                   |
+|------------------------|---------|-----------------------------------------------|
+| `ENABLE_RERANKING`     | `true`  | Enable cross-encoder reranking                |
+| `RERANKING_OVERFETCH`  | `4`     | Multiplier for over-fetching before reranking |
+| `HYBRID_RRF_OVERFETCH` | `2`     | Multiplier for RRF to get enough candidates   |
 
 ## Usage
 

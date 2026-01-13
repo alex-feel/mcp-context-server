@@ -28,6 +28,7 @@ from app.migrations import get_fts_migration_status
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
+from app.startup import get_reranking_provider
 from app.startup.validation import truncate_text
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
@@ -35,6 +36,270 @@ from app.types import ContextEntryDict
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+async def _apply_reranking(
+    query: str,
+    results: list[dict[str, Any]],
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Apply cross-encoder reranking to search results.
+
+    This is a helper function used by search tools to rerank results
+    after initial retrieval (semantic search, FTS, or hybrid).
+
+    Args:
+        query: The search query to score results against.
+        results: Search results with 'id' and 'text_content' fields.
+        limit: Maximum number of results to return after reranking.
+
+    Returns:
+        Reranked results with 'rerank_score' field added.
+        If reranking is disabled or unavailable, returns original results.
+    """
+    # Check if reranking is available
+    reranking_provider = get_reranking_provider()
+    if reranking_provider is None or not settings.reranking.enabled:
+        # Return original results (no reranking)
+        return results[:limit] if limit else results
+
+    if not results:
+        return results
+
+    try:
+        # Map text_content to text for reranking provider
+        # The provider expects 'text' field, but search results use 'text_content'
+        rerank_input: list[dict[str, Any]] = []
+        for result in results:
+            rerank_item: dict[str, Any] = {
+                'id': result.get('id'),
+                'text': result.get('text_content', ''),
+            }
+            rerank_input.append(rerank_item)
+
+        # Call reranking provider
+        reranked = await reranking_provider.rerank(
+            query=query,
+            results=rerank_input,
+            limit=limit,
+        )
+
+        # Build result lookup by ID for fast access
+        result_by_id: dict[int, dict[str, Any]] = {
+            int(r.get('id', 0)): r for r in results if r.get('id') is not None
+        }
+
+        # Merge rerank scores back into original results
+        final_results: list[dict[str, Any]] = []
+        for reranked_item in reranked:
+            item_id = reranked_item.get('id')
+            if item_id is not None and int(item_id) in result_by_id:
+                merged = result_by_id[int(item_id)].copy()
+                merged['rerank_score'] = reranked_item.get('rerank_score', 0.0)
+                final_results.append(merged)
+
+        logger.debug(
+            f'Reranked {len(results)} results to {len(final_results)} '
+            f'(limit={limit}, provider={reranking_provider.provider_name})',
+        )
+        return final_results
+
+    except Exception as e:
+        logger.warning(f'Reranking failed, returning original results: {e}')
+        # Fallback: return original results without reranking
+        return results[:limit] if limit else results
+
+
+async def _semantic_search_raw(
+    query: str,
+    limit: int,
+    offset: int = 0,
+    thread_id: str | None = None,
+    source: Literal['user', 'agent'] | None = None,
+    content_type: Literal['text', 'multimodal'] | None = None,
+    tags: list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    metadata: dict[str, str | int | float | bool] | None = None,
+    metadata_filters: list[dict[str, Any]] | None = None,
+    explain_query: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Raw semantic search without reranking (Layer 1).
+
+    This is the core semantic search implementation used by both
+    semantic_search_context (with reranking) and hybrid_search_context
+    (with RRF fusion and single reranking at the end).
+
+    Args:
+        query: Natural language search query.
+        limit: Maximum results to return.
+        offset: Pagination offset.
+        thread_id: Optional filter by thread.
+        source: Optional filter by source type.
+        content_type: Optional filter by content type.
+        tags: Optional filter by tags (OR logic).
+        start_date: Optional filter by created_at >= date (ISO 8601 string).
+        end_date: Optional filter by created_at <= date (ISO 8601 string).
+        metadata: Simple metadata filters.
+        metadata_filters: Advanced metadata filters.
+        explain_query: Include query execution statistics.
+
+    Returns:
+        Tuple of (results, stats). Results include text_content and distance.
+
+    Raises:
+        ToolError: If semantic search is not available or fails.
+        MetadataFilterValidationError: If metadata filters are invalid.
+    """
+    # Check if semantic search is available
+    embedding_provider = get_embedding_provider()
+    if embedding_provider is None:
+        from app.embeddings.factory import PROVIDER_INSTALL_INSTRUCTIONS
+
+        provider = settings.embedding.provider
+        install_cmd = PROVIDER_INSTALL_INSTRUCTIONS.get(provider, 'uv sync --extra embeddings-ollama')
+
+        error_msg = (
+            'Semantic search is not available. '
+            f'Ensure ENABLE_SEMANTIC_SEARCH=true and {provider} provider is properly configured. '
+            f'Install provider: {install_cmd}'
+        )
+        if provider == 'ollama':
+            error_msg += f'. Download model: ollama pull {settings.embedding.model}'
+        raise ToolError(error_msg)
+
+    # Get repositories
+    repos = await ensure_repositories()
+
+    # Generate embedding for query
+    try:
+        query_embedding = await embedding_provider.embed_query(query)
+    except Exception as e:
+        logger.error(f'Failed to generate query embedding: {e}')
+        raise ToolError(f'Failed to generate embedding for query: {str(e)}') from e
+
+    # Perform similarity search with optional filtering
+    from app.repositories.embedding_repository import MetadataFilterValidationError
+
+    try:
+        search_results, search_stats = await repos.embeddings.search(
+            query_embedding=query_embedding,
+            limit=limit,
+            offset=offset,
+            thread_id=thread_id,
+            source=source,
+            content_type=content_type,
+            tags=tags,
+            start_date=start_date,
+            end_date=end_date,
+            metadata=metadata,
+            metadata_filters=metadata_filters,
+            explain_query=explain_query,
+        )
+    except MetadataFilterValidationError:
+        raise  # Let caller handle validation errors
+    except Exception as e:
+        logger.error(f'Semantic search failed: {e}')
+        raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
+
+    return search_results, search_stats
+
+
+async def _fts_search_raw(
+    query: str,
+    limit: int,
+    mode: Literal['match', 'prefix', 'phrase', 'boolean'] = 'match',
+    offset: int = 0,
+    thread_id: str | None = None,
+    source: Literal['user', 'agent'] | None = None,
+    content_type: Literal['text', 'multimodal'] | None = None,
+    tags: list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    metadata: dict[str, str | int | float | bool] | None = None,
+    metadata_filters: list[dict[str, Any]] | None = None,
+    highlight: bool = False,
+    explain_query: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Raw full-text search without reranking (Layer 1).
+
+    This is the core FTS implementation used by both
+    fts_search_context (with reranking) and hybrid_search_context
+    (with RRF fusion and single reranking at the end).
+
+    Args:
+        query: Full-text search query.
+        limit: Maximum results to return.
+        mode: Search mode (match, prefix, phrase, boolean).
+        offset: Pagination offset.
+        thread_id: Optional filter by thread.
+        source: Optional filter by source type.
+        content_type: Optional filter by content type.
+        tags: Optional filter by tags (OR logic).
+        start_date: Optional filter by created_at >= date (ISO 8601 string).
+        end_date: Optional filter by created_at <= date (ISO 8601 string).
+        metadata: Simple metadata filters.
+        metadata_filters: Advanced metadata filters.
+        highlight: Include highlighted snippets.
+        explain_query: Include query execution statistics.
+
+    Returns:
+        Tuple of (results, stats). Results include text_content and score.
+
+    Raises:
+        ToolError: If FTS is not available or fails.
+        FtsValidationError: If query or filters are invalid.
+    """
+    # Check if FTS is enabled
+    if not settings.enable_fts:
+        raise ToolError(
+            'Full-text search is not available. '
+            'Set ENABLE_FTS=true to enable this feature.',
+        )
+
+    # Check if migration is in progress
+    fts_status = get_fts_migration_status()
+    if fts_status.in_progress:
+        raise ToolError('FTS migration in progress. Please retry shortly.')
+
+    # Get repositories
+    repos = await ensure_repositories()
+
+    # Check if FTS is properly initialized
+    if not await repos.fts.is_available():
+        raise ToolError(
+            'FTS index not found. The database may need migration. '
+            'Restart the server with ENABLE_FTS=true to apply migrations.',
+        )
+
+    # Import exception here to avoid circular imports
+    from app.repositories.fts_repository import FtsValidationError
+
+    try:
+        search_results, stats = await repos.fts.search(
+            query=query,
+            mode=mode,
+            limit=limit,
+            offset=offset,
+            thread_id=thread_id,
+            source=source,
+            content_type=content_type,
+            tags=tags,
+            start_date=start_date,
+            end_date=end_date,
+            metadata=metadata,
+            metadata_filters=metadata_filters,
+            highlight=highlight,
+            language=settings.fts_language,
+            explain_query=explain_query,
+        )
+    except FtsValidationError:
+        raise  # Let caller handle validation errors
+    except Exception as e:
+        logger.error(f'FTS search failed: {e}')
+        raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
+
+    return search_results, stats
 
 
 async def search_context(
@@ -254,47 +519,27 @@ async def semantic_search_context(
     end_date = validate_date_param(end_date, 'end_date')
     validate_date_range(start_date, end_date)
 
-    # Check if semantic search is available
-    semantic_embedding_provider = get_embedding_provider()
-    if semantic_embedding_provider is None:
-        from app.embeddings.factory import PROVIDER_INSTALL_INSTRUCTIONS
-
-        provider = settings.embedding.provider
-        install_cmd = PROVIDER_INSTALL_INSTRUCTIONS.get(provider, 'uv sync --extra embeddings-ollama')
-
-        error_msg = (
-            'Semantic search is not available. '
-            f'Ensure ENABLE_SEMANTIC_SEARCH=true and {provider} provider is properly configured. '
-            f'Install provider: {install_cmd}'
-        )
-        if provider == 'ollama':
-            error_msg += f'. Download model: ollama pull {settings.embedding.model}'
-        raise ToolError(error_msg)
-
     try:
         if ctx:
             await ctx.info(f'Performing semantic search: "{query[:50]}..."')
 
-        # Get repositories
-        repos = await ensure_repositories()
+        # Calculate overfetch limit for reranking
+        # Over-fetch more results to give reranker better candidates
+        reranking_provider = get_reranking_provider()
+        if reranking_provider is not None and settings.reranking.enabled:
+            overfetch_limit = (limit + offset) * settings.reranking.overfetch
+        else:
+            overfetch_limit = limit + offset
 
-        # Generate embedding for query
-        try:
-            query_embedding = await semantic_embedding_provider.embed_query(query)
-        except Exception as e:
-            logger.error(f'Failed to generate query embedding: {e}')
-            raise ToolError(f'Failed to generate embedding for query: {str(e)}') from e
-
-        # Perform similarity search with optional filtering (date and metadata)
         # Import exception here to avoid circular imports at module level
         from app.repositories.embedding_repository import MetadataFilterValidationError
 
         try:
-            # Unpack tuple; stats used when explain_query=True
-            search_results, search_stats = await repos.embeddings.search(
-                query_embedding=query_embedding,
-                limit=limit,
-                offset=offset,
+            # Call raw search (Layer 1) with overfetch
+            search_results, search_stats = await _semantic_search_raw(
+                query=query,
+                limit=overfetch_limit,
+                offset=0,  # Offset handled after reranking
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
@@ -315,12 +560,20 @@ async def semantic_search_context(
                 'error': e.message,
                 'validation_errors': e.validation_errors,
             }
-        except Exception as e:
-            logger.error(f'Semantic search failed: {e}')
-            raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
+
+        # Apply reranking (Layer 2) if available
+        reranked_results = await _apply_reranking(
+            query=query,
+            results=search_results,
+            limit=limit + offset,  # Get enough for offset + limit
+        )
+
+        # Apply offset after reranking
+        final_results = reranked_results[offset:][:limit]
 
         # Enrich results with tags and optionally images
-        for result in search_results:
+        repos = await ensure_repositories()
+        for result in final_results:
             context_id = result.get('id')
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
@@ -332,12 +585,12 @@ async def semantic_search_context(
             else:
                 result['tags'] = []
 
-        logger.info(f'Semantic search found {len(search_results)} results for query: "{query[:50]}..."')
+        logger.info(f'Semantic search found {len(final_results)} results for query: "{query[:50]}..."')
 
         response: dict[str, Any] = {
             'query': query,
-            'results': search_results,
-            'count': len(search_results),
+            'results': final_results,
+            'count': len(final_results),
             'model': settings.embedding.model,
         }
         if explain_query:
@@ -436,13 +689,6 @@ async def fts_search_context(
     end_date = validate_date_param(end_date, 'end_date')
     validate_date_range(start_date, end_date)
 
-    # Check if FTS is enabled
-    if not settings.enable_fts:
-        raise ToolError(
-            'Full-text search is not available. '
-            'Set ENABLE_FTS=true to enable this feature.',
-        )
-
     # Check if migration is in progress - return informative response for graceful degradation
     fts_status = get_fts_migration_status()
     if fts_status.in_progress:
@@ -470,25 +716,23 @@ async def fts_search_context(
         if ctx:
             await ctx.info(f'Performing FTS search: "{query[:50]}..." (mode={mode})')
 
-        # Get repositories
-        repos = await ensure_repositories()
-
-        # Check if FTS is properly initialized
-        if not await repos.fts.is_available():
-            raise ToolError(
-                'FTS index not found. The database may need migration. '
-                'Restart the server with ENABLE_FTS=true to apply migrations.',
-            )
+        # Calculate overfetch limit for reranking
+        reranking_provider = get_reranking_provider()
+        if reranking_provider is not None and settings.reranking.enabled:
+            overfetch_limit = (limit + offset) * settings.reranking.overfetch
+        else:
+            overfetch_limit = limit + offset
 
         # Import exception here to avoid circular imports
         from app.repositories.fts_repository import FtsValidationError
 
         try:
-            search_results, stats = await repos.fts.search(
+            # Call raw search (Layer 1) with overfetch
+            search_results, stats = await _fts_search_raw(
                 query=query,
+                limit=overfetch_limit,
                 mode=mode,
-                limit=limit,
-                offset=offset,
+                offset=0,  # Offset handled after reranking
                 thread_id=thread_id,
                 source=source,
                 content_type=content_type,
@@ -498,7 +742,6 @@ async def fts_search_context(
                 metadata=metadata,
                 metadata_filters=metadata_filters,
                 highlight=highlight,
-                language=settings.fts_language,
                 explain_query=explain_query,
             )
         except FtsValidationError as e:
@@ -519,12 +762,20 @@ async def fts_search_context(
                     'rows_returned': 0,
                 }
             return error_response
-        except Exception as e:
-            logger.error(f'FTS search failed: {e}')
-            raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
+
+        # Apply reranking (Layer 2) if available
+        reranked_results = await _apply_reranking(
+            query=query,
+            results=search_results,
+            limit=limit + offset,  # Get enough for offset + limit
+        )
+
+        # Apply offset after reranking
+        final_results = reranked_results[offset:][:limit]
 
         # Process results: parse metadata and enrich with tags
-        for result in search_results:
+        repos = await ensure_repositories()
+        for result in final_results:
             # Parse JSON metadata - database stores as JSON string
             metadata_raw = result.get('metadata')
             # Database can return string that needs parsing
@@ -547,13 +798,13 @@ async def fts_search_context(
             else:
                 result['tags'] = []
 
-        logger.info(f'FTS search found {len(search_results)} results for query: "{query[:50]}..."')
+        logger.info(f'FTS search found {len(final_results)} results for query: "{query[:50]}..."')
 
         response: dict[str, Any] = {
             'query': query,
             'mode': mode,
-            'results': search_results,
-            'count': len(search_results),
+            'results': final_results,
+            'count': len(final_results),
             'language': settings.fts_language,
         }
         if explain_query:
@@ -719,14 +970,18 @@ async def hybrid_search_context(
         from app.fusion import count_unique_results
         from app.fusion import reciprocal_rank_fusion
 
-        # Get repositories
+        # Get repositories for tag/image enrichment
         repos = await ensure_repositories()
 
-        # Over-fetch for better fusion quality
-        # Must account for offset to ensure all entries are fetched for proper pagination
-        over_fetch_limit = (limit + offset) * 2
+        # Calculate overfetch limit for hybrid search with reranking
+        # Chain: limit * hybrid_rrf_overfetch * reranking.overfetch
+        reranking_provider = get_reranking_provider()
+        if reranking_provider is not None and settings.reranking.enabled:
+            over_fetch_limit = (limit + offset) * settings.hybrid_rrf_overfetch * settings.reranking.overfetch
+        else:
+            over_fetch_limit = (limit + offset) * settings.hybrid_rrf_overfetch
 
-        # Execute searches in parallel
+        # Execute searches in parallel using raw functions (Layer 1 - no reranking)
         fts_results: list[dict[str, Any]] = []
         semantic_results: list[dict[str, Any]] = []
         fts_error: str | None = None
@@ -739,102 +994,52 @@ async def hybrid_search_context(
         async def run_fts_search() -> None:
             nonlocal fts_results, fts_error, fts_stats
             try:
-                # Check if FTS migration is in progress
-                if get_fts_migration_status().in_progress:
-                    fts_error = 'FTS migration in progress'
-                    return
-
-                # Check if FTS is properly initialized
-                if not await repos.fts.is_available():
-                    fts_error = 'FTS index not available'
-                    return
-
-                from app.repositories.fts_repository import FtsValidationError
-
-                try:
-                    results, stats = await repos.fts.search(
-                        query=query,
-                        mode='match',
-                        limit=over_fetch_limit,
-                        offset=0,
-                        thread_id=thread_id,
-                        source=source,
-                        content_type=content_type,
-                        tags=tags,
-                        start_date=start_date,
-                        end_date=end_date,
-                        metadata=metadata,
-                        metadata_filters=metadata_filters,
-                        highlight=False,
-                        language=settings.fts_language,
-                        explain_query=explain_query,
-                    )
-                    fts_results = results
-                    if explain_query:
-                        fts_stats = stats
-                except FtsValidationError as e:
-                    fts_error = str(e.message)
-                except Exception as e:
-                    fts_error = str(e)
+                results, stats = await _fts_search_raw(
+                    query=query,
+                    limit=over_fetch_limit,
+                    mode='match',
+                    offset=0,
+                    thread_id=thread_id,
+                    source=source,
+                    content_type=content_type,
+                    tags=tags,
+                    start_date=start_date,
+                    end_date=end_date,
+                    metadata=metadata,
+                    metadata_filters=metadata_filters,
+                    highlight=False,
+                    explain_query=explain_query,
+                )
+                fts_results = results
+                if explain_query:
+                    fts_stats = stats
+            except ToolError as e:
+                fts_error = str(e)
             except Exception as e:
                 fts_error = str(e)
 
         async def run_semantic_search() -> None:
             nonlocal semantic_results, semantic_error, semantic_stats
             try:
-                hybrid_embedding_provider = get_embedding_provider()
-                if hybrid_embedding_provider is None:
-                    semantic_error = 'Embedding service not available'
-                    return
-
-                # Track embedding generation time for explain_query
-                embedding_start_time = time_module.time() if explain_query else 0.0
-
-                # Generate embedding for query
-                try:
-                    query_embedding = await hybrid_embedding_provider.embed_query(query)
-                except Exception as e:
-                    semantic_error = f'Failed to generate embedding: {e}'
-                    return
-
-                embedding_generation_ms = (
-                    (time_module.time() - embedding_start_time) * 1000 if explain_query else 0.0
+                results, stats = await _semantic_search_raw(
+                    query=query,
+                    limit=over_fetch_limit,
+                    offset=0,
+                    thread_id=thread_id,
+                    source=source,
+                    content_type=content_type,
+                    tags=tags,
+                    start_date=start_date,
+                    end_date=end_date,
+                    metadata=metadata,
+                    metadata_filters=metadata_filters,
+                    explain_query=explain_query,
                 )
-
-                from app.repositories.embedding_repository import MetadataFilterValidationError
-
-                try:
-                    # Unpack tuple; stats will be captured for explain_query
-                    results, search_stats = await repos.embeddings.search(
-                        query_embedding=query_embedding,
-                        limit=over_fetch_limit,
-                        offset=0,
-                        thread_id=thread_id,
-                        source=source,
-                        content_type=content_type,
-                        tags=tags,
-                        start_date=start_date,
-                        end_date=end_date,
-                        metadata=metadata,
-                        metadata_filters=metadata_filters,
-                        explain_query=explain_query,
-                    )
-                    semantic_results = results
-
-                    # Build semantic stats with embedding generation time
-                    if explain_query:
-                        semantic_stats = {
-                            'execution_time_ms': round(search_stats.get('execution_time_ms', 0.0), 2),
-                            'embedding_generation_ms': round(embedding_generation_ms, 2),
-                            'filters_applied': search_stats.get('filters_applied', 0),
-                            'rows_returned': search_stats.get('rows_returned', 0),
-                            'backend': search_stats.get('backend', 'unknown'),
-                            'query_plan': search_stats.get('query_plan'),
-                        }
-                except MetadataFilterValidationError as e:
-                    semantic_error = str(e.message)
-                except Exception as e:
-                    semantic_error = str(e)
+                semantic_results = results
+                if explain_query:
+                    semantic_stats = stats
+            except ToolError as e:
+                semantic_error = str(e)
             except Exception as e:
                 semantic_error = str(e)
 
@@ -869,21 +1074,31 @@ async def hybrid_search_context(
                 except (json.JSONDecodeError, ValueError, AttributeError):
                     result['metadata'] = None
 
-        # Fuse results using RRF
-        # Over-fetch to handle offset, then apply offset after fusion
+        # Fuse results using RRF (no reranking yet - Layer 1 results only)
+        # Get more than needed for reranking
+        fused_limit_for_reranking = (limit + offset) * (
+            settings.reranking.overfetch if reranking_provider is not None and settings.reranking.enabled else 1
+        )
         fused_results = reciprocal_rank_fusion(
             fts_results=fts_results,
             semantic_results=semantic_results,
             k=effective_rrf_k,
-            limit=limit + offset,  # Over-fetch to handle offset
+            limit=fused_limit_for_reranking,
         )
 
-        # Apply offset after fusion
-        fused_results = fused_results[offset:]
-
-        # Enrich results with tags and optionally images (cast to Any for mutation compatibility)
+        # Apply reranking (Layer 3 - single reranking after fusion)
         fused_results_any: list[dict[str, Any]] = cast(list[dict[str, Any]], fused_results)
-        for result in fused_results_any:
+        reranked_results = await _apply_reranking(
+            query=query,
+            results=fused_results_any,
+            limit=limit + offset,  # Get enough for offset + limit
+        )
+
+        # Apply offset after reranking
+        final_results = reranked_results[offset:][:limit]
+
+        # Enrich results with tags and optionally images
+        for result in final_results:
             context_id = result.get('id')
             if context_id:
                 tags_result = await repos.tags.get_tags_for_context(int(context_id))
@@ -896,15 +1111,15 @@ async def hybrid_search_context(
                 result['tags'] = []
 
         logger.info(
-            f'Hybrid search found {len(fused_results_any)} results for query: "{query[:50]}..." '
+            f'Hybrid search found {len(final_results)} results for query: "{query[:50]}..." '
             f'(fts={len(fts_results)}, semantic={len(semantic_results)}, modes={modes_used})',
         )
 
         # Build response
         response: dict[str, Any] = {
             'query': query,
-            'results': fused_results_any,
-            'count': len(fused_results_any),
+            'results': final_results,
+            'count': len(final_results),
             'fusion_method': fusion_method,
             'search_modes_used': modes_used,
             'fts_count': len(fts_results),

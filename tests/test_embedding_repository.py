@@ -240,7 +240,7 @@ class TestEmbeddingRepository:
 
         # Update embedding
         new_embedding = [0.5] * embedding_dim
-        await embedding_repo.update(context_id, new_embedding)
+        await embedding_repo.update(context_id, [new_embedding], model='test-model')
 
         # Verify update by searching
         results, _ = await embedding_repo.search(

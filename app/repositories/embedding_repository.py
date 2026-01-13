@@ -77,14 +77,46 @@ class EmbeddingRepository(BaseRepository):
     ) -> None:
         """Store embedding for a context entry.
 
+        This is a convenience method for storing a single embedding. It uses the chunked
+        storage architecture internally, creating a single-chunk entry for compatibility
+        with the 1:N embedding schema.
+
         Args:
             context_id: ID of the context entry
             embedding: Embedding vector (dimension depends on provider/model configuration)
             model: Model identifier (from settings.embedding.model)
         """
+        # Delegate to store_chunked with single embedding for unified storage logic
+        await self.store_chunked(context_id, [embedding], model)
+        logger.debug(f'Stored embedding for context {context_id}')
+
+    async def store_chunked(
+        self,
+        context_id: int,
+        embeddings: list[list[float]],
+        model: str,
+    ) -> None:
+        """Store multiple chunk embeddings for a context entry atomically.
+
+        This method replaces store() for chunked content. All embeddings are
+        stored in a single transaction - either all succeed or all fail.
+
+        Args:
+            context_id: ID of the context entry
+            embeddings: List of embedding vectors (one per chunk)
+            model: Model identifier (from settings.embedding.model)
+
+        Raises:
+            ValueError: If embeddings list is empty
+        """
+        if not embeddings:
+            raise ValueError('embeddings list cannot be empty')
+
+        chunk_count = len(embeddings)
+
         if self.backend.backend_type == 'sqlite':
 
-            def _store_sqlite(conn: sqlite3.Connection) -> None:
+            def _store_chunked_sqlite(conn: sqlite3.Connection) -> None:
                 try:
                     import sqlite_vec
                 except ImportError as e:
@@ -93,44 +125,137 @@ class EmbeddingRepository(BaseRepository):
                         'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
                     ) from e
 
-                embedding_blob: bytes = cast(Any, sqlite_vec).serialize_float32(embedding)
-                query1 = (
-                    f'INSERT INTO vec_context_embeddings(rowid, embedding) '
-                    f'VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
-                )
-                conn.execute(query1, (context_id, embedding_blob))
+                # Step 1: Get next available rowid for vec0 virtual table
+                cursor = conn.execute('SELECT COALESCE(MAX(rowid), 0) + 1 FROM vec_context_embeddings')
+                next_rowid = cursor.fetchone()[0]
 
-                query2 = (
-                    f'INSERT INTO embedding_metadata (context_id, model_name, dimensions, created_at, updated_at) '
-                    f'VALUES ({self._placeholder(1)}, {self._placeholder(2)}, {self._placeholder(3)}, '
-                    f'CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
-                )
-                conn.execute(query2, (context_id, model, len(embedding)))
+                vec_rowids: list[int] = []
+                for i, embedding in enumerate(embeddings):
+                    vec_rowid = next_rowid + i
+                    embedding_blob: bytes = cast(Any, sqlite_vec).serialize_float32(embedding)
+                    conn.execute(
+                        'INSERT INTO vec_context_embeddings(rowid, embedding) VALUES (?, ?)',
+                        (vec_rowid, embedding_blob),
+                    )
+                    vec_rowids.append(vec_rowid)
 
-            await self.backend.execute_write(_store_sqlite)
-            logger.debug(f'Stored embedding for context {context_id} (SQLite)')
+                # Step 2: Insert mapping records into embedding_chunks
+                for vec_rowid in vec_rowids:
+                    conn.execute(
+                        'INSERT INTO embedding_chunks(context_id, vec_rowid) VALUES (?, ?)',
+                        (context_id, vec_rowid),
+                    )
+
+                # Step 3: Insert embedding_metadata with chunk_count
+                conn.execute(
+                    '''INSERT INTO embedding_metadata (context_id, model_name, dimensions, chunk_count, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
+                    (context_id, model, len(embeddings[0]), chunk_count),
+                )
+
+            await self.backend.execute_write(_store_chunked_sqlite)
+            logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (SQLite)')
 
         else:  # postgresql
 
-            async def _store_postgresql(conn: asyncpg.Connection) -> None:
-                # Insert into vec_context_embeddings
-                query1 = (
-                    f'INSERT INTO vec_context_embeddings(context_id, embedding) '
-                    f'VALUES ({self._placeholder(1)}, {self._placeholder(2)})'
-                )
-                await conn.execute(query1, context_id, embedding)
+            async def _store_chunked_postgresql(conn: asyncpg.Connection) -> None:
+                # Step 1: Insert all embeddings into vec_context_embeddings
+                # PostgreSQL uses id BIGSERIAL, context_id can repeat (1:N)
+                for embedding in embeddings:
+                    await conn.execute(
+                        'INSERT INTO vec_context_embeddings(context_id, embedding) VALUES ($1, $2)',
+                        context_id, embedding,
+                    )
 
-                # Insert into embedding_metadata
-                query2 = (
-                    f'INSERT INTO embedding_metadata (context_id, model_name, dimensions, created_at, updated_at) '
-                    f'VALUES ({self._placeholder(1)}, {self._placeholder(2)}, {self._placeholder(3)}, '
-                    f'CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+                # Step 2: Insert embedding_metadata with chunk_count
+                await conn.execute(
+                    '''INSERT INTO embedding_metadata (context_id, model_name, dimensions, chunk_count, created_at, updated_at)
+                       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
+                    context_id, model, len(embeddings[0]), chunk_count,
                 )
-                await conn.execute(query2, context_id, model, len(embedding))
-                return
 
-            await self.backend.execute_write(cast(Any, _store_postgresql))
-            logger.debug(f'Stored embedding for context {context_id} (PostgreSQL)')
+            await self.backend.execute_write(cast(Any, _store_chunked_postgresql))
+            logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (PostgreSQL)')
+
+    async def delete_all_chunks(self, context_id: int) -> int:
+        """Delete all chunk embeddings for a context entry.
+
+        Used before re-embedding when content is updated.
+        For SQLite, also cleans up embedding_chunks mapping table.
+
+        Args:
+            context_id: ID of the context entry
+
+        Returns:
+            Number of chunk embeddings deleted
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _delete_all_chunks_sqlite(conn: sqlite3.Connection) -> int:
+                # Step 1: Get vec_rowids from embedding_chunks
+                cursor = conn.execute(
+                    'SELECT vec_rowid FROM embedding_chunks WHERE context_id = ?',
+                    (context_id,),
+                )
+                vec_rowids = [row[0] for row in cursor.fetchall()]
+
+                if not vec_rowids:
+                    return 0
+
+                # Step 2: Delete from vec_context_embeddings (virtual table)
+                for vec_rowid in vec_rowids:
+                    conn.execute(
+                        'DELETE FROM vec_context_embeddings WHERE rowid = ?',
+                        (vec_rowid,),
+                    )
+
+                # Step 3: Delete from embedding_chunks
+                conn.execute(
+                    'DELETE FROM embedding_chunks WHERE context_id = ?',
+                    (context_id,),
+                )
+
+                # Step 4: Delete from embedding_metadata
+                conn.execute(
+                    'DELETE FROM embedding_metadata WHERE context_id = ?',
+                    (context_id,),
+                )
+
+                return len(vec_rowids)
+
+            deleted_count = await self.backend.execute_write(_delete_all_chunks_sqlite)
+            logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (SQLite)')
+            return deleted_count
+
+        # postgresql
+
+        async def _delete_all_chunks_postgresql(conn: asyncpg.Connection) -> int:
+            # Step 1: Count chunks before delete
+            count: int = await conn.fetchval(
+                'SELECT COUNT(*) FROM vec_context_embeddings WHERE context_id = $1',
+                context_id,
+            )
+
+            if count == 0:
+                return 0
+
+            # Step 2: Delete from vec_context_embeddings
+            await conn.execute(
+                'DELETE FROM vec_context_embeddings WHERE context_id = $1',
+                context_id,
+            )
+
+            # Step 3: Delete from embedding_metadata
+            await conn.execute(
+                'DELETE FROM embedding_metadata WHERE context_id = $1',
+                context_id,
+            )
+
+            return count
+
+        deleted_count = await self.backend.execute_write(cast(Any, _delete_all_chunks_postgresql))
+        logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (PostgreSQL)')
+        return deleted_count
 
     async def search(
         self,
@@ -292,11 +417,28 @@ class EmbeddingRepository(BaseRepository):
 
                 where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
+                # Use CTE with deduplication by context_id using MIN(distance) for max pooling
+                # This handles 1:N chunked embeddings - returns best chunk distance per document
                 query = f'''
                     WITH filtered_contexts AS (
                         SELECT id
                         FROM context_entries
                         {where_clause}
+                    ),
+                    chunk_distances AS (
+                        SELECT
+                            ec.context_id,
+                            vec_distance_l2(?, ve.embedding) as distance
+                        FROM filtered_contexts fc
+                        JOIN embedding_chunks ec ON ec.context_id = fc.id
+                        JOIN vec_context_embeddings ve ON ve.rowid = ec.vec_rowid
+                    ),
+                    best_chunks AS (
+                        SELECT
+                            context_id,
+                            MIN(distance) as best_distance
+                        FROM chunk_distances
+                        GROUP BY context_id
                     )
                     SELECT
                         ce.id,
@@ -307,11 +449,10 @@ class EmbeddingRepository(BaseRepository):
                         ce.metadata,
                         ce.created_at,
                         ce.updated_at,
-                        vec_distance_l2(?, ve.embedding) as distance
-                    FROM filtered_contexts fc
-                    JOIN context_entries ce ON ce.id = fc.id
-                    JOIN vec_context_embeddings ve ON ve.rowid = fc.id
-                    ORDER BY distance
+                        bc.best_distance as distance
+                    FROM best_chunks bc
+                    JOIN context_entries ce ON ce.id = bc.context_id
+                    ORDER BY bc.best_distance
                     LIMIT ? OFFSET ?
                 '''
 
@@ -476,8 +617,24 @@ class EmbeddingRepository(BaseRepository):
 
             where_clause = ' AND '.join(filter_conditions)
 
-            # Use <-> operator for L2 distance (Euclidean)
+            # Use CTE with deduplication by context_id using MIN(distance) for max pooling
+            # This handles 1:N chunked embeddings - returns best chunk distance per document
             query = f'''
+                    WITH chunk_distances AS (
+                        SELECT
+                            ve.context_id,
+                            ve.embedding <-> {self._placeholder(1)} as distance
+                        FROM vec_context_embeddings ve
+                        JOIN context_entries ce ON ce.id = ve.context_id
+                        WHERE {where_clause}
+                    ),
+                    best_chunks AS (
+                        SELECT
+                            context_id,
+                            MIN(distance) as best_distance
+                        FROM chunk_distances
+                        GROUP BY context_id
+                    )
                     SELECT
                         ce.id,
                         ce.thread_id,
@@ -487,11 +644,10 @@ class EmbeddingRepository(BaseRepository):
                         ce.metadata,
                         ce.created_at,
                         ce.updated_at,
-                        ve.embedding <-> {self._placeholder(1)} as distance
-                    FROM context_entries ce
-                    JOIN vec_context_embeddings ve ON ve.context_id = ce.id
-                    WHERE {where_clause}
-                    ORDER BY ve.embedding <-> {self._placeholder(1)}
+                        bc.best_distance as distance
+                    FROM best_chunks bc
+                    JOIN context_entries ce ON ce.id = bc.context_id
+                    ORDER BY bc.best_distance
                     LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 '''
 
@@ -519,85 +675,39 @@ class EmbeddingRepository(BaseRepository):
 
         return await self.backend.execute_read(_search_postgresql)
 
-    async def update(self, context_id: int, embedding: list[float]) -> None:
-        """Update embedding for a context entry.
+    async def update(
+        self,
+        context_id: int,
+        embeddings: list[list[float]],
+        model: str,
+    ) -> None:
+        """Update embeddings for a context entry (delete old, store new).
+
+        This method replaces all existing chunk embeddings with new ones atomically.
+        Uses delete-all + store-chunked pattern for consistency.
 
         Args:
             context_id: ID of the context entry
-            embedding: New embedding vector
+            embeddings: New embedding vectors (one per chunk)
+            model: Model identifier
         """
-        if self.backend.backend_type == 'sqlite':
+        # Delete existing chunks
+        await self.delete_all_chunks(context_id)
 
-            def _update_sqlite(conn: sqlite3.Connection) -> None:
-                try:
-                    import sqlite_vec
-                except ImportError as e:
-                    raise RuntimeError(
-                        'sqlite_vec package is required for semantic search. '
-                        'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
-                    ) from e
+        # Store new chunks
+        await self.store_chunked(context_id, embeddings, model)
 
-                embedding_blob: bytes = cast(Any, sqlite_vec).serialize_float32(embedding)
-                query1 = (
-                    f'UPDATE vec_context_embeddings SET embedding = {self._placeholder(1)} '
-                    f'WHERE rowid = {self._placeholder(2)}'
-                )
-                conn.execute(query1, (embedding_blob, context_id))
-
-                query2 = (
-                    f'UPDATE embedding_metadata SET updated_at = CURRENT_TIMESTAMP WHERE context_id = {self._placeholder(1)}'
-                )
-                conn.execute(query2, (context_id,))
-
-            await self.backend.execute_write(_update_sqlite)
-            logger.debug(f'Updated embedding for context {context_id} (SQLite)')
-
-        else:  # postgresql
-
-            async def _update_postgresql(conn: asyncpg.Connection) -> None:
-                # Update vec_context_embeddings
-                query1 = (
-                    f'UPDATE vec_context_embeddings SET embedding = {self._placeholder(1)} '
-                    f'WHERE context_id = {self._placeholder(2)}'
-                )
-                await conn.execute(query1, embedding, context_id)
-
-                # Update timestamp in embedding_metadata (trigger handles updated_at)
-                query2 = (
-                    f'UPDATE embedding_metadata SET updated_at = CURRENT_TIMESTAMP WHERE context_id = {self._placeholder(1)}'
-                )
-                await conn.execute(query2, context_id)
-
-            await self.backend.execute_write(cast(Any, _update_postgresql))
-            logger.debug(f'Updated embedding for context {context_id} (PostgreSQL)')
+        logger.debug(f'Updated {len(embeddings)} embeddings for context {context_id}')
 
     async def delete(self, context_id: int) -> None:
-        """Delete embedding for a context entry.
+        """Delete all embeddings for a context entry.
+
+        Delegates to delete_all_chunks() for proper cleanup of chunked embeddings.
 
         Args:
             context_id: ID of the context entry
         """
-        if self.backend.backend_type == 'sqlite':
-
-            def _delete_sqlite(conn: sqlite3.Connection) -> None:
-                query1 = f'DELETE FROM vec_context_embeddings WHERE rowid = {self._placeholder(1)}'
-                conn.execute(query1, (context_id,))
-
-                query2 = f'DELETE FROM embedding_metadata WHERE context_id = {self._placeholder(1)}'
-                conn.execute(query2, (context_id,))
-
-            await self.backend.execute_write(_delete_sqlite)
-            logger.debug(f'Deleted embedding for context {context_id} (SQLite)')
-
-        else:  # postgresql
-
-            async def _delete_postgresql(conn: asyncpg.Connection) -> None:
-                # Delete from vec_context_embeddings (CASCADE will delete from embedding_metadata)
-                query = f'DELETE FROM vec_context_embeddings WHERE context_id = {self._placeholder(1)}'
-                await conn.execute(query, context_id)
-
-            await self.backend.execute_write(cast(Any, _delete_postgresql))
-            logger.debug(f'Deleted embedding for context {context_id} (PostgreSQL)')
+        await self.delete_all_chunks(context_id)
 
     async def exists(self, context_id: int) -> bool:
         """Check if embedding exists for context entry.
@@ -626,13 +736,13 @@ class EmbeddingRepository(BaseRepository):
         return await self.backend.execute_read(_exists_postgresql)
 
     async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:
-        """Get embedding statistics.
+        """Get embedding statistics including chunk information.
 
         Args:
             thread_id: Optional filter by thread
 
         Returns:
-            Dictionary with statistics (count, coverage, etc.)
+            Dictionary with statistics (count, coverage, chunk info, etc.)
         """
         if self.backend.backend_type == 'sqlite':
 
@@ -658,11 +768,28 @@ class EmbeddingRepository(BaseRepository):
 
                 embedding_count = cursor.fetchone()[0]
 
+                # Get total chunk count from embedding_chunks table
+                if thread_id:
+                    query3 = f'''
+                        SELECT COUNT(*)
+                        FROM embedding_chunks ec
+                        JOIN context_entries ce ON ec.context_id = ce.id
+                        WHERE ce.thread_id = {self._placeholder(1)}
+                    '''
+                    cursor = conn.execute(query3, (thread_id,))
+                else:
+                    cursor = conn.execute('SELECT COUNT(*) FROM embedding_chunks')
+
+                total_chunks = cursor.fetchone()[0]
+
                 coverage_percentage = (embedding_count / total_entries * 100) if total_entries > 0 else 0.0
+                average_chunks = round(total_chunks / embedding_count, 2) if embedding_count > 0 else 0.0
 
                 return {
                     'total_embeddings': embedding_count,
                     'total_entries': total_entries,
+                    'total_chunks': total_chunks,
+                    'average_chunks_per_entry': average_chunks,
                     'coverage_percentage': round(coverage_percentage, 2),
                     'backend': 'sqlite',
                 }
@@ -688,11 +815,26 @@ class EmbeddingRepository(BaseRepository):
             else:
                 embedding_count = await conn.fetchval('SELECT COUNT(*) FROM embedding_metadata')
 
+            # Get total chunk count from vec_context_embeddings (1:N relationship)
+            if thread_id:
+                query3 = f'''
+                        SELECT COUNT(*)
+                        FROM vec_context_embeddings ve
+                        JOIN context_entries ce ON ve.context_id = ce.id
+                        WHERE ce.thread_id = {self._placeholder(1)}
+                    '''
+                total_chunks = await conn.fetchval(query3, thread_id)
+            else:
+                total_chunks = await conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings')
+
             coverage_percentage = (embedding_count / total_entries * 100) if total_entries > 0 else 0.0
+            average_chunks = round(total_chunks / embedding_count, 2) if embedding_count > 0 else 0.0
 
             return {
                 'total_embeddings': embedding_count,
                 'total_entries': total_entries,
+                'total_chunks': total_chunks,
+                'average_chunks_per_entry': average_chunks,
                 'coverage_percentage': round(coverage_percentage, 2),
                 'backend': 'postgresql',
             }

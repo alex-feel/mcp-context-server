@@ -262,6 +262,8 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `ENABLE_SEMANTIC_SEARCH` | `true`  | Enable vector similarity search       |
 | `ENABLE_FTS`             | `true`  | Enable full-text search               |
 | `ENABLE_HYBRID_SEARCH`   | `true`  | Enable combined FTS + semantic search |
+| `ENABLE_CHUNKING`        | `true`  | Enable text chunking for embeddings   |
+| `ENABLE_RERANKING`       | `true`  | Enable cross-encoder reranking        |
 
 **Embedding Settings (Ollama):**
 
@@ -307,6 +309,27 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `METADATA_INDEX_SYNC_MODE` | `additive`              | Index sync mode: `strict`, `auto`, `warn`, `additive`    |
 
 See the [Metadata Guide](../metadata-addition-updating-and-filtering.md#environment-variables) for full details on configurable metadata indexing.
+
+**Chunking and Reranking:**
+
+Text chunking and cross-encoder reranking are enabled by default to improve search quality. These features work automatically without configuration.
+
+| Variable           | Default                   | Description                                     |
+|--------------------|---------------------------|-------------------------------------------------|
+| `ENABLE_CHUNKING`  | `true`                    | Text chunking for long document embedding       |
+| `CHUNK_SIZE`       | `1000`                    | Target chunk size in characters                 |
+| `ENABLE_RERANKING` | `true`                    | Cross-encoder result reranking                  |
+| `RERANKING_MODEL`  | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB, downloads on first use) |
+
+To disable these features, set the environment variables to `false` in your Docker Compose file:
+
+```yaml
+environment:
+  - ENABLE_CHUNKING=false
+  - ENABLE_RERANKING=false
+```
+
+For more configuration options, see [Text Chunking](../semantic-search.md#text-chunking) and [Cross-Encoder Reranking](../semantic-search.md#cross-encoder-reranking).
 
 ### External PostgreSQL Configuration
 

@@ -121,7 +121,7 @@ Ollama runs embedding models locally with no API costs.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "ollama",
@@ -133,6 +133,8 @@ Ollama runs embedding models locally with no API costs.
   }
 }
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 #### Environment Variables
 
@@ -175,7 +177,7 @@ OpenAI provides high-quality embeddings via API.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "openai",
@@ -187,6 +189,8 @@ OpenAI provides high-quality embeddings via API.
   }
 }
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 #### Environment Variables
 
@@ -235,7 +239,7 @@ Azure OpenAI provides enterprise-grade embeddings with compliance features.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-azure]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-azure,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "azure",
@@ -250,6 +254,8 @@ Azure OpenAI provides enterprise-grade embeddings with compliance features.
   }
 }
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 #### Environment Variables
 
@@ -284,7 +290,7 @@ HuggingFace provides access to open-source embedding models.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-huggingface]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-huggingface,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "huggingface",
@@ -296,6 +302,8 @@ HuggingFace provides access to open-source embedding models.
   }
 }
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 #### Environment Variables
 
@@ -336,7 +344,7 @@ Voyage AI specializes in RAG-optimized embeddings with long context support.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-voyage]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-voyage,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "voyage",
@@ -348,6 +356,8 @@ Voyage AI specializes in RAG-optimized embeddings with long context support.
   }
 }
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 #### Environment Variables
 
@@ -412,6 +422,91 @@ LangSmith provides observability for embedding operations, including:
 2. Select your project
 3. View embedding operations with timing and cost data
 
+## Text Chunking
+
+Text chunking splits long context entries into smaller chunks for embedding generation. This improves semantic search quality for long documents by ensuring each chunk fits within the embedding model's optimal context window.
+
+**Key point:** Chunking is enabled by default. No configuration is required.
+
+### Configuration
+
+| Variable                | Default | Description                                                                       |
+|-------------------------|---------|-----------------------------------------------------------------------------------|
+| `ENABLE_CHUNKING`       | `true`  | Enable text chunking for embedding generation                                     |
+| `CHUNK_SIZE`            | `1000`  | Target chunk size in characters                                                   |
+| `CHUNK_OVERLAP`         | `100`   | Overlap between consecutive chunks                                                |
+| `CHUNK_AGGREGATION`     | `max`   | How to aggregate chunk scores (only 'max' supported; avg, sum planned for future) |
+| `CHUNK_DEDUP_OVERFETCH` | `5`     | Multiplier for over-fetching chunks before deduplication                          |
+
+### How It Works
+
+1. **Text Splitting**: Long text is split using RecursiveCharacterTextSplitter with separators: `['\n\n', '\n', '. ', ' ', '']`
+2. **Embedding Generation**: Each chunk is embedded independently
+3. **Storage**: Multiple embeddings stored per context entry (1:N relationship)
+4. **Search Deduplication**: Results are deduplicated by context_id using the configured aggregation method
+
+### Aggregation Methods
+
+Currently only `max` aggregation is supported. The `avg` and `sum` methods will be added in a future release.
+
+### When to Adjust Settings
+
+- **Increase CHUNK_SIZE**: For documents with long cohesive sections
+- **Increase CHUNK_OVERLAP**: To preserve context across chunk boundaries
+
+## Cross-Encoder Reranking
+
+Reranking uses a cross-encoder model (FlashRank) to improve search result precision by re-scoring candidates using the full query-document context.
+
+**Key point:** Reranking is enabled by default. The FlashRank model (~34MB) downloads automatically on first use.
+
+### Installation
+
+Reranking requires the `reranking` extra which contains the `flashrank` package:
+
+```bash
+# For local development
+uv sync --extra reranking
+
+# For uvx (combined with embeddings, e.g., Ollama)
+uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
+```
+
+**Important:** Since `ENABLE_RERANKING=true` by default, you must install the `reranking` extra for the server to start successfully. To run without reranking, set `ENABLE_RERANKING=false`.
+
+### Configuration
+
+| Variable               | Default                   | Description                                   |
+|------------------------|---------------------------|-----------------------------------------------|
+| `ENABLE_RERANKING`     | `true`                    | Enable cross-encoder reranking                |
+| `RERANKING_PROVIDER`   | `flashrank`               | Reranking provider name                       |
+| `RERANKING_MODEL`      | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB)                       |
+| `RERANKING_MAX_LENGTH` | `512`                     | Maximum input length in tokens                |
+| `RERANKING_OVERFETCH`  | `4`                       | Multiplier for over-fetching before reranking |
+| `RERANKING_CACHE_DIR`  | None                      | Custom cache directory for model files        |
+
+### How It Works
+
+1. **Over-fetching**: Search retrieves `limit * RERANKING_OVERFETCH` candidates
+2. **Cross-Encoder Scoring**: FlashRank scores each candidate against the query
+3. **Re-ordering**: Results sorted by cross-encoder score (higher = more relevant)
+4. **Limiting**: Top `limit` results returned
+
+### Available Models
+
+| Model                               | Size | Notes                          |
+|-------------------------------------|------|--------------------------------|
+| `ms-marco-MiniLM-L-12-v2` (default) | 34MB | Fast, good quality             |
+| `ms-marco-MiniLM-L-6-v2`            | 23MB | Faster, slightly lower quality |
+| `rank_zephyr_7b_v1_full`            | 14GB | Highest quality, requires GPU  |
+
+### Performance Considerations
+
+- **First Request**: Model downloads on first use (~34MB for default model)
+- **Latency**: Adds 20-100ms per search depending on candidate count
+- **Memory**: ~200MB RAM for default model
+- **Cache**: Model cached in `~/.cache/flashrank/` by default
+
 ## Common Configuration Settings
 
 ### Timeout and Retry Settings
@@ -432,7 +527,7 @@ All providers support these settings:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "openai",

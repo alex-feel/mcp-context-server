@@ -70,7 +70,9 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         total_tags (int), database_size_mb (float), connection_metrics (dict),
         semantic_search (dict with enabled, available, model, dimensions, embedding_count,
         coverage_percentage), fts (dict with enabled, available, language, backend,
-        engine, indexed_entries, coverage_percentage).
+        engine, indexed_entries, coverage_percentage), chunking (dict with enabled,
+        chunk_size, chunk_overlap, aggregation), reranking (dict with enabled,
+        available, provider, model).
 
     Raises:
         ToolError: If retrieving statistics fails.
@@ -95,13 +97,16 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         if settings.enable_semantic_search:
             if get_embedding_provider() is not None:
                 embedding_stats = await repos.embeddings.get_statistics()
+                logger.debug(f'[STATISTICS] Embedding repository stats: {embedding_stats}')
                 stats['semantic_search'] = {
                     'enabled': True,
                     'available': True,
                     'backend': embedding_stats['backend'],
                     'model': settings.embedding.model,
                     'dimensions': settings.embedding.dim,
-                    'embedding_count': embedding_stats['total_embeddings'],
+                    'context_count': embedding_stats['total_embeddings'],
+                    'embedding_count': embedding_stats['total_chunks'],
+                    'average_chunks_per_entry': embedding_stats['average_chunks_per_entry'],
                     'coverage_percentage': embedding_stats['coverage_percentage'],
                 }
             else:
@@ -138,6 +143,41 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
                 }
         else:
             stats['fts'] = {
+                'enabled': False,
+                'available': False,
+            }
+
+        # Add chunking configuration with runtime availability check
+        from app.startup import get_chunking_service
+        chunking_service = get_chunking_service()
+        stats['chunking'] = {
+            'enabled': settings.chunking.enabled,
+            'available': chunking_service is not None and chunking_service.is_enabled,
+            'chunk_size': settings.chunking.size,
+            'chunk_overlap': settings.chunking.overlap,
+            'aggregation': settings.chunking.aggregation,
+        }
+
+        # Add reranking configuration
+        from app.startup import get_reranking_provider
+
+        reranking_provider = get_reranking_provider()
+        if settings.reranking.enabled:
+            if reranking_provider is not None:
+                stats['reranking'] = {
+                    'enabled': True,
+                    'available': True,
+                    'provider': settings.reranking.provider,
+                    'model': settings.reranking.model,
+                }
+            else:
+                stats['reranking'] = {
+                    'enabled': True,
+                    'available': False,
+                    'message': 'Reranking provider not initialized',
+                }
+        else:
+            stats['reranking'] = {
                 'enabled': False,
                 'available': False,
             }

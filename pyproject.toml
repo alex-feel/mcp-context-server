@@ -39,6 +39,7 @@ embeddings-ollama = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-ollama>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
     "langsmith>=0.4.0",
 ]
 embeddings-openai = [
@@ -46,6 +47,7 @@ embeddings-openai = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-openai>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
     "langsmith>=0.4.0",
 ]
 embeddings-azure = [
@@ -53,6 +55,7 @@ embeddings-azure = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-openai>=0.3.0",  # Azure uses same package as OpenAI
+    "langchain-text-splitters>=0.3.0",
     "langsmith>=0.4.0",
 ]
 embeddings-huggingface = [
@@ -60,6 +63,7 @@ embeddings-huggingface = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-huggingface>=0.2.0",
+    "langchain-text-splitters>=0.3.0",
     "langsmith>=0.4.0",
 ]
 embeddings-voyage = [
@@ -67,6 +71,7 @@ embeddings-voyage = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-voyageai>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
     "langsmith>=0.4.0",
 ]
 
@@ -79,7 +84,19 @@ embeddings-all = [
     "langchain-openai>=0.3.0",
     "langchain-huggingface>=0.2.0",
     "langchain-voyageai>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
     "langsmith>=0.4.0",
+]
+
+# Reranking providers
+reranking = [
+    "flashrank>=0.2.0",
+]
+
+# Convenience: all search quality improvements
+search-quality = [
+    "langchain-text-splitters>=0.3.0",
+    "flashrank>=0.2.0",
 ]
 
 [dependency-groups]
@@ -247,7 +264,7 @@ disallow_any_explicit = false
 module = ['migrations.*']
 ignore_errors = true
 
-# Handle optional dependencies for semantic search
+# Handle optional dependencies for semantic search, chunking, and reranking
 [[tool.mypy.overrides]]
 module = [
   'sqlite_vec',
@@ -258,6 +275,10 @@ module = [
   'langchain_huggingface',
   'langchain_voyageai',
   'langchain_ollama',
+  'langchain_text_splitters',
+  'langchain_text_splitters.*',
+  'flashrank',
+  'flashrank.*',
 ]
 ignore_missing_imports = true
 follow_imports = 'skip'
@@ -283,6 +304,12 @@ reportMissingTypeStubs = false
 # Suppress optional dependency errors in app/embeddings/providers (langchain_*)
 [[tool.pyright.executionEnvironments]]
 root = "app/embeddings/providers"
+reportMissingImports = false
+reportUnknownVariableType = false
+reportAttributeAccessIssue = false
+
+[[tool.pyright.executionEnvironments]]
+root = "app/reranking/providers"
 reportMissingImports = false
 reportUnknownVariableType = false
 reportAttributeAccessIssue = false
@@ -332,6 +359,8 @@ markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow tests (deselect with '-m \"not slow\"')",
     "performance: marks tests as performance tests",
+    "requires_chunking: marks tests requiring langchain-text-splitters",
+    "requires_flashrank: marks tests requiring flashrank",
 ]
 
 [tool.coverage.run]

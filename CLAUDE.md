@@ -413,6 +413,25 @@ Configuration via `.env` file or environment:
 **Hybrid Search Settings:**
 - `ENABLE_HYBRID_SEARCH`: Enable hybrid search combining FTS and semantic with RRF fusion (default: false)
 - `HYBRID_RRF_K`: RRF smoothing constant for result fusion (default: 60)
+- `HYBRID_RRF_OVERFETCH`: Multiplier for over-fetching before RRF fusion (default: 2)
+
+**Chunking Settings** (for improved semantic search on long documents):
+- `ENABLE_CHUNKING`: Enable text chunking for embedding generation (default: true)
+- `CHUNK_SIZE`: Target chunk size in characters (default: 1000)
+- `CHUNK_OVERLAP`: Overlap between chunks in characters (default: 100)
+- `CHUNK_AGGREGATION`: How to aggregate chunk scores (default: max; only 'max' supported in current version)
+- `CHUNK_DEDUP_OVERFETCH`: Multiplier for fetching extra chunks before deduplication (default: 5)
+
+**Reranking Settings** (for improved search precision):
+- `ENABLE_RERANKING`: Enable cross-encoder reranking (default: true)
+- `RERANKING_PROVIDER`: Reranking provider - `flashrank` (default)
+- `RERANKING_MODEL`: Model name (default: ms-marco-MiniLM-L-12-v2, 34MB)
+- `RERANKING_MAX_LENGTH`: Maximum input length in tokens (default: 512)
+- `RERANKING_OVERFETCH`: Multiplier for over-fetching before reranking (default: 4x)
+- `RERANKING_CACHE_DIR`: Custom cache directory for model files
+
+**Additional Search Settings:**
+- `SEARCH_DEFAULT_SORT_BY`: Default sort order (default: relevance; only 'relevance' supported in current version)
 
 **Metadata Indexing Settings:**
 - `METADATA_INDEXED_FIELDS`: Comma-separated list of metadata fields to index with optional type hints.
@@ -621,6 +640,8 @@ uv run python -c "from app.server import init_database, _backend; init_database(
    - `AuthSettings`: Authentication settings (tokens, client IDs)
    - `EmbeddingSettings`: Embedding provider configuration (provider selection, API keys, model settings)
    - `LangSmithSettings`: LangSmith tracing configuration (optional observability)
+   - `ChunkingSettings`: Text chunking configuration for semantic search
+   - `RerankingSettings`: Cross-encoder reranking configuration
 4. **Use `Field(alias='ENV_VAR_NAME')`** to map settings attributes to environment variable names
 5. **Update `server.json`** when adding new environment variables (for MCP registry)
 

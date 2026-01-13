@@ -5,11 +5,13 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from typing import Self
 
 from dotenv import find_dotenv
 from pydantic import Field
 from pydantic import SecretStr
 from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
@@ -237,6 +239,99 @@ class LangSmithSettings(CommonSettings):
     )
 
 
+class ChunkingSettings(CommonSettings):
+    """Text chunking settings for semantic search.
+
+    Controls how long documents are split into smaller chunks for embedding.
+    Chunking improves semantic search quality for documents longer than ~500 tokens.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        alias='ENABLE_CHUNKING',
+        description='Enable text chunking for embedding generation',
+    )
+    size: int = Field(
+        default=1000,
+        alias='CHUNK_SIZE',
+        ge=100,
+        le=10000,
+        description='Target chunk size in characters (default: 1000)',
+    )
+    overlap: int = Field(
+        default=100,
+        alias='CHUNK_OVERLAP',
+        ge=0,
+        le=500,
+        description='Overlap between chunks in characters (default: 100)',
+    )
+    aggregation: Literal['max'] = Field(
+        default='max',
+        alias='CHUNK_AGGREGATION',
+        description='How to aggregate chunk scores (currently only max is supported; '
+                    'avg and sum will be added in future releases)',
+    )
+    dedup_overfetch: int = Field(
+        default=5,
+        alias='CHUNK_DEDUP_OVERFETCH',
+        ge=1,
+        le=20,
+        description='Multiplier for fetching extra chunks before deduplication (default: 5)',
+    )
+
+    @model_validator(mode='after')
+    def validate_overlap_less_than_size(self) -> Self:
+        """Ensure overlap is strictly less than chunk size."""
+        if self.overlap >= self.size:
+            raise ValueError(
+                f'CHUNK_OVERLAP ({self.overlap}) must be less than CHUNK_SIZE ({self.size})',
+            )
+        return self
+
+
+class RerankingSettings(CommonSettings):
+    """Cross-encoder reranking settings.
+
+    Reranking improves search precision by using a cross-encoder model
+    to re-score and reorder initial search results.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        alias='ENABLE_RERANKING',
+        description='Enable cross-encoder reranking of search results',
+    )
+    provider: str = Field(
+        default='flashrank',
+        alias='RERANKING_PROVIDER',
+        description='Reranking provider (default: flashrank)',
+    )
+    model: str = Field(
+        default='ms-marco-MiniLM-L-12-v2',
+        alias='RERANKING_MODEL',
+        description='Reranking model name (default: ms-marco-MiniLM-L-12-v2, 34MB)',
+    )
+    max_length: int = Field(
+        default=512,
+        alias='RERANKING_MAX_LENGTH',
+        ge=128,
+        le=2048,
+        description='Maximum input length for reranking (default: 512 tokens)',
+    )
+    overfetch: int = Field(
+        default=4,
+        alias='RERANKING_OVERFETCH',
+        ge=1,
+        le=20,
+        description='Multiplier for over-fetching results before reranking (default: 4x)',
+    )
+    cache_dir: str | None = Field(
+        default=None,
+        alias='RERANKING_CACHE_DIR',
+        description='Directory for caching reranking models (default: system cache)',
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage-related settings with environment variable mapping."""
 
@@ -443,6 +538,27 @@ class AppSettings(CommonSettings):
         le=1000,
         description='RRF smoothing constant for hybrid search (default 60)',
     )
+    hybrid_rrf_overfetch: int = Field(
+        default=2,
+        alias='HYBRID_RRF_OVERFETCH',
+        ge=1,
+        le=10,
+        description='Multiplier for over-fetching results before RRF fusion (default: 2x)',
+    )
+
+    # Search result sorting
+    search_default_sort_by: Literal['relevance'] = Field(
+        default='relevance',
+        alias='SEARCH_DEFAULT_SORT_BY',
+        description='Default sort order for search results (currently only relevance is supported; '
+                    'created_at and updated_at will be added in future releases)',
+    )
+
+    # Chunking settings (nested)
+    chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
+
+    # Reranking settings (nested)
+    reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
 
     # Transport settings
     transport: TransportSettings = Field(default_factory=lambda: TransportSettings())

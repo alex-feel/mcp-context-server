@@ -7,14 +7,17 @@ This package contains migration orchestration and all migration implementations:
 - semantic.py: Semantic search migrations (vector tables, jsonb_merge_patch)
 - fts.py: Full-text search migrations
 - metadata.py: Metadata field index management
+- chunking.py: 1:N embedding relationship migration
 
 SQL Files (resources):
 - add_semantic_search_*.sql: Vector table schemas
 - add_fts_*.sql: FTS table schemas
+- add_chunking_*.sql: 1:N embedding schema modifications
 - add_jsonb_merge_patch_postgresql.sql: PostgreSQL merge function
 - fix_function_search_path_postgresql.sql: Security fix
 """
 
+from app.migrations.chunking import apply_chunking_migration
 from app.migrations.dependencies import ProviderCheckResult
 from app.migrations.dependencies import check_provider_dependencies
 from app.migrations.dependencies import check_vector_storage_dependencies
@@ -48,4 +51,6 @@ __all__ = [
     'reset_fts_migration_status',
     # Metadata
     'handle_metadata_indexes',
+    # Chunking
+    'apply_chunking_migration',
 ]

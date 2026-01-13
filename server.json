@@ -410,6 +410,97 @@
           "name": "HYBRID_RRF_K"
         },
         {
+          "description": "Multiplier for over-fetching results before RRF fusion (default: 2)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_RRF_OVERFETCH"
+        },
+        {
+          "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SEARCH_DEFAULT_SORT_BY"
+        },
+        {
+          "description": "Enable text chunking for embedding generation (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_CHUNKING"
+        },
+        {
+          "description": "Target chunk size in characters (default: 1000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_SIZE"
+        },
+        {
+          "description": "Overlap between chunks in characters (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_OVERLAP"
+        },
+        {
+          "description": "Chunk score aggregation method: max (only 'max' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "CHUNK_AGGREGATION"
+        },
+        {
+          "description": "Multiplier for over-fetching chunks before deduplication (default: 5)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_DEDUP_OVERFETCH"
+        },
+        {
+          "description": "Enable cross-encoder reranking of search results (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_RERANKING"
+        },
+        {
+          "description": "Reranking provider (default: flashrank)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_PROVIDER"
+        },
+        {
+          "description": "Reranking model name (default: ms-marco-MiniLM-L-12-v2)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_MODEL"
+        },
+        {
+          "description": "Maximum input length for reranking in tokens (default: 512)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_MAX_LENGTH"
+        },
+        {
+          "description": "Multiplier for over-fetching results before reranking (default: 4)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_OVERFETCH"
+        },
+        {
+          "description": "Directory for caching reranking models",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_CACHE_DIR"
+        },
+        {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
           "isRequired": false,
           "format": "string",
@@ -1049,6 +1140,97 @@
           "format": "number",
           "isSecret": false,
           "name": "HYBRID_RRF_K"
+        },
+        {
+          "description": "Multiplier for over-fetching results before RRF fusion (default: 2)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_RRF_OVERFETCH"
+        },
+        {
+          "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SEARCH_DEFAULT_SORT_BY"
+        },
+        {
+          "description": "Enable text chunking for embedding generation (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_CHUNKING"
+        },
+        {
+          "description": "Target chunk size in characters (default: 1000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_SIZE"
+        },
+        {
+          "description": "Overlap between chunks in characters (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_OVERLAP"
+        },
+        {
+          "description": "Chunk score aggregation method: max (only 'max' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "CHUNK_AGGREGATION"
+        },
+        {
+          "description": "Multiplier for over-fetching chunks before deduplication (default: 5)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_DEDUP_OVERFETCH"
+        },
+        {
+          "description": "Enable cross-encoder reranking of search results (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_RERANKING"
+        },
+        {
+          "description": "Reranking provider (default: flashrank)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_PROVIDER"
+        },
+        {
+          "description": "Reranking model name (default: ms-marco-MiniLM-L-12-v2)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_MODEL"
+        },
+        {
+          "description": "Maximum input length for reranking in tokens (default: 512)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_MAX_LENGTH"
+        },
+        {
+          "description": "Multiplier for over-fetching results before reranking (default: 4)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_OVERFETCH"
+        },
+        {
+          "description": "Directory for caching reranking models",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_CACHE_DIR"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
