@@ -249,7 +249,8 @@ When hybrid search is enabled and at least one underlying search method is avail
         "fts_rank": 2,
         "semantic_rank": 1,
         "fts_score": 2.45,
-        "semantic_distance": 0.234
+        "semantic_distance": 0.234,
+        "rerank_score": 0.95
       }
     }
   ],
@@ -321,13 +322,14 @@ When `explain_query=True`, the response includes a `stats` object with detailed 
 
 Each result includes a `scores` object with detailed breakdown:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `rrf` | float | Combined RRF score (higher = better) |
-| `fts_rank` | int or null | Position in FTS results (1-based), null if not in FTS results |
-| `semantic_rank` | int or null | Position in semantic results (1-based), null if not in semantic results |
-| `fts_score` | float or null | Original FTS relevance score (BM25/ts_rank) |
-| `semantic_distance` | float or null | Original semantic distance (L2, lower = more similar) |
+| Field               | Type          | Description                                                                          |
+|---------------------|---------------|--------------------------------------------------------------------------------------|
+| `rrf`               | float         | Combined RRF score (higher = better)                                                 |
+| `fts_rank`          | int or null   | Position in FTS results (1-based), null if not in FTS results                        |
+| `semantic_rank`     | int or null   | Position in semantic results (1-based), null if not in semantic results              |
+| `fts_score`         | float or null | Original FTS relevance score (BM25/ts_rank)                                          |
+| `semantic_distance` | float or null | Original semantic distance (L2, lower = more similar)                                |
+| `rerank_score`      | float or null | Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled |
 
 **Interpreting null values:**
 

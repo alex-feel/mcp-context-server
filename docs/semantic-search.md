@@ -746,7 +746,11 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
       "id": 123,
       "thread_id": "thread-abc",
       "text_content": "matching context",
-      "distance": 0.234,
+      "scores": {
+        "semantic_distance": 0.234,
+        "semantic_rank": null,
+        "rerank_score": 0.92
+      },
       "tags": ["tag1", "tag2"]
     }
   ],
@@ -760,7 +764,10 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
 }
 ```
 
-**Distance Metric**: L2 (Euclidean distance) - lower values indicate higher similarity.
+**Scores Object**:
+- `semantic_distance`: L2 Euclidean distance (LOWER = more similar)
+- `semantic_rank`: Always null for standalone semantic search (no ranking)
+- `rerank_score`: Cross-encoder relevance score (HIGHER = better, 0.0-1.0), present when reranking is enabled
 
 ### Automatic Embedding Generation
 

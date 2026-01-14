@@ -2692,10 +2692,10 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, f'ML semantic search failed: {ml_search_data}'))
                 return False
 
-            # Verify results contain distance/similarity scores
+            # Verify results contain distance/similarity scores in scores object
             ml_results = ml_search_data.get('results', [])
-            if not ml_results or 'distance' not in ml_results[0]:
-                self.test_results.append((test_name, False, 'Missing distance scores in results'))
+            if not ml_results or 'scores' not in ml_results[0] or 'semantic_distance' not in ml_results[0].get('scores', {}):
+                self.test_results.append((test_name, False, 'Missing scores or semantic_distance in results'))
                 return False
 
             # Test 2: Search with thread_id filter
@@ -3054,9 +3054,9 @@ class MCPServerIntegrationTest:
                 )
                 return False
 
-            # Verify results have scores
-            if not all('score' in r for r in match_results):
-                self.test_results.append((test_name, False, 'Missing scores in results'))
+            # Verify results have scores object with fts_score
+            if not all('scores' in r and 'fts_score' in r.get('scores', {}) for r in match_results):
+                self.test_results.append((test_name, False, 'Missing scores or fts_score in results'))
                 return False
 
             # Test 2: Prefix mode search for 'prog*'
@@ -6197,21 +6197,21 @@ class MCPServerIntegrationTest:
 
             results = search_data['results']
 
-            # Verify rerank_score is present in results
-            has_rerank_score = all('rerank_score' in r for r in results)
+            # Verify rerank_score is present in scores object
+            has_rerank_score = all('scores' in r and 'rerank_score' in r.get('scores', {}) for r in results)
             if not has_rerank_score:
-                self.test_results.append((test_name, False, 'Missing rerank_score in results'))
+                self.test_results.append((test_name, False, 'Missing rerank_score in results.scores'))
                 return False
 
             # Verify rerank_score is a float between 0 and 1
             for i, result in enumerate(results):
-                score = result.get('rerank_score')
+                score = result.get('scores', {}).get('rerank_score')
                 if not isinstance(score, (int, float)) or score < 0 or score > 1:
                     self.test_results.append((test_name, False, f'Invalid rerank_score at index {i}: {score}'))
                     return False
 
             # Verify results are sorted by rerank_score (descending)
-            scores = [r['rerank_score'] for r in results]
+            scores = [r['scores']['rerank_score'] for r in results]
             is_sorted = all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
             if not is_sorted:
                 self.test_results.append((test_name, False, f'Results not sorted by rerank_score: {scores}'))
@@ -6300,21 +6300,21 @@ class MCPServerIntegrationTest:
 
             results = search_data['results']
 
-            # Verify results have both FTS score and rerank_score
+            # Verify results have both FTS score and rerank_score in scores object
             first_result = results[0]
-            has_fts_score = 'score' in first_result
-            has_rerank_score = 'rerank_score' in first_result
+            has_fts_score = 'scores' in first_result and 'fts_score' in first_result.get('scores', {})
+            has_rerank_score = 'scores' in first_result and 'rerank_score' in first_result.get('scores', {})
 
             if not has_fts_score:
-                self.test_results.append((test_name, False, 'Missing FTS score in results'))
+                self.test_results.append((test_name, False, 'Missing fts_score in results.scores'))
                 return False
 
             if not has_rerank_score:
-                self.test_results.append((test_name, False, 'Missing rerank_score in FTS results'))
+                self.test_results.append((test_name, False, 'Missing rerank_score in results.scores'))
                 return False
 
             # Verify results are sorted by rerank_score
-            scores = [r['rerank_score'] for r in results]
+            scores = [r['scores']['rerank_score'] for r in results]
             is_sorted = all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
 
             self.test_results.append(
@@ -6409,19 +6409,19 @@ class MCPServerIntegrationTest:
             scores = first_result['scores']
             has_rrf = 'rrf' in scores
 
-            # Verify rerank_score is present (outside scores dict)
-            has_rerank_score = 'rerank_score' in first_result
+            # Verify rerank_score is present inside scores dict
+            has_rerank_score = 'rerank_score' in scores
 
             if not has_rrf:
                 self.test_results.append((test_name, False, 'Missing RRF score in hybrid results'))
                 return False
 
             if not has_rerank_score:
-                self.test_results.append((test_name, False, 'Missing rerank_score in hybrid results'))
+                self.test_results.append((test_name, False, 'Missing rerank_score in results.scores'))
                 return False
 
             # Verify results are sorted by rerank_score
-            rerank_scores = [r['rerank_score'] for r in results]
+            rerank_scores = [r['scores']['rerank_score'] for r in results]
             is_sorted = all(rerank_scores[i] >= rerank_scores[i + 1] for i in range(len(rerank_scores) - 1))
 
             self.test_results.append(
@@ -6614,9 +6614,9 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, 'Search failed'))
                 return False
 
-            # Verify results have distance (not chunking-related fields)
+            # Verify results have scores with semantic_distance (not chunking-related fields)
             results = search_data.get('results', [])
-            if results and 'distance' in results[0]:
+            if results and 'scores' in results[0] and 'semantic_distance' in results[0].get('scores', {}):
                 self.test_results.append((test_name, True, 'Search works with chunking disabled'))
                 return True
 
@@ -6699,15 +6699,17 @@ class MCPServerIntegrationTest:
             results = search_data.get('results', [])
 
             # Verify NO rerank_score in results (reranking disabled)
-            has_rerank_score = any('rerank_score' in r for r in results)
+            has_rerank_score = any(
+                'scores' in r and r.get('scores', {}).get('rerank_score') is not None for r in results
+            )
 
             if has_rerank_score:
                 self.test_results.append((test_name, False, 'rerank_score present when reranking disabled'))
                 return False
 
-            # Verify results are ordered by distance instead
-            if results and 'distance' in results[0]:
-                self.test_results.append((test_name, True, 'No rerank_score, ordered by distance'))
+            # Verify results are ordered by semantic_distance instead
+            if results and 'scores' in results[0] and 'semantic_distance' in results[0].get('scores', {}):
+                self.test_results.append((test_name, True, 'No rerank_score, ordered by semantic_distance'))
                 return True
 
             self.test_results.append((test_name, True, 'No rerank_score in results (reranking disabled)'))
@@ -6816,9 +6818,9 @@ class MCPServerIntegrationTest:
 
             results = search_data['results']
 
-            # Verify rerank_score is present (reranking working)
-            if 'rerank_score' not in results[0]:
-                self.test_results.append((test_name, False, 'Missing rerank_score in integration test'))
+            # Verify rerank_score is present in scores object (reranking working)
+            if 'scores' not in results[0] or 'rerank_score' not in results[0].get('scores', {}):
+                self.test_results.append((test_name, False, 'Missing rerank_score in results.scores'))
                 return False
 
             # Count unique documents (deduplication working)

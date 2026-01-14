@@ -190,8 +190,46 @@ class BulkDeleteResponseDict(TypedDict):
 # FTS (Full-Text Search) TypedDicts
 
 
+class ScoresDict(TypedDict, total=False):
+    """Unified scores breakdown for all search tools.
+
+    All search tools return this structure with applicable fields populated:
+    - FTS search: fts_score, fts_rank, rerank_score
+    - Semantic search: semantic_distance, semantic_rank, rerank_score
+    - Hybrid search: All fields
+
+    Score Polarity Reference:
+    - fts_score: HIGHER = better match (BM25/ts_rank relevance)
+    - fts_rank: LOWER = better (1 = best)
+    - semantic_distance: LOWER = better (L2 Euclidean)
+    - semantic_rank: LOWER = better (1 = best)
+    - rrf: HIGHER = better (combined RRF score)
+    - rerank_score: HIGHER = better (cross-encoder relevance, 0.0-1.0)
+    """
+
+    # FTS scores
+    fts_score: float | None  # BM25/ts_rank relevance (HIGHER = better)
+    fts_rank: int | None  # Rank in FTS results (1-based, LOWER = better)
+
+    # Semantic scores
+    semantic_distance: float | None  # L2 Euclidean distance (LOWER = better)
+    semantic_rank: int | None  # Rank in semantic results (1-based, LOWER = better)
+
+    # RRF score (hybrid only)
+    rrf: float | None  # Combined RRF score (HIGHER = better)
+
+    # Rerank score (all tools when reranking enabled)
+    rerank_score: float | None  # Cross-encoder relevance (HIGHER = better, 0.0-1.0)
+
+
 class FtsSearchResultDict(TypedDict, total=False):
-    """Type definition for FTS search result entry."""
+    """Type definition for FTS search result entry.
+
+    The `scores` object contains:
+    - fts_score: BM25/ts_rank relevance score (HIGHER = better)
+    - fts_rank: Always null for standalone FTS (no ranking)
+    - rerank_score: Present when reranking is enabled (HIGHER = better)
+    """
 
     id: int
     thread_id: str
@@ -202,7 +240,7 @@ class FtsSearchResultDict(TypedDict, total=False):
     created_at: str
     updated_at: str
     tags: list[str]
-    score: float
+    scores: ScoresDict
     highlighted: str | None
 
 
@@ -225,7 +263,10 @@ class FtsSearchResponseDict(TypedDict, total=False):
 class SemanticSearchResultDict(TypedDict, total=False):
     """Type definition for semantic search result entry.
 
-    Similar to FtsSearchResultDict but with distance instead of score.
+    The `scores` object contains:
+    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - semantic_rank: Always null for standalone semantic (no ranking)
+    - rerank_score: Present when reranking is enabled (HIGHER = better)
     """
 
     id: int
@@ -237,7 +278,7 @@ class SemanticSearchResultDict(TypedDict, total=False):
     created_at: str
     updated_at: str
     tags: list[str]
-    distance: float  # L2 Euclidean distance (LOWER = more similar)
+    scores: ScoresDict
     images: list[ImageAttachmentDict] | list[dict[str, str]] | None
 
 
@@ -280,13 +321,15 @@ class HybridScoresDict(TypedDict, total=False):
     """Type definition for hybrid search scores breakdown.
 
     Contains scores from individual search methods and the combined RRF score.
+    The `rerank_score` is present when reranking is enabled.
     """
 
-    rrf: float  # Combined RRF score
+    rrf: float  # Combined RRF score (HIGHER = better)
     fts_rank: int | None  # Rank in FTS results (1-based), None if not in FTS results
     semantic_rank: int | None  # Rank in semantic results (1-based), None if not in semantic results
     fts_score: float | None  # Original FTS score (BM25/ts_rank)
     semantic_distance: float | None  # Original semantic distance (L2)
+    rerank_score: float | None  # Cross-encoder reranking score (HIGHER = better, 0.0-1.0)
 
 
 class HybridSearchResultDict(TypedDict, total=False):

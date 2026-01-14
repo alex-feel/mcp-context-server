@@ -54,8 +54,8 @@ async def _apply_reranking(
         limit: Maximum number of results to return after reranking.
 
     Returns:
-        Reranked results with 'rerank_score' field added.
-        If reranking is disabled or unavailable, returns original results.
+        Reranked results with 'rerank_score' injected into the 'scores' object.
+        If reranking is disabled or unavailable, returns original results unchanged.
     """
     # Check if reranking is available
     reranking_provider = get_reranking_provider()
@@ -89,13 +89,19 @@ async def _apply_reranking(
             int(r.get('id', 0)): r for r in results if r.get('id') is not None
         }
 
-        # Merge rerank scores back into original results
+        # Merge rerank scores back into original results (inject into scores object)
         final_results: list[dict[str, Any]] = []
         for reranked_item in reranked:
             item_id = reranked_item.get('id')
             if item_id is not None and int(item_id) in result_by_id:
                 merged = result_by_id[int(item_id)].copy()
-                merged['rerank_score'] = reranked_item.get('rerank_score', 0.0)
+                # Inject rerank_score into scores object
+                if 'scores' in merged and isinstance(merged['scores'], dict):
+                    merged['scores'] = merged['scores'].copy()
+                    merged['scores']['rerank_score'] = reranked_item.get('rerank_score', 0.0)
+                else:
+                    # Create scores object if not present (shouldn't happen with updated tools)
+                    merged['scores'] = {'rerank_score': reranked_item.get('rerank_score', 0.0)}
                 final_results.append(merged)
 
         logger.debug(
@@ -504,12 +510,18 @@ async def semantic_search_context(
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
-    The `distance` field is L2 Euclidean distance - LOWER values mean HIGHER similarity.
-    Typical interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
+    The `scores` object contains:
+    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - semantic_rank: Always null for standalone semantic search
+    - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
+
+    Typical distance interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
 
     Returns:
         Dict with query (str), results (list with id, thread_id, source, text_content,
-        metadata, distance, tags), count (int), model (str), and stats (only when explain_query=True).
+        metadata, scores, tags), count (int), model (str), and stats (only when explain_query=True).
+
+        The `scores` field contains: semantic_distance, semantic_rank, rerank_score.
 
     Raises:
         ToolError: If semantic search is not available or search operation fails.
@@ -559,6 +571,15 @@ async def semantic_search_context(
                 'model': settings.embedding.model,
                 'error': e.message,
                 'validation_errors': e.validation_errors,
+            }
+
+        # Transform results to use scores object (before reranking)
+        for result in search_results:
+            # Move distance into scores object
+            distance_value = result.pop('distance', None)
+            result['scores'] = {
+                'semantic_distance': distance_value,
+                'semantic_rank': None,  # Standalone semantic has no ranking
             }
 
         # Apply reranking (Layer 2) if available
@@ -674,12 +695,17 @@ async def fts_search_context(
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
-    The `score` field is relevance score - HIGHER values mean BETTER match.
+    The `scores` object contains:
+    - fts_score: BM25/ts_rank relevance (HIGHER = better match)
+    - fts_rank: Always null for standalone FTS search
+    - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
     Returns:
         Dict with query (str), mode (str), results (list with id, thread_id, source,
-        text_content, metadata, score, highlighted, tags), count (int), language (str),
+        text_content, metadata, scores, highlighted, tags), count (int), language (str),
         and stats (only when explain_query=True).
+
+        The `scores` field contains: fts_score, fts_rank, rerank_score.
 
     Raises:
         ToolError: If FTS is not available or search operation fails.
@@ -762,6 +788,15 @@ async def fts_search_context(
                     'rows_returned': 0,
                 }
             return error_response
+
+        # Transform results to use scores object (before reranking)
+        for result in search_results:
+            # Move score into scores object
+            fts_score_value = result.pop('score', None)
+            result['scores'] = {
+                'fts_score': fts_score_value,
+                'fts_rank': None,  # Standalone FTS has no ranking
+            }
 
         # Apply reranking (Layer 2) if available
         reranked_results = await _apply_reranking(
@@ -897,7 +932,7 @@ async def hybrid_search_context(
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
     The `scores` field contains: rrf (combined), fts_rank, semantic_rank,
-    fts_score, semantic_distance.
+    fts_score, semantic_distance, rerank_score.
 
     When explain_query=True, the `stats` field contains:
     - execution_time_ms: Total hybrid search time

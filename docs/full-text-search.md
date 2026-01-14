@@ -162,7 +162,11 @@ When FTS is enabled, a new MCP tool becomes available.
       "created_at": "2025-12-01T10:00:00Z",
       "updated_at": "2025-12-01T10:00:00Z",
       "tags": ["tag1", "tag2"],
-      "score": 2.45,
+      "scores": {
+        "fts_score": 2.45,
+        "fts_rank": null,
+        "rerank_score": 0.87
+      },
       "highlighted": "matching <mark>context</mark> content"
     }
   ],
@@ -179,7 +183,10 @@ When FTS is enabled, a new MCP tool becomes available.
 
 **Note:** The `stats` field is only included when `explain_query=True`.
 
-**Score**: Higher values indicate better relevance (BM25 for SQLite, ts_rank for PostgreSQL).
+**Scores Object**:
+- `fts_score`: BM25/ts_rank relevance score (HIGHER = better match)
+- `fts_rank`: Always null for standalone FTS (no ranking)
+- `rerank_score`: Cross-encoder relevance score (HIGHER = better, 0.0-1.0), present when reranking is enabled
 
 ### Search Modes
 
