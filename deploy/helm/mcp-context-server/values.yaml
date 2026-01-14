@@ -137,6 +137,10 @@ search:
 # Ollama sidecar configuration (only used when search.semantic.provider=ollama)
 ollama:
   enabled: false
+  # Truncation control: false (default) returns error when context exceeded, true enables silent truncation
+  truncate: false
+  # Context window size in tokens (range: 512-131072)
+  numCtx: 4096
   image:
     repository: ollama/ollama
     tag: "latest"

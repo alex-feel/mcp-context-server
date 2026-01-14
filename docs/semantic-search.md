@@ -138,12 +138,14 @@ Ollama runs embedding models locally with no API costs.
 
 #### Environment Variables
 
-| Variable             | Default                  | Description       |
-|----------------------|--------------------------|-------------------|
-| `EMBEDDING_PROVIDER` | `ollama`                 | Set to `ollama`   |
-| `EMBEDDING_MODEL`    | `qwen3-embedding:0.6b`   | Ollama model name |
-| `EMBEDDING_DIM`      | `1024`                   | Vector dimensions |
-| `OLLAMA_HOST`        | `http://localhost:11434` | Ollama API URL    |
+| Variable             | Default                  | Description                                                                                          |
+|----------------------|--------------------------|------------------------------------------------------------------------------------------------------|
+| `EMBEDDING_PROVIDER` | `ollama`                 | Set to `ollama`                                                                                      |
+| `EMBEDDING_MODEL`    | `qwen3-embedding:0.6b`   | Ollama model name                                                                                    |
+| `EMBEDDING_DIM`      | `1024`                   | Vector dimensions                                                                                    |
+| `OLLAMA_HOST`        | `http://localhost:11434` | Ollama API URL                                                                                       |
+| `OLLAMA_TRUNCATE`    | `false`                  | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
+| `OLLAMA_NUM_CTX`     | `4096`                   | Context window size in tokens (range: 512-131072)                                                    |
 
 **Docker Networking**: Use `host.docker.internal:11434` (Windows/macOS) or `172.17.0.1:11434` (Linux) when running in containers.
 
@@ -361,14 +363,14 @@ Voyage AI specializes in RAG-optimized embeddings with long context support.
 
 #### Environment Variables
 
-| Variable             | Default    | Description                     |
-|----------------------|------------|---------------------------------|
-| `EMBEDDING_PROVIDER` | -          | Set to `voyage`                 |
-| `EMBEDDING_MODEL`    | `voyage-3` | Voyage model name               |
-| `EMBEDDING_DIM`      | `1024`     | Vector dimensions               |
-| `VOYAGE_API_KEY`     | -          | **Required**: Voyage AI API key |
-| `VOYAGE_TRUNCATION`  | `true`     | Truncate long texts             |
-| `VOYAGE_BATCH_SIZE`  | `7`        | Texts per API call (1-128)      |
+| Variable             | Default    | Description                                                                                          |
+|----------------------|------------|------------------------------------------------------------------------------------------------------|
+| `EMBEDDING_PROVIDER` | -          | Set to `voyage`                                                                                      |
+| `EMBEDDING_MODEL`    | `voyage-3` | Voyage model name                                                                                    |
+| `EMBEDDING_DIM`      | `1024`     | Vector dimensions                                                                                    |
+| `VOYAGE_API_KEY`     | -          | **Required**: Voyage AI API key                                                                      |
+| `VOYAGE_TRUNCATION`  | `false`    | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
+| `VOYAGE_BATCH_SIZE`  | `7`        | Texts per API call (1-128)                                                                           |
 
 #### Available Voyage Models
 
@@ -506,6 +508,82 @@ uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-c
 - **Latency**: Adds 20-100ms per search depending on candidate count
 - **Memory**: ~200MB RAM for default model
 - **Cache**: Model cached in `~/.cache/flashrank/` by default
+
+## Context Length and Truncation Control
+
+Embedding models have maximum context windows (measured in tokens). Text exceeding this limit must either be truncated or rejected with an error.
+
+### Truncation Behavior by Provider
+
+| Provider        | Truncation Control | Default Behavior                        | Configuration             |
+|-----------------|--------------------|-----------------------------------------|---------------------------|
+| **Ollama**      | Configurable       | Error on context exceed                 | `OLLAMA_TRUNCATE=false`   |
+| **Voyage**      | Configurable       | Error on context exceed                 | `VOYAGE_TRUNCATION=false` |
+| **OpenAI**      | Always error       | Returns error if input exceeds limit    | N/A                       |
+| **Azure**       | Always error       | Returns error if input exceeds limit    | N/A                       |
+| **HuggingFace** | Always truncate    | Silently truncates (cannot be disabled) | N/A                       |
+
+### Recommended Configuration
+
+**For production use**, keep truncation **disabled** (`false`) and enable **chunking** (`ENABLE_CHUNKING=true`, default):
+
+```bash
+# Recommended: Chunking handles long documents, errors on unexpected overflows
+ENABLE_CHUNKING=true        # Default
+OLLAMA_TRUNCATE=false       # Default - errors prevent silent quality degradation
+```
+
+**Silent truncation** (`OLLAMA_TRUNCATE=true`) is only recommended when:
+- You accept potential embedding quality degradation for very long documents
+- Chunking is disabled and you want graceful handling of edge cases
+
+### How Pre-Validation Works
+
+When truncation is disabled (`OLLAMA_TRUNCATE=false` or `VOYAGE_TRUNCATION=false`):
+
+1. **Before calling the embedding API**, text length is estimated using heuristic: 1 token ~ 3 characters
+2. If estimated tokens exceed the model's context limit, an error is raised **before** the API call
+3. This provides fail-fast behavior with clear error messages
+
+Example error:
+```
+ValueError: Text length (5000 chars, ~1666 estimated tokens) may exceed context window
+(1000 tokens from OLLAMA_NUM_CTX) for model qwen3-embedding:0.6b.
+Options: 1) Enable chunking (ENABLE_CHUNKING=true, default),
+         2) Increase OLLAMA_NUM_CTX,
+         3) Set OLLAMA_TRUNCATE=true to allow silent truncation.
+```
+
+### Context Limits by Model
+
+Common embedding models and their context limits:
+
+| Model                  | Provider    | Max Tokens | Notes                       |
+|------------------------|-------------|------------|-----------------------------|
+| qwen3-embedding:0.6b   | Ollama      | 32,000     | Default model               |
+| nomic-embed-text       | Ollama      | 8,192      | Limited by OLLAMA_NUM_CTX   |
+| text-embedding-3-small | OpenAI      | 8,191      | Always error on exceed      |
+| text-embedding-3-large | OpenAI      | 8,191      | Always error on exceed      |
+| voyage-3               | Voyage AI   | 32,000     | Configurable via truncation |
+| all-MiniLM-L6-v2       | HuggingFace | 256        | Always silently truncates   |
+
+**Note**: For Ollama models, the effective context limit is `min(model_max_tokens, OLLAMA_NUM_CTX)`.
+
+### Startup Validation
+
+On server startup, the universal validator checks:
+
+1. **When chunking enabled**: Warns if `CHUNK_SIZE` may exceed model's context limit
+2. **When chunking disabled**: Warns about potential issues with large documents
+3. **Unknown models**: Uses provider default and logs a warning
+
+Example startup warning:
+```
+[EMBEDDING CONFIG] CHUNK_SIZE (100000 chars, ~33333 tokens estimate) exceeds
+model context limit (32000 tokens from model spec for qwen3-embedding:0.6b).
+Chunks will cause embedding errors.
+Recommendation: Reduce CHUNK_SIZE to ~76800 chars (80% of context window).
+```
 
 ## Common Configuration Settings
 

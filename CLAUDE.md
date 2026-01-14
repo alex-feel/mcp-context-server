@@ -405,10 +405,13 @@ Configuration via `.env` file or environment:
 
 **Provider-Specific Settings:**
 - `OLLAMA_HOST`: Ollama API host URL (default: http://localhost:11434)
+- `OLLAMA_TRUNCATE`: Control truncation behavior (default: false = error on context exceed, true = silent truncation)
+- `OLLAMA_NUM_CTX`: Ollama context window size in tokens (default: 4096, range: 512-131072)
 - `OPENAI_API_KEY`: OpenAI API key (required for openai provider)
 - `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME`: Azure OpenAI settings
 - `HUGGINGFACEHUB_API_TOKEN`: HuggingFace API token (required for huggingface provider)
 - `VOYAGE_API_KEY`: Voyage AI API key (required for voyage provider)
+- `VOYAGE_TRUNCATION`: Control truncation behavior (default: false = error on context exceed, true = silent truncation)
 
 **Hybrid Search Settings:**
 - `ENABLE_HYBRID_SEARCH`: Enable hybrid search combining FTS and semantic with RRF fusion (default: false)

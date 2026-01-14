@@ -347,6 +347,20 @@
           "name": "OLLAMA_HOST"
         },
         {
+          "description": "Ollama truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "OLLAMA_TRUNCATE"
+        },
+        {
+          "description": "Ollama context window size in tokens (default: 4096, range: 512-131072)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "OLLAMA_NUM_CTX"
+        },
+        {
           "description": "Embedding model name for semantic search",
           "isRequired": false,
           "format": "string",
@@ -571,7 +585,7 @@
           "name": "VOYAGE_API_KEY"
         },
         {
-          "description": "Voyage AI truncation mode (true/false)",
+          "description": "Voyage AI truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
@@ -1079,6 +1093,20 @@
           "name": "OLLAMA_HOST"
         },
         {
+          "description": "Ollama truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "OLLAMA_TRUNCATE"
+        },
+        {
+          "description": "Ollama context window size in tokens (default: 4096, range: 512-131072)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "OLLAMA_NUM_CTX"
+        },
+        {
           "description": "Embedding model name for semantic search",
           "isRequired": false,
           "format": "string",
@@ -1303,7 +1331,7 @@
           "name": "VOYAGE_API_KEY"
         },
         {
-          "description": "Voyage AI truncation mode (true/false)",
+          "description": "Voyage AI truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
