@@ -21,14 +21,11 @@ from urllib.parse import quote
 
 import asyncpg
 
-from app.logger_config import config_logger
 from app.schemas import load_schema
 from app.settings import get_settings
 
-# Get settings
+# Get settings (used for connection configuration)
 settings = get_settings()
-# Configure logging
-config_logger(settings.log_level)
 logger = logging.getLogger(__name__)
 
 

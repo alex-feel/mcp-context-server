@@ -19,10 +19,20 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+# ============================================================================
+# CRITICAL: Logger Configuration MUST happen BEFORE importing app modules
+# that trigger backend loading (app.backends, app.repositories)
+# ============================================================================
+from app.logger_config import config_logger
+from app.settings import get_settings
+
+settings = get_settings()
+config_logger(settings.log_level)
+logger = logging.getLogger(__name__)
+
 # Import startup module for global state access
 from app.backends import create_backend
 from app.embeddings import create_embedding_provider
-from app.logger_config import config_logger
 from app.migrations import FtsMigrationStatus
 from app.migrations import ProviderCheckResult
 
@@ -38,7 +48,6 @@ from app.migrations import estimate_migration_time
 from app.migrations import handle_metadata_indexes
 from app.migrations import reset_fts_migration_status
 from app.repositories import RepositoryContainer
-from app.settings import get_settings
 
 # Import from startup module - global state and initialization
 from app.startup import DB_PATH
@@ -118,12 +127,6 @@ from app.tools import store_context
 from app.tools import store_context_batch
 from app.tools import update_context
 from app.tools import update_context_batch
-
-# Get setting
-settings = get_settings()
-# Configure logging
-config_logger(settings.log_level)
-logger = logging.getLogger(__name__)
 
 
 def _get_server_version() -> str:

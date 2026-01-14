@@ -72,6 +72,18 @@ from anyio import Path as AsyncPath
 from dotenv import load_dotenv
 from fastmcp import Context
 
+# ============================================================================
+# CRITICAL: Configure logging BEFORE importing app modules
+# This ensures tests have properly configured logging even when app modules
+# are imported directly (not via app.server entry point)
+# ============================================================================
+from app.logger_config import config_logger
+from app.settings import get_settings
+
+_test_settings = get_settings()
+config_logger(_test_settings.log_level)
+
+# Now safe to import app modules
 import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend

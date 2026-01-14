@@ -16,9 +16,7 @@ from typing import Literal
 from typing import cast
 
 from app.backends.base import StorageBackend
-from app.logger_config import config_logger
 from app.repositories.base import BaseRepository
-from app.settings import get_settings
 
 # Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
 # Matches word characters connected by one or more hyphens
@@ -27,10 +25,6 @@ HYPHENATED_WORD_PATTERN = re.compile(r'\b(\w+(?:-\w+)+)\b')
 if TYPE_CHECKING:
     import asyncpg
 
-# Get settings
-settings = get_settings()
-# Configure logging
-config_logger(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
