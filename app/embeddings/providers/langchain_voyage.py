@@ -26,6 +26,7 @@ class VoyageEmbeddingProvider:
         VOYAGE_API_KEY: Voyage AI API key (required)
         EMBEDDING_MODEL: Model name (default: voyage-3)
         EMBEDDING_DIM: Vector dimensions (default: 1024)
+        VOYAGE_TRUNCATION: Control truncation behavior (default: false = error on exceed)
     """
 
     def __init__(self) -> None:
@@ -62,18 +63,16 @@ class VoyageEmbeddingProvider:
         # Build kwargs for VoyageAIEmbeddings
         # Note: VoyageAI underlying client has max_retries=0 by default
         # Universal wrapper handles all retry logic
+        # Note: Using kwargs pattern because pyright type stubs don't recognize voyage_api_key
         kwargs: dict[str, Any] = {
             'model': self._model,
             'voyage_api_key': self._api_key.get_secret_value(),
             'batch_size': self._batch_size,
+            'truncation': self._truncation,
         }
-
-        # Only set truncation if explicitly configured
-        if self._truncation is not None:
-            kwargs['truncation'] = self._truncation
-
         self._embeddings = VoyageAIEmbeddings(**kwargs)
-        logger.info(f'Initialized Voyage AI embedding provider: {self._model}')
+        truncation_mode = 'disabled (errors on exceed)' if not self._truncation else 'enabled (silent truncation)'
+        logger.info(f'Initialized Voyage AI embedding provider: {self._model}, truncation={truncation_mode}')
 
     async def shutdown(self) -> None:
         """Cleanup resources."""

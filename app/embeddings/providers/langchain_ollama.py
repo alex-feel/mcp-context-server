@@ -27,6 +27,8 @@ class OllamaEmbeddingProvider:
         OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
         EMBEDDING_MODEL: Model name (default: qwen3-embedding:0.6b)
         EMBEDDING_DIM: Vector dimensions (default: 1024)
+        OLLAMA_NUM_CTX: Context length in tokens (default: 4096)
+        OLLAMA_TRUNCATE: Control truncation behavior (default: false = error on exceed)
     """
 
     def __init__(self) -> None:
@@ -35,6 +37,8 @@ class OllamaEmbeddingProvider:
         self._model = settings.embedding.model
         self._base_url = settings.embedding.ollama_host
         self._dimension = settings.embedding.dim
+        self._truncate = settings.embedding.ollama_truncate
+        self._num_ctx = settings.embedding.ollama_num_ctx
         self._embeddings: Any = None
 
     async def initialize(self) -> None:
@@ -53,11 +57,21 @@ class OllamaEmbeddingProvider:
 
         # OllamaEmbeddings has no built-in retry
         # Universal wrapper handles all retry logic
+        # Note: truncate parameter not supported by langchain-ollama library.
+        # Truncation control is handled via pre-validation in _validate_text_length()
         self._embeddings = OllamaEmbeddings(
             model=self._model,
             base_url=self._base_url,
         )
-        logger.info(f'Initialized Ollama embedding provider: {self._model} at {self._base_url}')
+        logger.info(
+            f'Initialized Ollama embedding provider: {self._model} at {self._base_url}, '
+            f'num_ctx={self._num_ctx}',
+        )
+        if not self._truncate:
+            logger.info(
+                '[EMBEDDING CONFIG] OLLAMA_TRUNCATE=false. Text length validation enabled. '
+                'Texts exceeding context limit will raise error before embedding.',
+            )
 
     async def shutdown(self) -> None:
         """Cleanup resources."""
@@ -79,6 +93,10 @@ class OllamaEmbeddingProvider:
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        # Pre-validate text length when truncation disabled
+        if not self._truncate:
+            self._validate_text_length(text)
 
         async def _embed() -> list[Any]:
             result: list[Any] = await self._embeddings.aembed_query(text)
@@ -116,6 +134,14 @@ class OllamaEmbeddingProvider:
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        # Pre-validate all texts when truncation disabled
+        if not self._truncate:
+            for i, text in enumerate(texts):
+                try:
+                    self._validate_text_length(text)
+                except ValueError as e:
+                    raise ValueError(f'Text {i} validation failed: {e}') from e
 
         async def _embed() -> list[list[Any]]:
             result: list[list[Any]] = await self._embeddings.aembed_documents(texts)
@@ -164,6 +190,42 @@ class OllamaEmbeddingProvider:
     def provider_name(self) -> str:
         """Return provider identifier."""
         return 'ollama'
+
+    def _validate_text_length(self, text: str) -> None:
+        """Validate text length against estimated context window.
+
+        When OLLAMA_TRUNCATE=false, this provides fail-fast behavior by checking
+        if text is likely to exceed the context window BEFORE calling the embedding API.
+
+        Args:
+            text: Text to validate
+
+        Raises:
+            ValueError: If text likely exceeds context window and truncation disabled
+        """
+        # Import here to avoid circular imports
+        from app.embeddings.context_limits import get_model_spec
+
+        # Get model-specific max_tokens if known, else use OLLAMA_NUM_CTX setting
+        spec = get_model_spec(self._model)
+        if spec:
+            max_tokens = min(spec.max_tokens, self._num_ctx)
+            source = f'model spec ({spec.max_tokens}) capped by OLLAMA_NUM_CTX ({self._num_ctx})'
+        else:
+            max_tokens = self._num_ctx
+            source = f'OLLAMA_NUM_CTX ({self._num_ctx})'
+
+        # Heuristic: 1 token ~ 3-4 characters for English
+        # Use conservative estimate (3 chars/token) to avoid false negatives
+        estimated_tokens = len(text) / 3
+
+        if estimated_tokens > max_tokens:
+            raise ValueError(
+                f'Text length ({len(text)} chars, ~{int(estimated_tokens)} estimated tokens) '
+                f'may exceed context window ({max_tokens} tokens from {source}) for model {self._model}. '
+                f'Options: 1) Enable chunking (ENABLE_CHUNKING=true, default), '
+                f'2) Increase OLLAMA_NUM_CTX, 3) Set OLLAMA_TRUNCATE=true to allow silent truncation.',
+            )
 
     @staticmethod
     def _convert_to_python_floats(embedding: list[Any]) -> list[float]:

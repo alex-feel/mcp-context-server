@@ -24,6 +24,8 @@ class TestOllamaEmbeddingProvider:
         mock.embedding.model = 'test-model'
         mock.embedding.ollama_host = 'http://localhost:11434'
         mock.embedding.dim = 768
+        mock.embedding.ollama_truncate = False
+        mock.embedding.ollama_num_ctx = 4096
         return mock
 
     @pytest.fixture
@@ -265,6 +267,119 @@ class TestOllamaEmbeddingProvider:
 
             assert result == [1.5, 2.5, 3.5]
             assert all(isinstance(x, float) for x in result)
+
+    @pytest.mark.asyncio
+    async def test_truncate_not_passed_to_embeddings(
+        self,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Test that truncate is NOT passed to OllamaEmbeddings (library doesn't support it)."""
+        mock_settings.embedding.ollama_truncate = False
+
+        mock_langchain = MagicMock()
+        mock_embeddings = MagicMock()
+        mock_langchain.OllamaEmbeddings = MagicMock(return_value=mock_embeddings)
+
+        with (
+            patch.dict('sys.modules', {'langchain_ollama': mock_langchain}),
+            patch(
+                'app.embeddings.providers.langchain_ollama.get_settings',
+                return_value=mock_settings,
+            ),
+        ):
+            from app.embeddings.providers.langchain_ollama import OllamaEmbeddingProvider
+
+            provider = OllamaEmbeddingProvider()
+            await provider.initialize()
+
+            # Verify truncate was NOT passed (langchain-ollama doesn't support it)
+            call_kwargs = mock_langchain.OllamaEmbeddings.call_args[1]
+            assert 'truncate' not in call_kwargs
+            assert call_kwargs['model'] == mock_settings.embedding.model
+            assert call_kwargs['base_url'] == mock_settings.embedding.ollama_host
+
+    @pytest.mark.asyncio
+    async def test_text_length_validation_when_truncate_disabled(
+        self,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Test that text length is validated when OLLAMA_TRUNCATE=false."""
+        mock_settings.embedding.ollama_truncate = False
+        mock_settings.embedding.ollama_num_ctx = 1000  # Small context for testing
+        mock_settings.embedding.model = 'qwen3-embedding:0.6b'
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
+
+        with patch(
+            'app.embeddings.providers.langchain_ollama.get_settings',
+            return_value=mock_settings,
+        ):
+            from app.embeddings.providers.langchain_ollama import OllamaEmbeddingProvider
+
+            provider = OllamaEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            # Long text that exceeds estimated context (~1666 tokens, exceeds 1000)
+            long_text = 'a' * 5000
+
+            with pytest.raises(ValueError, match='may exceed context window'):
+                await provider.embed_query(long_text)
+
+    @pytest.mark.asyncio
+    async def test_no_validation_when_truncate_enabled(
+        self,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Test that text length is NOT validated when OLLAMA_TRUNCATE=true."""
+        mock_settings.embedding.ollama_truncate = True
+        mock_settings.embedding.ollama_num_ctx = 1000
+        mock_settings.embedding.model = 'qwen3-embedding:0.6b'
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
+
+        with patch(
+            'app.embeddings.providers.langchain_ollama.get_settings',
+            return_value=mock_settings,
+        ):
+            from app.embeddings.providers.langchain_ollama import OllamaEmbeddingProvider
+
+            provider = OllamaEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            # Long text - should NOT raise error when truncate=True
+            long_text = 'a' * 5000
+            result = await provider.embed_query(long_text)
+            assert len(result) == 768
+
+    @pytest.mark.asyncio
+    async def test_embed_documents_validation_when_truncate_disabled(
+        self,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Test that embed_documents validates all texts when OLLAMA_TRUNCATE=false."""
+        mock_settings.embedding.ollama_truncate = False
+        mock_settings.embedding.ollama_num_ctx = 1000
+        mock_settings.embedding.model = 'qwen3-embedding:0.6b'
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_documents = AsyncMock(return_value=[[0.1] * 768])
+
+        with patch(
+            'app.embeddings.providers.langchain_ollama.get_settings',
+            return_value=mock_settings,
+        ):
+            from app.embeddings.providers.langchain_ollama import OllamaEmbeddingProvider
+
+            provider = OllamaEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            # Second text exceeds context
+            texts = ['short text', 'a' * 5000]
+
+            with pytest.raises(ValueError, match='Text 1 validation failed'):
+                await provider.embed_documents(texts)
 
 
 class TestOpenAIEmbeddingProvider:
@@ -535,7 +650,7 @@ class TestVoyageEmbeddingProvider:
         mock.embedding.dim = 1024
         mock.embedding.voyage_api_key = MagicMock()
         mock.embedding.voyage_api_key.get_secret_value.return_value = 'test-voyage-key'
-        mock.embedding.voyage_truncation = None
+        mock.embedding.voyage_truncation = False  # New default: disabled
         mock.embedding.voyage_batch_size = 7
         return mock
 
@@ -546,7 +661,7 @@ class TestVoyageEmbeddingProvider:
         mock.embedding.model = 'voyage-3'
         mock.embedding.dim = 1024
         mock.embedding.voyage_api_key = None
-        mock.embedding.voyage_truncation = None
+        mock.embedding.voyage_truncation = False  # New default: disabled
         mock.embedding.voyage_batch_size = 7
         return mock
 
@@ -700,11 +815,40 @@ class TestVoyageEmbeddingProvider:
             assert provider.get_dimension() == 1024
 
     @pytest.mark.asyncio
-    async def test_truncation_setting_applied(
+    async def test_truncation_false_passed_by_default(
         self,
         mock_settings_with_key: MagicMock,
     ) -> None:
-        """Test truncation setting is passed to VoyageAIEmbeddings."""
+        """Test truncation=False (new default) is passed to VoyageAIEmbeddings."""
+        mock_settings_with_key.embedding.voyage_truncation = False
+
+        mock_langchain = MagicMock()
+        mock_embeddings = MagicMock()
+        mock_langchain.VoyageAIEmbeddings = MagicMock(return_value=mock_embeddings)
+
+        with (
+            patch.dict('sys.modules', {'langchain_voyageai': mock_langchain}),
+            patch(
+                'app.embeddings.providers.langchain_voyage.get_settings',
+                return_value=mock_settings_with_key,
+            ),
+        ):
+            from app.embeddings.providers.langchain_voyage import VoyageEmbeddingProvider
+
+            provider = VoyageEmbeddingProvider()
+            await provider.initialize()
+
+            # Verify truncation was passed in kwargs
+            call_kwargs = mock_langchain.VoyageAIEmbeddings.call_args[1]
+            assert 'truncation' in call_kwargs
+            assert call_kwargs['truncation'] is False
+
+    @pytest.mark.asyncio
+    async def test_truncation_true_passed_when_enabled(
+        self,
+        mock_settings_with_key: MagicMock,
+    ) -> None:
+        """Test truncation=True is passed to VoyageAIEmbeddings when enabled."""
         mock_settings_with_key.embedding.voyage_truncation = True
 
         mock_langchain = MagicMock()

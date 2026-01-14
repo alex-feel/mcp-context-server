@@ -131,6 +131,21 @@ class EmbeddingSettings(CommonSettings):
         alias='OLLAMA_HOST',
         description='Ollama server URL',
     )
+    ollama_num_ctx: int = Field(
+        default=4096,
+        alias='OLLAMA_NUM_CTX',
+        ge=512,
+        le=131072,
+        description='Ollama context length in tokens. Default 4096. '
+                    'Must match or exceed model capabilities.',
+    )
+    ollama_truncate: bool = Field(
+        default=False,
+        alias='OLLAMA_TRUNCATE',
+        description='Control text truncation when exceeding context length. '
+                    'False (default): Returns error on exceeded context. '
+                    'True: Silently truncates input (may degrade embedding quality).',
+    )
 
     # OpenAI-specific (matches LangChain docs: OPENAI_API_KEY)
     openai_api_key: SecretStr | None = Field(
@@ -184,10 +199,12 @@ class EmbeddingSettings(CommonSettings):
         alias='VOYAGE_API_KEY',
         description='Voyage AI API key',
     )
-    voyage_truncation: bool | None = Field(
-        default=None,
+    voyage_truncation: bool = Field(
+        default=False,
         alias='VOYAGE_TRUNCATION',
-        description='Whether to truncate texts exceeding context length (default: auto)',
+        description='Control text truncation when exceeding context length. '
+                    'False (default): Returns error on exceeded context. '
+                    'True: Silently truncates input (may degrade embedding quality).',
     )
     voyage_batch_size: int = Field(
         default=7,
@@ -603,6 +620,136 @@ class AppSettings(CommonSettings):
                 f'Valid options: {", ".join(sorted(valid_languages))}',
             )
         return v_lower
+
+    @model_validator(mode='after')
+    def validate_chunk_size_vs_context_limit(self) -> Self:
+        """Validate CHUNK_SIZE against model context window from context_limits.py.
+
+        This is a UNIVERSAL validator that works for ALL embedding providers.
+
+        When ENABLE_CHUNKING=true:
+            - Validates CHUNK_SIZE against model's max_tokens
+            - Warns if chunk size may exceed context window
+
+        When ENABLE_CHUNKING=false:
+            - Warns about potential issues with large documents
+            - Document sizes are unknown at startup, so only general warning is possible
+
+        Returns:
+            Self: The validated settings instance.
+        """
+        # Import here to avoid circular imports at module load time
+        try:
+            from app.embeddings.context_limits import get_model_spec
+            from app.embeddings.context_limits import get_provider_default_context
+        except ImportError:
+            # context_limits module not available - skip validation
+            return self
+
+        # Get model specification from context_limits.py
+        model_spec = get_model_spec(self.embedding.model)
+
+        # Determine max_tokens for the model
+        # truncation_behavior can be 'error', 'silent', 'configurable', or None (unknown)
+        truncation_behavior: str | None
+        if model_spec:
+            max_tokens = model_spec.max_tokens
+            truncation_behavior = model_spec.truncation_behavior
+            source = f'model spec for {model_spec.model}'
+        else:
+            # Unknown model - use provider default
+            max_tokens = get_provider_default_context(self.embedding.provider)
+            truncation_behavior = None  # Unknown behavior
+            source = f'provider default for {self.embedding.provider}'
+            logger.warning(
+                f'[EMBEDDING CONFIG] Model "{self.embedding.model}" not found in context_limits.py. '
+                f'Using provider default context limit ({max_tokens} tokens). '
+                f'Consider adding model spec to app/embeddings/context_limits.py for accurate validation.',
+            )
+
+        if not self.chunking.enabled:
+            # ENABLE_CHUNKING=false - warn about potential issues
+            if truncation_behavior == 'silent':
+                logger.warning(
+                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'Model "{self.embedding.model}" ALWAYS silently truncates (cannot be disabled). '
+                    f'Documents exceeding {max_tokens} tokens ({source}) will be truncated without warning.',
+                )
+            elif truncation_behavior == 'configurable':
+                # Determine current truncation setting for this provider
+                truncation_enabled = self._get_truncation_setting_for_provider()
+                if truncation_enabled:
+                    logger.warning(
+                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation enabled. '
+                        f'Large documents will be silently truncated to {max_tokens} tokens ({source}). '
+                        f'Consider enabling chunking for better embedding quality.',
+                    )
+                else:
+                    logger.warning(
+                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation disabled. '
+                        f'Documents exceeding {max_tokens} tokens ({source}) will cause embedding errors. '
+                        f'Consider enabling chunking to handle large documents.',
+                    )
+            elif truncation_behavior == 'error':
+                logger.warning(
+                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'Model "{self.embedding.model}" returns error on context exceed (no truncation). '
+                    f'Documents exceeding {max_tokens} tokens ({source}) will fail embedding. '
+                    f'Consider enabling chunking to handle large documents.',
+                )
+            else:
+                # Unknown truncation behavior
+                logger.warning(
+                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false. Document sizes unknown at startup. '
+                    f'Documents exceeding {max_tokens} tokens ({source}) may cause issues. '
+                    f'Consider enabling chunking for better reliability.',
+                )
+            return self
+
+        # ENABLE_CHUNKING=true - validate CHUNK_SIZE against max_tokens
+        # Heuristic: 1 token ~ 3-4 characters for English
+        chunk_tokens_estimate = self.chunking.size / 3
+
+        if chunk_tokens_estimate > max_tokens:
+            # Determine consequence based on truncation behavior
+            if truncation_behavior == 'silent':
+                consequence = 'will be silently truncated (quality degradation)'
+            elif truncation_behavior == 'configurable':
+                truncation_enabled = self._get_truncation_setting_for_provider()
+                consequence = 'will be silently truncated' if truncation_enabled else 'will cause embedding errors'
+            elif truncation_behavior == 'error':
+                consequence = 'will cause embedding errors'
+            else:
+                consequence = 'may cause issues'
+
+            logger.warning(
+                f'[EMBEDDING CONFIG] CHUNK_SIZE ({self.chunking.size} chars, '
+                f'~{int(chunk_tokens_estimate)} tokens estimate) exceeds '
+                f'model context limit ({max_tokens} tokens from {source}). '
+                f'Chunks {consequence}. '
+                f'Recommendation: Reduce CHUNK_SIZE to ~{int(max_tokens * 3 * 0.8)} chars '
+                f'(80% of context window).',
+            )
+
+        return self
+
+    def _get_truncation_setting_for_provider(self) -> bool:
+        """Get current truncation setting for the configured provider.
+
+        Returns:
+            bool: True if truncation is enabled, False otherwise
+        """
+        # Provider is Literal['ollama', 'openai', 'azure', 'huggingface', 'voyage']
+        # All cases are exhaustively covered
+        match self.embedding.provider:
+            case 'ollama':
+                return self.embedding.ollama_truncate
+            case 'voyage':
+                return self.embedding.voyage_truncation
+            case 'openai' | 'azure':
+                return False  # OpenAI/Azure always error on exceed
+            case 'huggingface':
+                return True  # HuggingFace always silently truncates
 
 
 @lru_cache
