@@ -38,7 +38,7 @@ class TestServerToolRegistration:
 
             settings = AppSettings()
 
-            assert settings.enable_semantic_search is False
+            assert settings.semantic_search.enabled is False
 
     @pytest.mark.asyncio
     async def test_fts_tool_registration_condition(self, tmp_path: Path) -> None:
@@ -56,7 +56,7 @@ class TestServerToolRegistration:
 
             settings = AppSettings()
 
-            assert settings.enable_fts is True
+            assert settings.fts.enabled is True
 
     @pytest.mark.asyncio
     async def test_hybrid_search_requires_at_least_one_mode(self, tmp_path: Path) -> None:
@@ -77,9 +77,9 @@ class TestServerToolRegistration:
 
             # Hybrid is enabled in settings, but tool won't register
             # because neither FTS nor semantic is available
-            assert settings.enable_hybrid_search is True
-            assert settings.enable_fts is False
-            assert settings.enable_semantic_search is False
+            assert settings.hybrid_search.enabled is True
+            assert settings.fts.enabled is False
+            assert settings.semantic_search.enabled is False
 
     @pytest.mark.asyncio
     async def test_all_search_modes_enabled(self, tmp_path: Path) -> None:
@@ -98,9 +98,9 @@ class TestServerToolRegistration:
 
             settings = AppSettings()
 
-            assert settings.enable_fts is True
-            assert settings.enable_semantic_search is True
-            assert settings.enable_hybrid_search is True
+            assert settings.fts.enabled is True
+            assert settings.semantic_search.enabled is True
+            assert settings.hybrid_search.enabled is True
 
 
 class TestServerConfigurationSettings:
@@ -123,7 +123,7 @@ class TestServerConfigurationSettings:
             from app.settings import AppSettings
 
             settings = AppSettings()
-            assert settings.log_level == 'ERROR'
+            assert settings.logging.level == 'ERROR'
 
     def test_log_level_override(self, tmp_path: Path) -> None:
         """Test log level can be overridden."""
@@ -138,7 +138,7 @@ class TestServerConfigurationSettings:
             from app.settings import AppSettings
 
             settings = AppSettings()
-            assert settings.log_level == 'DEBUG'
+            assert settings.logging.level == 'DEBUG'
 
     def test_fts_language_default(self, tmp_path: Path) -> None:
         """Test default FTS language is english."""
@@ -152,7 +152,7 @@ class TestServerConfigurationSettings:
             from app.settings import AppSettings
 
             settings = AppSettings()
-            assert settings.fts_language == 'english'
+            assert settings.fts.language == 'english'
 
     def test_hybrid_rrf_k_default(self, tmp_path: Path) -> None:
         """Test default RRF k parameter is 60."""
@@ -166,7 +166,7 @@ class TestServerConfigurationSettings:
             from app.settings import AppSettings
 
             settings = AppSettings()
-            assert settings.hybrid_rrf_k == 60
+            assert settings.hybrid_search.rrf_k == 60
 
     def test_embedding_dim_default(self, tmp_path: Path) -> None:
         """Test default embedding dimension is 1024."""
@@ -345,10 +345,10 @@ class TestLifespanErrorHandling:
 
         # Mock settings - ENABLE_EMBEDDING_GENERATION=true (default)
         mock_settings = MagicMock()
-        mock_settings.enable_embedding_generation = True
-        mock_settings.enable_semantic_search = True
-        mock_settings.enable_fts = False
-        mock_settings.enable_hybrid_search = False
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.semantic_search.enabled = True
+        mock_settings.fts.enabled = False
+        mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
 
         # Store and restore globals
@@ -409,10 +409,10 @@ class TestLifespanErrorHandling:
 
         # Mock settings - ENABLE_EMBEDDING_GENERATION=false (user explicitly disabled)
         mock_settings = MagicMock()
-        mock_settings.enable_embedding_generation = False
-        mock_settings.enable_semantic_search = False  # Doesn't matter when embeddings disabled
-        mock_settings.enable_fts = False
-        mock_settings.enable_hybrid_search = False
+        mock_settings.embedding.generation_enabled = False
+        mock_settings.semantic_search.enabled = False  # Doesn't matter when embeddings disabled
+        mock_settings.fts.enabled = False
+        mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
 
         # Store and restore globals
@@ -469,10 +469,10 @@ class TestLifespanErrorHandling:
 
         # Mock settings - disable embedding generation to avoid initialization
         mock_settings = MagicMock()
-        mock_settings.enable_embedding_generation = False
-        mock_settings.enable_semantic_search = False
-        mock_settings.enable_fts = False
-        mock_settings.enable_hybrid_search = False
+        mock_settings.embedding.generation_enabled = False
+        mock_settings.semantic_search.enabled = False
+        mock_settings.fts.enabled = False
+        mock_settings.hybrid_search.enabled = False
 
         original_backend = app.startup._backend
         original_repos = app.startup._repositories
@@ -532,10 +532,10 @@ class TestLifespanErrorHandling:
 
         # Mock settings - enable embedding generation
         mock_settings = MagicMock()
-        mock_settings.enable_embedding_generation = True
-        mock_settings.enable_semantic_search = True
-        mock_settings.enable_fts = False
-        mock_settings.enable_hybrid_search = False
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.semantic_search.enabled = True
+        mock_settings.fts.enabled = False
+        mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
 
         original_backend = app.startup._backend

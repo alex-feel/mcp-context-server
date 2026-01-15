@@ -34,7 +34,7 @@ class TestApplyChunkingMigration:
 
         # Mock settings with semantic search disabled
         mock_settings = MagicMock()
-        mock_settings.enable_semantic_search = False
+        mock_settings.semantic_search.enabled = False
 
         with patch('app.migrations.chunking.settings', mock_settings):
             # Call should return early without doing anything

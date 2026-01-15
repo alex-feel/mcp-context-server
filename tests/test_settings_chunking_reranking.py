@@ -271,8 +271,8 @@ class TestAppSettingsIntegration:
         settings = AppSettings()
         assert settings.chunking.enabled is True
         assert settings.reranking.enabled is True
-        assert settings.hybrid_rrf_overfetch == 2
-        assert settings.search_default_sort_by == 'relevance'
+        assert settings.hybrid_search.rrf_overfetch == 2
+        assert settings.search.default_sort_by == 'relevance'
 
     def test_hybrid_rrf_overfetch_minimum_valid(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -280,7 +280,7 @@ class TestAppSettingsIntegration:
         """Minimum valid hybrid_rrf_overfetch should pass."""
         monkeypatch.setenv('HYBRID_RRF_OVERFETCH', '1')
         settings = AppSettings()
-        assert settings.hybrid_rrf_overfetch == 1
+        assert settings.hybrid_search.rrf_overfetch == 1
 
     def test_hybrid_rrf_overfetch_maximum_valid(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -288,7 +288,7 @@ class TestAppSettingsIntegration:
         """Maximum valid hybrid_rrf_overfetch should pass."""
         monkeypatch.setenv('HYBRID_RRF_OVERFETCH', '10')
         settings = AppSettings()
-        assert settings.hybrid_rrf_overfetch == 10
+        assert settings.hybrid_search.rrf_overfetch == 10
 
     def test_hybrid_rrf_overfetch_below_minimum_fails(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -310,7 +310,7 @@ class TestAppSettingsIntegration:
         """search_default_sort_by 'relevance' should be valid."""
         monkeypatch.setenv('SEARCH_DEFAULT_SORT_BY', 'relevance')
         settings = AppSettings()
-        assert settings.search_default_sort_by == 'relevance'
+        assert settings.search.default_sort_by == 'relevance'
 
     def test_sort_by_invalid_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Invalid search_default_sort_by should fail."""

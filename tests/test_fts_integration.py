@@ -898,8 +898,8 @@ class TestFtsGracefulDegradation:
             patch('app.migrations.fts._fts_migration_status', migration_status),
             patch('app.server.settings') as mock_settings,
         ):
-            mock_settings.enable_fts = True
-            mock_settings.fts_language = 'english'
+            mock_settings.fts.enabled = True
+            mock_settings.fts.language = 'english'
 
             # Import after patching to get patched version
             from app.server import fts_search_context
@@ -947,8 +947,8 @@ class TestFtsGracefulDegradation:
             patch('app.migrations.fts._fts_migration_status', migration_status),
             patch('app.server.settings') as mock_settings,
         ):
-            mock_settings.enable_fts = True
-            mock_settings.fts_language = 'english'
+            mock_settings.fts.enabled = True
+            mock_settings.fts.language = 'english'
 
             from app.server import fts_search_context
 
@@ -982,8 +982,8 @@ class TestFtsGracefulDegradation:
             patch('app.migrations.fts._fts_migration_status', migration_status),
             patch('app.server.settings') as mock_settings,
         ):
-            mock_settings.enable_fts = True
-            mock_settings.fts_language = 'german'
+            mock_settings.fts.enabled = True
+            mock_settings.fts.language = 'german'
 
             from app.server import fts_search_context
 

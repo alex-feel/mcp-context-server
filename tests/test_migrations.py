@@ -33,7 +33,7 @@ class TestApplySemanticSearchMigration:
 
         # Mock settings directly since it's already loaded at import time
         mock_settings = MagicMock()
-        mock_settings.enable_semantic_search = False
+        mock_settings.semantic_search.enabled = False
 
         with patch('app.migrations.semantic.settings', mock_settings):
             # Call should return early without doing anything
@@ -439,7 +439,7 @@ class TestApplyFtsMigration:
 
         # Mock settings
         mock_settings = MagicMock()
-        mock_settings.enable_fts = True
+        mock_settings.fts.enabled = True
 
         # Patch Path.exists to return False for FTS migration file
         original_exists = Path.exists

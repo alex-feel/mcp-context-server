@@ -81,7 +81,7 @@ from app.logger_config import config_logger
 from app.settings import get_settings
 
 _test_settings = get_settings()
-config_logger(_test_settings.log_level)
+config_logger(_test_settings.logging.level)
 
 # Now safe to import app modules
 import app.startup
@@ -219,7 +219,7 @@ requires_flashrank = pytest.mark.skipif(
 def is_fts_enabled() -> bool:
     """Check if FTS is enabled in environment."""
     from app.settings import get_settings
-    return get_settings().enable_fts
+    return get_settings().fts.enabled
 
 
 requires_fts = pytest.mark.skipif(
@@ -563,6 +563,8 @@ def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> 
             # CRITICAL: Patch factory.get_settings to prevent lazy backend creation from reading environment
             patch('app.backends.factory.get_settings', return_value=test_settings),
             patch('app.server.DB_PATH', temp_db_path),
+            # CRITICAL: Patch startup.DB_PATH - ensure_backend() uses this for lazy initialization
+            patch('app.startup.DB_PATH', temp_db_path),
             # Patch MAX_IMAGE_SIZE_MB and MAX_TOTAL_SIZE_MB where they are used (in app.tools.context)
             patch('app.tools.context.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
             patch('app.tools.context.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),

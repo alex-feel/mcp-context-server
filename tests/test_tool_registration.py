@@ -32,7 +32,7 @@ requires_sqlite_vec = pytest.mark.skipif(
 class TestIsToolDisabled:
     """Tests for is_tool_disabled().
 
-    Note: is_tool_disabled uses settings.disabled_tools which is a property
+    Note: is_tool_disabled uses settings.tools.disabled which is a property
     computed from the environment at settings load time. We mock the settings
     object directly to test the function behavior.
     """
@@ -40,7 +40,7 @@ class TestIsToolDisabled:
     def test_returns_false_when_not_in_list(self) -> None:
         """Test tool not in DISABLED_TOOLS returns False."""
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = {'delete_context', 'update_context'}
+        mock_settings.tools.disabled = {'delete_context', 'update_context'}
 
         with patch('app.tools.settings', mock_settings):
             from app.tools import is_tool_disabled
@@ -51,7 +51,7 @@ class TestIsToolDisabled:
     def test_returns_true_when_in_list(self) -> None:
         """Test tool in DISABLED_TOOLS returns True."""
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = {'delete_context', 'update_context'}
+        mock_settings.tools.disabled = {'delete_context', 'update_context'}
 
         with patch('app.tools.settings', mock_settings):
             from app.tools import is_tool_disabled
@@ -62,7 +62,7 @@ class TestIsToolDisabled:
     def test_returns_false_when_list_empty(self) -> None:
         """Test returns False when DISABLED_TOOLS is empty."""
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = set()
+        mock_settings.tools.disabled = set()
 
         with patch('app.tools.settings', mock_settings):
             from app.tools import is_tool_disabled
@@ -74,7 +74,7 @@ class TestIsToolDisabled:
         """Test tool matching is case-insensitive."""
         mock_settings = MagicMock()
         # Settings stores lowercase, function converts to lowercase
-        mock_settings.disabled_tools = {'delete_context'}
+        mock_settings.tools.disabled = {'delete_context'}
 
         with patch('app.tools.settings', mock_settings):
             from app.tools import is_tool_disabled
@@ -96,7 +96,7 @@ class TestRegisterTool:
         """Test tool registered when not disabled."""
         mock_mcp = MagicMock()
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = set()
+        mock_settings.tools.disabled = set()
 
         async def dummy_tool() -> dict[str, Any]:
             return {'success': True}
@@ -113,7 +113,7 @@ class TestRegisterTool:
         """Test tool not registered when disabled."""
         mock_mcp = MagicMock()
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = {'dummy_tool'}
+        mock_settings.tools.disabled = {'dummy_tool'}
 
         async def dummy_tool() -> dict[str, Any]:
             return {'success': True}
@@ -130,7 +130,7 @@ class TestRegisterTool:
         """Test tool name defaults to function name."""
         mock_mcp = MagicMock()
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = set()
+        mock_settings.tools.disabled = set()
 
         async def my_custom_tool() -> dict[str, Any]:
             return {'success': True}
@@ -147,7 +147,7 @@ class TestRegisterTool:
         """Test explicit name overrides function name for disabled check."""
         mock_mcp = MagicMock()
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = {'explicit_name'}  # Disable by explicit name
+        mock_settings.tools.disabled = {'explicit_name'}  # Disable by explicit name
 
         async def my_func() -> dict[str, Any]:
             return {'success': True}
@@ -166,7 +166,7 @@ class TestRegisterTool:
         mock_decorator = MagicMock(return_value=lambda f: f)
         mock_mcp.tool.return_value = mock_decorator
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = set()
+        mock_settings.tools.disabled = set()
 
         async def store_context() -> dict[str, Any]:
             return {'success': True}
@@ -186,7 +186,7 @@ class TestRegisterTool:
         """Test return value indicates registration."""
         mock_mcp = MagicMock()
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = set()
+        mock_settings.tools.disabled = set()
 
         async def test_tool() -> dict[str, Any]:
             return {'success': True}
@@ -202,7 +202,7 @@ class TestRegisterTool:
         """Test return value indicates skip."""
         mock_mcp = MagicMock()
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = {'test_tool'}
+        mock_settings.tools.disabled = {'test_tool'}
 
         async def test_tool() -> dict[str, Any]:
             return {'success': True}
@@ -221,7 +221,7 @@ class TestDisabledToolsConfiguration:
     def test_multiple_tools_can_be_disabled(self) -> None:
         """Test multiple tools can be disabled via settings."""
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = {
+        mock_settings.tools.disabled = {
             'delete_context',
             'update_context',
             'delete_context_batch',
@@ -238,7 +238,7 @@ class TestDisabledToolsConfiguration:
     def test_empty_disabled_tools_enables_all(self) -> None:
         """Test all tools enabled when DISABLED_TOOLS empty."""
         mock_settings = MagicMock()
-        mock_settings.disabled_tools = set()
+        mock_settings.tools.disabled = set()
 
         with patch('app.tools.settings', mock_settings):
             from app.tools import is_tool_disabled

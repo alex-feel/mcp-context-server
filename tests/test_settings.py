@@ -72,7 +72,7 @@ class TestFtsLanguageValidation:
         for lang in valid_languages:
             with env_var('FTS_LANGUAGE', lang):
                 settings = AppSettings()
-                assert settings.fts_language == lang.lower(), f'Language {lang} should be accepted'
+                assert settings.fts.language == lang.lower(), f'Language {lang} should be accepted'
 
     def test_valid_languages_case_insensitive(self) -> None:
         """Test that language validation is case-insensitive."""
@@ -89,7 +89,7 @@ class TestFtsLanguageValidation:
         for input_lang, expected_output in case_variations:
             with env_var('FTS_LANGUAGE', input_lang):
                 settings = AppSettings()
-                assert settings.fts_language == expected_output, (
+                assert settings.fts.language == expected_output, (
                     f'Language {input_lang} should be normalized to {expected_output}'
                 )
 
@@ -134,19 +134,19 @@ class TestFtsLanguageValidation:
         # Ensure FTS_LANGUAGE is not set
         with env_var('FTS_LANGUAGE', None):
             settings = AppSettings()
-            assert settings.fts_language == 'english'
+            assert settings.fts.language == 'english'
 
     def test_fts_language_via_environment_variable(self) -> None:
         """Test that FTS_LANGUAGE can be set via environment variable."""
         # Test valid language via env var
         with env_var('FTS_LANGUAGE', 'german'):
             settings = AppSettings()
-            assert settings.fts_language == 'german'
+            assert settings.fts.language == 'german'
 
         # Test case normalization via env var
         with env_var('FTS_LANGUAGE', 'FRENCH'):
             settings = AppSettings()
-            assert settings.fts_language == 'french'
+            assert settings.fts.language == 'french'
 
     def test_invalid_language_via_environment_variable(self) -> None:
         """Test that invalid FTS_LANGUAGE via env var raises error."""
@@ -205,4 +205,4 @@ class TestFtsLanguageValidation:
         for lang in valid_languages:
             with env_var('FTS_LANGUAGE', lang):
                 settings = AppSettings()
-                assert settings.fts_language == lang
+                assert settings.fts.language == lang

@@ -517,8 +517,8 @@ class TestSemanticSearchDateFiltering:
             patch('app.startup._embedding_provider', mock_embedding_provider),
             patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             # Import and get the actual function
             import app.server
@@ -557,8 +557,8 @@ class TestSemanticSearchDateFiltering:
             patch('app.startup._embedding_provider', mock_embedding_provider),
             patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
             semantic_search = app.tools.semantic_search_context
@@ -593,8 +593,8 @@ class TestSemanticSearchDateFiltering:
             patch('app.startup._embedding_provider', mock_embedding_provider),
             patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
             semantic_search = app.tools.semantic_search_context
@@ -620,7 +620,7 @@ class TestSemanticSearchDateFiltering:
             patch('app.startup._embedding_provider', mock_embedding_provider),
             patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
+            mock_settings.semantic_search.enabled = True
 
             import app.server
             semantic_search = app.tools.semantic_search_context
@@ -642,7 +642,7 @@ class TestSemanticSearchDateFiltering:
             patch('app.startup._embedding_provider', mock_embedding_provider),
             patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
+            mock_settings.semantic_search.enabled = True
 
             import app.server
             semantic_search = app.tools.semantic_search_context
@@ -675,8 +675,8 @@ class TestSemanticSearchDateFiltering:
             patch('app.startup._embedding_provider', mock_embedding_provider),
             patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
             semantic_search = app.tools.semantic_search_context
@@ -709,8 +709,8 @@ class TestSemanticSearchDateFiltering:
             patch('app.startup._embedding_provider', mock_embedding_provider),
             patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
             semantic_search = app.tools.semantic_search_context

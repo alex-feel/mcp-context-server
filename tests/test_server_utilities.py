@@ -731,7 +731,7 @@ class TestValidatePoolTimeoutForEmbedding:
         mock_settings = MagicMock()
         mock_settings.storage = mock_storage_settings
         mock_settings.embedding = mock_embedding_settings
-        mock_settings.enable_semantic_search = True
+        mock_settings.semantic_search.enabled = True
 
         with patch('app.startup.validation.settings', mock_settings):
             validate_pool_timeout_for_embedding()
@@ -759,7 +759,7 @@ class TestValidatePoolTimeoutForEmbedding:
         mock_settings = MagicMock()
         mock_settings.storage = mock_storage_settings
         mock_settings.embedding = mock_embedding_settings
-        mock_settings.enable_semantic_search = True
+        mock_settings.semantic_search.enabled = True
 
         with patch('app.startup.validation.settings', mock_settings):
             validate_pool_timeout_for_embedding()
@@ -777,7 +777,7 @@ class TestValidatePoolTimeoutForEmbedding:
         caplog.set_level(logging.WARNING)
 
         mock_settings = MagicMock()
-        mock_settings.enable_semantic_search = False
+        mock_settings.semantic_search.enabled = False
 
         with patch('app.startup.validation.settings', mock_settings):
             validate_pool_timeout_for_embedding()
