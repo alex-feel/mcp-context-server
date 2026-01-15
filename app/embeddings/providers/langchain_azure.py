@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 from app.embeddings.retry import with_retry_and_timeout
+from app.embeddings.tracing import traced_embedding
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class AzureEmbeddingProvider:
         self._embeddings = None
         logger.info('Azure OpenAI embedding provider shut down')
 
+    @traced_embedding
     async def embed_query(self, text: str) -> list[float]:
         """Generate single embedding using async method."""
         if self._embeddings is None:
@@ -107,6 +109,7 @@ class AzureEmbeddingProvider:
 
         return embedding
 
+    @traced_embedding
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Generate batch embeddings using async method."""
         if self._embeddings is None:

@@ -55,6 +55,7 @@ from app.startup import get_backend
 from app.startup import get_embedding_provider
 from app.startup import get_reranking_provider
 from app.startup import init_database
+from app.startup import propagate_langsmith_settings
 from app.startup import set_backend
 from app.startup import set_chunking_service
 from app.startup import set_embedding_provider
@@ -224,7 +225,11 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, delete_context)
         register_tool(mcp, delete_context_batch)
 
-        # 11) Initialize embedding generation if enabled (BEFORE semantic search)
+        # 11) Propagate LangSmith settings to os.environ BEFORE embedding provider init
+        # This enables LangSmith SDK auto-detection when users configure via .env file
+        propagate_langsmith_settings()
+
+        # 12) Initialize embedding generation if enabled (BEFORE semantic search)
         # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
         # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
         if settings.embedding.generation_enabled:
@@ -287,7 +292,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_embedding_provider(None)
             logger.info('Embedding generation disabled (ENABLE_EMBEDDING_GENERATION=false)')
 
-        # 12) Initialize reranking provider if enabled
+        # 13) Initialize reranking provider if enabled
         # Reranking improves search precision by re-scoring results with a cross-encoder
         if settings.reranking.enabled:
             try:
@@ -327,7 +332,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_reranking_provider(None)
             logger.info('Reranking disabled (ENABLE_RERANKING=false)')
 
-        # 13) Initialize chunking service if enabled
+        # 14) Initialize chunking service if enabled
         # Chunking splits long documents into smaller pieces for better semantic search quality
         if settings.chunking.enabled:
             try:
@@ -360,7 +365,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_chunking_service(None)
             logger.info('Chunking disabled (ENABLE_CHUNKING=false)')
 
-        # 14) Register semantic search tool if enabled AND embedding provider is available
+        # 15) Register semantic search tool if enabled AND embedding provider is available
         # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
@@ -377,7 +382,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
-        # 15) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 16) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.fts.enabled:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
@@ -394,7 +399,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
-        # 16) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 17) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.hybrid_search.enabled:
             semantic_available_for_hybrid = (
                 settings.semantic_search.enabled and get_embedding_provider() is not None

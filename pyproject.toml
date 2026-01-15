@@ -40,7 +40,6 @@ embeddings-ollama = [
     "pgvector>=0.4.0",
     "langchain-ollama>=0.3.0",
     "langchain-text-splitters>=0.3.0",
-    "langsmith>=0.4.0",
 ]
 embeddings-openai = [
     "numpy>=2.4.1",
@@ -48,7 +47,6 @@ embeddings-openai = [
     "pgvector>=0.4.0",
     "langchain-openai>=0.3.0",
     "langchain-text-splitters>=0.3.0",
-    "langsmith>=0.4.0",
 ]
 embeddings-azure = [
     "numpy>=2.4.1",
@@ -56,7 +54,6 @@ embeddings-azure = [
     "pgvector>=0.4.0",
     "langchain-openai>=0.3.0",  # Azure uses same package as OpenAI
     "langchain-text-splitters>=0.3.0",
-    "langsmith>=0.4.0",
 ]
 embeddings-huggingface = [
     "numpy>=2.4.1",
@@ -64,7 +61,6 @@ embeddings-huggingface = [
     "pgvector>=0.4.0",
     "langchain-huggingface>=0.2.0",
     "langchain-text-splitters>=0.3.0",
-    "langsmith>=0.4.0",
 ]
 embeddings-voyage = [
     "numpy>=2.4.1",
@@ -72,7 +68,6 @@ embeddings-voyage = [
     "pgvector>=0.4.0",
     "langchain-voyageai>=0.3.0",
     "langchain-text-splitters>=0.3.0",
-    "langsmith>=0.4.0",
 ]
 
 # Convenience: all embedding providers (for testing/development)
@@ -85,7 +80,6 @@ embeddings-all = [
     "langchain-huggingface>=0.2.0",
     "langchain-voyageai>=0.3.0",
     "langchain-text-splitters>=0.3.0",
-    "langsmith>=0.4.0",
 ]
 
 # Reranking providers
@@ -97,6 +91,11 @@ reranking = [
 search-quality = [
     "langchain-text-splitters>=0.3.0",
     "flashrank>=0.2.0",
+]
+
+# LangSmith tracing (optional observability)
+langsmith = [
+    "langsmith>=0.4.0",
 ]
 
 [dependency-groups]

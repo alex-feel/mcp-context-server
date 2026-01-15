@@ -391,13 +391,29 @@ LangSmith provides observability for embedding operations, including:
 - Error debugging
 - Usage analytics
 
+### Installation
+
+LangSmith tracing requires the optional `langsmith` dependency:
+
+```bash
+# For local development
+uv sync --extra langsmith
+
+# For uvx (combined with embeddings, e.g., Ollama)
+uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,langsmith,reranking]" mcp-context-server
+```
+
+**Graceful Degradation**: If `LANGSMITH_TRACING=true` but the `langsmith` package is not installed, the server will log a warning once and continue operating without tracing.
+
 ### Setup
 
 1. **Create account** at [smith.langchain.com](https://smith.langchain.com)
 
 2. **Get API key** from settings
 
-3. **Enable tracing** in your configuration:
+3. **Install dependencies**: `uv sync --extra langsmith`
+
+4. **Enable tracing** in your configuration:
 
 ```json
 {

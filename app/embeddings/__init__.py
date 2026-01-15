@@ -26,6 +26,7 @@ from app.embeddings.factory import create_embedding_provider
 from app.embeddings.retry import EmbeddingRetryExhaustedError
 from app.embeddings.retry import EmbeddingTimeoutError
 from app.embeddings.retry import with_retry_and_timeout
+from app.embeddings.tracing import traced_embedding
 
 __all__ = [
     'EmbeddingProvider',
@@ -33,4 +34,5 @@ __all__ = [
     'EmbeddingRetryExhaustedError',
     'EmbeddingTimeoutError',
     'with_retry_and_timeout',
+    'traced_embedding',
 ]

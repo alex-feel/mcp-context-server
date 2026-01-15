@@ -156,7 +156,7 @@ For more details on environment variable expansion, see: https://docs.claude.com
 - **HUGGINGFACEHUB_API_TOKEN**: HuggingFace Hub token (for `huggingface` provider)
 - **VOYAGE_API_KEY**: Voyage AI API key (for `voyage` provider)
 
-**LangSmith Tracing** (optional observability):
+**LangSmith Tracing** (optional observability - requires `langsmith` extra: `uv sync --extra langsmith`):
 - **LANGSMITH_TRACING**: Enable LangSmith tracing (true/false) - defaults to false
 - **LANGSMITH_API_KEY**: LangSmith API key
 - **LANGSMITH_PROJECT**: Project name for grouping traces - defaults to `mcp-context-server`

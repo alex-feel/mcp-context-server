@@ -302,6 +302,42 @@ async def ensure_repositories() -> RepositoryContainer:
     return _repositories
 
 
+def propagate_langsmith_settings() -> None:
+    """Propagate LangSmith settings to os.environ for SDK auto-detection.
+
+    LangSmith SDK reads environment variables directly, not from Pydantic settings.
+    This function bridges the gap when users configure via .env file or settings.
+
+    Environment variables set (when tracing enabled):
+    - LANGSMITH_TRACING: 'true'
+    - LANGSMITH_API_KEY: API key (only if provided)
+    - LANGSMITH_ENDPOINT: API endpoint URL
+    - LANGSMITH_PROJECT: Project name for grouping traces
+
+    Graceful degradation:
+    - Does nothing if tracing disabled
+    - Does nothing if langsmith package not installed (decorator handles this)
+    """
+    import os
+
+    langsmith_settings = settings.langsmith
+    if not langsmith_settings.tracing:
+        return  # Tracing disabled, no propagation needed
+
+    # Propagate ALL FOUR variables
+    os.environ['LANGSMITH_TRACING'] = 'true'
+    os.environ['LANGSMITH_ENDPOINT'] = langsmith_settings.endpoint
+    os.environ['LANGSMITH_PROJECT'] = langsmith_settings.project
+
+    if langsmith_settings.api_key:
+        os.environ['LANGSMITH_API_KEY'] = langsmith_settings.api_key.get_secret_value()
+
+    logger.info(
+        f'LangSmith tracing enabled: project={langsmith_settings.project}, '
+        f'endpoint={langsmith_settings.endpoint}',
+    )
+
+
 __all__ = [
     # Configuration constants
     'DB_PATH',
@@ -329,6 +365,7 @@ __all__ = [
     'init_database',
     'ensure_backend',
     'ensure_repositories',
+    'propagate_langsmith_settings',
     # Re-exported types
     'RerankingProvider',
     'ChunkingService',
