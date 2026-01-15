@@ -367,7 +367,7 @@ async def delete_context(
 
         if context_ids:
             # Delete embeddings first (explicit cleanup)
-            if settings.enable_semantic_search:
+            if settings.semantic_search.enabled:
                 for context_id in context_ids:
                     try:
                         await repos.embeddings.delete(context_id)
@@ -380,7 +380,7 @@ async def delete_context(
 
         elif thread_id:
             # Get all context IDs in thread for embedding cleanup
-            if settings.enable_semantic_search:
+            if settings.semantic_search.enabled:
                 try:
                     # Get all context IDs in this thread
                     results = await repos.context.search_contexts(

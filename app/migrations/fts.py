@@ -115,7 +115,7 @@ async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'Rep
     # Import here to avoid circular import (repos type hint uses string annotation above)
 
     # Skip if FTS is not enabled
-    if not settings.enable_fts:
+    if not settings.fts.enabled:
         logger.debug('FTS disabled (ENABLE_FTS=false), skipping migration')
         return
 
@@ -169,7 +169,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
     if backend_type == 'sqlite':
         # Check current tokenizer
         current_tokenizer = await fts_repo.get_current_tokenizer()
-        desired_tokenizer = await fts_repo.get_desired_tokenizer(settings.fts_language)
+        desired_tokenizer = await fts_repo.get_desired_tokenizer(settings.fts.language)
 
         if current_tokenizer != desired_tokenizer:
             logger.info(
@@ -209,7 +209,7 @@ async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type
     else:  # postgresql
         # Check current language
         current_language = await fts_repo.get_current_language()
-        desired_language = settings.fts_language
+        desired_language = settings.fts.language
 
         if current_language and current_language != desired_language:
             logger.info(
@@ -270,7 +270,7 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         # Determine tokenizer based on language setting
         # - 'porter unicode61' for English (enables stemming: "running" matches "run")
         # - 'unicode61' for other languages (multilingual support, no stemming)
-        tokenizer = 'porter unicode61' if settings.fts_language.lower() == 'english' else 'unicode61'
+        tokenizer = 'porter unicode61' if settings.fts.language.lower() == 'english' else 'unicode61'
         migration_sql = migration_sql.replace('{TOKENIZER}', tokenizer)
 
         def _apply_fts_sqlite(conn: sqlite3.Connection) -> None:
@@ -288,7 +288,7 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
             raise RuntimeError(error_msg)
 
         migration_sql = migration_path.read_text(encoding='utf-8')
-        migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts_language)
+        migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts.language)
 
         async def _apply_fts_pg(conn: asyncpg.Connection) -> None:
             statements: list[str] = []
@@ -316,4 +316,4 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
                     await conn.execute(stmt)
 
         await manager.execute_write(cast(Any, _apply_fts_pg))
-        logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts_language}')
+        logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts.language}')

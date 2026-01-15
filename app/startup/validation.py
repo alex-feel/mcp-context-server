@@ -39,7 +39,7 @@ def validate_pool_timeout_for_embedding() -> None:
     - Exponential backoff delays between retry attempts
     - 10% safety margin for network/processing overhead
     """
-    if not settings.enable_semantic_search:
+    if not settings.semantic_search.enabled:
         return  # Skip validation if semantic search is disabled
 
     # Calculate minimum required timeout

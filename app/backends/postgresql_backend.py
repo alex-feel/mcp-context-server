@@ -282,7 +282,7 @@ class PostgreSQLBackend:
         try:
             # Pre-create pgvector extension if semantic search enabled
             # This prevents "unknown type: public.vector" warnings during pool initialization
-            if settings.enable_semantic_search:
+            if settings.semantic_search.enabled:
                 await self._ensure_pgvector_extension()
 
             # Define connection initialization function for pgvector support

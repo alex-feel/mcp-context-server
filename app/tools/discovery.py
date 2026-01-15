@@ -94,7 +94,7 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         stats['connection_metrics'] = manager.get_metrics()
 
         # Add semantic search metrics if available
-        if settings.enable_semantic_search:
+        if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
                 embedding_stats = await repos.embeddings.get_statistics()
                 logger.debug(f'[STATISTICS] Embedding repository stats: {embedding_stats}')
@@ -122,14 +122,14 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
             }
 
         # Add FTS metrics if available
-        if settings.enable_fts:
+        if settings.fts.enabled:
             fts_available = await repos.fts.is_available()
             if fts_available:
                 fts_stats = await repos.fts.get_statistics()
                 stats['fts'] = {
                     'enabled': True,
                     'available': True,
-                    'language': settings.fts_language,
+                    'language': settings.fts.language,
                     'backend': fts_stats['backend'],
                     'engine': fts_stats['engine'],
                     'indexed_entries': fts_stats['indexed_entries'],

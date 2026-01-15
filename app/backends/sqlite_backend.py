@@ -488,7 +488,7 @@ class SQLiteBackend:
             It will gracefully skip loading if the package is not available.
         """
         # Only attempt to load if semantic search is enabled
-        if not settings.enable_semantic_search:
+        if not settings.semantic_search.enabled:
             return
 
         # Check if already loaded to avoid duplicate loading

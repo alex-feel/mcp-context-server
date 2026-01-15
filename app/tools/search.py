@@ -295,7 +295,7 @@ async def _fts_search_raw(
         FtsValidationError: If query or filters are invalid.
     """
     # Check if FTS is enabled
-    if not settings.enable_fts:
+    if not settings.fts.enabled:
         raise ToolError(
             'Full-text search is not available. '
             'Set ENABLE_FTS=true to enable this feature.',
@@ -338,7 +338,7 @@ async def _fts_search_raw(
             metadata=metadata,
             metadata_filters=metadata_filters,
             highlight=actual_highlight,
-            language=settings.fts_language,
+            language=settings.fts.language,
             explain_query=explain_query,
         )
     except FtsValidationError:
@@ -792,7 +792,7 @@ async def fts_search_context(
             remaining = 60  # Default estimate if no timing info available
 
         old_lang = fts_status.old_language or 'unknown'
-        new_lang = fts_status.new_language or settings.fts_language
+        new_lang = fts_status.new_language or settings.fts.language
 
         return {
             'migration_in_progress': True,
@@ -848,7 +848,7 @@ async def fts_search_context(
                 'mode': mode,
                 'results': [],
                 'count': 0,
-                'language': settings.fts_language,
+                'language': settings.fts.language,
                 'error': e.message,
                 'validation_errors': e.validation_errors,
             }
@@ -915,7 +915,7 @@ async def fts_search_context(
             'mode': mode,
             'results': final_results,
             'count': len(final_results),
-            'language': settings.fts_language,
+            'language': settings.fts.language,
         }
         if explain_query:
             response['stats'] = stats
@@ -1029,7 +1029,7 @@ async def hybrid_search_context(
     validate_date_range(start_date, end_date)
 
     # Check if hybrid search is enabled
-    if not settings.enable_hybrid_search:
+    if not settings.hybrid_search.enabled:
         raise ToolError(
             'Hybrid search is not available. '
             'Set ENABLE_HYBRID_SEARCH=true to enable this feature. '
@@ -1041,11 +1041,11 @@ async def hybrid_search_context(
         search_modes = ['fts', 'semantic']
 
     # Use settings default if rrf_k not specified
-    effective_rrf_k = rrf_k if rrf_k is not None else settings.hybrid_rrf_k
+    effective_rrf_k = rrf_k if rrf_k is not None else settings.hybrid_search.rrf_k
 
     # Determine available search modes
-    fts_available = settings.enable_fts
-    semantic_available = settings.enable_semantic_search and get_embedding_provider() is not None
+    fts_available = settings.fts.enabled
+    semantic_available = settings.semantic_search.enabled and get_embedding_provider() is not None
 
     # Filter requested modes to available ones
     available_modes: list[str] = []
@@ -1087,9 +1087,9 @@ async def hybrid_search_context(
         # Chain: limit * hybrid_rrf_overfetch * reranking.overfetch
         reranking_provider = get_reranking_provider()
         if reranking_provider is not None and settings.reranking.enabled:
-            over_fetch_limit = (limit + offset) * settings.hybrid_rrf_overfetch * settings.reranking.overfetch
+            over_fetch_limit = (limit + offset) * settings.hybrid_search.rrf_overfetch * settings.reranking.overfetch
         else:
-            over_fetch_limit = (limit + offset) * settings.hybrid_rrf_overfetch
+            over_fetch_limit = (limit + offset) * settings.hybrid_search.rrf_overfetch
 
         # Determine if we need highlights for internal reranking
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled

@@ -720,7 +720,7 @@ async def delete_context_batch(
         repos = await ensure_repositories()
 
         # Delete embeddings first if context_ids are specified
-        if settings.enable_semantic_search and context_ids:
+        if settings.semantic_search.enabled and context_ids:
             for cid in context_ids:
                 try:
                     await repos.embeddings.delete(cid)

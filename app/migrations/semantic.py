@@ -46,7 +46,7 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
-    if not settings.enable_semantic_search:
+    if not settings.semantic_search.enabled:
         return
 
     # Determine backend type to select correct migration file

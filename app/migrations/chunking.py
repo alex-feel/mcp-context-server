@@ -127,7 +127,7 @@ async def apply_chunking_migration(backend: StorageBackend | None = None) -> Non
         - Must be called after apply_semantic_search_migration()
     """
     # Only apply if semantic search is enabled (embeddings exist)
-    if not settings.enable_semantic_search:
+    if not settings.semantic_search.enabled:
         return
 
     # Determine backend type

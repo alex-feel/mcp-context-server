@@ -33,6 +33,33 @@ class CommonSettings(BaseSettings):
     )
 
 
+class LoggingSettings(CommonSettings):
+    """Application logging configuration."""
+
+    level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(
+        default='ERROR',
+        alias='LOG_LEVEL',
+        description='Application log level',
+    )
+
+
+class ToolManagementSettings(CommonSettings):
+    """MCP tool availability configuration."""
+
+    disabled_raw: str = Field(
+        default='',
+        alias='DISABLED_TOOLS',
+        description='Comma-separated list of tools to disable (e.g., delete_context,update_context)',
+    )
+
+    @property
+    def disabled(self) -> set[str]:
+        """Parse comma-separated string into lowercase set of disabled tool names."""
+        if not self.disabled_raw or not self.disabled_raw.strip():
+            return set()
+        return {t.lower().strip() for t in self.disabled_raw.split(',') if t.strip()}
+
+
 class TransportSettings(CommonSettings):
     """HTTP transport settings for Docker/remote deployments."""
 
@@ -80,6 +107,27 @@ class EmbeddingSettings(CommonSettings):
     All environment variable names follow LangChain documentation conventions
     for maximum compatibility and user familiarity.
     """
+
+    # Embedding generation toggle
+    # CRITICAL: generation_enabled default=True is INTENTIONAL and MUST NOT be changed.
+    #
+    # Rationale:
+    # 1. Embeddings are fundamental infrastructure - users should explicitly opt OUT, not opt IN
+    # 2. Fail-fast semantics prevent silent embedding gaps in stored content
+    # 3. Users who don't want embeddings MUST explicitly set ENABLE_EMBEDDING_GENERATION=false
+    # 4. This ensures no surprises - if embeddings are missing, user explicitly disabled them
+    # 5. ENABLE_SEMANTIC_SEARCH=true requires embeddings; if ENABLE_EMBEDDING_GENERATION=false
+    #    and ENABLE_SEMANTIC_SEARCH=true, semantic_search_context tool will NOT be registered
+    #
+    # DO NOT change this default without understanding the full architectural implications.
+    # This default=True is part of the breaking change in v1.0.0.
+    generation_enabled: bool = Field(
+        default=True,
+        alias='ENABLE_EMBEDDING_GENERATION',
+        description='Enable embedding generation for stored context entries. '
+                    'If true and dependencies are not met, server will NOT start. '
+                    'Set to false to disable embeddings entirely.',
+    )
 
     # Provider selection
     provider: Literal['ollama', 'openai', 'azure', 'huggingface', 'voyage'] = Field(
@@ -382,6 +430,114 @@ class FtsPassageSettings(CommonSettings):
     )
 
 
+class SemanticSearchSettings(CommonSettings):
+    """Semantic search feature configuration.
+
+    Controls whether semantic_search_context tool is registered.
+    Requires embedding provider to be available.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        alias='ENABLE_SEMANTIC_SEARCH',
+        description='Enable semantic search tool registration',
+    )
+
+
+class FtsSettings(CommonSettings):
+    """Full-text search feature configuration.
+
+    Controls FTS tool registration and language/tokenizer settings.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        alias='ENABLE_FTS',
+        description='Enable full-text search functionality',
+    )
+
+    language: str = Field(
+        default='english',
+        alias='FTS_LANGUAGE',
+        description='Language for FTS stemming (e.g., english, german, french)',
+    )
+
+    @field_validator('language')
+    @classmethod
+    def validate_language(cls, v: str) -> str:
+        """Validate FTS language is a known PostgreSQL text search configuration.
+
+        PostgreSQL FTS requires a valid text search configuration. Invalid values
+        cause runtime failures when applying migrations or executing queries.
+        This validator fails fast at startup to prevent runtime errors.
+
+        Returns:
+            str: The validated language name normalized to lowercase.
+
+        Raises:
+            ValueError: If the language is not a valid PostgreSQL text search configuration.
+        """
+        # PostgreSQL built-in text search configurations
+        # Full list: SELECT cfgname FROM pg_ts_config;
+        valid_languages = {
+            'simple', 'arabic', 'armenian', 'basque', 'catalan', 'danish', 'dutch',
+            'english', 'finnish', 'french', 'german', 'greek', 'hindi', 'hungarian',
+            'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian',
+            'portuguese', 'romanian', 'russian', 'serbian', 'spanish', 'swedish',
+            'tamil', 'turkish', 'yiddish',
+        }
+        v_lower = v.lower()
+        if v_lower not in valid_languages:
+            raise ValueError(
+                f"FTS_LANGUAGE='{v}' is not a valid PostgreSQL text search configuration. "
+                f'Valid options: {", ".join(sorted(valid_languages))}',
+            )
+        return v_lower
+
+
+class HybridSearchSettings(CommonSettings):
+    """Hybrid search configuration using Reciprocal Rank Fusion (RRF).
+
+    Combines FTS and semantic search results for improved relevance.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        alias='ENABLE_HYBRID_SEARCH',
+        description='Enable hybrid search combining FTS and semantic search',
+    )
+
+    rrf_k: int = Field(
+        default=60,
+        alias='HYBRID_RRF_K',
+        ge=1,
+        le=1000,
+        description='RRF smoothing constant for hybrid search (default 60)',
+    )
+
+    rrf_overfetch: int = Field(
+        default=2,
+        alias='HYBRID_RRF_OVERFETCH',
+        ge=1,
+        le=10,
+        description='Multiplier for over-fetching results before RRF fusion (default: 2x)',
+    )
+
+
+class SearchSettings(CommonSettings):
+    """General search behavior configuration.
+
+    Settings that apply across all search types (FTS, semantic, hybrid).
+    """
+
+    default_sort_by: Literal['relevance'] = Field(
+        default='relevance',
+        alias='SEARCH_DEFAULT_SORT_BY',
+        description='Default sort order for search results (currently only relevance is supported; '
+                    'created_at and updated_at will be added in future releases)',
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage-related settings with environment variable mapping."""
 
@@ -526,136 +682,27 @@ class StorageSettings(BaseSettings):
 
 
 class AppSettings(CommonSettings):
-    log_level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(
-        default='ERROR',
-        alias='LOG_LEVEL',
-    )
-
+    # Core settings
+    logging: LoggingSettings = Field(default_factory=lambda: LoggingSettings())
+    tools: ToolManagementSettings = Field(default_factory=lambda: ToolManagementSettings())
     storage: StorageSettings = Field(default_factory=lambda: StorageSettings())
 
-    # Tool disabling - stored as raw string to avoid pydantic-settings JSON parsing
-    disabled_tools_raw: str = Field(
-        default='',
-        alias='DISABLED_TOOLS',
-        description='Comma-separated list of tools to disable (e.g., delete_context,update_context)',
-    )
-
-    @property
-    def disabled_tools(self) -> set[str]:
-        """Parse comma-separated string into lowercase set of disabled tool names."""
-        if not self.disabled_tools_raw or not self.disabled_tools_raw.strip():
-            return set()
-        return {t.lower().strip() for t in self.disabled_tools_raw.split(',') if t.strip()}
-
-    # Semantic search settings
-    enable_semantic_search: bool = Field(default=False, alias='ENABLE_SEMANTIC_SEARCH')
-
-    # Embedding generation settings
-    # CRITICAL: enable_embedding_generation default=True is INTENTIONAL and MUST NOT be changed.
-    #
-    # Rationale:
-    # 1. Embeddings are fundamental infrastructure - users should explicitly opt OUT, not opt IN
-    # 2. Fail-fast semantics prevent silent embedding gaps in stored content
-    # 3. Users who don't want embeddings MUST explicitly set ENABLE_EMBEDDING_GENERATION=false
-    # 4. This ensures no surprises - if embeddings are missing, user explicitly disabled them
-    # 5. ENABLE_SEMANTIC_SEARCH=true requires embeddings; if ENABLE_EMBEDDING_GENERATION=false
-    #    and ENABLE_SEMANTIC_SEARCH=true, semantic_search_context tool will NOT be registered
-    #
-    # DO NOT change this default without understanding the full architectural implications.
-    # This default=True is part of the breaking change in v1.0.0.
-    enable_embedding_generation: bool = Field(
-        default=True,
-        alias='ENABLE_EMBEDDING_GENERATION',
-        description='Enable embedding generation for stored context entries. '
-                    'If true and dependencies are not met, server will NOT start. '
-                    'Set to false to disable embeddings entirely.',
-    )
-
-    # Full-text search settings
-    enable_fts: bool = Field(default=False, alias='ENABLE_FTS')
-    fts_language: str = Field(
-        default='english',
-        alias='FTS_LANGUAGE',
-        description='Language for FTS stemming (e.g., english, german, french)',
-    )
-
-    # Hybrid search settings
-    enable_hybrid_search: bool = Field(default=False, alias='ENABLE_HYBRID_SEARCH')
-    hybrid_rrf_k: int = Field(
-        default=60,
-        alias='HYBRID_RRF_K',
-        ge=1,
-        le=1000,
-        description='RRF smoothing constant for hybrid search (default 60)',
-    )
-    hybrid_rrf_overfetch: int = Field(
-        default=2,
-        alias='HYBRID_RRF_OVERFETCH',
-        ge=1,
-        le=10,
-        description='Multiplier for over-fetching results before RRF fusion (default: 2x)',
-    )
-
-    # Search result sorting
-    search_default_sort_by: Literal['relevance'] = Field(
-        default='relevance',
-        alias='SEARCH_DEFAULT_SORT_BY',
-        description='Default sort order for search results (currently only relevance is supported; '
-                    'created_at and updated_at will be added in future releases)',
-    )
-
-    # Chunking settings (nested)
-    chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
-
-    # Reranking settings (nested)
-    reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
-
-    # FTS passage extraction settings (nested)
+    # Search-related settings
+    search: SearchSettings = Field(default_factory=lambda: SearchSettings())
+    semantic_search: SemanticSearchSettings = Field(default_factory=lambda: SemanticSearchSettings())
+    fts: FtsSettings = Field(default_factory=lambda: FtsSettings())
+    hybrid_search: HybridSearchSettings = Field(default_factory=lambda: HybridSearchSettings())
     fts_passage: FtsPassageSettings = Field(default_factory=lambda: FtsPassageSettings())
 
-    # Transport settings
-    transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
-
-    # Auth settings
-    auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
-
-    # Embedding provider settings (new structured settings for Phase 2+)
+    # Embedding and processing settings
     embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())
+    chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
+    reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
 
-    # LangSmith tracing settings
+    # Infrastructure settings
+    transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
+    auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
     langsmith: LangSmithSettings = Field(default_factory=lambda: LangSmithSettings())
-
-    @field_validator('fts_language')
-    @classmethod
-    def validate_fts_language(cls, v: str) -> str:
-        """Validate FTS language is a known PostgreSQL text search configuration.
-
-        PostgreSQL FTS requires a valid text search configuration. Invalid values
-        cause runtime failures when applying migrations or executing queries.
-        This validator fails fast at startup to prevent runtime errors.
-
-        Returns:
-            str: The validated language name normalized to lowercase.
-
-        Raises:
-            ValueError: If the language is not a valid PostgreSQL text search configuration.
-        """
-        # PostgreSQL built-in text search configurations
-        # Full list: SELECT cfgname FROM pg_ts_config;
-        valid_languages = {
-            'simple', 'arabic', 'armenian', 'basque', 'catalan', 'danish', 'dutch',
-            'english', 'finnish', 'french', 'german', 'greek', 'hindi', 'hungarian',
-            'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian',
-            'portuguese', 'romanian', 'russian', 'serbian', 'spanish', 'swedish',
-            'tamil', 'turkish', 'yiddish',
-        }
-        v_lower = v.lower()
-        if v_lower not in valid_languages:
-            raise ValueError(
-                f"FTS_LANGUAGE='{v}' is not a valid PostgreSQL text search configuration. "
-                f'Valid options: {", ".join(sorted(valid_languages))}',
-            )
-        return v_lower
 
     @model_validator(mode='after')
     def validate_chunk_size_vs_context_limit(self) -> Self:

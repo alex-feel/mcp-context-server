@@ -27,7 +27,7 @@ from app.logger_config import config_logger
 from app.settings import get_settings
 
 settings = get_settings()
-config_logger(settings.log_level)
+config_logger(settings.logging.level)
 logger = logging.getLogger(__name__)
 
 # Import startup module for global state access
@@ -227,7 +227,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         # 11) Initialize embedding generation if enabled (BEFORE semantic search)
         # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
         # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
-        if settings.enable_embedding_generation:
+        if settings.embedding.generation_enabled:
             # Step 1: Check vector storage dependencies (provider-agnostic)
             vector_deps_available = await check_vector_storage_dependencies(backend.backend_type)
 
@@ -362,7 +362,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
         # 14) Register semantic search tool if enabled AND embedding provider is available
         # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
-        if settings.enable_semantic_search:
+        if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
                 register_tool(mcp, semantic_search_context)
                 logger.info('[OK] semantic_search_context registered')
@@ -379,7 +379,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
         # 15) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
-        if settings.enable_fts:
+        if settings.fts.enabled:
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
             # The tool itself checks migration status and returns informative response
             register_tool(mcp, fts_search_context)
@@ -395,11 +395,11 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
         # 16) Register Hybrid Search tool if enabled AND at least one search mode is available
-        if settings.enable_hybrid_search:
+        if settings.hybrid_search.enabled:
             semantic_available_for_hybrid = (
-                settings.enable_semantic_search and get_embedding_provider() is not None
+                settings.semantic_search.enabled and get_embedding_provider() is not None
             )
-            fts_available_for_hybrid = settings.enable_fts
+            fts_available_for_hybrid = settings.fts.enabled
 
             if semantic_available_for_hybrid or fts_available_for_hybrid:
                 # DISABLED_TOOLS takes priority over ENABLE_HYBRID_SEARCH

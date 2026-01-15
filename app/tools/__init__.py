@@ -119,7 +119,7 @@ def is_tool_disabled(tool_name: str) -> bool:
     Returns:
         True if tool is disabled, False otherwise
     """
-    return tool_name.lower() in settings.disabled_tools
+    return tool_name.lower() in settings.tools.disabled
 
 
 def register_tool(
