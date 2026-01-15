@@ -58,7 +58,7 @@ class FtsRepository(BaseRepository):
     - SQLite: Uses FTS5 with unicode61 tokenizer and BM25 ranking.
       Note: unicode61 provides multilingual tokenization but NO stemming,
       so "running" will NOT match "run". The language parameter is ignored.
-    - PostgreSQL: Uses tsvector with ts_rank and language-specific stemming
+    - PostgreSQL: Uses tsvector with ts_rank_cd and language-specific stemming
       (supports 29 languages). Stemming means "running" WILL match "run".
     """
 
@@ -526,7 +526,7 @@ class FtsRepository(BaseRepository):
                     ce.metadata,
                     ce.created_at,
                     ce.updated_at,
-                    ts_rank(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score,
+                    ts_rank_cd(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score,
                     {highlight_expr}
                 FROM context_entries ce
                 WHERE {where_clause}
