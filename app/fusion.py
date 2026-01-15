@@ -130,6 +130,7 @@ def reciprocal_rank_fusion(
             'updated_at': data.get('updated_at', ''),
             'tags': data.get('tags', []),
             'scores': scores,
+            'rerank_text': data.get('rerank_text'),  # Preserve for chunk-aware reranking
         }
         results.append(result_entry)
 

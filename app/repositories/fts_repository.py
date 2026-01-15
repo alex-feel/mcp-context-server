@@ -501,13 +501,15 @@ class FtsRepository(BaseRepository):
             param_position += 1
 
             # Build highlight expression if requested
+            # HighlightAll=true returns the ENTIRE document with ALL matches highlighted
+            # This matches SQLite FTS5 highlight() behavior for consistent cross-backend results
             if highlight:
                 highlight_expr = f'''
                     ts_headline(
                         '{language}',
                         ce.text_content,
                         {tsquery_func}{self._placeholder(query_param_pos)}),
-                        'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=25'
+                        'HighlightAll=true, StartSel=<mark>, StopSel=</mark>'
                     ) as highlighted
                 '''
             else:

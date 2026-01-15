@@ -40,6 +40,7 @@ class FlashRankProvider:
         self._model_name = settings.reranking.model
         self._max_length = settings.reranking.max_length
         self._cache_dir = settings.reranking.cache_dir
+        self._chars_per_token = settings.reranking.chars_per_token
         self._ranker: Any = None  # Lazy initialization
 
     async def initialize(self) -> None:
@@ -136,9 +137,27 @@ class FlashRankProvider:
         request = RerankRequest(query=query, passages=passages)
         reranked = self._ranker.rerank(request)
 
-        # Key operational event: shows reranking worked
+        # Operational logging with token estimates
+        passage_sizes = [len(r['text']) for r in results]
+        token_estimates = [size / self._chars_per_token for size in passage_sizes]
+        max_tokens = max(token_estimates) if token_estimates else 0
+
         query_preview = query[:50] + '...' if len(query) > 50 else query
-        logger.info(f'[RERANKING] Reranked {len(results)} results: query="{query_preview}", limit={limit}')
+
+        # Warn if any passage likely exceeds token limit
+        if max_tokens > self._max_length:
+            logger.warning(
+                f'[RERANKING] Passage may exceed token limit: '
+                f'~{int(max_tokens)} tokens estimated (limit: {self._max_length}). '
+                f'Largest passage: {max(passage_sizes)} chars',
+            )
+        else:
+            logger.info(
+                f'[RERANKING] Reranked {len(results)} results: '
+                f'{min(passage_sizes)}-{max(passage_sizes)} chars '
+                f'(~{int(min(token_estimates))}-{int(max(token_estimates))} tokens, '
+                f'limit: {self._max_length}), query="{query_preview}"',
+            )
 
         # Map scores back to original results
         # FlashRank returns: [{"id": ..., "text": ..., "meta": ..., "score": float}, ...]

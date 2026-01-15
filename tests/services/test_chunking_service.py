@@ -32,41 +32,48 @@ class TestTextChunk:
     """Tests for the TextChunk dataclass."""
 
     def test_text_chunk_creation(self) -> None:
-        """TextChunk should store text and chunk_index."""
-        chunk = TextChunk(text='Hello world', chunk_index=0)
+        """TextChunk should store text, chunk_index, and boundaries."""
+        chunk = TextChunk(text='Hello world', chunk_index=0, start_index=0, end_index=11)
         assert chunk.text == 'Hello world'
         assert chunk.chunk_index == 0
+        assert chunk.start_index == 0
+        assert chunk.end_index == 11
 
     def test_text_chunk_is_frozen(self) -> None:
         """TextChunk should be immutable (cannot delete attributes)."""
-        chunk = TextChunk(text='Hello', chunk_index=0)
+        chunk = TextChunk(text='Hello', chunk_index=0, start_index=0, end_index=5)
         with pytest.raises(AttributeError):
             del chunk.text
 
     def test_text_chunk_equality(self) -> None:
         """TextChunks with same values should be equal."""
-        chunk1 = TextChunk(text='Hello', chunk_index=0)
-        chunk2 = TextChunk(text='Hello', chunk_index=0)
+        chunk1 = TextChunk(text='Hello', chunk_index=0, start_index=0, end_index=5)
+        chunk2 = TextChunk(text='Hello', chunk_index=0, start_index=0, end_index=5)
         assert chunk1 == chunk2
 
     def test_text_chunk_different_index(self) -> None:
         """TextChunks with different indices should not be equal."""
-        chunk1 = TextChunk(text='Hello', chunk_index=0)
-        chunk2 = TextChunk(text='Hello', chunk_index=1)
+        chunk1 = TextChunk(text='Hello', chunk_index=0, start_index=0, end_index=5)
+        chunk2 = TextChunk(text='Hello', chunk_index=1, start_index=5, end_index=10)
         assert chunk1 != chunk2
 
     def test_text_chunk_different_text(self) -> None:
         """TextChunks with different text should not be equal."""
-        chunk1 = TextChunk(text='Hello', chunk_index=0)
-        chunk2 = TextChunk(text='World', chunk_index=0)
+        chunk1 = TextChunk(text='Hello', chunk_index=0, start_index=0, end_index=5)
+        chunk2 = TextChunk(text='World', chunk_index=0, start_index=0, end_index=5)
         assert chunk1 != chunk2
 
     def test_text_chunk_hashable(self) -> None:
         """TextChunk should be hashable (for use in sets/dicts)."""
-        chunk = TextChunk(text='Hello', chunk_index=0)
+        chunk = TextChunk(text='Hello', chunk_index=0, start_index=0, end_index=5)
         # Should not raise
         chunk_set = {chunk}
         assert chunk in chunk_set
+
+    def test_text_chunk_boundary_invariant(self) -> None:
+        """TextChunk boundaries should match text length."""
+        chunk = TextChunk(text='Hello world', chunk_index=0, start_index=0, end_index=11)
+        assert chunk.end_index - chunk.start_index == len(chunk.text)
 
 
 class TestChunkingServiceInit:

@@ -410,6 +410,20 @@
           "name": "FTS_LANGUAGE"
         },
         {
+          "description": "Characters of context around each FTS match for reranking passage extraction (default: 750)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_WINDOW_SIZE"
+        },
+        {
+          "description": "Merge FTS match regions within this character distance (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_GAP_MERGE"
+        },
+        {
           "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
           "isRequired": false,
           "format": "boolean",
@@ -513,6 +527,13 @@
           "format": "string",
           "isSecret": false,
           "name": "RERANKING_CACHE_DIR"
+        },
+        {
+          "description": "Estimated characters per token for passage size validation (default: 4.0, range: 2.0-8.0)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_CHARS_PER_TOKEN"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
@@ -1156,6 +1177,20 @@
           "name": "FTS_LANGUAGE"
         },
         {
+          "description": "Characters of context around each FTS match for reranking passage extraction (default: 750)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_WINDOW_SIZE"
+        },
+        {
+          "description": "Merge FTS match regions within this character distance (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_GAP_MERGE"
+        },
+        {
           "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
           "isRequired": false,
           "format": "boolean",
@@ -1259,6 +1294,13 @@
           "format": "string",
           "isSecret": false,
           "name": "RERANKING_CACHE_DIR"
+        },
+        {
+          "description": "Estimated characters per token for passage size validation (default: 4.0, range: 2.0-8.0)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_CHARS_PER_TOKEN"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",

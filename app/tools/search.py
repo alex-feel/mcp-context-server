@@ -25,6 +25,7 @@ from pydantic import Field
 
 from app.migrations import format_exception_message
 from app.migrations import get_fts_migration_status
+from app.services.passage_extraction_service import extract_rerank_passage
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
@@ -67,13 +68,17 @@ async def _apply_reranking(
         return results
 
     try:
-        # Map text_content to text for reranking provider
-        # The provider expects 'text' field, but search results use 'text_content'
+        # Map rerank_text (if available) or text_content to text for reranking provider
+        # FTS results have 'rerank_text' (extracted passage around matches)
+        # Semantic results may have 'rerank_text' (matched chunk) in future
+        # Fallback to text_content if neither is available
         rerank_input: list[dict[str, Any]] = []
         for result in results:
+            # Prefer rerank_text (passage/chunk), fall back to text_content (full document)
+            rerank_text = result.get('rerank_text') or result.get('text_content', '')
             rerank_item: dict[str, Any] = {
                 'id': result.get('id'),
-                'text': result.get('text_content', ''),
+                'text': rerank_text,
             }
             rerank_input.append(rerank_item)
 
@@ -128,6 +133,7 @@ async def _semantic_search_raw(
     end_date: str | None = None,
     metadata: dict[str, str | int | float | bool] | None = None,
     metadata_filters: list[dict[str, Any]] | None = None,
+    _extract_rerank_text: bool = False,
     explain_query: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Raw semantic search without reranking (Layer 1).
@@ -148,10 +154,12 @@ async def _semantic_search_raw(
         end_date: Optional filter by created_at <= date (ISO 8601 string).
         metadata: Simple metadata filters.
         metadata_filters: Advanced metadata filters.
+        _extract_rerank_text: If True, extract matched chunk as rerank_text (internal use).
         explain_query: Include query execution statistics.
 
     Returns:
         Tuple of (results, stats). Results include text_content and distance.
+        If _extract_rerank_text is True, results also include rerank_text.
 
     Raises:
         ToolError: If semantic search is not available or fails.
@@ -208,6 +216,33 @@ async def _semantic_search_raw(
         logger.error(f'Semantic search failed: {e}')
         raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
 
+    # Post-process for reranking: extract chunk text from boundaries
+    if _extract_rerank_text:
+        for result in search_results:
+            text_content = result.get('text_content', '')
+            start_idx = result.get('matched_chunk_start')
+            end_idx = result.get('matched_chunk_end')
+
+            if start_idx is not None and end_idx is not None and end_idx > start_idx:
+                # Extract matched chunk for reranking
+                result['rerank_text'] = text_content[start_idx:end_idx]
+                logger.debug(
+                    f'[SEMANTIC] Extracted rerank_text: {len(result["rerank_text"])} chars '
+                    f'from [{start_idx}:{end_idx}]',
+                )
+            else:
+                # Fallback: use beginning of document (legacy data without boundaries)
+                max_rerank_len = settings.reranking.max_length * 4  # ~2000 chars
+                result['rerank_text'] = text_content[:max_rerank_len]
+                logger.debug(
+                    f'[SEMANTIC] No chunk boundaries, using document beginning '
+                    f'({len(result["rerank_text"])} chars)',
+                )
+
+            # Remove internal boundary fields from result
+            result.pop('matched_chunk_start', None)
+            result.pop('matched_chunk_end', None)
+
     return search_results, search_stats
 
 
@@ -225,6 +260,7 @@ async def _fts_search_raw(
     metadata: dict[str, str | int | float | bool] | None = None,
     metadata_filters: list[dict[str, Any]] | None = None,
     highlight: bool = False,
+    _internal_highlight_for_rerank: bool = False,
     explain_query: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Raw full-text search without reranking (Layer 1).
@@ -246,11 +282,13 @@ async def _fts_search_raw(
         end_date: Optional filter by created_at <= date (ISO 8601 string).
         metadata: Simple metadata filters.
         metadata_filters: Advanced metadata filters.
-        highlight: Include highlighted snippets.
+        highlight: Include highlighted snippets in client response.
+        _internal_highlight_for_rerank: Generate highlights internally for passage extraction.
         explain_query: Include query execution statistics.
 
     Returns:
         Tuple of (results, stats). Results include text_content and score.
+        When _internal_highlight_for_rerank=True, results also include 'rerank_text' field.
 
     Raises:
         ToolError: If FTS is not available or fails.
@@ -281,6 +319,10 @@ async def _fts_search_raw(
     # Import exception here to avoid circular imports
     from app.repositories.fts_repository import FtsValidationError
 
+    # Determine actual highlight setting
+    # Generate highlights if client requested OR if we need for passage extraction
+    actual_highlight = highlight or _internal_highlight_for_rerank
+
     try:
         search_results, stats = await repos.fts.search(
             query=query,
@@ -295,7 +337,7 @@ async def _fts_search_raw(
             end_date=end_date,
             metadata=metadata,
             metadata_filters=metadata_filters,
-            highlight=highlight,
+            highlight=actual_highlight,
             language=settings.fts_language,
             explain_query=explain_query,
         )
@@ -304,6 +346,25 @@ async def _fts_search_raw(
     except Exception as e:
         logger.error(f'FTS search failed: {e}')
         raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
+
+    # Post-process for reranking: extract passages from highlighted results
+    if _internal_highlight_for_rerank:
+        for result in search_results:
+            highlighted = result.get('highlighted')
+            text_content = result.get('text_content', '')
+
+            # Extract passage for reranking using highlight positions
+            result['rerank_text'] = extract_rerank_passage(
+                text_content=text_content,
+                highlighted=highlighted,
+                window_size=settings.fts_passage.rerank_window_size,
+                max_passage_size=settings.reranking.max_length * 4,  # ~2000 chars for 512 tokens
+                gap_merge_threshold=settings.fts_passage.rerank_gap_merge,
+            )
+
+            # Remove 'highlighted' if client didn't request it
+            if not highlight:
+                result.pop('highlighted', None)
 
     return search_results, stats
 
@@ -538,16 +599,17 @@ async def semantic_search_context(
         # Calculate overfetch limit for reranking
         # Over-fetch more results to give reranker better candidates
         reranking_provider = get_reranking_provider()
-        if reranking_provider is not None and settings.reranking.enabled:
-            overfetch_limit = (limit + offset) * settings.reranking.overfetch
-        else:
-            overfetch_limit = limit + offset
+        need_reranking = reranking_provider is not None and settings.reranking.enabled
+        overfetch_limit = (
+            (limit + offset) * settings.reranking.overfetch if need_reranking else limit + offset
+        )
 
         # Import exception here to avoid circular imports at module level
         from app.repositories.embedding_repository import MetadataFilterValidationError
 
         try:
             # Call raw search (Layer 1) with overfetch
+            # Extract rerank_text (matched chunk) when reranking is enabled
             search_results, search_stats = await _semantic_search_raw(
                 query=query,
                 limit=overfetch_limit,
@@ -560,6 +622,7 @@ async def semantic_search_context(
                 end_date=end_date,
                 metadata=metadata,
                 metadata_filters=metadata_filters,
+                _extract_rerank_text=need_reranking,
                 explain_query=explain_query,
             )
         except MetadataFilterValidationError as e:
@@ -591,6 +654,10 @@ async def semantic_search_context(
 
         # Apply offset after reranking
         final_results = reranked_results[offset:][:limit]
+
+        # Clean up internal fields from final results
+        for result in final_results:
+            result.pop('rerank_text', None)  # Internal field, not for client
 
         # Enrich results with tags and optionally images
         repos = await ensure_repositories()
@@ -749,6 +816,9 @@ async def fts_search_context(
         else:
             overfetch_limit = limit + offset
 
+        # Determine if we need highlights for internal reranking
+        need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
+
         # Import exception here to avoid circular imports
         from app.repositories.fts_repository import FtsValidationError
 
@@ -768,6 +838,7 @@ async def fts_search_context(
                 metadata=metadata,
                 metadata_filters=metadata_filters,
                 highlight=highlight,
+                _internal_highlight_for_rerank=need_highlight_for_rerank,
                 explain_query=explain_query,
             )
         except FtsValidationError as e:
@@ -807,6 +878,10 @@ async def fts_search_context(
 
         # Apply offset after reranking
         final_results = reranked_results[offset:][:limit]
+
+        # Clean up internal fields from final results
+        for result in final_results:
+            result.pop('rerank_text', None)  # Internal field, not for client
 
         # Process results: parse metadata and enrich with tags
         repos = await ensure_repositories()
@@ -1016,6 +1091,9 @@ async def hybrid_search_context(
         else:
             over_fetch_limit = (limit + offset) * settings.hybrid_rrf_overfetch
 
+        # Determine if we need highlights for internal reranking
+        need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
+
         # Execute searches in parallel using raw functions (Layer 1 - no reranking)
         fts_results: list[dict[str, Any]] = []
         semantic_results: list[dict[str, Any]] = []
@@ -1042,7 +1120,8 @@ async def hybrid_search_context(
                     end_date=end_date,
                     metadata=metadata,
                     metadata_filters=metadata_filters,
-                    highlight=False,
+                    highlight=False,  # Client doesn't want highlighted field in hybrid
+                    _internal_highlight_for_rerank=need_highlight_for_rerank,
                     explain_query=explain_query,
                 )
                 fts_results = results
@@ -1068,6 +1147,7 @@ async def hybrid_search_context(
                     end_date=end_date,
                     metadata=metadata,
                     metadata_filters=metadata_filters,
+                    _extract_rerank_text=need_highlight_for_rerank,
                     explain_query=explain_query,
                 )
                 semantic_results = results
@@ -1131,6 +1211,10 @@ async def hybrid_search_context(
 
         # Apply offset after reranking
         final_results = reranked_results[offset:][:limit]
+
+        # Clean up internal fields from final results
+        for result in final_results:
+            result.pop('rerank_text', None)  # Internal field, not for client
 
         # Enrich results with tags and optionally images
         for result in final_results:

@@ -78,6 +78,20 @@ def _check_chunk_count_column_sqlite(conn: sqlite3.Connection) -> bool:
     return 'chunk_count' in columns
 
 
+def _check_chunk_boundary_columns_sqlite(conn: sqlite3.Connection) -> bool:
+    """Check if chunk boundary columns exist in embedding_chunks for SQLite.
+
+    Args:
+        conn: SQLite connection
+
+    Returns:
+        True if both start_index and end_index columns exist, False otherwise
+    """
+    cursor = conn.execute('PRAGMA table_info(embedding_chunks)')
+    columns = [row[1] for row in cursor.fetchall()]
+    return 'start_index' in columns and 'end_index' in columns
+
+
 def _check_embedding_metadata_exists_sqlite(conn: sqlite3.Connection) -> bool:
     """Check if embedding_metadata table exists for SQLite.
 
@@ -220,6 +234,18 @@ async def _apply_chunking_migration_with_backend(
             if not _check_embedding_metadata_exists_sqlite(conn):
                 logger.debug('Chunking migration: skipping - embedding_metadata table does not exist')
                 return
+
+            # Check if embedding_chunks table exists but lacks boundary columns
+            # This handles upgrade from pre-f36266c schema where table was created
+            # without start_index and end_index columns
+            if _check_chunking_migration_applied_sqlite(conn) and not _check_chunk_boundary_columns_sqlite(conn):
+                logger.info('Chunking migration: adding missing boundary columns to embedding_chunks')
+                conn.execute(
+                    'ALTER TABLE embedding_chunks ADD COLUMN start_index INTEGER NOT NULL DEFAULT 0',
+                )
+                conn.execute(
+                    'ALTER TABLE embedding_chunks ADD COLUMN end_index INTEGER NOT NULL DEFAULT 0',
+                )
 
             # Execute the migration SQL
             conn.executescript(migration_sql_template)

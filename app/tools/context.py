@@ -194,14 +194,28 @@ async def store_context(
                     f'enabled={chunking_service.is_enabled if chunking_service else "N/A"}')
                 if chunking_service is not None and chunking_service.is_enabled:
                     # Chunked embedding generation for long documents
+                    # Import ChunkEmbedding for boundary-aware storage
+                    from app.repositories.embedding_repository import ChunkEmbedding
+
                     chunks = chunking_service.split_text(text)
                     chunk_texts = [chunk.text for chunk in chunks]
                     logger.info(f'[EMBEDDING] Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
                     embeddings = await store_embedding_provider.embed_documents(chunk_texts)
                     logger.info(f'[EMBEDDING] Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
+
+                    # Create ChunkEmbedding objects with boundary information
+                    chunk_embeddings = [
+                        ChunkEmbedding(
+                            embedding=emb,
+                            start_index=chunk.start_index,
+                            end_index=chunk.end_index,
+                        )
+                        for emb, chunk in zip(embeddings, chunks, strict=True)
+                    ]
+
                     await repos.embeddings.store_chunked(
                         context_id=context_id,
-                        embeddings=embeddings,
+                        chunk_embeddings=chunk_embeddings,
                         model=settings.embedding.model,
                     )
                     embedding_generated = True
@@ -585,29 +599,53 @@ async def update_context(
                     chunking_service = get_chunking_service()
                     if chunking_service is not None and chunking_service.is_enabled:
                         # Chunked embedding regeneration for long documents
+                        # Import ChunkEmbedding for boundary-aware storage
+                        from app.repositories.embedding_repository import ChunkEmbedding
+
                         # Delete existing chunks first
                         await repos.embeddings.delete_all_chunks(context_id)
-                        # Generate and store new chunks
+                        # Generate and store new chunks with boundary info
                         chunks = chunking_service.split_text(text)
                         chunk_texts = [chunk.text for chunk in chunks]
                         embeddings = await update_embedding_provider.embed_documents(chunk_texts)
+
+                        # Create ChunkEmbedding objects with boundary information
+                        chunk_embeddings = [
+                            ChunkEmbedding(
+                                embedding=emb,
+                                start_index=chunk.start_index,
+                                end_index=chunk.end_index,
+                            )
+                            for emb, chunk in zip(embeddings, chunks, strict=True)
+                        ]
+
                         await repos.embeddings.store_chunked(
                             context_id=context_id,
-                            embeddings=embeddings,
+                            chunk_embeddings=chunk_embeddings,
                             model=settings.embedding.model,
                         )
                         logger.debug(f'Regenerated {len(chunks)} chunk embeddings for context {context_id}')
                     else:
                         # Single embedding (chunking disabled or not configured)
+                        # Import ChunkEmbedding for boundary-aware storage
+                        from app.repositories.embedding_repository import ChunkEmbedding
+
                         new_embedding = await update_embedding_provider.embed_query(text)
 
                         # Check if embedding exists
                         embedding_exists = await repos.embeddings.exists(context_id)
 
+                        # Create single ChunkEmbedding with full document boundaries
+                        single_chunk = ChunkEmbedding(
+                            embedding=new_embedding,
+                            start_index=0,
+                            end_index=len(text),
+                        )
+
                         if embedding_exists:
                             await repos.embeddings.update(
                                 context_id=context_id,
-                                embeddings=[new_embedding],
+                                chunk_embeddings=[single_chunk],
                                 model=settings.embedding.model,
                             )
                             logger.debug(f'Updated embedding for context {context_id}')
@@ -616,6 +654,8 @@ async def update_context(
                                 context_id=context_id,
                                 embedding=new_embedding,
                                 model=settings.embedding.model,
+                                start_index=0,
+                                end_index=len(text),
                             )
                             logger.debug(f'Created embedding for context {context_id}')
 

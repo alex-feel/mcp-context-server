@@ -347,6 +347,39 @@ class RerankingSettings(CommonSettings):
         alias='RERANKING_CACHE_DIR',
         description='Directory for caching reranking models (default: system cache)',
     )
+    chars_per_token: float = Field(
+        default=4.0,
+        alias='RERANKING_CHARS_PER_TOKEN',
+        ge=2.0,
+        le=8.0,
+        description='Estimated characters per token for passage size validation. '
+                    'Default 4.0 for English. Use 3.0-3.5 for multilingual/code.',
+    )
+
+
+class FtsPassageSettings(CommonSettings):
+    """FTS passage extraction settings for reranking.
+
+    Controls how text passages are extracted from FTS results with highlighted
+    matches for use in cross-encoder reranking. These settings affect the quality
+    and size of passages sent to the reranker.
+    """
+
+    rerank_window_size: int = Field(
+        default=750,
+        alias='FTS_RERANK_WINDOW_SIZE',
+        ge=100,
+        le=2000,
+        description='Characters of context around each FTS match for reranking passage extraction (default: 750)',
+    )
+
+    rerank_gap_merge: int = Field(
+        default=100,
+        alias='FTS_RERANK_GAP_MERGE',
+        ge=0,
+        le=500,
+        description='Merge FTS match regions within this character distance (default: 100)',
+    )
 
 
 class StorageSettings(BaseSettings):
@@ -577,6 +610,9 @@ class AppSettings(CommonSettings):
     # Reranking settings (nested)
     reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
 
+    # FTS passage extraction settings (nested)
+    fts_passage: FtsPassageSettings = Field(default_factory=lambda: FtsPassageSettings())
+
     # Transport settings
     transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
 
@@ -729,6 +765,45 @@ class AppSettings(CommonSettings):
                 f'Chunks {consequence}. '
                 f'Recommendation: Reduce CHUNK_SIZE to ~{int(max_tokens * 3 * 0.8)} chars '
                 f'(80% of context window).',
+            )
+
+        return self
+
+    @model_validator(mode='after')
+    def validate_fts_passage_vs_reranking(self) -> Self:
+        """Validate FTS passage settings against cross-encoder token limits.
+
+        When reranking is enabled, validates that FTS passage extraction settings
+        are configured appropriately for the cross-encoder's max_length limit.
+
+        Uses configurable chars_per_token ratio for token estimation, allowing
+        users to tune based on their content type (English prose ~4.5, code ~3.5).
+
+        Returns:
+            Self: The validated settings instance.
+        """
+        # Skip validation if reranking is disabled
+        if not self.reranking.enabled:
+            return self
+
+        # Calculate estimated passage size for a single FTS match with context windows
+        boundary_expansion = 400  # max_search * 2 from expand_to_boundary
+        single_match_estimate = self.fts_passage.rerank_window_size * 2 + boundary_expansion
+
+        # Estimate token usage
+        estimated_tokens = single_match_estimate / self.reranking.chars_per_token
+
+        if estimated_tokens > self.reranking.max_length:
+            optimal_window = int(
+                (self.reranking.max_length * self.reranking.chars_per_token - boundary_expansion) / 2,
+            )
+            logger.warning(
+                f'[FTS PASSAGE CONFIG] Single FTS match may produce ~{int(estimated_tokens)} tokens '
+                f'(using {self.reranking.chars_per_token} chars/token), exceeding RERANKING_MAX_LENGTH '
+                f'({self.reranking.max_length} tokens). Cross-encoder will truncate. '
+                f'Recommendations: '
+                f'1. Reduce FTS_RERANK_WINDOW_SIZE to ~{optimal_window} chars, OR '
+                f'2. Increase RERANKING_CHARS_PER_TOKEN if your content has longer words',
             )
 
         return self

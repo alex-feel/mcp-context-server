@@ -217,23 +217,39 @@ async def store_context_batch(
                             chunking_service = get_chunking_service()
                             if chunking_service is not None and chunking_service.is_enabled:
                                 # Chunked embedding generation for long documents
-                                chunks = chunking_service.split_text(original_entry['text_content'])
+                                # Import ChunkEmbedding for boundary-aware storage
+                                from app.repositories.embedding_repository import ChunkEmbedding
+
+                                text_content = original_entry['text_content']
+                                chunks = chunking_service.split_text(text_content)
                                 chunk_texts = [chunk.text for chunk in chunks]
                                 embeddings = await batch_store_embedding_provider.embed_documents(chunk_texts)
+
+                                # Create ChunkEmbedding objects with boundary information
+                                chunk_embeddings = [
+                                    ChunkEmbedding(
+                                        embedding=emb,
+                                        start_index=chunk.start_index,
+                                        end_index=chunk.end_index,
+                                    )
+                                    for emb, chunk in zip(embeddings, chunks, strict=True)
+                                ]
+
                                 await repos.embeddings.store_chunked(
                                     context_id=ctx_id,
-                                    embeddings=embeddings,
+                                    chunk_embeddings=chunk_embeddings,
                                     model=settings.embedding.model,
                                 )
                             else:
                                 # Single embedding (chunking disabled or not configured)
-                                embedding = await batch_store_embedding_provider.embed_query(
-                                    original_entry['text_content'],
-                                )
+                                text_content = original_entry['text_content']
+                                embedding = await batch_store_embedding_provider.embed_query(text_content)
                                 await repos.embeddings.store(
                                     context_id=ctx_id,
                                     embedding=embedding,
                                     model=settings.embedding.model,
+                                    start_index=0,
+                                    end_index=len(text_content),
                                 )
                         except Exception as emb_err:
                             logger.error(f'Failed to generate embedding for context {ctx_id}: {emb_err}')
@@ -517,25 +533,52 @@ async def update_context_batch(
                         chunking_service = get_chunking_service()
                         if chunking_service is not None and chunking_service.is_enabled:
                             # Chunked embedding regeneration for long documents
+                            # Import ChunkEmbedding for boundary-aware storage
+                            from app.repositories.embedding_repository import ChunkEmbedding
+
                             # Delete existing chunks first
                             await repos.embeddings.delete_all_chunks(context_id)
-                            # Generate and store new chunks
-                            chunks = chunking_service.split_text(update['text'])
+                            # Generate and store new chunks with boundary info
+                            text_content = update['text']
+                            chunks = chunking_service.split_text(text_content)
                             chunk_texts = [chunk.text for chunk in chunks]
                             embeddings = await batch_update_embedding_provider.embed_documents(chunk_texts)
+
+                            # Create ChunkEmbedding objects with boundary information
+                            chunk_embeddings = [
+                                ChunkEmbedding(
+                                    embedding=emb,
+                                    start_index=chunk.start_index,
+                                    end_index=chunk.end_index,
+                                )
+                                for emb, chunk in zip(embeddings, chunks, strict=True)
+                            ]
+
                             await repos.embeddings.store_chunked(
                                 context_id=context_id,
-                                embeddings=embeddings,
+                                chunk_embeddings=chunk_embeddings,
                                 model=settings.embedding.model,
                             )
                         else:
                             # Single embedding (chunking disabled or not configured)
-                            new_embedding = await batch_update_embedding_provider.embed_query(update['text'])
+                            # Import ChunkEmbedding for boundary-aware storage
+                            from app.repositories.embedding_repository import ChunkEmbedding
+
+                            text_content = update['text']
+                            new_embedding = await batch_update_embedding_provider.embed_query(text_content)
                             embedding_exists = await repos.embeddings.exists(context_id)
+
+                            # Create single ChunkEmbedding with full document boundaries
+                            single_chunk = ChunkEmbedding(
+                                embedding=new_embedding,
+                                start_index=0,
+                                end_index=len(text_content),
+                            )
+
                             if embedding_exists:
                                 await repos.embeddings.update(
                                     context_id=context_id,
-                                    embeddings=[new_embedding],
+                                    chunk_embeddings=[single_chunk],
                                     model=settings.embedding.model,
                                 )
                             else:
@@ -543,6 +586,8 @@ async def update_context_batch(
                                     context_id=context_id,
                                     embedding=new_embedding,
                                     model=settings.embedding.model,
+                                    start_index=0,
+                                    end_index=len(text_content),
                                 )
                         updated_fields.append('embedding')
                     except Exception as emb_err:

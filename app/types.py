@@ -349,6 +349,7 @@ class HybridSearchResultDict(TypedDict, total=False):
     updated_at: str
     tags: list[str]
     scores: HybridScoresDict  # Hybrid scoring breakdown
+    rerank_text: str | None  # Internal: chunk text for reranking (removed before API response)
 
 
 # Hybrid Search Stats TypedDicts (for explain_query parameter)

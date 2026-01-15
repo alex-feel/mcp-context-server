@@ -302,6 +302,79 @@ class TestApplyChunkingMigration:
                 await backend.shutdown()
 
     @pytest.mark.asyncio
+    async def test_migration_adds_boundary_columns_to_existing_table_sqlite(self, tmp_path: Path) -> None:
+        """Verify boundary columns added to existing embedding_chunks table without them.
+
+        This test simulates upgrade from pre-f36266c schema where embedding_chunks
+        was created WITHOUT start_index and end_index columns.
+        """
+        db_path = tmp_path / 'test_upgrade.db'
+
+        # Create base schema with OLD embedding_chunks (no boundary columns)
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.executescript(schema_sql)
+            # Create embedding_metadata (prerequisite)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS embedding_metadata (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    context_id INTEGER NOT NULL UNIQUE,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    embedded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+                )
+            ''')
+            # Create OLD embedding_chunks WITHOUT boundary columns (pre-f36266c schema)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS embedding_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    context_id INTEGER NOT NULL,
+                    vec_rowid INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+                )
+            ''')
+            conn.commit()
+
+        env = {
+            'DB_PATH': str(db_path),
+            'MCP_TEST_MODE': '1',
+            'ENABLE_SEMANTIC_SEARCH': 'true',
+            'STORAGE_BACKEND': 'sqlite',
+        }
+
+        import os
+
+        with patch.dict(os.environ, env, clear=False):
+            from app.backends.sqlite_backend import SQLiteBackend
+
+            backend = SQLiteBackend(db_path=str(db_path))
+            await backend.initialize()
+
+            try:
+                from app.migrations import apply_chunking_migration
+
+                # Should NOT raise - should add missing columns gracefully
+                await apply_chunking_migration(backend=backend)
+
+                # Verify boundary columns now exist
+                def _check_columns(conn: sqlite3.Connection) -> list[str]:
+                    cursor = conn.execute('PRAGMA table_info(embedding_chunks)')
+                    return [row[1] for row in cursor.fetchall()]
+
+                columns = await backend.execute_read(_check_columns)
+                assert 'start_index' in columns, 'start_index column should exist after migration'
+                assert 'end_index' in columns, 'end_index column should exist after migration'
+
+            finally:
+                await backend.shutdown()
+
+    @pytest.mark.asyncio
     async def test_existing_embeddings_migrated_sqlite(self, tmp_path: Path) -> None:
         """Verify existing embeddings are migrated to embedding_chunks."""
         db_path = tmp_path / 'test_data_migration.db'

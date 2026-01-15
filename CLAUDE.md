@@ -382,6 +382,8 @@ Configuration via `.env` file or environment:
 **Full-Text Search Settings:**
 - `ENABLE_FTS`: Enable full-text search functionality (default: false)
 - `FTS_LANGUAGE`: Language for stemming and text search (default: english). PostgreSQL supports 29 languages with full stemming. SQLite uses Porter stemmer (English) or unicode61 tokenizer (no stemming).
+- `FTS_RERANK_WINDOW_SIZE`: Characters of context around each FTS match for reranking passage extraction (default: 750)
+- `FTS_RERANK_GAP_MERGE`: Merge FTS match regions within this character distance (default: 100)
 
 **Embedding Generation Settings:**
 - `ENABLE_EMBEDDING_GENERATION`: Enable embedding generation for stored context entries (default: true).
@@ -425,6 +427,10 @@ Configuration via `.env` file or environment:
 - `CHUNK_AGGREGATION`: How to aggregate chunk scores (default: max; only 'max' supported in current version)
 - `CHUNK_DEDUP_OVERFETCH`: Multiplier for fetching extra chunks before deduplication (default: 5)
 
+**Chunk-Aware Reranking**: When reranking is enabled, the system uses chunk boundaries to extract the
+matched chunk text for the cross-encoder reranker instead of the document beginning. This ensures the
+reranker scores the semantically relevant portion of the document, improving ranking quality for long documents.
+
 **Reranking Settings** (for improved search precision):
 - `ENABLE_RERANKING`: Enable cross-encoder reranking (default: true)
 - `RERANKING_PROVIDER`: Reranking provider - `flashrank` (default)
@@ -432,6 +438,7 @@ Configuration via `.env` file or environment:
 - `RERANKING_MAX_LENGTH`: Maximum input length in tokens (default: 512)
 - `RERANKING_OVERFETCH`: Multiplier for over-fetching before reranking (default: 4x)
 - `RERANKING_CACHE_DIR`: Custom cache directory for model files
+- `RERANKING_CHARS_PER_TOKEN`: Estimated characters per token for passage size validation (default: 4.0, range: 2.0-8.0). Adjust for different content types: 4.0-4.5 for English prose, 3.0-3.5 for code/multilingual.
 
 **Additional Search Settings:**
 - `SEARCH_DEFAULT_SORT_BY`: Default sort order (default: relevance; only 'relevance' supported in current version)
@@ -645,6 +652,7 @@ uv run python -c "from app.server import init_database, _backend; init_database(
    - `LangSmithSettings`: LangSmith tracing configuration (optional observability)
    - `ChunkingSettings`: Text chunking configuration for semantic search
    - `RerankingSettings`: Cross-encoder reranking configuration
+   - `FtsPassageSettings`: FTS passage extraction for reranking
 4. **Use `Field(alias='ENV_VAR_NAME')`** to map settings attributes to environment variable names
 5. **Update `server.json`** when adding new environment variables (for MCP registry)
 

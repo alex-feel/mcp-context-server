@@ -8,7 +8,7 @@ each chunk can be independently embedded and matched.
 
 The service uses LangChain's RecursiveCharacterTextSplitter which attempts
 to keep natural text units (paragraphs, sentences) intact while respecting
-chunk size limits.
+chunk size limits. Chunk boundaries are tracked for chunk-aware reranking.
 """
 
 from __future__ import annotations
@@ -22,28 +22,40 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class TextChunk:
-    """Immutable chunk of text with index for ordering.
+    """Immutable chunk of text with index and character boundaries.
 
     Attributes:
         text: The chunk content.
         chunk_index: Zero-based position in the original document.
+        start_index: Character offset where chunk starts in original document.
+        end_index: Character offset where chunk ends in original document.
 
     Example:
-        >>> chunk = TextChunk(text='Hello world', chunk_index=0)
+        >>> chunk = TextChunk(text='Hello world', chunk_index=0, start_index=0, end_index=11)
         >>> chunk.text
         'Hello world'
+        >>> chunk.end_index - chunk.start_index == len(chunk.text)
+        True
     """
 
     text: str
     chunk_index: int
+    start_index: int
+    end_index: int
 
 
 class ChunkingService:
-    """Service for splitting text into chunks for embedding.
+    """Service for splitting text into chunks for embedding with boundary tracking.
 
     The service wraps LangChain's RecursiveCharacterTextSplitter with
     configuration from ChunkingSettings. When disabled or when text is
     shorter than chunk_size, returns the original text as a single chunk.
+
+    Boundary Tracking:
+        Each chunk includes start_index and end_index fields that track
+        the character offsets in the original document. This enables
+        chunk-aware reranking where the reranker scores the matched chunk
+        rather than a truncated document beginning.
 
     Lazy Initialization:
         The langchain_text_splitters package is only imported when the
@@ -59,7 +71,7 @@ class ChunkingService:
         >>> service = ChunkingService(enabled=True, chunk_size=1000, chunk_overlap=100)
         >>> chunks = service.split_text('Long document...')
         >>> for chunk in chunks:
-        ...     print(f'Chunk {chunk.chunk_index}: {len(chunk.text)} chars')
+        ...     print(f'Chunk {chunk.chunk_index}: chars {chunk.start_index}-{chunk.end_index}')
     """
 
     # Markdown-friendly separators
@@ -111,6 +123,7 @@ class ChunkingService:
                 length_function=len,
                 separators=self.SEPARATORS,
                 is_separator_regex=False,
+                add_start_index=True,  # Enable boundary tracking for chunk-aware reranking
             )
 
     @property
@@ -134,17 +147,18 @@ class ChunkingService:
         return self._chunk_overlap
 
     def split_text(self, text: str) -> list[TextChunk]:
-        """Split text into chunks.
+        """Split text into chunks with boundary tracking.
 
         If disabled or text is shorter than chunk_size, returns a single
-        chunk containing the original text. Otherwise, splits using
-        RecursiveCharacterTextSplitter.
+        chunk containing the original text with boundaries [0, len(text)].
+        Otherwise, splits using RecursiveCharacterTextSplitter with
+        start_index metadata for boundary tracking.
 
         Args:
             text: The text to split.
 
         Returns:
-            List of TextChunk objects with text and chunk_index.
+            List of TextChunk objects with text, chunk_index, start_index, and end_index.
             Always returns at least one chunk (even for empty string).
 
         Example:
@@ -152,25 +166,32 @@ class ChunkingService:
             >>> chunks = service.split_text('Short text')
             >>> len(chunks)
             1
-            >>> chunks[0].chunk_index
+            >>> chunks[0].start_index
             0
+            >>> chunks[0].end_index
+            10
         """
         logger.debug(f'[CHUNKING] Split request: enabled={self._enabled}, text_len={len(text)}, chunk_size={self._chunk_size}')
 
         if not self._enabled or len(text) <= self._chunk_size:
             logger.debug('[CHUNKING] Fast path: text <= chunk_size, returning 1 chunk')
-            return [TextChunk(text=text, chunk_index=0)]
+            return [TextChunk(text=text, chunk_index=0, start_index=0, end_index=len(text))]
 
-        logger.debug('[CHUNKING] Invoking text splitter')
+        logger.debug('[CHUNKING] Invoking text splitter with boundary tracking')
 
-        # Split using RecursiveCharacterTextSplitter
+        # Use create_documents to get metadata with start_index
         assert self._splitter is not None  # Type narrowing for mypy
-        chunks_text = self._splitter.split_text(text)
+        split_docs = self._splitter.create_documents([text])
 
         # Key operational event: shows chunking produced results
-        logger.info(f'[CHUNKING] Split complete: {len(chunks_text)} chunks, sizes: {[len(c) for c in chunks_text]}')
+        logger.info(f'[CHUNKING] Split complete: {len(split_docs)} chunks with boundaries')
 
         return [
-            TextChunk(text=chunk_text, chunk_index=idx)
-            for idx, chunk_text in enumerate(chunks_text)
+            TextChunk(
+                text=split_doc.page_content,
+                chunk_index=idx,
+                start_index=split_doc.metadata.get('start_index', 0),
+                end_index=split_doc.metadata.get('start_index', 0) + len(split_doc.page_content),
+            )
+            for idx, split_doc in enumerate(split_docs)
         ]
