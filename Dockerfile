@@ -65,5 +65,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()" || exit 1
 
-# Run the server
-CMD ["python", "-m", "app.server"]
+# Copy entrypoint script that handles exit codes to prevent infinite restart loops
+COPY --chown=appuser:appuser deploy/docker/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+# Run the server via entrypoint wrapper
+ENTRYPOINT ["/docker-entrypoint.sh"]

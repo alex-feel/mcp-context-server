@@ -869,6 +869,44 @@ If embedding generation fails, context is still stored (graceful degradation).
 
 ## Troubleshooting
 
+### Startup Error Classification
+
+The server classifies startup errors into two categories with different exit codes:
+
+**Configuration Errors (Exit Code 78)**
+
+These errors require human intervention to fix. The server will NOT recover by restarting:
+
+| Error Type                  | Example                                          | Fix                                                      |
+|-----------------------------|--------------------------------------------------|----------------------------------------------------------|
+| Missing API key             | `OPENAI_API_KEY environment variable is not set` | Set the required environment variable                    |
+| Package not installed       | `langchain-openai package not installed`         | Run `uv sync --extra embeddings-openai`                  |
+| Invalid provider            | `Unknown provider: 'invalid'`                    | Use valid EMBEDDING_PROVIDER value                       |
+| Vector storage dependencies | `vector storage dependencies not available`      | Install required packages                                |
+| Model not found             | `model 'model' not found (status code: 404)`     | Pull model: `ollama pull <model>` or fix EMBEDDING_MODEL |
+
+**Dependency Errors (Exit Code 69)**
+
+These errors may resolve with time. Supervisor may retry with backoff:
+
+| Error Type               | Example                                             | Fix                            |
+|--------------------------|-----------------------------------------------------|--------------------------------|
+| Service not running      | `Ollama service not accessible: Connection refused` | Start Ollama: `ollama serve`   |
+| Network issues           | `Connection timed out`                              | Check network connectivity     |
+| Temporary unavailability | `Service returned status 503`                       | Wait and retry                 |
+
+### Log Messages
+
+The server logs startup errors with clear indicators:
+
+```
+# Configuration Error (will NOT retry)
+[FATAL] Configuration error (will not retry): ENABLE_EMBEDDING_GENERATION=true but langchain-openai package not installed...
+
+# Dependency Error (may retry)
+[ERROR] Dependency unavailable (may retry): ENABLE_EMBEDDING_GENERATION=true but ollama is not available (service may be down)...
+```
+
 ### Provider Connection Errors
 
 **Error**: `Failed to connect to Ollama: Connection refused`

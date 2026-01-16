@@ -649,6 +649,124 @@ docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-al
 
 **Note:** The OpenAI Docker Compose configurations automatically pass the correct build argument. If using Ollama configurations, no build argument is needed (default is `embeddings-ollama`).
 
+### Restart Policies and Exit Codes
+
+The MCP Context Server uses BSD sysexits.h exit codes to signal different failure types to container supervisors:
+
+| Exit Code | Meaning                  | Docker Restart Behavior                   |
+|-----------|--------------------------|-------------------------------------------|
+| 0         | Normal shutdown          | No restart                                |
+| 1         | General error            | Restart if policy allows                  |
+| 69        | Dependency unavailable   | Restart with backoff (may recover)        |
+| 78        | Configuration error      | Container halted (prevents restart loops) |
+
+**Exit Code 69 (EX_UNAVAILABLE)** indicates external dependencies are temporarily unavailable:
+- Ollama service not running (may start later)
+- Database temporarily unreachable
+- Network connectivity issues
+
+**Exit Code 78 (EX_CONFIG)** indicates configuration problems requiring human intervention:
+- Missing API keys (OPENAI_API_KEY, VOYAGE_API_KEY, etc.)
+- Missing required packages
+- Invalid configuration values
+- Embedding model not found (requires `ollama pull` or fix EMBEDDING_MODEL)
+
+### Entrypoint Wrapper Script
+
+The Docker image includes an entrypoint wrapper script (`docker-entrypoint.sh`) that intercepts exit codes to prevent infinite restart loops:
+
+**How it works:**
+
+```
+Docker starts container
+    |
+    v
+docker-entrypoint.sh runs Python server
+    |
+    v
+Server exits with code (0, 69, 78, or other)
+    |
+    v
+Entrypoint interprets exit code:
+    - Code 0: Normal exit
+    - Code 78: Configuration error -> exec sleep infinity (container stays running but idle)
+    - Code 69: Dependency error -> exit 69 (Docker may restart)
+    - Other: Pass through exit code
+```
+
+**Configuration errors (exit code 78) - Container halted:**
+
+When the server encounters a configuration error (e.g., embedding model not found), the entrypoint:
+
+1. Prints a clear error message with troubleshooting steps
+2. Replaces itself with `sleep infinity`
+3. Container remains "Running" (but idle) instead of entering a restart loop
+
+This allows you to:
+- Inspect logs with `docker logs <container>`
+- Fix the configuration
+- Stop and restart manually: `docker stop <container> && docker compose up -d`
+
+**Dependency errors (exit code 69) - May retry:**
+
+When the server encounters a dependency error (e.g., Ollama not running yet), the entrypoint:
+
+1. Prints an informational message
+2. Exits with code 69
+3. Docker's `on-failure:5` policy may restart the container (up to 5 times)
+
+**Default restart policy:**
+
+All Docker Compose configurations use `restart: "on-failure:5"` for the MCP Context Server:
+
+```yaml
+services:
+  mcp-context-server:
+    restart: "on-failure:5"  # Restart up to 5 times on failure
+```
+
+This provides defense in depth:
+- Entrypoint handles configuration errors (code 78) by halting
+- Restart policy limits dependency error retries (code 69) to 5 attempts
+
+For production, the built-in health check is already configured:
+
+```yaml
+services:
+  mcp-context-server:
+    restart: "on-failure:5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+```
+
+### Troubleshooting Container Halted State
+
+If your container shows "Running" but the server is not responding:
+
+1. **Check container logs:**
+   ```bash
+   docker logs <container_name>
+   ```
+
+2. **Look for "CONFIGURATION ERROR - CONTAINER HALTED" message:**
+   ```
+   ==============================================
+   [FATAL] CONFIGURATION ERROR - CONTAINER HALTED
+   ==============================================
+   ```
+
+3. **Fix the configuration** based on the error message (e.g., pull missing model, set API key)
+
+4. **Restart the container:**
+   ```bash
+   docker stop <container_name>
+   docker compose -f <your-compose-file>.yml up -d
+   ```
+
 ### Production Considerations
 
 1. **Change default PostgreSQL password** in production deployments
@@ -657,6 +775,7 @@ docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-al
 4. **Set up monitoring** using the `/health` endpoint
 5. **Use reverse proxy** (nginx, traefik) for TLS termination
 6. **Secure OpenAI API key** - never commit `.env` files to version control
+7. **Set restart policies** with limited retry count to prevent infinite loops
 
 ## Files Reference
 
@@ -684,12 +803,13 @@ docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-al
 
 ### Other Files
 
-| File                                 | Description                                    |
-|--------------------------------------|------------------------------------------------|
-| `Dockerfile`                         | Multi-stage MCP server image (repository root) |
-| `deploy/docker/ollama/Dockerfile`    | Custom Ollama image                            |
-| `deploy/docker/ollama/entrypoint.sh` | Auto model pull entrypoint                     |
-| `.dockerignore`                      | Build context optimization (repository root)   |
+| File                                 | Description                                       |
+|--------------------------------------|---------------------------------------------------|
+| `Dockerfile`                         | Multi-stage MCP server image (repository root)    |
+| `deploy/docker/docker-entrypoint.sh` | Exit code handler to prevent infinite restart     |
+| `deploy/docker/ollama/Dockerfile`    | Custom Ollama image                               |
+| `deploy/docker/ollama/entrypoint.sh` | Auto model pull entrypoint                        |
+| `.dockerignore`                      | Build context optimization (repository root)      |
 
 ## Additional Resources
 

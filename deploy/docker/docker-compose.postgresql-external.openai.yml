@@ -37,4 +37,4 @@ services:
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
-    restart: unless-stopped
+    restart: on-failure

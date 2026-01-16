@@ -37,7 +37,7 @@ services:
       - ENABLE_HYBRID_SEARCH=true
     volumes:
       - mcp-data:/data
-    restart: unless-stopped
+    restart: on-failure
 
 volumes:
   mcp-data:

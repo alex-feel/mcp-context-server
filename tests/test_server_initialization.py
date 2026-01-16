@@ -330,6 +330,7 @@ class TestLifespanErrorHandling:
         from unittest.mock import MagicMock
 
         import app.startup
+        from app.errors import ConfigurationError
         from app.server import lifespan
 
         mock_backend = MagicMock()
@@ -379,7 +380,8 @@ class TestLifespanErrorHandling:
                 mock_mcp = MagicMock()
 
                 # Server should FAIL when ENABLE_EMBEDDING_GENERATION=true but provider fails
-                with pytest.raises(RuntimeError, match='ENABLE_EMBEDDING_GENERATION=true'):
+                # ConfigurationError is raised for import failures (exit code 78)
+                with pytest.raises(ConfigurationError, match='ENABLE_EMBEDDING_GENERATION=true'):
                     async with lifespan(mock_mcp):
                         pass
         finally:

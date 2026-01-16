@@ -44,7 +44,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    restart: on-failure
 
   postgres:
     image: pgvector/pgvector:pg18-trixie

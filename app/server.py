@@ -6,6 +6,7 @@ enabling shared memory across different conversation threads with support for te
 """
 
 import logging
+import sys
 import tomllib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -33,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Import startup module for global state access
 from app.backends import create_backend
 from app.embeddings import create_embedding_provider
+from app.errors import ConfigurationError
+from app.errors import DependencyError
+from app.errors import classify_provider_error
 from app.migrations import FtsMigrationStatus
 from app.migrations import ProviderCheckResult
 
@@ -237,7 +241,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             vector_deps_available = await check_vector_storage_dependencies(backend.backend_type)
 
             if not vector_deps_available:
-                raise RuntimeError(
+                raise ConfigurationError(
                     'ENABLE_EMBEDDING_GENERATION=true but vector storage dependencies not available. '
                     'Fix: Install provider dependencies (e.g., uv sync --extra embeddings-ollama) '
                     'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
@@ -249,9 +253,12 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
             if not provider_check['available']:
                 install_hint = provider_check.get('install_instructions') or 'Check provider configuration'
-                raise RuntimeError(
+                reason = provider_check['reason'] or ''
+                # Classify error based on reason (config vs dependency)
+                error_class = classify_provider_error(reason)
+                raise error_class(
                     f'ENABLE_EMBEDDING_GENERATION=true but {provider} provider dependencies not met. '
-                    f'Reason: {provider_check["reason"]}. '
+                    f'Reason: {reason}. '
                     f'Fix: {install_hint} '
                     f'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
                 )
@@ -264,7 +271,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
                 # Verify provider is available
                 if not await embedding_provider.is_available():
                     await embedding_provider.shutdown()
-                    raise RuntimeError(
+                    raise DependencyError(
                         f'ENABLE_EMBEDDING_GENERATION=true but {embedding_provider.provider_name} '
                         'is not available (service may be down). '
                         'Fix: Ensure the embedding service is running and accessible '
@@ -275,15 +282,16 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
                 logger.info(f'[OK] Embedding generation enabled with provider: {embedding_provider.provider_name}')
 
             except ImportError as e:
-                raise RuntimeError(
+                raise ConfigurationError(
                     f'ENABLE_EMBEDDING_GENERATION=true but provider import failed: {e}. '
                     f'Fix: Install provider dependencies (e.g., uv sync --extra embeddings-{provider}) '
                     f'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
                 ) from e
-            except RuntimeError:
-                raise  # Re-raise RuntimeError from above checks
+            except (ConfigurationError, DependencyError):
+                raise  # Re-raise our specific error types
             except Exception as e:
-                raise RuntimeError(
+                # Unknown initialization errors are treated as dependency issues (may recover)
+                raise DependencyError(
                     f'ENABLE_EMBEDDING_GENERATION=true but initialization failed: {e}. '
                     f'Fix: Check provider configuration and service availability '
                     f'OR set ENABLE_EMBEDDING_GENERATION=false to disable embeddings.',
@@ -494,6 +502,12 @@ def main() -> None:
     - http: For Docker/remote deployments (set MCP_TRANSPORT=http)
 
     Initialization and shutdown are handled by the @mcp.startup and @mcp.shutdown decorators.
+
+    Exit codes follow BSD sysexits.h convention for supervisor integration:
+    - 0: Normal shutdown
+    - 69 (EX_UNAVAILABLE): External dependency unavailable (supervisor may retry with backoff)
+    - 78 (EX_CONFIG): Configuration error (supervisor should NOT restart)
+    - 1: General error (unknown cause)
     """
     try:
         # Log server version at startup
@@ -517,9 +531,19 @@ def main() -> None:
 
     except KeyboardInterrupt:
         logger.info('Server shutdown requested')
+    except ConfigurationError as e:
+        # Configuration errors: missing packages, invalid settings, missing API keys
+        # Exit code 78 (EX_CONFIG) signals supervisor NOT to restart
+        logger.critical(f'[FATAL] Configuration error (will not retry): {e}')
+        sys.exit(ConfigurationError.EXIT_CODE)
+    except DependencyError as e:
+        # Dependency errors: service down, model not pulled, network issues
+        # Exit code 69 (EX_UNAVAILABLE) allows supervisor to retry with backoff
+        logger.error(f'[ERROR] Dependency unavailable (may retry): {e}')
+        sys.exit(DependencyError.EXIT_CODE)
     except Exception as e:
         logger.error(f'Server error: {e}')
-        raise
+        sys.exit(1)
 
 
 if __name__ == '__main__':

@@ -49,7 +49,7 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
-    restart: unless-stopped
+    restart: on-failure
 
   ollama:
     build:
