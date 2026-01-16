@@ -265,7 +265,7 @@ disallow_any_explicit = false
 module = ['migrations.*']
 ignore_errors = true
 
-# Handle optional dependencies for semantic search, chunking, and reranking
+# Handle optional dependencies for semantic search, chunking, reranking, and tracing
 [[tool.mypy.overrides]]
 module = [
   'sqlite_vec',
@@ -280,6 +280,8 @@ module = [
   'langchain_text_splitters.*',
   'flashrank',
   'flashrank.*',
+  'langsmith',
+  'langsmith.*',
 ]
 ignore_missing_imports = true
 follow_imports = 'skip'
