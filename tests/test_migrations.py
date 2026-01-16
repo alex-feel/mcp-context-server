@@ -192,15 +192,17 @@ class TestApplySemanticSearchMigration:
             ''')
             conn.commit()
 
-        env = {
-            'DB_PATH': str(db_path),
-            'MCP_TEST_MODE': '1',
-            'ENABLE_SEMANTIC_SEARCH': 'true',
-            'STORAGE_BACKEND': 'sqlite',
-            'EMBEDDING_DIM': '768',  # Different from stored 384
-        }
+        # Create mock settings with semantic search enabled and dimension mismatch
+        # NOTE: Patching os.environ has NO EFFECT because get_settings() is cached
+        # via @lru_cache at conftest.py import time with semantic_search.enabled=False.
+        # We must patch the settings object directly in the migration module.
+        mock_settings = MagicMock()
+        mock_settings.semantic_search.enabled = True
+        mock_settings.embedding.dim = 768  # Different from stored 384
+        mock_settings.storage.db_path = db_path
+        mock_settings.storage.postgresql_schema = 'public'
 
-        with patch.dict(os.environ, env, clear=False):
+        with patch('app.migrations.semantic.settings', mock_settings):
             from app.backends.sqlite_backend import SQLiteBackend
 
             backend = SQLiteBackend(db_path=str(db_path))
