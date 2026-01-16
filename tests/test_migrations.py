@@ -107,13 +107,12 @@ class TestApplySemanticSearchMigration:
             # Manually create the semantic search tables to simulate existing migration
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS embedding_metadata (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    context_entry_id INTEGER NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
+                    context_id INTEGER PRIMARY KEY,
+                    model_name TEXT NOT NULL,
                     dimensions INTEGER NOT NULL,
-                    embedded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
                 )
             ''')
             conn.commit()
@@ -174,12 +173,12 @@ class TestApplySemanticSearchMigration:
             ''')
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS embedding_metadata (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    context_entry_id INTEGER NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
+                    context_id INTEGER PRIMARY KEY,
+                    model_name TEXT NOT NULL,
                     dimensions INTEGER NOT NULL,
-                    embedded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
                 )
             ''')
             # Insert metadata with dimension 384 (different from configured 768)
@@ -188,8 +187,8 @@ class TestApplySemanticSearchMigration:
                 VALUES ('test', 'user', 'text', 'test content')
             ''')
             conn.execute('''
-                INSERT INTO embedding_metadata (context_entry_id, provider, model, dimensions)
-                VALUES (1, 'test', 'test-model', 384)
+                INSERT INTO embedding_metadata (context_id, model_name, dimensions)
+                VALUES (1, 'test-model', 384)
             ''')
             conn.commit()
 
