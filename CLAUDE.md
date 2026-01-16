@@ -35,7 +35,7 @@ Note: Integration tests use SQLite-only temporary databases. PostgreSQL is produ
 FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
-   - Entry point with FastMCP instance, lifespan management, and main() function (~415 lines)
+   - Entry point with FastMCP instance, lifespan management, and main() function (~550 lines)
    - Tool implementations in `app/tools/` package organized by domain:
      - `context.py`: store_context, get_context_by_ids, update_context, delete_context
      - `search.py`: search_context, semantic_search_context, fts_search_context, hybrid_search_context
@@ -109,7 +109,7 @@ The server codebase is organized into focused packages:
 
 ```
 app/
-├── server.py              # Entry point, lifespan, FastMCP (~415 lines)
+├── server.py              # Entry point, lifespan, FastMCP (~550 lines)
 ├── settings.py            # ALL env vars via get_settings() - centralized configuration
 ├── types.py               # 40+ TypedDicts for API responses (ScoresDict, ContextEntryDict, etc.)
 ├── models.py              # Pydantic models (ContextEntry, ImageAttachment, StoreContextRequest)
@@ -372,7 +372,7 @@ Existing settings classes by domain:
 - `ToolManagementSettings`: Tool availability (disabled tools)
 - `TransportSettings`: HTTP transport (host, port)
 - `AuthSettings`: Authentication (tokens, client IDs)
-- `StorageSettings`: Database backend configuration
+- `StorageSettings`: Database backend configuration (includes metadata indexing settings)
 - `EmbeddingSettings`: Embedding provider configuration
 - `SemanticSearchSettings`: Semantic search toggle
 - `FtsSettings`: Full-text search configuration
@@ -382,7 +382,6 @@ Existing settings classes by domain:
 - `RerankingSettings`: Cross-encoder reranking
 - `FtsPassageSettings`: FTS passage extraction
 - `LangSmithSettings`: LangSmith tracing
-- `MetadataIndexSettings`: Metadata field indexing
 
 ### FastMCP-Specific Requirements
 
