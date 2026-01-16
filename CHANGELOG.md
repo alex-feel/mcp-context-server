@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.0.0](https://github.com/alex-feel/mcp-context-server/compare/v0.17.0...v1.0.0) (2026-01-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* API response structure changed for all search tools. Users must update their code:
+    - FTS: result['score'] -> result['scores']['fts_score']
+    - Semantic: result['distance'] -> result['scores']['semantic_distance']
+    - All tools: result['rerank_score'] -> result['scores']['rerank_score']
+* Default embedding model changed from embeddinggemma:latest (768 dim) to qwen3-embedding:0.6b (1024 dim). Existing vector databases will have incompatible embeddings.
+* ENABLE_EMBEDDING_GENERATION now defaults to true. Server will NOT start if embedding dependencies are not available when ENABLE_EMBEDDING_GENERATION=true (the default).
+
+### Features
+
+* add chunk-aware reranking for FTS, semantic search, and hybrid search ([ff79859](https://github.com/alex-feel/mcp-context-server/commit/ff79859a65645be5fe83b50054994ee1ac352f48))
+* add embedding truncation control with universal validator ([d941b6f](https://github.com/alex-feel/mcp-context-server/commit/d941b6f349ddac787abfee581e5f22e6b8103579))
+* add text chunking and cross-encoder reranking ([942bb24](https://github.com/alex-feel/mcp-context-server/commit/942bb24d66330017864d91d1a73d07f9df7920ed))
+* implement universal retry wrapper for embedding providers ([4031061](https://github.com/alex-feel/mcp-context-server/commit/40310619dfdf09be9ef1ca24bebbff8160ac5a92))
+* prevent Docker infinite restart loops with exit code handling ([91acfa4](https://github.com/alex-feel/mcp-context-server/commit/91acfa4c00cd979577ee2157619a7b495caff8d7))
+* replace embeddinggemma with qwen3-embedding:0.6b ([02ce75e](https://github.com/alex-feel/mcp-context-server/commit/02ce75e3833eb7150e873f33e670c8809d26da6c))
+* separate embedding generation from semantic search ([3967262](https://github.com/alex-feel/mcp-context-server/commit/396726205d2a681e939d1a0fe36ba96c2822b7aa))
+* standardize scores API across all search tools ([0a940c9](https://github.com/alex-feel/mcp-context-server/commit/0a940c9d134b44a8e7d1c3e4fca637aad0b1566a))
+* switch PostgreSQL FTS ranking from ts_rank to ts_rank_cd ([a58fd9c](https://github.com/alex-feel/mcp-context-server/commit/a58fd9c9e4d24e91cc26eb53b31732fa4aa4a845))
+
+
+### Bug Fixes
+
+* enable LangSmith tracing for embedding operations ([ba7bf9f](https://github.com/alex-feel/mcp-context-server/commit/ba7bf9fc12a66e673dac54d9d947970b5f380587))
+
 ## [0.17.0](https://github.com/alex-feel/mcp-context-server/compare/v0.16.1...v0.17.0) (2026-01-11)
 
 
