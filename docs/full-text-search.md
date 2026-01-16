@@ -111,7 +111,7 @@ SQLite uses the FTS5 extension with external content mode for efficient full-tex
 PostgreSQL uses native tsvector/tsquery functionality with GIN indexing.
 
 **Features**:
-- **ts_rank scoring**: PostgreSQL's built-in relevance ranking
+- **ts_rank_cd scoring**: PostgreSQL's built-in relevance ranking with document coverage normalization
 - **29 language support**: Full linguistic stemming for all supported languages
 - **GIN index**: Optimized for fast full-text searches
 - **Generated column**: tsvector automatically computed and stored
@@ -162,7 +162,11 @@ When FTS is enabled, a new MCP tool becomes available.
       "created_at": "2025-12-01T10:00:00Z",
       "updated_at": "2025-12-01T10:00:00Z",
       "tags": ["tag1", "tag2"],
-      "score": 2.45,
+      "scores": {
+        "fts_score": 2.45,
+        "fts_rank": null,
+        "rerank_score": 0.87
+      },
       "highlighted": "matching <mark>context</mark> content"
     }
   ],
@@ -179,7 +183,10 @@ When FTS is enabled, a new MCP tool becomes available.
 
 **Note:** The `stats` field is only included when `explain_query=True`.
 
-**Score**: Higher values indicate better relevance (BM25 for SQLite, ts_rank for PostgreSQL).
+**Scores Object**:
+- `fts_score`: BM25/ts_rank relevance score (HIGHER = better match)
+- `fts_rank`: Always null for standalone FTS (no ranking)
+- `rerank_score`: Cross-encoder relevance score (HIGHER = better, 0.0-1.0), present when reranking is enabled
 
 ### Search Modes
 
@@ -491,6 +498,6 @@ Both operations automatically rebuild the index from existing data.
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - meaning-based search with embeddings
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators
-- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
 - **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
 - **Main Documentation**: [README.md](../README.md) - overview and quick start

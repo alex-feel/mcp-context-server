@@ -222,6 +222,7 @@ class TestEmbeddingRepository:
     ) -> None:
         """Test updating an existing embedding."""
         from app.repositories import RepositoryContainer
+        from app.repositories.embedding_repository import ChunkEmbedding
         from app.repositories.embedding_repository import EmbeddingRepository
 
         backend = async_db_with_embeddings
@@ -238,9 +239,10 @@ class TestEmbeddingRepository:
         )
         await embedding_repo.store(context_id, [0.1] * embedding_dim, model='test-model')
 
-        # Update embedding
+        # Update embedding using ChunkEmbedding
         new_embedding = [0.5] * embedding_dim
-        await embedding_repo.update(context_id, new_embedding)
+        chunk_emb = ChunkEmbedding(embedding=new_embedding, start_index=0, end_index=15)
+        await embedding_repo.update(context_id, [chunk_emb], model='test-model')
 
         # Verify update by searching
         results, _ = await embedding_repo.search(

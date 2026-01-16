@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.embeddings.retry import with_retry_and_timeout
+from app.embeddings.tracing import traced_embedding
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,7 @@ class VoyageEmbeddingProvider:
         VOYAGE_API_KEY: Voyage AI API key (required)
         EMBEDDING_MODEL: Model name (default: voyage-3)
         EMBEDDING_DIM: Vector dimensions (default: 1024)
+        VOYAGE_TRUNCATION: Control truncation behavior (default: false = error on exceed)
     """
 
     def __init__(self) -> None:
@@ -59,24 +62,25 @@ class VoyageEmbeddingProvider:
             )
 
         # Build kwargs for VoyageAIEmbeddings
+        # Note: VoyageAI underlying client has max_retries=0 by default
+        # Universal wrapper handles all retry logic
+        # Note: Using kwargs pattern because pyright type stubs don't recognize voyage_api_key
         kwargs: dict[str, Any] = {
             'model': self._model,
             'voyage_api_key': self._api_key.get_secret_value(),
             'batch_size': self._batch_size,
+            'truncation': self._truncation,
         }
-
-        # Only set truncation if explicitly configured
-        if self._truncation is not None:
-            kwargs['truncation'] = self._truncation
-
         self._embeddings = VoyageAIEmbeddings(**kwargs)
-        logger.info(f'Initialized Voyage AI embedding provider: {self._model}')
+        truncation_mode = 'disabled (errors on exceed)' if not self._truncation else 'enabled (silent truncation)'
+        logger.info(f'Initialized Voyage AI embedding provider: {self._model}, truncation={truncation_mode}')
 
     async def shutdown(self) -> None:
         """Cleanup resources."""
         self._embeddings = None
         logger.info('Voyage AI embedding provider shut down')
 
+    @traced_embedding
     async def embed_query(self, text: str) -> list[float]:
         """Generate single embedding using async method.
 
@@ -87,14 +91,21 @@ class VoyageEmbeddingProvider:
             Embedding vector as list of floats
 
         Raises:
-            RuntimeError: If provider not initialized or embedding fails
+            RuntimeError: If provider not initialized
             ValueError: If embedding dimension mismatch
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embedding = await self._embeddings.aembed_query(text)
+        async def _embed() -> list[Any]:
+            result: list[Any] = await self._embeddings.aembed_query(text)
+            return result
+
+        embedding = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_query')
         embedding = self._convert_to_python_floats(embedding)
+
+        # Key operational event: shows embedding generation worked
+        logger.info(f'[EMBEDDING] Generated query embedding: text_len={len(text)}, dim={len(embedding)}')
 
         # Validate dimension
         if len(embedding) != self._dimension:
@@ -105,6 +116,7 @@ class VoyageEmbeddingProvider:
 
         return embedding
 
+    @traced_embedding
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Generate batch embeddings using async method.
 
@@ -115,13 +127,20 @@ class VoyageEmbeddingProvider:
             List of embedding vectors
 
         Raises:
-            RuntimeError: If provider not initialized or embedding fails
+            RuntimeError: If provider not initialized
             ValueError: If any embedding dimension mismatch
         """
         if self._embeddings is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
 
-        embeddings = await self._embeddings.aembed_documents(texts)
+        async def _embed() -> list[list[Any]]:
+            result: list[list[Any]] = await self._embeddings.aembed_documents(texts)
+            return result
+
+        embeddings = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_documents')
+
+        # Key operational event: shows embedding generation worked
+        logger.info(f'[EMBEDDING] Generated {len(embeddings)} embeddings for {len(texts)} texts')
 
         result: list[list[float]] = []
         for i, emb in enumerate(embeddings):

@@ -7,11 +7,54 @@ mock contexts, and sample test data for comprehensive testing.
 
 from __future__ import annotations
 
+# ============================================================================
+# CRITICAL: These stdlib imports are safe and MUST come before the event loop
+# policy setup. They do NOT trigger httpx or langsmith imports.
+# ============================================================================
+import os
+import sys
+
+# ============================================================================
+# CRITICAL: Windows Event Loop Policy MUST Be Set BEFORE Any Async-Related Imports
+# ============================================================================
+# When embeddings-ollama is installed, importing app.server triggers:
+#   app.server -> app.embeddings -> app.embeddings.retry -> httpx
+# If LangSmith is also installed, it auto-instruments httpx at import time
+# using whatever event loop policy is active at that moment.
+#
+# On Windows, the default Proactor (IOCP) loop can hang when httpx/langsmith
+# leave pending I/O operations that never complete, causing
+# GetQueuedCompletionStatus to block indefinitely.
+#
+# The Selector event loop policy MUST be set BEFORE any of these imports occur.
+# ============================================================================
+if sys.platform == 'win32':
+    import asyncio
+
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# ============================================================================
+# CRITICAL: Disable LangSmith/LangChain Tracing BEFORE Importing Packages
+# ============================================================================
+# LangSmith auto-instruments httpx at import time if tracing is enabled.
+# These environment variables MUST be set BEFORE importing any packages
+# that might trigger LangSmith initialization.
+# ============================================================================
+os.environ['LANGSMITH_TRACING'] = 'false'
+os.environ['LANGCHAIN_TRACING_V2'] = 'false'
+os.environ['LANGSMITH_TEST_CACHE'] = ''
+
+# ============================================================================
+# Now Safe to Import Everything Else
+# ============================================================================
+# Note: E402 warnings for these imports are suppressed via pyproject.toml
+# extend-per-file-ignores because the imports MUST come after the event loop
+# policy and environment variable setup above.
+# ============================================================================
 import asyncio
 import base64
 import importlib.util
 import json
-import os
 import sqlite3
 import tempfile
 from collections.abc import AsyncGenerator
@@ -29,7 +72,19 @@ from anyio import Path as AsyncPath
 from dotenv import load_dotenv
 from fastmcp import Context
 
-import app.server
+# ============================================================================
+# CRITICAL: Configure logging BEFORE importing app modules
+# This ensures tests have properly configured logging even when app modules
+# are imported directly (not via app.server entry point)
+# ============================================================================
+from app.logger_config import config_logger
+from app.settings import get_settings
+
+_test_settings = get_settings()
+config_logger(_test_settings.logging.level)
+
+# Now safe to import app modules
+import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.settings import AppSettings
@@ -42,6 +97,61 @@ from app.settings import AppSettings
 def is_ollama_available() -> bool:
     """Check if ollama package is installed."""
     return importlib.util.find_spec('ollama') is not None
+
+
+def is_ollama_model_available(model: str | None = None) -> bool:
+    """Check if Ollama model is available for testing.
+
+    Performs two checks:
+    1. Ollama service is running
+    2. The specified model (or any candidate model) is installed
+
+    Args:
+        model: Specific model to check, or None to check candidate models
+
+    Returns:
+        True if model is available, False otherwise
+    """
+    try:
+        import httpx
+        import ollama
+    except ImportError:
+        return False
+
+    # Get Ollama host from settings or use default
+    try:
+        from app.settings import get_settings
+
+        host = get_settings().embedding.ollama_host
+    except Exception:
+        host = 'http://localhost:11434'
+
+    try:
+        # Check 1: Service is running (short timeout)
+        with httpx.Client(timeout=2.0) as client:
+            response = client.get(host)
+            if response.status_code != 200:
+                return False
+
+        # Check 2: Model is available
+        ollama_client = ollama.Client(host=host, timeout=5.0)
+
+        if model is not None:
+            # Check specific model
+            ollama_client.show(model)
+            return True
+        # Check candidate models (same priority as run_server.py)
+        candidate_models = ['all-minilm', 'qwen3-embedding:0.6b']
+        for candidate in candidate_models:
+            try:
+                ollama_client.show(candidate)
+                return True
+            except Exception:
+                continue
+        return False
+
+    except Exception:
+        return False
 
 
 def is_sqlite_vec_available() -> bool:
@@ -57,6 +167,16 @@ def is_numpy_available() -> bool:
 def are_semantic_search_deps_available() -> bool:
     """Check if all semantic search dependencies are available."""
     return is_ollama_available() and is_sqlite_vec_available() and is_numpy_available()
+
+
+def is_chunking_available() -> bool:
+    """Check if langchain-text-splitters package is installed."""
+    return importlib.util.find_spec('langchain_text_splitters') is not None
+
+
+def is_flashrank_available() -> bool:
+    """Check if flashrank package is installed."""
+    return importlib.util.find_spec('flashrank') is not None
 
 
 # Pytest markers for conditional skipping
@@ -80,11 +200,26 @@ requires_semantic_search = pytest.mark.skipif(
     reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
 )
 
+requires_ollama_model = pytest.mark.skipif(
+    not is_ollama_model_available(),
+    reason='Ollama model not available (service not running or no model installed)',
+)
+
+requires_chunking = pytest.mark.skipif(
+    not is_chunking_available(),
+    reason='langchain-text-splitters package not installed (chunking feature)',
+)
+
+requires_flashrank = pytest.mark.skipif(
+    not is_flashrank_available(),
+    reason='flashrank package not installed (reranking feature)',
+)
+
 
 def is_fts_enabled() -> bool:
     """Check if FTS is enabled in environment."""
     from app.settings import get_settings
-    return get_settings().enable_fts
+    return get_settings().fts.enabled
 
 
 requires_fts = pytest.mark.skipif(
@@ -428,8 +563,11 @@ def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> 
             # CRITICAL: Patch factory.get_settings to prevent lazy backend creation from reading environment
             patch('app.backends.factory.get_settings', return_value=test_settings),
             patch('app.server.DB_PATH', temp_db_path),
-            patch('app.server.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
-            patch('app.server.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
+            # CRITICAL: Patch startup.DB_PATH - ensure_backend() uses this for lazy initialization
+            patch('app.startup.DB_PATH', temp_db_path),
+            # Patch MAX_IMAGE_SIZE_MB and MAX_TOTAL_SIZE_MB where they are used (in app.tools.context)
+            patch('app.tools.context.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
+            patch('app.tools.context.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
         ):
             yield
     finally:
@@ -460,12 +598,11 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[StorageBack
     backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
     await backend.initialize()
 
-    # Set in server module
-    app.server._backend = backend
-    app.server.DB_PATH = temp_db_path
+    # Set in startup module (global state)
+    app.startup.set_backend(backend)
 
     # Initialize repositories
-    app.server._repositories = RepositoryContainer(backend)
+    app.startup.set_repositories(RepositoryContainer(backend))
 
     # Initialize the database schema using the backend
     # NOTE: We initialize schema directly instead of calling init_database() to avoid
@@ -483,21 +620,21 @@ async def async_db_initialized(temp_db_path: Path) -> AsyncGenerator[StorageBack
         yield backend
     finally:
         # Proper cleanup
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
+        cleanup_backend = app.startup.get_backend()
+        if cleanup_backend is not None:
             try:
                 # Shutdown the storage backend
-                await app.server._backend.shutdown()
+                await cleanup_backend.shutdown()
             except Exception as e:
                 # Log error but continue cleanup to prevent test suite hang
                 import logging
                 logging.getLogger(__name__).error(f'Error during backend shutdown: {e}')
             finally:
                 # Always clear the reference, even if shutdown failed
-                app.server._backend = None
+                app.startup.set_backend(None)
 
         # Reset repositories
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
+        app.startup.set_repositories(None)
 
 
 @pytest_asyncio.fixture
@@ -514,17 +651,17 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
 
     # CRITICAL: Aggressive pre-cleanup to prevent interference from previous tests
     # Shut down any existing backend from previous tests
-    if hasattr(app.server, '_backend') and app.server._backend is not None:
+    existing_backend = app.startup.get_backend()
+    if existing_backend is not None:
         try:
-            await app.server._backend.shutdown()
+            await existing_backend.shutdown()
         except Exception:
             pass
         finally:
-            app.server._backend = None
+            app.startup.set_backend(None)
 
     # Reset repositories
-    if hasattr(app.server, '_repositories'):
-        app.server._repositories = None
+    app.startup.set_repositories(None)
 
     # Small delay to let background tasks fully terminate
     await asyncio.sleep(0.05)
@@ -539,10 +676,10 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
     # reading STORAGE_BACKEND from environment (user may have postgresql in .env)
     backend = create_backend(backend_type='sqlite', db_path=str(temp_db_path))
     await backend.initialize()
-    app.server._backend = backend
+    app.startup.set_backend(backend)
 
     # Initialize repositories with the backend
-    app.server._repositories = RepositoryContainer(backend)
+    app.startup.set_repositories(RepositoryContainer(backend))
 
     # Initialize the database schema using the backend
     from app.schemas import load_schema
@@ -561,11 +698,12 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
         yield
     finally:
         # Proper async cleanup with timeout protection
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
+        cleanup_backend = app.startup.get_backend()
+        if cleanup_backend is not None:
             try:
                 # Shutdown the storage backend with timeout to prevent hangs
                 await asyncio.wait_for(
-                    app.server._backend.shutdown(),
+                    cleanup_backend.shutdown(),
                     timeout=5.0,
                 )
             except TimeoutError:
@@ -578,11 +716,10 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
                 logging.getLogger(__name__).error(f'Error during backend shutdown: {e}')
             finally:
                 # Always clear the reference, even if shutdown failed
-                app.server._backend = None
+                app.startup.set_backend(None)
 
         # Reset the repositories to ensure clean state
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
+        app.startup.set_repositories(None)
 
 
 @contextmanager
@@ -628,12 +765,11 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
     backend = create_backend(backend_type='sqlite', db_path=str(db_path))
     await backend.initialize()
 
-    # Set in server module
-    app.server._backend = backend
-    app.server.DB_PATH = db_path
+    # Set in startup module (global state)
+    app.startup.set_backend(backend)
 
     # Initialize repositories
-    app.server._repositories = RepositoryContainer(backend)
+    app.startup.set_repositories(RepositoryContainer(backend))
 
     # Initialize the base database schema
     schema_sql = load_schema('sqlite')
@@ -644,12 +780,16 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
     await backend.execute_write(_init_schema)
 
     # Apply semantic search migration with correct dimension
-    migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search_sqlite.sql'
-    migration_sql = migration_path.read_text(encoding='utf-8')
+    semantic_migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_semantic_search_sqlite.sql'
+    semantic_migration_sql = semantic_migration_path.read_text(encoding='utf-8')
     # Replace the template with actual dimension
-    migration_sql = migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding.dim))
+    semantic_migration_sql = semantic_migration_sql.replace('{EMBEDDING_DIM}', str(settings.embedding.dim))
 
-    def _apply_migration(conn: sqlite3.Connection) -> None:
+    # Apply chunking migration (creates embedding_chunks table for 1:N relationships)
+    chunking_migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
+    chunking_migration_sql = chunking_migration_path.read_text(encoding='utf-8')
+
+    def _apply_migrations(conn: sqlite3.Connection) -> None:
         # Load sqlite-vec extension before executing migration
         # The migration SQL uses vec0 module which requires sqlite-vec extension
         try:
@@ -664,24 +804,35 @@ async def async_db_with_embeddings(tmp_path: Path) -> AsyncGenerator[StorageBack
                 'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
             ) from e
 
-        conn.executescript(migration_sql)
+        # Apply semantic search migration first (creates vec_context_embeddings)
+        conn.executescript(semantic_migration_sql)
 
-    await backend.execute_write(_apply_migration)
+        # Apply chunking migration (creates embedding_chunks for 1:N relationships)
+        conn.executescript(chunking_migration_sql)
+
+        # Add chunk_count column to embedding_metadata (if not exists)
+        # SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check first
+        cursor = conn.execute('PRAGMA table_info(embedding_metadata)')
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'chunk_count' not in columns:
+            conn.execute('ALTER TABLE embedding_metadata ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1')
+
+    await backend.execute_write(_apply_migrations)
 
     try:
         yield backend
     finally:
         # Proper cleanup
-        if hasattr(app.server, '_backend') and app.server._backend is not None:
+        cleanup_backend = app.startup.get_backend()
+        if cleanup_backend is not None:
             try:
-                await app.server._backend.shutdown()
+                await cleanup_backend.shutdown()
             except Exception:
                 pass
             finally:
-                app.server._backend = None
+                app.startup.set_backend(None)
 
-        if hasattr(app.server, '_repositories'):
-            app.server._repositories = None
+        app.startup.set_repositories(None)
 
 
 @pytest.fixture

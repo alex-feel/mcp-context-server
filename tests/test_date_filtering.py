@@ -15,14 +15,14 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
-import app.server
+import app.tools
 from app.repositories import RepositoryContainer
-from app.server import validate_date_param
-from app.server import validate_date_range
+from app.startup.validation import validate_date_param
+from app.startup.validation import validate_date_range
 
-# Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
-store_context = app.server.store_context
-search_context = app.server.search_context
+# Get the actual async functions from app.tools
+store_context = app.tools.store_context
+search_context = app.tools.search_context
 
 
 class TestDateValidation:
@@ -200,7 +200,7 @@ class TestSearchContextDateFiltering:
 
         future_date = (datetime.now(UTC) + timedelta(days=1)).strftime('%Y-%m-%d')
 
-        with patch('app.server._ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='date-test-1',
                 start_date=future_date,
@@ -224,7 +224,7 @@ class TestSearchContextDateFiltering:
         # Expected expanded value includes end-of-day time with microsecond precision
         expected_end_date = f'{past_date}T23:59:59.999999'
 
-        with patch('app.server._ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='date-test-2',
                 end_date=past_date,
@@ -260,7 +260,7 @@ class TestSearchContextDateFiltering:
         # Expected expanded end_date includes end-of-day time with microsecond precision
         expected_end_date = f'{tomorrow}T23:59:59.999999'
 
-        with patch('app.server._ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
             result = await search_context(
                 thread_id='date-test-3',
                 start_date=today,
@@ -306,7 +306,7 @@ class TestSearchContextDateFiltering:
         start = (now - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')
         end = (now + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')
 
-        with patch('app.server._ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
             await search_context(
                 thread_id='date-test-6',
                 start_date=start,
@@ -323,7 +323,7 @@ class TestSearchContextDateFiltering:
         """Test that no date filter passes None to repository."""
         self.mock_repos.context.search_contexts = AsyncMock(return_value=([], {}))
 
-        with patch('app.server._ensure_repositories', return_value=self.mock_repos):
+        with patch('app.tools.search.ensure_repositories', return_value=self.mock_repos):
             await search_context(
                 thread_id='date-test-7',
             limit=50,
@@ -513,16 +513,16 @@ class TestSemanticSearchDateFiltering:
         today = datetime.now(UTC).strftime('%Y-%m-%d')
 
         with (
-            patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_provider', mock_embedding_provider),
-            patch('app.server.settings') as mock_settings,
+            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.startup._embedding_provider', mock_embedding_provider),
+            patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             # Import and get the actual function
             import app.server
-            semantic_search = app.server.semantic_search_context
+            semantic_search = app.tools.semantic_search_context
 
             result = await semantic_search(
                 query='test query',
@@ -553,15 +553,15 @@ class TestSemanticSearchDateFiltering:
         expected_end_date = f'{today}T23:59:59.999999'
 
         with (
-            patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_provider', mock_embedding_provider),
-            patch('app.server.settings') as mock_settings,
+            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.startup._embedding_provider', mock_embedding_provider),
+            patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context
+            semantic_search = app.tools.semantic_search_context
 
             await semantic_search(
                 query='test query',
@@ -589,15 +589,15 @@ class TestSemanticSearchDateFiltering:
         expected_end_date = f'{tomorrow}T23:59:59.999999'
 
         with (
-            patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_provider', mock_embedding_provider),
-            patch('app.server.settings') as mock_settings,
+            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.startup._embedding_provider', mock_embedding_provider),
+            patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context
+            semantic_search = app.tools.semantic_search_context
 
             await semantic_search(
                 query='test query',
@@ -617,13 +617,13 @@ class TestSemanticSearchDateFiltering:
         mock_embedding_provider = MagicMock()
 
         with (
-            patch('app.server._embedding_provider', mock_embedding_provider),
-            patch('app.server.settings') as mock_settings,
+            patch('app.startup._embedding_provider', mock_embedding_provider),
+            patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
+            mock_settings.semantic_search.enabled = True
 
             import app.server
-            semantic_search = app.server.semantic_search_context
+            semantic_search = app.tools.semantic_search_context
 
             with pytest.raises(ToolError) as exc_info:
                 await semantic_search(
@@ -639,13 +639,13 @@ class TestSemanticSearchDateFiltering:
         mock_embedding_provider = MagicMock()
 
         with (
-            patch('app.server._embedding_provider', mock_embedding_provider),
-            patch('app.server.settings') as mock_settings,
+            patch('app.startup._embedding_provider', mock_embedding_provider),
+            patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
+            mock_settings.semantic_search.enabled = True
 
             import app.server
-            semantic_search = app.server.semantic_search_context
+            semantic_search = app.tools.semantic_search_context
 
             with pytest.raises(ToolError) as exc_info:
                 await semantic_search(
@@ -671,15 +671,15 @@ class TestSemanticSearchDateFiltering:
         end = '2025-11-29T18:00:00'
 
         with (
-            patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_provider', mock_embedding_provider),
-            patch('app.server.settings') as mock_settings,
+            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.startup._embedding_provider', mock_embedding_provider),
+            patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context
+            semantic_search = app.tools.semantic_search_context
 
             await semantic_search(
                 query='test query',
@@ -705,15 +705,15 @@ class TestSemanticSearchDateFiltering:
         self.mock_repos.tags.get_tags_for_context = AsyncMock(return_value=[])
 
         with (
-            patch('app.server._ensure_repositories', return_value=self.mock_repos),
-            patch('app.server._embedding_provider', mock_embedding_provider),
-            patch('app.server.settings') as mock_settings,
+            patch('app.tools.search.ensure_repositories', return_value=self.mock_repos),
+            patch('app.startup._embedding_provider', mock_embedding_provider),
+            patch('app.tools.search.settings') as mock_settings,
         ):
-            mock_settings.enable_semantic_search = True
-            mock_settings.embedding_model = 'test-model'
+            mock_settings.semantic_search.enabled = True
+            mock_settings.embedding.model = 'test-model'
 
             import app.server
-            semantic_search = app.server.semantic_search_context
+            semantic_search = app.tools.semantic_search_context
 
             await semantic_search(
                 query='test query',

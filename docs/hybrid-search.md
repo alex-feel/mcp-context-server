@@ -47,14 +47,16 @@ Hybrid Search uses existing FTS and Semantic Search infrastructure. No additiona
 For full hybrid search capability:
 
 ```bash
-# Install embedding provider dependencies (e.g., Ollama)
-uv sync --extra embeddings-ollama
+# Install embedding provider and reranking dependencies (e.g., Ollama)
+uv sync --extra embeddings-ollama --extra reranking
 
 # Or use another provider: embeddings-openai, embeddings-azure, embeddings-huggingface, embeddings-voyage
 
 # Pull embedding model (for Ollama)
-ollama pull embeddinggemma:latest
+ollama pull qwen3-embedding:0.6b
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 ## Configuration
 
@@ -101,7 +103,7 @@ Add to your `.mcp.json` file:
         "--python",
         "3.12",
         "--with",
-        "mcp-context-server[embeddings-ollama]",
+        "mcp-context-server[embeddings-ollama,reranking]",
         "mcp-context-server"
       ],
       "env": {
@@ -114,6 +116,8 @@ Add to your `.mcp.json` file:
   }
 }
 ```
+
+**Note:** The `--extra reranking` is necessary to enable reranking.
 
 ## How RRF Fusion Works
 
@@ -156,6 +160,46 @@ FTS Results:           Semantic Results:      After RRF Fusion:
 ```
 
 Doc B appears in both lists (FTS rank 2, semantic rank 1), so it scores highest after fusion.
+
+## Reranking Integration
+
+When both hybrid search and reranking are enabled (both are enabled by default), reranking is applied AFTER RRF fusion:
+
+1. FTS and semantic search run in parallel
+2. RRF fusion combines results
+3. Cross-encoder reranking refines final ordering
+
+This ensures documents found by both methods rank highest, then reranking optimizes relevance.
+
+### Over-Fetching Chain
+
+For a request with `limit=5`, the pipeline applies multiple over-fetch multipliers:
+
+```
+User requests: limit=5
+    |
+    v
+Reranking needs: 5 * 4 (RERANKING_OVERFETCH) = 20 candidates
+    |
+    v
+RRF needs: 20 * 2 (HYBRID_RRF_OVERFETCH) = 40 per method
+    |
+    v
+Semantic search: 40 * 5 (CHUNK_DEDUP_OVERFETCH) = 200 chunks
+    |
+    v
+After chunk dedup + RRF + rerank: 5 final results
+```
+
+### Configuration
+
+Reranking is controlled by these environment variables (see [Semantic Search Guide](semantic-search.md#cross-encoder-reranking) for details):
+
+| Variable               | Default | Description                                   |
+|------------------------|---------|-----------------------------------------------|
+| `ENABLE_RERANKING`     | `true`  | Enable cross-encoder reranking                |
+| `RERANKING_OVERFETCH`  | `4`     | Multiplier for over-fetching before reranking |
+| `HYBRID_RRF_OVERFETCH` | `2`     | Multiplier for RRF to get enough candidates   |
 
 ## Usage
 
@@ -205,7 +249,8 @@ When hybrid search is enabled and at least one underlying search method is avail
         "fts_rank": 2,
         "semantic_rank": 1,
         "fts_score": 2.45,
-        "semantic_distance": 0.234
+        "semantic_distance": 0.234,
+        "rerank_score": 0.95
       }
     }
   ],
@@ -277,13 +322,14 @@ When `explain_query=True`, the response includes a `stats` object with detailed 
 
 Each result includes a `scores` object with detailed breakdown:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `rrf` | float | Combined RRF score (higher = better) |
-| `fts_rank` | int or null | Position in FTS results (1-based), null if not in FTS results |
-| `semantic_rank` | int or null | Position in semantic results (1-based), null if not in semantic results |
-| `fts_score` | float or null | Original FTS relevance score (BM25/ts_rank) |
-| `semantic_distance` | float or null | Original semantic distance (L2, lower = more similar) |
+| Field               | Type          | Description                                                                          |
+|---------------------|---------------|--------------------------------------------------------------------------------------|
+| `rrf`               | float         | Combined RRF score (higher = better)                                                 |
+| `fts_rank`          | int or null   | Position in FTS results (1-based), null if not in FTS results                        |
+| `semantic_rank`     | int or null   | Position in semantic results (1-based), null if not in semantic results              |
+| `fts_score`         | float or null | Original FTS relevance score (BM25/ts_rank)                                          |
+| `semantic_distance` | float or null | Original semantic distance (L2, lower = more similar)                                |
+| `rerank_score`      | float or null | Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled |
 
 **Interpreting null values:**
 
@@ -560,7 +606,7 @@ Both FTS and semantic search should show as available for full hybrid functional
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - semantic search setup with Ollama
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata filtering with operators
-- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
 - **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
 - **Main Documentation**: [README.md](../README.md) - overview and quick start
 

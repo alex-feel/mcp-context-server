@@ -15,13 +15,13 @@ This feature is **optional** and supports multiple embedding providers via LangC
 
 The server supports 5 embedding providers:
 
-| Provider | Default Model | Dimensions | Cost | Best For |
-|----------|---------------|------------|------|----------|
-| **Ollama** (default) | embeddinggemma:latest | 768 | Free (local) | Development, privacy-focused |
-| **OpenAI** | text-embedding-3-small | 1536 | $0.02/1M tokens | Production, high quality |
-| **Azure OpenAI** | text-embedding-ada-002 | 1536 | Pay-as-you-go | Enterprise, compliance |
-| **HuggingFace** | sentence-transformers/all-MiniLM-L6-v2 | 384 | Free (API) | Open source, experimentation |
-| **Voyage AI** | voyage-3 | 1024 | $0.06/1M tokens | RAG optimization, long context |
+| Provider             | Default Model                          | Dimensions | Cost            | Best For                       |
+|----------------------|----------------------------------------|------------|-----------------|--------------------------------|
+| **Ollama** (default) | qwen3-embedding:0.6b                   | 1024       | Free (local)    | Development, privacy-focused   |
+| **OpenAI**           | text-embedding-3-small                 | 1536       | $0.02/1M tokens | Production, high quality       |
+| **Azure OpenAI**     | text-embedding-ada-002                 | 1536       | Pay-as-you-go   | Enterprise, compliance         |
+| **HuggingFace**      | sentence-transformers/all-MiniLM-L6-v2 | 384        | Free (API)      | Open source, experimentation   |
+| **Voyage AI**        | voyage-3                               | 1024       | $0.06/1M tokens | RAG optimization, long context |
 
 Select a provider via the `EMBEDDING_PROVIDER` environment variable.
 
@@ -34,13 +34,13 @@ Select a provider via the `EMBEDDING_PROVIDER` environment variable.
 
 ### Provider-Specific Requirements
 
-| Provider | Requirements |
-|----------|--------------|
-| Ollama | Ollama installed locally, ~1GB storage per model |
-| OpenAI | OpenAI API key, internet access |
-| Azure OpenAI | Azure subscription, deployed embedding model |
-| HuggingFace | HuggingFace API token (optional for some models) |
-| Voyage AI | Voyage AI API key |
+| Provider     | Requirements                                     |
+|--------------|--------------------------------------------------|
+| Ollama       | Ollama installed locally, ~1GB storage per model |
+| OpenAI       | OpenAI API key, internet access                  |
+| Azure OpenAI | Azure subscription, deployed embedding model     |
+| HuggingFace  | HuggingFace API token (optional for some models) |
+| Voyage AI    | Voyage AI API key                                |
 
 ## Installation
 
@@ -104,7 +104,7 @@ Ollama runs embedding models locally with no API costs.
 
 2. **Pull embedding model**:
    ```bash
-   ollama pull embeddinggemma:latest
+   ollama pull qwen3-embedding:0.6b
    ```
 
 3. **Verify installation**:
@@ -121,12 +121,12 @@ Ollama runs embedding models locally with no API costs.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "ollama",
-        "EMBEDDING_MODEL": "embeddinggemma:latest",
-        "EMBEDDING_DIM": "768",
+        "EMBEDDING_MODEL": "qwen3-embedding:0.6b",
+        "EMBEDDING_DIM": "1024",
         "OLLAMA_HOST": "http://localhost:11434"
       }
     }
@@ -134,25 +134,29 @@ Ollama runs embedding models locally with no API costs.
 }
 ```
 
+**Note:** The `--extra reranking` is necessary to enable reranking.
+
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | `ollama` | Set to `ollama` |
-| `EMBEDDING_MODEL` | `embeddinggemma:latest` | Ollama model name |
-| `EMBEDDING_DIM` | `768` | Vector dimensions |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API URL |
+| Variable             | Default                  | Description                                                                                          |
+|----------------------|--------------------------|------------------------------------------------------------------------------------------------------|
+| `EMBEDDING_PROVIDER` | `ollama`                 | Set to `ollama`                                                                                      |
+| `EMBEDDING_MODEL`    | `qwen3-embedding:0.6b`   | Ollama model name                                                                                    |
+| `EMBEDDING_DIM`      | `1024`                   | Vector dimensions                                                                                    |
+| `OLLAMA_HOST`        | `http://localhost:11434` | Ollama API URL                                                                                       |
+| `OLLAMA_TRUNCATE`    | `false`                  | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
+| `OLLAMA_NUM_CTX`     | `4096`                   | Context window size in tokens (range: 512-131072)                                                    |
 
 **Docker Networking**: Use `host.docker.internal:11434` (Windows/macOS) or `172.17.0.1:11434` (Linux) when running in containers.
 
 #### Alternative Ollama Models
 
-| Model | Dimensions | Notes |
-|-------|------------|-------|
-| embeddinggemma:latest | 768 | Default, good general-purpose, 100+ languages |
-| nomic-embed-text | 768 | Strong performance, English-focused |
-| mxbai-embed-large | 1024 | Higher quality, slower |
-| all-minilm | 384 | Very fast, good for large-scale |
+| Model                | Dimensions | Notes                                              |
+|----------------------|------------|----------------------------------------------------|
+| qwen3-embedding:0.6b | 1024       | Default, MTEB-R 61.82, 32K context, 100+ languages |
+| nomic-embed-text     | 768        | Strong performance, English-focused                |
+| mxbai-embed-large    | 1024       | Higher quality, slower                             |
+| all-minilm           | 384        | Very fast, good for large-scale                    |
 
 ### OpenAI
 
@@ -175,7 +179,7 @@ OpenAI provides high-quality embeddings via API.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "openai",
@@ -188,24 +192,26 @@ OpenAI provides high-quality embeddings via API.
 }
 ```
 
+**Note:** The `--extra reranking` is necessary to enable reranking.
+
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `openai` |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI model name |
-| `EMBEDDING_DIM` | `1536` | Vector dimensions |
-| `OPENAI_API_KEY` | - | **Required**: OpenAI API key |
-| `OPENAI_API_BASE` | - | Custom base URL (optional) |
-| `OPENAI_ORGANIZATION` | - | Organization ID (optional) |
+| Variable              | Default                  | Description                  |
+|-----------------------|--------------------------|------------------------------|
+| `EMBEDDING_PROVIDER`  | -                        | Set to `openai`              |
+| `EMBEDDING_MODEL`     | `text-embedding-3-small` | OpenAI model name            |
+| `EMBEDDING_DIM`       | `1536`                   | Vector dimensions            |
+| `OPENAI_API_KEY`      | -                        | **Required**: OpenAI API key |
+| `OPENAI_API_BASE`     | -                        | Custom base URL (optional)   |
+| `OPENAI_ORGANIZATION` | -                        | Organization ID (optional)   |
 
 #### Available OpenAI Models
 
-| Model | Dimensions | Price | Notes |
-|-------|------------|-------|-------|
-| text-embedding-3-small | 1536 | $0.02/1M | Recommended, cost-effective |
-| text-embedding-3-large | 3072 | $0.13/1M | Higher quality |
-| text-embedding-ada-002 | 1536 | $0.10/1M | Legacy model |
+| Model                  | Dimensions | Price    | Notes                       |
+|------------------------|------------|----------|-----------------------------|
+| text-embedding-3-small | 1536       | $0.02/1M | Recommended, cost-effective |
+| text-embedding-3-large | 3072       | $0.13/1M | Higher quality              |
+| text-embedding-ada-002 | 1536       | $0.10/1M | Legacy model                |
 
 ### Azure OpenAI
 
@@ -235,7 +241,7 @@ Azure OpenAI provides enterprise-grade embeddings with compliance features.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-azure]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-azure,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "azure",
@@ -251,17 +257,19 @@ Azure OpenAI provides enterprise-grade embeddings with compliance features.
 }
 ```
 
+**Note:** The `--extra reranking` is necessary to enable reranking.
+
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `azure` |
-| `EMBEDDING_MODEL` | - | Model name |
-| `EMBEDDING_DIM` | `1536` | Vector dimensions |
-| `AZURE_OPENAI_API_KEY` | - | **Required**: Azure API key |
-| `AZURE_OPENAI_ENDPOINT` | - | **Required**: Azure endpoint URL |
-| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` | - | **Required**: Deployment name |
-| `AZURE_OPENAI_API_VERSION` | `2024-02-01` | API version |
+| Variable                                 | Default      | Description                      |
+|------------------------------------------|--------------|----------------------------------|
+| `EMBEDDING_PROVIDER`                     | -            | Set to `azure`                   |
+| `EMBEDDING_MODEL`                        | -            | Model name                       |
+| `EMBEDDING_DIM`                          | `1536`       | Vector dimensions                |
+| `AZURE_OPENAI_API_KEY`                   | -            | **Required**: Azure API key      |
+| `AZURE_OPENAI_ENDPOINT`                  | -            | **Required**: Azure endpoint URL |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` | -            | **Required**: Deployment name    |
+| `AZURE_OPENAI_API_VERSION`               | `2024-02-01` | API version                      |
 
 ### HuggingFace
 
@@ -284,7 +292,7 @@ HuggingFace provides access to open-source embedding models.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-huggingface]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-huggingface,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "huggingface",
@@ -297,23 +305,25 @@ HuggingFace provides access to open-source embedding models.
 }
 ```
 
+**Note:** The `--extra reranking` is necessary to enable reranking.
+
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `huggingface` |
-| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model identifier |
-| `EMBEDDING_DIM` | `384` | Vector dimensions |
-| `HUGGINGFACEHUB_API_TOKEN` | - | HuggingFace API token (optional for some models) |
+| Variable                   | Default                                  | Description                                      |
+|----------------------------|------------------------------------------|--------------------------------------------------|
+| `EMBEDDING_PROVIDER`       | -                                        | Set to `huggingface`                             |
+| `EMBEDDING_MODEL`          | `sentence-transformers/all-MiniLM-L6-v2` | Model identifier                                 |
+| `EMBEDDING_DIM`            | `384`                                    | Vector dimensions                                |
+| `HUGGINGFACEHUB_API_TOKEN` | -                                        | HuggingFace API token (optional for some models) |
 
 #### Recommended HuggingFace Models
 
-| Model | Dimensions | Notes |
-|-------|------------|-------|
-| sentence-transformers/all-MiniLM-L6-v2 | 384 | Fast, good quality |
-| sentence-transformers/all-mpnet-base-v2 | 768 | Higher quality |
-| BAAI/bge-small-en-v1.5 | 384 | BGE series, excellent quality |
-| BAAI/bge-base-en-v1.5 | 768 | BGE series, balanced |
+| Model                                   | Dimensions | Notes                         |
+|-----------------------------------------|------------|-------------------------------|
+| sentence-transformers/all-MiniLM-L6-v2  | 384        | Fast, good quality            |
+| sentence-transformers/all-mpnet-base-v2 | 768        | Higher quality                |
+| BAAI/bge-small-en-v1.5                  | 384        | BGE series, excellent quality |
+| BAAI/bge-base-en-v1.5                   | 768        | BGE series, balanced          |
 
 ### Voyage AI
 
@@ -336,7 +346,7 @@ Voyage AI specializes in RAG-optimized embeddings with long context support.
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-voyage]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-voyage,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "voyage",
@@ -349,26 +359,28 @@ Voyage AI specializes in RAG-optimized embeddings with long context support.
 }
 ```
 
+**Note:** The `--extra reranking` is necessary to enable reranking.
+
 #### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_PROVIDER` | - | Set to `voyage` |
-| `EMBEDDING_MODEL` | `voyage-3` | Voyage model name |
-| `EMBEDDING_DIM` | `1024` | Vector dimensions |
-| `VOYAGE_API_KEY` | - | **Required**: Voyage AI API key |
-| `VOYAGE_TRUNCATION` | `true` | Truncate long texts |
-| `VOYAGE_BATCH_SIZE` | `7` | Texts per API call (1-128) |
+| Variable             | Default    | Description                                                                                          |
+|----------------------|------------|------------------------------------------------------------------------------------------------------|
+| `EMBEDDING_PROVIDER` | -          | Set to `voyage`                                                                                      |
+| `EMBEDDING_MODEL`    | `voyage-3` | Voyage model name                                                                                    |
+| `EMBEDDING_DIM`      | `1024`     | Vector dimensions                                                                                    |
+| `VOYAGE_API_KEY`     | -          | **Required**: Voyage AI API key                                                                      |
+| `VOYAGE_TRUNCATION`  | `false`    | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
+| `VOYAGE_BATCH_SIZE`  | `7`        | Texts per API call (1-128)                                                                           |
 
 #### Available Voyage Models
 
-| Model | Dimensions | Context | Notes |
-|-------|------------|---------|-------|
-| voyage-3 | 1024 | 32K | Latest, recommended |
-| voyage-3-lite | 512 | 32K | Faster, lower cost |
-| voyage-code-3 | 1024 | 32K | Optimized for code |
-| voyage-finance-2 | 1024 | 32K | Financial domain |
-| voyage-law-2 | 1024 | 32K | Legal domain |
+| Model            | Dimensions | Context | Notes               |
+|------------------|------------|---------|---------------------|
+| voyage-3         | 1024       | 32K     | Latest, recommended |
+| voyage-3-lite    | 512        | 32K     | Faster, lower cost  |
+| voyage-code-3    | 1024       | 32K     | Optimized for code  |
+| voyage-finance-2 | 1024       | 32K     | Financial domain    |
+| voyage-law-2     | 1024       | 32K     | Legal domain        |
 
 ## LangSmith Tracing
 
@@ -379,13 +391,29 @@ LangSmith provides observability for embedding operations, including:
 - Error debugging
 - Usage analytics
 
+### Installation
+
+LangSmith tracing requires the optional `langsmith` dependency:
+
+```bash
+# For local development
+uv sync --extra langsmith
+
+# For uvx (combined with embeddings, e.g., Ollama)
+uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,langsmith,reranking]" mcp-context-server
+```
+
+**Graceful Degradation**: If `LANGSMITH_TRACING=true` but the `langsmith` package is not installed, the server will log a warning once and continue operating without tracing.
+
 ### Setup
 
 1. **Create account** at [smith.langchain.com](https://smith.langchain.com)
 
 2. **Get API key** from settings
 
-3. **Enable tracing** in your configuration:
+3. **Install dependencies**: `uv sync --extra langsmith`
+
+4. **Enable tracing** in your configuration:
 
 ```json
 {
@@ -399,12 +427,12 @@ LangSmith provides observability for embedding operations, including:
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LANGSMITH_TRACING` | `false` | Enable/disable tracing |
-| `LANGSMITH_API_KEY` | - | LangSmith API key |
-| `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` | API endpoint |
-| `LANGSMITH_PROJECT` | `mcp-context-server` | Project name for grouping traces |
+| Variable             | Default                           | Description                      |
+|----------------------|-----------------------------------|----------------------------------|
+| `LANGSMITH_TRACING`  | `false`                           | Enable/disable tracing           |
+| `LANGSMITH_API_KEY`  | -                                 | LangSmith API key                |
+| `LANGSMITH_ENDPOINT` | `https://api.smith.langchain.com` | API endpoint                     |
+| `LANGSMITH_PROJECT`  | `mcp-context-server`              | Project name for grouping traces |
 
 ### Viewing Traces
 
@@ -412,17 +440,178 @@ LangSmith provides observability for embedding operations, including:
 2. Select your project
 3. View embedding operations with timing and cost data
 
+## Text Chunking
+
+Text chunking splits long context entries into smaller chunks for embedding generation. This improves semantic search quality for long documents by ensuring each chunk fits within the embedding model's optimal context window.
+
+**Key point:** Chunking is enabled by default. No configuration is required.
+
+### Configuration
+
+| Variable                | Default | Description                                                                       |
+|-------------------------|---------|-----------------------------------------------------------------------------------|
+| `ENABLE_CHUNKING`       | `true`  | Enable text chunking for embedding generation                                     |
+| `CHUNK_SIZE`            | `1000`  | Target chunk size in characters                                                   |
+| `CHUNK_OVERLAP`         | `100`   | Overlap between consecutive chunks                                                |
+| `CHUNK_AGGREGATION`     | `max`   | How to aggregate chunk scores (only 'max' supported; avg, sum planned for future) |
+| `CHUNK_DEDUP_OVERFETCH` | `5`     | Multiplier for over-fetching chunks before deduplication                          |
+
+### How It Works
+
+1. **Text Splitting**: Long text is split using RecursiveCharacterTextSplitter with separators: `['\n\n', '\n', '. ', ' ', '']`
+2. **Embedding Generation**: Each chunk is embedded independently
+3. **Storage**: Multiple embeddings stored per context entry (1:N relationship)
+4. **Search Deduplication**: Results are deduplicated by context_id using the configured aggregation method
+
+### Aggregation Methods
+
+Currently only `max` aggregation is supported. The `avg` and `sum` methods will be added in a future release.
+
+### When to Adjust Settings
+
+- **Increase CHUNK_SIZE**: For documents with long cohesive sections
+- **Increase CHUNK_OVERLAP**: To preserve context across chunk boundaries
+
+## Cross-Encoder Reranking
+
+Reranking uses a cross-encoder model (FlashRank) to improve search result precision by re-scoring candidates using the full query-document context.
+
+**Key point:** Reranking is enabled by default. The FlashRank model (~34MB) downloads automatically on first use.
+
+### Installation
+
+Reranking requires the `reranking` extra which contains the `flashrank` package:
+
+```bash
+# For local development
+uv sync --extra reranking
+
+# For uvx (combined with embeddings, e.g., Ollama)
+uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
+```
+
+**Important:** Since `ENABLE_RERANKING=true` by default, you must install the `reranking` extra for the server to start successfully. To run without reranking, set `ENABLE_RERANKING=false`.
+
+### Configuration
+
+| Variable               | Default                   | Description                                   |
+|------------------------|---------------------------|-----------------------------------------------|
+| `ENABLE_RERANKING`     | `true`                    | Enable cross-encoder reranking                |
+| `RERANKING_PROVIDER`   | `flashrank`               | Reranking provider name                       |
+| `RERANKING_MODEL`      | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB)                       |
+| `RERANKING_MAX_LENGTH` | `512`                     | Maximum input length in tokens                |
+| `RERANKING_OVERFETCH`  | `4`                       | Multiplier for over-fetching before reranking |
+| `RERANKING_CACHE_DIR`  | None                      | Custom cache directory for model files        |
+
+### How It Works
+
+1. **Over-fetching**: Search retrieves `limit * RERANKING_OVERFETCH` candidates
+2. **Cross-Encoder Scoring**: FlashRank scores each candidate against the query
+3. **Re-ordering**: Results sorted by cross-encoder score (higher = more relevant)
+4. **Limiting**: Top `limit` results returned
+
+### Available Models
+
+| Model                               | Size | Notes                          |
+|-------------------------------------|------|--------------------------------|
+| `ms-marco-MiniLM-L-12-v2` (default) | 34MB | Fast, good quality             |
+| `ms-marco-MiniLM-L-6-v2`            | 23MB | Faster, slightly lower quality |
+| `rank_zephyr_7b_v1_full`            | 14GB | Highest quality, requires GPU  |
+
+### Performance Considerations
+
+- **First Request**: Model downloads on first use (~34MB for default model)
+- **Latency**: Adds 20-100ms per search depending on candidate count
+- **Memory**: ~200MB RAM for default model
+- **Cache**: Model cached in `~/.cache/flashrank/` by default
+
+## Context Length and Truncation Control
+
+Embedding models have maximum context windows (measured in tokens). Text exceeding this limit must either be truncated or rejected with an error.
+
+### Truncation Behavior by Provider
+
+| Provider        | Truncation Control | Default Behavior                        | Configuration             |
+|-----------------|--------------------|-----------------------------------------|---------------------------|
+| **Ollama**      | Configurable       | Error on context exceed                 | `OLLAMA_TRUNCATE=false`   |
+| **Voyage**      | Configurable       | Error on context exceed                 | `VOYAGE_TRUNCATION=false` |
+| **OpenAI**      | Always error       | Returns error if input exceeds limit    | N/A                       |
+| **Azure**       | Always error       | Returns error if input exceeds limit    | N/A                       |
+| **HuggingFace** | Always truncate    | Silently truncates (cannot be disabled) | N/A                       |
+
+### Recommended Configuration
+
+**For production use**, keep truncation **disabled** (`false`) and enable **chunking** (`ENABLE_CHUNKING=true`, default):
+
+```bash
+# Recommended: Chunking handles long documents, errors on unexpected overflows
+ENABLE_CHUNKING=true        # Default
+OLLAMA_TRUNCATE=false       # Default - errors prevent silent quality degradation
+```
+
+**Silent truncation** (`OLLAMA_TRUNCATE=true`) is only recommended when:
+- You accept potential embedding quality degradation for very long documents
+- Chunking is disabled and you want graceful handling of edge cases
+
+### How Pre-Validation Works
+
+When truncation is disabled (`OLLAMA_TRUNCATE=false` or `VOYAGE_TRUNCATION=false`):
+
+1. **Before calling the embedding API**, text length is estimated using heuristic: 1 token ~ 3 characters
+2. If estimated tokens exceed the model's context limit, an error is raised **before** the API call
+3. This provides fail-fast behavior with clear error messages
+
+Example error:
+```
+ValueError: Text length (5000 chars, ~1666 estimated tokens) may exceed context window
+(1000 tokens from OLLAMA_NUM_CTX) for model qwen3-embedding:0.6b.
+Options: 1) Enable chunking (ENABLE_CHUNKING=true, default),
+         2) Increase OLLAMA_NUM_CTX,
+         3) Set OLLAMA_TRUNCATE=true to allow silent truncation.
+```
+
+### Context Limits by Model
+
+Common embedding models and their context limits:
+
+| Model                  | Provider    | Max Tokens | Notes                       |
+|------------------------|-------------|------------|-----------------------------|
+| qwen3-embedding:0.6b   | Ollama      | 32,000     | Default model               |
+| nomic-embed-text       | Ollama      | 8,192      | Limited by OLLAMA_NUM_CTX   |
+| text-embedding-3-small | OpenAI      | 8,191      | Always error on exceed      |
+| text-embedding-3-large | OpenAI      | 8,191      | Always error on exceed      |
+| voyage-3               | Voyage AI   | 32,000     | Configurable via truncation |
+| all-MiniLM-L6-v2       | HuggingFace | 256        | Always silently truncates   |
+
+**Note**: For Ollama models, the effective context limit is `min(model_max_tokens, OLLAMA_NUM_CTX)`.
+
+### Startup Validation
+
+On server startup, the universal validator checks:
+
+1. **When chunking enabled**: Warns if `CHUNK_SIZE` may exceed model's context limit
+2. **When chunking disabled**: Warns about potential issues with large documents
+3. **Unknown models**: Uses provider default and logs a warning
+
+Example startup warning:
+```
+[EMBEDDING CONFIG] CHUNK_SIZE (100000 chars, ~33333 tokens estimate) exceeds
+model context limit (32000 tokens from model spec for qwen3-embedding:0.6b).
+Chunks will cause embedding errors.
+Recommendation: Reduce CHUNK_SIZE to ~76800 chars (80% of context window).
+```
+
 ## Common Configuration Settings
 
 ### Timeout and Retry Settings
 
 All providers support these settings:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMBEDDING_TIMEOUT_S` | `30.0` | API timeout in seconds |
-| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `3` | Max retry attempts |
-| `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0` | Base delay between retries |
+| Variable                       | Default | Description                |
+|--------------------------------|---------|----------------------------|
+| `EMBEDDING_TIMEOUT_S`          | `30.0`  | API timeout in seconds     |
+| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `3`     | Max retry attempts         |
+| `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0`   | Base delay between retries |
 
 ### Full Configuration Example
 
@@ -432,7 +621,7 @@ All providers support these settings:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai,reranking]", "mcp-context-server"],
       "env": {
         "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "openai",
@@ -497,13 +686,13 @@ SELECT * FROM pg_available_extensions WHERE name = 'vector';
 
 ### Common Dimensions by Model
 
-| Model | Dimension |
-|-------|-----------|
-| embeddinggemma:latest | 768 |
-| text-embedding-3-small | 1536 |
-| text-embedding-3-large | 3072 |
-| all-MiniLM-L6-v2 | 384 |
-| voyage-3 | 1024 |
+| Model                  | Dimension |
+|------------------------|-----------|
+| qwen3-embedding:0.6b   | 1024      |
+| text-embedding-3-small | 1536      |
+| text-embedding-3-large | 3072      |
+| all-MiniLM-L6-v2       | 384       |
+| voyage-3               | 1024      |
 
 ### Migration Procedure
 
@@ -511,8 +700,8 @@ When you change `EMBEDDING_DIM` and restart, you'll see:
 
 ```
 RuntimeError: Embedding dimension mismatch detected!
-  Existing database dimension: 768
-  Configured EMBEDDING_DIM: 1024
+  Existing database dimension: 1024
+  Configured EMBEDDING_DIM: 1536
 ```
 
 **Steps**:
@@ -539,7 +728,7 @@ RuntimeError: Embedding dimension mismatch detected!
 
 4. **Restart server** - new tables created automatically
 
-5. **Re-import data** - embeddings regenerate on access
+5. **Re-store data** - embeddings are generated at `store_context` and `store_context_batch` time (and regenerated when text changes via `update_context` or `update_context_batch`)
 
 ## Usage
 
@@ -573,7 +762,11 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
       "id": 123,
       "thread_id": "thread-abc",
       "text_content": "matching context",
-      "distance": 0.234,
+      "scores": {
+        "semantic_distance": 0.234,
+        "semantic_rank": null,
+        "rerank_score": 0.92
+      },
       "tags": ["tag1", "tag2"]
     }
   ],
@@ -587,14 +780,19 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
 }
 ```
 
-**Distance Metric**: L2 (Euclidean distance) - lower values indicate higher similarity.
+**Scores Object**:
+- `semantic_distance`: L2 Euclidean distance (LOWER = more similar)
+- `semantic_rank`: Always null for standalone semantic search (no ranking)
+- `rerank_score`: Cross-encoder relevance score (HIGHER = better, 0.0-1.0), present when reranking is enabled
 
 ### Automatic Embedding Generation
 
 Embeddings are generated automatically:
 
 - **On `store_context`**: Embeddings generated in background
+- **On `store_context_batch`**: Embeddings generated for each entry
 - **On `update_context`**: Embeddings regenerated when text changes
+- **On `update_context_batch`**: Embeddings regenerated for entries with text changes
 - **On `delete_context`**: Embeddings cascade deleted
 
 If embedding generation fails, context is still stored (graceful degradation).
@@ -673,6 +871,44 @@ If embedding generation fails, context is still stored (graceful degradation).
 
 ## Troubleshooting
 
+### Startup Error Classification
+
+The server classifies startup errors into two categories with different exit codes:
+
+**Configuration Errors (Exit Code 78)**
+
+These errors require human intervention to fix. The server will NOT recover by restarting:
+
+| Error Type                  | Example                                          | Fix                                                      |
+|-----------------------------|--------------------------------------------------|----------------------------------------------------------|
+| Missing API key             | `OPENAI_API_KEY environment variable is not set` | Set the required environment variable                    |
+| Package not installed       | `langchain-openai package not installed`         | Run `uv sync --extra embeddings-openai`                  |
+| Invalid provider            | `Unknown provider: 'invalid'`                    | Use valid EMBEDDING_PROVIDER value                       |
+| Vector storage dependencies | `vector storage dependencies not available`      | Install required packages                                |
+| Model not found             | `model 'model' not found (status code: 404)`     | Pull model: `ollama pull <model>` or fix EMBEDDING_MODEL |
+
+**Dependency Errors (Exit Code 69)**
+
+These errors may resolve with time. Supervisor may retry with backoff:
+
+| Error Type               | Example                                             | Fix                            |
+|--------------------------|-----------------------------------------------------|--------------------------------|
+| Service not running      | `Ollama service not accessible: Connection refused` | Start Ollama: `ollama serve`   |
+| Network issues           | `Connection timed out`                              | Check network connectivity     |
+| Temporary unavailability | `Service returned status 503`                       | Wait and retry                 |
+
+### Log Messages
+
+The server logs startup errors with clear indicators:
+
+```
+# Configuration Error (will NOT retry)
+[FATAL] Configuration error (will not retry): ENABLE_EMBEDDING_GENERATION=true but langchain-openai package not installed...
+
+# Dependency Error (may retry)
+[ERROR] Dependency unavailable (may retry): ENABLE_EMBEDDING_GENERATION=true but ollama is not available (service may be down)...
+```
+
 ### Provider Connection Errors
 
 **Error**: `Failed to connect to Ollama: Connection refused`
@@ -690,7 +926,7 @@ If embedding generation fails, context is still stored (graceful degradation).
 
 ### Dimension Mismatch
 
-**Error**: `Embedding dimension mismatch: expected 1536, got 768`
+**Error**: `Embedding dimension mismatch: expected 1536, got 1024`
 
 **Cause**: Model produces different dimensions than configured
 
@@ -698,11 +934,11 @@ If embedding generation fails, context is still stored (graceful degradation).
 
 ### Model Not Found
 
-**Error**: `Model 'embeddinggemma:latest' not found`
+**Error**: `Model 'qwen3-embedding:0.6b' not found`
 
 **Solution** (Ollama):
 ```bash
-ollama pull embeddinggemma:latest
+ollama pull qwen3-embedding:0.6b
 ```
 
 ### Dependencies Not Installed
@@ -730,25 +966,25 @@ uv sync --extra embeddings-ollama
 
 ### Common Error Messages
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `Connection refused` | Provider not running | Start Ollama or check API credentials |
-| `API key invalid` | Wrong credentials | Verify API key is correct |
-| `Model not found` | Model not available | Pull model or check model name |
-| `Dimension mismatch` | Wrong EMBEDDING_DIM | Match dimension to model output |
-| `Rate limit exceeded` | API rate limiting | Reduce request rate or upgrade plan |
+| Error                 | Cause                | Solution                              |
+|-----------------------|----------------------|---------------------------------------|
+| `Connection refused`  | Provider not running | Start Ollama or check API credentials |
+| `API key invalid`     | Wrong credentials    | Verify API key is correct             |
+| `Model not found`     | Model not available  | Pull model or check model name        |
+| `Dimension mismatch`  | Wrong EMBEDDING_DIM  | Match dimension to model output       |
+| `Rate limit exceeded` | API rate limiting    | Reduce request rate or upgrade plan   |
 
 ## Performance Optimization
 
 ### Provider Selection by Use Case
 
-| Use Case | Recommended Provider |
-|----------|---------------------|
-| Development | Ollama (free, local) |
-| Production (general) | OpenAI (balanced) |
-| Enterprise | Azure OpenAI (compliance) |
-| Cost-sensitive | HuggingFace (free API) |
-| RAG optimization | Voyage AI (specialized) |
+| Use Case             | Recommended Provider      |
+|----------------------|---------------------------|
+| Development          | Ollama (free, local)      |
+| Production (general) | OpenAI (balanced)         |
+| Enterprise           | Azure OpenAI (compliance) |
+| Cost-sensitive       | HuggingFace (free API)    |
+| RAG optimization     | Voyage AI (specialized)   |
 
 ### Batch Size (Voyage AI)
 

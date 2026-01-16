@@ -488,7 +488,7 @@ class TestSearchContext:
 
         # Directly update database to set text_content to empty (edge case)
         # Use backend-agnostic approach for both SQLite and PostgreSQL
-        backend = app.server._backend
+        backend = app.startup.get_backend()
         assert backend is not None
 
         # Get backend type to determine SQL syntax

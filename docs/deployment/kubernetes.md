@@ -179,21 +179,78 @@ ingress:
         - mcp.example.com
 ```
 
-## Health Checks
+## Health Checks and Probes
 
 The chart configures three probes:
 
 **Liveness Probe:**
 - Path: `/health`
 - Restarts container if unhealthy
+- Recommended: `failureThreshold: 3`, `periodSeconds: 10`
 
 **Readiness Probe:**
 - Path: `/health`
 - Removes from service if not ready
+- Recommended: `failureThreshold: 1`, `periodSeconds: 5`
 
 **Startup Probe:**
 - Path: `/health`
-- Allows slow startup (e.g., model loading)
+- Allows slow startup (e.g., model loading, embedding initialization)
+- Recommended: `failureThreshold: 30`, `periodSeconds: 10` (5 minutes max startup)
+
+### Exit Codes and Restart Behavior
+
+The MCP Context Server uses BSD sysexits.h exit codes:
+
+| Exit Code | Meaning                | Kubernetes Behavior                |
+|-----------|------------------------|------------------------------------|
+| 0         | Normal shutdown        | Pod terminates successfully        |
+| 1         | General error          | CrashLoopBackOff with backoff      |
+| 69        | Dependency unavailable | CrashLoopBackOff (may recover)     |
+| 78        | Configuration error    | CrashLoopBackOff (requires fix)    |
+
+**Exit Code 69 (EX_UNAVAILABLE)** - transient dependency issues:
+- Ollama service not yet running
+- Embedding model not pulled
+- Database temporarily unreachable
+
+**Exit Code 78 (EX_CONFIG)** - configuration problems:
+- Missing API keys (OPENAI_API_KEY, etc.)
+- Missing required packages
+- Invalid EMBEDDING_PROVIDER
+
+### Recommended Probe Configuration
+
+```yaml
+spec:
+  containers:
+  - name: mcp-context-server
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 8000
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 8000
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      failureThreshold: 1
+    startupProbe:
+      httpGet:
+        path: /health
+        port: 8000
+      failureThreshold: 30    # 30 * 10s = 5 minutes max startup
+      periodSeconds: 10
+```
+
+**Note:** The startup probe allows time for:
+- Ollama to start (when using sidecar)
+- Embedding model to download (~2-3 minutes for qwen3-embedding:0.6b)
+- Database migrations to complete
 
 ## Monitoring
 
@@ -210,9 +267,9 @@ curl http://localhost:8000/health
 kubectl logs -l app.kubernetes.io/name=mcp-context-server -f
 ```
 
-### Metrics
+### Health Monitoring
 
-The server exposes metrics at `/metrics` (when enabled). Use Prometheus ServiceMonitor for scraping.
+Use the `/health` endpoint to monitor server status. The server does not expose a `/metrics` endpoint.
 
 ## Troubleshooting
 

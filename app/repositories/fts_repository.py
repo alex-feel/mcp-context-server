@@ -16,9 +16,7 @@ from typing import Literal
 from typing import cast
 
 from app.backends.base import StorageBackend
-from app.logger_config import config_logger
 from app.repositories.base import BaseRepository
-from app.settings import get_settings
 
 # Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
 # Matches word characters connected by one or more hyphens
@@ -27,10 +25,6 @@ HYPHENATED_WORD_PATTERN = re.compile(r'\b(\w+(?:-\w+)+)\b')
 if TYPE_CHECKING:
     import asyncpg
 
-# Get settings
-settings = get_settings()
-# Configure logging
-config_logger(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +58,7 @@ class FtsRepository(BaseRepository):
     - SQLite: Uses FTS5 with unicode61 tokenizer and BM25 ranking.
       Note: unicode61 provides multilingual tokenization but NO stemming,
       so "running" will NOT match "run". The language parameter is ignored.
-    - PostgreSQL: Uses tsvector with ts_rank and language-specific stemming
+    - PostgreSQL: Uses tsvector with ts_rank_cd and language-specific stemming
       (supports 29 languages). Stemming means "running" WILL match "run".
     """
 
@@ -97,7 +91,7 @@ class FtsRepository(BaseRepository):
         """Execute full-text search with optional filters.
 
         SQLite: Uses FTS5 MATCH with BM25 scoring
-        PostgreSQL: Uses tsvector with ts_rank scoring
+        PostgreSQL: Uses tsvector with ts_rank_cd scoring
 
         Args:
             query: Full-text search query string
@@ -507,13 +501,15 @@ class FtsRepository(BaseRepository):
             param_position += 1
 
             # Build highlight expression if requested
+            # HighlightAll=true returns the ENTIRE document with ALL matches highlighted
+            # This matches SQLite FTS5 highlight() behavior for consistent cross-backend results
             if highlight:
                 highlight_expr = f'''
                     ts_headline(
                         '{language}',
                         ce.text_content,
                         {tsquery_func}{self._placeholder(query_param_pos)}),
-                        'StartSel=<mark>, StopSel=</mark>, MaxWords=50, MinWords=25'
+                        'HighlightAll=true, StartSel=<mark>, StopSel=</mark>'
                     ) as highlighted
                 '''
             else:
@@ -530,7 +526,7 @@ class FtsRepository(BaseRepository):
                     ce.metadata,
                     ce.created_at,
                     ce.updated_at,
-                    ts_rank(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score,
+                    ts_rank_cd(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score,
                     {highlight_expr}
                 FROM context_entries ce
                 WHERE {where_clause}

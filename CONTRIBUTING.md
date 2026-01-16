@@ -297,10 +297,10 @@ context_entries (main table)
 ├── text_content
 ├── metadata (JSON, with functional indexes)
 │   ├── $.status (indexed)
-│   ├── $.priority (indexed)
 │   ├── $.agent_name (indexed)
 │   ├── $.task_name (indexed)
-│   └── $.completed (indexed)
+│   ├── $.project (indexed)
+│   └── $.report_type (indexed)
 └── timestamps
 
 tags (normalized, many-to-many)
@@ -373,7 +373,7 @@ When adding frequently-queried metadata fields:
 - **Strategic Indexing**:
   - Primary: `thread_id`, `thread_source`, `created_at`
   - Secondary: `tags`, `image_context`
-  - Metadata functional indexes: `$.status`, `$.priority`, `$.agent_name`, `$.task_name`, `$.completed`
+  - Metadata functional indexes: `$.status`, `$.agent_name`, `$.task_name`, `$.project`, `$.report_type`
 - **Query Optimization**:
   - Indexed fields filtered first
   - Metadata queries use json_extract() with functional indexes

@@ -7,13 +7,14 @@ authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
-    "fastmcp==2.14.1",
+    "fastmcp==2.14.3",
     "pydantic-settings==2.12.0",
     "pydantic==2.12.5",
     "python-dotenv==1.2.1",
     "typing_extensions==4.15.0",
     "asyncpg==0.31.0",
-    "anyio>=4.12.0",
+    "anyio==4.12.1",
+    "tenacity==9.1.2",
 ]
 
 [build-system]
@@ -38,35 +39,35 @@ embeddings-ollama = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-ollama>=0.3.0",
-    "langsmith>=0.4.0",
+    "langchain-text-splitters>=0.3.0",
 ]
 embeddings-openai = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-openai>=0.3.0",
-    "langsmith>=0.4.0",
+    "langchain-text-splitters>=0.3.0",
 ]
 embeddings-azure = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-openai>=0.3.0",  # Azure uses same package as OpenAI
-    "langsmith>=0.4.0",
+    "langchain-text-splitters>=0.3.0",
 ]
 embeddings-huggingface = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-huggingface>=0.2.0",
-    "langsmith>=0.4.0",
+    "langchain-text-splitters>=0.3.0",
 ]
 embeddings-voyage = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-voyageai>=0.3.0",
-    "langsmith>=0.4.0",
+    "langchain-text-splitters>=0.3.0",
 ]
 
 # Convenience: all embedding providers (for testing/development)
@@ -78,6 +79,22 @@ embeddings-all = [
     "langchain-openai>=0.3.0",
     "langchain-huggingface>=0.2.0",
     "langchain-voyageai>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
+]
+
+# Reranking providers
+reranking = [
+    "flashrank>=0.2.0",
+]
+
+# Convenience: all search quality improvements
+search-quality = [
+    "langchain-text-splitters>=0.3.0",
+    "flashrank>=0.2.0",
+]
+
+# LangSmith tracing (optional observability)
+langsmith = [
     "langsmith>=0.4.0",
 ]
 
@@ -103,8 +120,13 @@ src = ["app"]
 target-version = "py312"
 line-length = 127
 extend-include = ["tests/**/*.py"]
-# Per-file ignores: FastMCP tools use inline JSON structures instead of formal docstring sections
-extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501"] }
+# Per-file ignores:
+# - app/server.py: DOC201, DOC501 required - FastMCP tools use inline JSON structures instead of formal docstring sections.
+#   app/server.py: E402 required - config_logger() MUST be called BEFORE importing app.backends (which triggers
+#   backend module loading). This ensures logging is configured before any backend code runs.
+# - tests/conftest.py: E402 required - Windows event loop policy and LangSmith env vars MUST be set
+#   BEFORE importing app.server (which triggers httpx import). See conftest.py comments for details.
+extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"] }
 
 [tool.ruff.lint]
 # Ignore specific rules
@@ -243,7 +265,7 @@ disallow_any_explicit = false
 module = ['migrations.*']
 ignore_errors = true
 
-# Handle optional dependencies for semantic search
+# Handle optional dependencies for semantic search, chunking, reranking, and tracing
 [[tool.mypy.overrides]]
 module = [
   'sqlite_vec',
@@ -254,6 +276,12 @@ module = [
   'langchain_huggingface',
   'langchain_voyageai',
   'langchain_ollama',
+  'langchain_text_splitters',
+  'langchain_text_splitters.*',
+  'flashrank',
+  'flashrank.*',
+  'langsmith',
+  'langsmith.*',
 ]
 ignore_missing_imports = true
 follow_imports = 'skip'
@@ -279,6 +307,12 @@ reportMissingTypeStubs = false
 # Suppress optional dependency errors in app/embeddings/providers (langchain_*)
 [[tool.pyright.executionEnvironments]]
 root = "app/embeddings/providers"
+reportMissingImports = false
+reportUnknownVariableType = false
+reportAttributeAccessIssue = false
+
+[[tool.pyright.executionEnvironments]]
+root = "app/reranking/providers"
 reportMissingImports = false
 reportUnknownVariableType = false
 reportAttributeAccessIssue = false
@@ -328,6 +362,8 @@ markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow tests (deselect with '-m \"not slow\"')",
     "performance: marks tests as performance tests",
+    "requires_chunking: marks tests requiring langchain-text-splitters",
+    "requires_flashrank: marks tests requiring flashrank",
 ]
 
 [tool.coverage.run]

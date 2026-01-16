@@ -415,7 +415,7 @@ class TestHybridSearchResponseStructure:
 
         # Check scores structure - use .get() for TypedDict compatibility
         scores = result.get('scores', {})
-        score_fields = ['rrf', 'fts_rank', 'semantic_rank', 'fts_score', 'semantic_distance']
+        score_fields = ['rrf', 'fts_rank', 'semantic_rank', 'fts_score', 'semantic_distance', 'rerank_score']
         for field in score_fields:
             assert field in scores, f'Missing score field: {field}'
 

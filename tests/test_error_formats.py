@@ -132,7 +132,7 @@ class TestErrorFormatConsistency:
         from fastmcp.exceptions import ToolError
 
         # Mock repository to say entry exists
-        with patch('app.server._ensure_repositories') as mock_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_repos:
             container = MagicMock()
             container.context.check_entry_exists = AsyncMock(return_value=True)
             mock_repos.return_value = container
@@ -154,7 +154,7 @@ class TestErrorFormatConsistency:
         from fastmcp.exceptions import ToolError
 
         # Mock repository to say entry exists
-        with patch('app.server._ensure_repositories') as mock_repos:
+        with patch('app.tools.context.ensure_repositories') as mock_repos:
             container = MagicMock()
             container.context.check_entry_exists = AsyncMock(return_value=True)
             mock_repos.return_value = container

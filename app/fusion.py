@@ -108,13 +108,14 @@ def reciprocal_rank_fusion(
     for doc in sorted_docs:
         data = doc['data']
 
-        # Build scores object
+        # Build scores object (rerank_score added by _apply_reranking if enabled)
         scores: HybridScoresDict = {
             'rrf': doc['rrf_score'],
             'fts_rank': doc['fts_rank'],
             'semantic_rank': doc['semantic_rank'],
             'fts_score': doc['fts_score'],
             'semantic_distance': doc['semantic_distance'],
+            'rerank_score': None,  # Will be populated by _apply_reranking
         }
 
         # Build result entry
@@ -129,6 +130,7 @@ def reciprocal_rank_fusion(
             'updated_at': data.get('updated_at', ''),
             'tags': data.get('tags', []),
             'scores': scores,
+            'rerank_text': data.get('rerank_text'),  # Preserve for chunk-aware reranking
         }
         results.append(result_entry)
 

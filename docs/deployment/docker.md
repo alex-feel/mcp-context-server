@@ -6,67 +6,142 @@ This guide covers deploying the MCP Context Server using Docker and Docker Compo
 
 **Key Features:**
 - HTTP transport mode for remote access (vs. stdio for local)
-- Three pre-configured deployment options (SQLite, PostgreSQL, External PostgreSQL)
-- Automatic embedding model download on first start
+- Six pre-configured deployment options (3 database backends x 2 embedding providers)
+- Support for both Ollama (local) and OpenAI (cloud) embeddings
 - Health checks and container orchestration support
-- Shared Ollama model volume across configurations
+- Shared Ollama model volume across Ollama configurations
 
 ## Prerequisites
 
 - **Docker Engine**: 20.10+ or Docker Desktop
 - **Docker Compose**: V2 (included with Docker Desktop)
-- **Storage**: ~2GB for images and models (600MB for embeddinggemma)
+- **Storage**: ~2GB for images and models (~600MB for qwen3-embedding:0.6b with Ollama)
 - **Network**: Port 8000 available for HTTP transport
+- **OpenAI API Key**: Required for OpenAI embedding configurations
 
 ## Deployment Options
 
-Three Docker Compose configurations are provided, each as a standalone file:
+Six Docker Compose configurations are provided, organized by embedding provider:
 
-| Configuration | File | Database | Use Case |
-|--------------|------|----------|----------|
-| SQLite | `deploy/docker/docker-compose.sqlite.yml` | Local SQLite | Single-user, testing, development |
-| PostgreSQL | `deploy/docker/docker-compose.postgresql.yml` | Internal PostgreSQL | Multi-user, production |
-| External PostgreSQL | `deploy/docker/docker-compose.postgresql-external.yml` | Supabase, corporate DB | Existing database infrastructure |
+### Ollama Embeddings (Local, Self-Hosted)
+
+| Configuration                | File                                            | Database               | Use Case                          |
+|------------------------------|-------------------------------------------------|------------------------|-----------------------------------|
+| SQLite + Ollama              | `docker-compose.sqlite.ollama.yml`              | Local SQLite           | Single-user, testing, development |
+| PostgreSQL + Ollama          | `docker-compose.postgresql.ollama.yml`          | Internal PostgreSQL    | Multi-user, production            |
+| External PostgreSQL + Ollama | `docker-compose.postgresql-external.ollama.yml` | Supabase, corporate DB | Existing database infrastructure  |
+
+### OpenAI Embeddings (Cloud API)
+
+| Configuration                | File                                            | Database               | Use Case                         |
+|------------------------------|-------------------------------------------------|------------------------|----------------------------------|
+| SQLite + OpenAI              | `docker-compose.sqlite.openai.yml`              | Local SQLite           | Single-user, cloud embeddings    |
+| PostgreSQL + OpenAI          | `docker-compose.postgresql.openai.yml`          | Internal PostgreSQL    | Multi-user, cloud embeddings     |
+| External PostgreSQL + OpenAI | `docker-compose.postgresql-external.openai.yml` | Supabase, corporate DB | Enterprise with cloud embeddings |
+
+**Choosing Between Ollama and OpenAI:**
+
+| Factor      | Ollama                          | OpenAI                            |
+|-------------|---------------------------------|-----------------------------------|
+| Cost        | Free (self-hosted)              | Pay-per-use API                   |
+| Privacy     | Data stays local                | Data sent to OpenAI               |
+| Setup       | Automatic model download        | Requires API key                  |
+| Performance | Depends on hardware             | Consistent cloud performance      |
+| Model       | qwen3-embedding:0.6b (1024 dim) | text-embedding-3-small (1536 dim) |
 
 ## Quick Start
 
-### SQLite Deployment (Simplest)
+### Ollama Deployments
+
+#### SQLite + Ollama (Simplest)
 
 ```bash
 # Build and start
-docker compose -f deploy/docker/docker-compose.sqlite.yml up -d
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml up -d
 
 # Wait for embedding model download (first run only, ~2-3 minutes)
-docker compose -f deploy/docker/docker-compose.sqlite.yml logs -f ollama
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs -f ollama
 
 # Verify server is ready
 curl http://localhost:8000/health
 ```
 
-### PostgreSQL Deployment (Recommended for Production)
+#### PostgreSQL + Ollama (Recommended for Production)
 
 ```bash
 # Build and start (includes PostgreSQL with pgvector)
-docker compose -f deploy/docker/docker-compose.postgresql.yml up -d
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml up -d
 
 # Wait for all services to be healthy
-docker compose -f deploy/docker/docker-compose.postgresql.yml ps
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml ps
 
 # Verify server is ready
 curl http://localhost:8000/health
 ```
 
-### External PostgreSQL Deployment (Supabase, Corporate)
+#### External PostgreSQL + Ollama (Supabase, Corporate)
 
 ```bash
 # 1. Copy and configure environment file
-cp deploy/docker/.env.example deploy/docker/.env
+cp deploy/docker/.env-postgresql-external.ollama.example deploy/docker/.env
 
 # 2. Edit .env with your PostgreSQL connection details
 # See "External PostgreSQL Configuration" section below
 
 # 3. Build and start
-docker compose -f deploy/docker/docker-compose.postgresql-external.yml up -d
+docker compose -f deploy/docker/docker-compose.postgresql-external.ollama.yml up -d
+
+# Verify server is ready
+curl http://localhost:8000/health
+```
+
+### OpenAI Deployments
+
+All OpenAI configurations **require** an `.env` file with your OpenAI API key.
+
+#### SQLite + OpenAI
+
+```bash
+# 1. Copy and configure environment file
+cp deploy/docker/.env-sqlite.openai.example deploy/docker/.env
+
+# 2. Edit .env and add your OPENAI_API_KEY
+# OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# 3. Build and start
+docker compose -f deploy/docker/docker-compose.sqlite.openai.yml up -d
+
+# Verify server is ready
+curl http://localhost:8000/health
+```
+
+#### PostgreSQL + OpenAI
+
+```bash
+# 1. Copy and configure environment file
+cp deploy/docker/.env-postgresql.openai.example deploy/docker/.env
+
+# 2. Edit .env and add your OPENAI_API_KEY
+# OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# 3. Build and start
+docker compose -f deploy/docker/docker-compose.postgresql.openai.yml up -d
+
+# Verify server is ready
+curl http://localhost:8000/health
+```
+
+#### External PostgreSQL + OpenAI (Supabase, Corporate)
+
+```bash
+# 1. Copy and configure environment file
+cp deploy/docker/.env-postgresql-external.openai.example deploy/docker/.env
+
+# 2. Edit .env with your OpenAI API key AND PostgreSQL connection details
+# See "External PostgreSQL Configuration" section below
+
+# 3. Build and start
+docker compose -f deploy/docker/docker-compose.postgresql-external.openai.yml up -d
 
 # Verify server is ready
 curl http://localhost:8000/health
@@ -116,7 +191,7 @@ Replace `localhost` with your server's IP or hostname for remote connections:
 
 ### Services Overview
 
-Each Docker Compose file defines two or three services:
+**Ollama configurations** define two or three services:
 
 **mcp-context-server:**
 - Production MCP server image
@@ -126,7 +201,7 @@ Each Docker Compose file defines two or three services:
 
 **ollama:**
 - Custom Ollama image with automatic model pulling
-- Downloads `embeddinggemma:latest` on first start
+- Downloads `qwen3-embedding:0.6b` on first start
 - Health check waits for model availability
 
 **postgres (PostgreSQL configurations only):**
@@ -134,17 +209,28 @@ Each Docker Compose file defines two or three services:
 - Pre-installed pgvector extension for semantic search
 - Persistent volume for data
 
+**OpenAI configurations** are simpler - no Ollama service required:
+
+**mcp-context-server:**
+- Same as above, but uses OpenAI API for embeddings
+- Requires `OPENAI_API_KEY` in `.env` file
+
+**postgres (PostgreSQL configurations only):**
+- Same as Ollama configurations
+
 ### Volume Management
 
-| Volume | Purpose | Shared Across |
-|--------|---------|---------------|
-| `mcp-context-sqlite-data` | SQLite database | SQLite config only |
-| `mcp-context-postgres-data` | PostgreSQL data | PostgreSQL config only |
-| `ollama-models` | Embedding models (~600MB) | All configurations |
+| Volume                                 | Purpose                   | Used By                   |
+|----------------------------------------|---------------------------|---------------------------|
+| `mcp-context-sqlite-ollama-data`       | SQLite database           | SQLite + Ollama           |
+| `mcp-context-sqlite-openai-data`       | SQLite database           | SQLite + OpenAI           |
+| `mcp-context-postgresql-ollama-data`   | PostgreSQL data           | PostgreSQL + Ollama       |
+| `mcp-context-postgresql-openai-data`   | PostgreSQL data           | PostgreSQL + OpenAI       |
+| `ollama-models`                        | Embedding models (~600MB) | All Ollama configurations |
 
-The `ollama-models` volume is shared across all configurations, so switching between SQLite and PostgreSQL does not re-download the embedding model.
+The `ollama-models` volume is shared across all Ollama configurations, so switching between SQLite and PostgreSQL does not re-download the embedding model.
 
-### Automatic Model Download
+### Automatic Model Download (Ollama Only)
 
 The custom Ollama image (`deploy/docker/ollama/Dockerfile`) includes an entrypoint script that:
 
@@ -163,52 +249,103 @@ All Docker Compose files use environment variables for configuration. Key settin
 
 **Transport Settings:**
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCP_TRANSPORT` | `http` | Transport mode (set to `http` for Docker) |
-| `FASTMCP_HOST` | `0.0.0.0` | HTTP bind address |
-| `FASTMCP_PORT` | `8000` | HTTP port |
+| Variable        | Default   | Description                               |
+|-----------------|-----------|-------------------------------------------|
+| `MCP_TRANSPORT` | `http`    | Transport mode (set to `http` for Docker) |
+| `FASTMCP_HOST`  | `0.0.0.0` | HTTP bind address                         |
+| `FASTMCP_PORT`  | `8000`    | HTTP port                                 |
 
 **Search Features:**
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ENABLE_SEMANTIC_SEARCH` | `true` | Enable vector similarity search |
-| `ENABLE_FTS` | `true` | Enable full-text search |
-| `ENABLE_HYBRID_SEARCH` | `true` | Enable combined FTS + semantic search |
-| `EMBEDDING_MODEL` | `embeddinggemma:latest` | Ollama embedding model |
-| `EMBEDDING_DIM` | `768` | Embedding vector dimensions |
+| Variable                 | Default | Description                           |
+|--------------------------|---------|---------------------------------------|
+| `ENABLE_SEMANTIC_SEARCH` | `true`  | Enable vector similarity search       |
+| `ENABLE_FTS`             | `true`  | Enable full-text search               |
+| `ENABLE_HYBRID_SEARCH`   | `true`  | Enable combined FTS + semantic search |
+| `ENABLE_CHUNKING`        | `true`  | Enable text chunking for embeddings   |
+| `ENABLE_RERANKING`       | `true`  | Enable cross-encoder reranking        |
+
+**Embedding Settings (Ollama):**
+
+| Variable             | Default                 | Description                 |
+|----------------------|-------------------------|-----------------------------|
+| `EMBEDDING_PROVIDER` | `ollama`                | Embedding provider          |
+| `EMBEDDING_MODEL`    | `qwen3-embedding:0.6b`  | Ollama embedding model      |
+| `EMBEDDING_DIM`      | `1024`                  | Embedding vector dimensions |
+| `OLLAMA_HOST`        | `http://ollama:11434`   | Ollama API endpoint         |
+
+**Embedding Settings (OpenAI):**
+
+| Variable             | Default                  | Description                     |
+|----------------------|--------------------------|---------------------------------|
+| `EMBEDDING_PROVIDER` | `openai`                 | Embedding provider              |
+| `EMBEDDING_MODEL`    | `text-embedding-3-small` | OpenAI embedding model          |
+| `EMBEDDING_DIM`      | `1536`                   | Embedding vector dimensions     |
+| `OPENAI_API_KEY`     | (required)               | OpenAI API key (from .env file) |
 
 **Storage Settings (SQLite):**
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `STORAGE_BACKEND` | `sqlite` | Database backend |
-| `DB_PATH` | `/data/context_storage.db` | Database path inside container |
+| Variable          | Default                    | Description                    |
+|-------------------|----------------------------|--------------------------------|
+| `STORAGE_BACKEND` | `sqlite`                   | Database backend               |
+| `DB_PATH`         | `/data/context_storage.db` | Database path inside container |
 
 **Storage Settings (PostgreSQL):**
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `STORAGE_BACKEND` | `postgresql` | Database backend |
-| `POSTGRESQL_HOST` | `postgres` | PostgreSQL hostname |
-| `POSTGRESQL_PORT` | `5432` | PostgreSQL port |
-| `POSTGRESQL_USER` | `postgres` | PostgreSQL username |
-| `POSTGRESQL_PASSWORD` | `postgres` | PostgreSQL password |
+| Variable              | Default       | Description              |
+|-----------------------|---------------|--------------------------|
+| `STORAGE_BACKEND`     | `postgresql`  | Database backend         |
+| `POSTGRESQL_HOST`     | `postgres`    | PostgreSQL hostname      |
+| `POSTGRESQL_PORT`     | `5432`        | PostgreSQL port          |
+| `POSTGRESQL_USER`     | `postgres`    | PostgreSQL username      |
+| `POSTGRESQL_PASSWORD` | `postgres`    | PostgreSQL password      |
 | `POSTGRESQL_DATABASE` | `mcp_context` | PostgreSQL database name |
 
 **Metadata Indexing Settings:**
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `METADATA_INDEXED_FIELDS` | `status,agent_name,...` | Comma-separated fields to index with optional type hints |
-| `METADATA_INDEX_SYNC_MODE` | `additive` | Index sync mode: `strict`, `auto`, `warn`, `additive` |
+| Variable                   | Default                 | Description                                              |
+|----------------------------|-------------------------|----------------------------------------------------------|
+| `METADATA_INDEXED_FIELDS`  | `status,agent_name,...` | Comma-separated fields to index with optional type hints |
+| `METADATA_INDEX_SYNC_MODE` | `additive`              | Index sync mode: `strict`, `auto`, `warn`, `additive`    |
 
 See the [Metadata Guide](../metadata-addition-updating-and-filtering.md#environment-variables) for full details on configurable metadata indexing.
 
+**Chunking and Reranking:**
+
+Text chunking and cross-encoder reranking are enabled by default to improve search quality. These features work automatically without configuration.
+
+| Variable           | Default                   | Description                                     |
+|--------------------|---------------------------|-------------------------------------------------|
+| `ENABLE_CHUNKING`  | `true`                    | Text chunking for long document embedding       |
+| `CHUNK_SIZE`       | `1000`                    | Target chunk size in characters                 |
+| `ENABLE_RERANKING` | `true`                    | Cross-encoder result reranking                  |
+| `RERANKING_MODEL`  | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB, downloads on first use) |
+
+To disable these features, set the environment variables to `false` in your Docker Compose file:
+
+```yaml
+environment:
+  - ENABLE_CHUNKING=false
+  - ENABLE_RERANKING=false
+```
+
+For more configuration options, see [Text Chunking](../semantic-search.md#text-chunking) and [Cross-Encoder Reranking](../semantic-search.md#cross-encoder-reranking).
+
 ### External PostgreSQL Configuration
 
-For external PostgreSQL (Supabase, corporate databases), copy `deploy/docker/.env.example` to `deploy/docker/.env` and configure:
+For external PostgreSQL (Supabase, corporate databases), copy the appropriate `.env.example` file to `.env` and configure:
+
+**For Ollama:**
+```bash
+cp deploy/docker/.env-postgresql-external.ollama.example deploy/docker/.env
+```
+
+**For OpenAI:**
+```bash
+cp deploy/docker/.env-postgresql-external.openai.example deploy/docker/.env
+```
+
+Then configure PostgreSQL connection:
 
 ```bash
 # Option A: Individual variables (recommended)
@@ -250,6 +387,21 @@ POSTGRESQL_SSL_MODE=require
 
 See the [Supabase section in README.md](../../README.md#using-with-supabase) for detailed connection setup.
 
+### Optional .env for Ollama Configurations
+
+Ollama configurations work without any `.env` file. However, you can optionally create one for additional settings like LangSmith tracing:
+
+```bash
+# Copy the optional template
+cp deploy/docker/.env-sqlite.ollama.example deploy/docker/.env
+# or
+cp deploy/docker/.env-postgresql.ollama.example deploy/docker/.env
+
+# Edit .env to enable optional features
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_your-langsmith-api-key
+```
+
 ## Verification
 
 ### Health Check
@@ -265,27 +417,27 @@ curl http://localhost:8000/health
 ### Container Status
 
 ```bash
-# SQLite deployment
-docker compose -f deploy/docker/docker-compose.sqlite.yml ps
+# Ollama deployment
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml ps
 
-# PostgreSQL deployment
-docker compose -f deploy/docker/docker-compose.postgresql.yml ps
+# OpenAI deployment
+docker compose -f deploy/docker/docker-compose.sqlite.openai.yml ps
 
 # Expected output: all services "healthy"
 NAME                  STATUS
 mcp-context-server    Up (healthy)
-ollama                Up (healthy)
+ollama                Up (healthy)   # Ollama only
 postgres              Up (healthy)   # PostgreSQL only
 ```
 
-### Model Availability
+### Model Availability (Ollama Only)
 
 ```bash
 # Check if embedding model is loaded
-docker compose -f deploy/docker/docker-compose.sqlite.yml exec ollama ollama list
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama list
 
 # Expected output includes:
-# embeddinggemma:latest    622 MB
+# qwen3-embedding:0.6b    ~600 MB
 ```
 
 ### Test MCP Connection
@@ -308,9 +460,9 @@ curl -X POST http://localhost:8000/mcp \
 **Solution:**
 ```bash
 # Check download progress
-docker compose -f deploy/docker/docker-compose.sqlite.yml logs -f ollama
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs -f ollama
 
-# The entrypoint shows: "Pulling model: embeddinggemma:latest..."
+# The entrypoint shows: "Pulling model: qwen3-embedding:0.6b..."
 # Wait for: "Model pulled successfully!"
 ```
 
@@ -325,13 +477,13 @@ docker compose -f deploy/docker/docker-compose.sqlite.yml logs -f ollama
 **Solutions:**
 ```bash
 # Check PostgreSQL logs
-docker compose -f deploy/docker/docker-compose.postgresql.yml logs postgres
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml logs postgres
 
 # Verify PostgreSQL is accepting connections
-docker compose -f deploy/docker/docker-compose.postgresql.yml exec postgres pg_isready
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml exec postgres pg_isready
 
 # Test credentials manually
-docker compose -f deploy/docker/docker-compose.postgresql.yml exec postgres \
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml exec postgres \
   psql -U postgres -d mcp_context -c "SELECT 1"
 ```
 
@@ -355,7 +507,7 @@ ports:
 
 Then connect clients to `http://localhost:8001/mcp`
 
-### Issue 5: Semantic Search Not Available
+### Issue 5: Semantic Search Not Available (Ollama)
 
 **Symptom:** `semantic_search_context` tool not listed
 
@@ -366,29 +518,45 @@ Then connect clients to `http://localhost:8001/mcp`
 **Solutions:**
 ```bash
 # Verify Ollama is healthy
-docker compose -f deploy/docker/docker-compose.sqlite.yml ps ollama
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml ps ollama
 
 # Check if model exists
-docker compose -f deploy/docker/docker-compose.sqlite.yml exec ollama ollama list
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama list
 
 # If model missing, trigger download
-docker compose -f deploy/docker/docker-compose.sqlite.yml exec ollama ollama pull embeddinggemma:latest
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3-embedding:0.6b
+```
+
+### Issue 6: OpenAI API Key Missing
+
+**Symptom:** Server fails to start with OpenAI configuration
+
+**Cause:** `.env` file missing or `OPENAI_API_KEY` not set
+
+**Solution:**
+```bash
+# Ensure .env exists
+cp deploy/docker/.env-sqlite.openai.example deploy/docker/.env
+
+# Verify OPENAI_API_KEY is set
+grep OPENAI_API_KEY deploy/docker/.env
 ```
 
 ### Common Error Messages
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `connection refused` | Service not running | Check container status with `docker compose ps` |
-| `model not found` | Embedding model not pulled | Wait for automatic download or pull manually |
-| `permission denied` | Volume permission issue | Check volume ownership matches UID 10001 |
-| `database is locked` | SQLite concurrent access | Expected for SQLite; use PostgreSQL for concurrency |
+| Error                | Cause                      | Solution                                            |
+|----------------------|----------------------------|-----------------------------------------------------|
+| `connection refused` | Service not running        | Check container status with `docker compose ps`     |
+| `model not found`    | Embedding model not pulled | Wait for automatic download or pull manually        |
+| `permission denied`  | Volume permission issue    | Check volume ownership matches UID 10001            |
+| `database is locked` | SQLite concurrent access   | Expected for SQLite; use PostgreSQL for concurrency |
+| `Invalid API Key`    | OpenAI key incorrect       | Verify OPENAI_API_KEY in .env file                  |
 
 ## Advanced Configuration
 
-### Custom Embedding Model
+### Custom Embedding Model (Ollama)
 
-To use a different embedding model, update both services:
+To use a different Ollama embedding model, update both services:
 
 ```yaml
 # In docker-compose file
@@ -396,14 +564,27 @@ services:
   mcp-context-server:
     environment:
       - EMBEDDING_MODEL=nomic-embed-text
-      - EMBEDDING_DIM=768
+      - EMBEDDING_DIM=1024
 
   ollama:
     environment:
       - MODEL=nomic-embed-text
 ```
 
-### GPU Support (Linux)
+### Custom Embedding Model (OpenAI)
+
+To use a different OpenAI embedding model:
+
+```yaml
+# In docker-compose file
+services:
+  mcp-context-server:
+    environment:
+      - EMBEDDING_MODEL=text-embedding-3-large
+      - EMBEDDING_DIM=3072  # Adjust for model
+```
+
+### GPU Support (Linux, Ollama Only)
 
 For GPU-accelerated embedding generation on Linux:
 
@@ -431,6 +612,161 @@ docker build -t mcp-context-server .
 docker build -f deploy/docker/ollama/Dockerfile -t mcp-ollama .
 ```
 
+### Building with Different Embedding Providers
+
+The Dockerfile supports building with different embedding providers via build arguments:
+
+```bash
+# Build with Ollama embeddings (default)
+docker build -t mcp-context-server .
+
+# Build with OpenAI embeddings
+docker build --build-arg EMBEDDING_EXTRA=embeddings-openai -t mcp-context-server-openai .
+
+# Build with Azure OpenAI embeddings
+docker build --build-arg EMBEDDING_EXTRA=embeddings-azure -t mcp-context-server-azure .
+
+# Build with HuggingFace embeddings
+docker build --build-arg EMBEDDING_EXTRA=embeddings-huggingface -t mcp-context-server-huggingface .
+
+# Build with Voyage embeddings
+docker build --build-arg EMBEDDING_EXTRA=embeddings-voyage -t mcp-context-server-voyage .
+
+# Build with all embedding providers
+docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-all .
+```
+
+**Available Embedding Extras:**
+
+| Extra                    | Provider         | Package               |
+|--------------------------|------------------|-----------------------|
+| `embeddings-ollama`      | Ollama (default) | langchain-ollama      |
+| `embeddings-openai`      | OpenAI           | langchain-openai      |
+| `embeddings-azure`       | Azure OpenAI     | langchain-openai      |
+| `embeddings-huggingface` | HuggingFace      | langchain-huggingface |
+| `embeddings-voyage`      | Voyage AI        | langchain-voyageai    |
+| `embeddings-all`         | All providers    | All packages          |
+
+**Note:** The OpenAI Docker Compose configurations automatically pass the correct build argument. If using Ollama configurations, no build argument is needed (default is `embeddings-ollama`).
+
+### Restart Policies and Exit Codes
+
+The MCP Context Server uses BSD sysexits.h exit codes to signal different failure types to container supervisors:
+
+| Exit Code | Meaning                  | Docker Restart Behavior                   |
+|-----------|--------------------------|-------------------------------------------|
+| 0         | Normal shutdown          | No restart                                |
+| 1         | General error            | Restart if policy allows                  |
+| 69        | Dependency unavailable   | Restart with backoff (may recover)        |
+| 78        | Configuration error      | Container halted (prevents restart loops) |
+
+**Exit Code 69 (EX_UNAVAILABLE)** indicates external dependencies are temporarily unavailable:
+- Ollama service not running (may start later)
+- Database temporarily unreachable
+- Network connectivity issues
+
+**Exit Code 78 (EX_CONFIG)** indicates configuration problems requiring human intervention:
+- Missing API keys (OPENAI_API_KEY, VOYAGE_API_KEY, etc.)
+- Missing required packages
+- Invalid configuration values
+- Embedding model not found (requires `ollama pull` or fix EMBEDDING_MODEL)
+
+### Entrypoint Wrapper Script
+
+The Docker image includes an entrypoint wrapper script (`docker-entrypoint.sh`) that intercepts exit codes to prevent infinite restart loops:
+
+**How it works:**
+
+```
+Docker starts container
+    |
+    v
+docker-entrypoint.sh runs Python server
+    |
+    v
+Server exits with code (0, 69, 78, or other)
+    |
+    v
+Entrypoint interprets exit code:
+    - Code 0: Normal exit
+    - Code 78: Configuration error -> exec sleep infinity (container stays running but idle)
+    - Code 69: Dependency error -> exit 69 (Docker may restart)
+    - Other: Pass through exit code
+```
+
+**Configuration errors (exit code 78) - Container halted:**
+
+When the server encounters a configuration error (e.g., embedding model not found), the entrypoint:
+
+1. Prints a clear error message with troubleshooting steps
+2. Replaces itself with `sleep infinity`
+3. Container remains "Running" (but idle) instead of entering a restart loop
+
+This allows you to:
+- Inspect logs with `docker logs <container>`
+- Fix the configuration
+- Stop and restart manually: `docker stop <container> && docker compose up -d`
+
+**Dependency errors (exit code 69) - May retry:**
+
+When the server encounters a dependency error (e.g., Ollama not running yet), the entrypoint:
+
+1. Prints an informational message
+2. Exits with code 69
+3. Docker's `on-failure:5` policy may restart the container (up to 5 times)
+
+**Default restart policy:**
+
+All Docker Compose configurations use `restart: "on-failure:5"` for the MCP Context Server:
+
+```yaml
+services:
+  mcp-context-server:
+    restart: "on-failure:5"  # Restart up to 5 times on failure
+```
+
+This provides defense in depth:
+- Entrypoint handles configuration errors (code 78) by halting
+- Restart policy limits dependency error retries (code 69) to 5 attempts
+
+For production, the built-in health check is already configured:
+
+```yaml
+services:
+  mcp-context-server:
+    restart: "on-failure:5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+```
+
+### Troubleshooting Container Halted State
+
+If your container shows "Running" but the server is not responding:
+
+1. **Check container logs:**
+   ```bash
+   docker logs <container_name>
+   ```
+
+2. **Look for "CONFIGURATION ERROR - CONTAINER HALTED" message:**
+   ```
+   ==============================================
+   [FATAL] CONFIGURATION ERROR - CONTAINER HALTED
+   ==============================================
+   ```
+
+3. **Fix the configuration** based on the error message (e.g., pull missing model, set API key)
+
+4. **Restart the container:**
+   ```bash
+   docker stop <container_name>
+   docker compose -f <your-compose-file>.yml up -d
+   ```
+
 ### Production Considerations
 
 1. **Change default PostgreSQL password** in production deployments
@@ -438,19 +774,42 @@ docker build -f deploy/docker/ollama/Dockerfile -t mcp-ollama .
 3. **Configure resource limits** for container memory/CPU
 4. **Set up monitoring** using the `/health` endpoint
 5. **Use reverse proxy** (nginx, traefik) for TLS termination
+6. **Secure OpenAI API key** - never commit `.env` files to version control
+7. **Set restart policies** with limited retry count to prevent infinite loops
 
 ## Files Reference
 
-| File | Description |
-|------|-------------|
-| `Dockerfile` | Multi-stage MCP server image (repository root) |
-| `deploy/docker/docker-compose.sqlite.yml` | SQLite deployment |
-| `deploy/docker/docker-compose.postgresql.yml` | PostgreSQL with pgvector deployment |
-| `deploy/docker/docker-compose.postgresql-external.yml` | External PostgreSQL deployment |
-| `deploy/docker/.env.example` | Environment template for external DB |
-| `deploy/docker/ollama/Dockerfile` | Custom Ollama image |
-| `deploy/docker/ollama/entrypoint.sh` | Auto model pull entrypoint |
-| `.dockerignore` | Build context optimization (repository root) |
+### Docker Compose Files
+
+| File                                            | Description                             |
+|-------------------------------------------------|-----------------------------------------|
+| `docker-compose.sqlite.ollama.yml`              | SQLite + Ollama embeddings              |
+| `docker-compose.postgresql.ollama.yml`          | PostgreSQL + Ollama embeddings          |
+| `docker-compose.postgresql-external.ollama.yml` | External PostgreSQL + Ollama embeddings |
+| `docker-compose.sqlite.openai.yml`              | SQLite + OpenAI embeddings              |
+| `docker-compose.postgresql.openai.yml`          | PostgreSQL + OpenAI embeddings          |
+| `docker-compose.postgresql-external.openai.yml` | External PostgreSQL + OpenAI embeddings |
+
+### Environment Templates
+
+| File                                      | Description                                    | Required |
+|-------------------------------------------|------------------------------------------------|----------|
+| `.env-sqlite.ollama.example`              | Optional config for SQLite + Ollama            | No       |
+| `.env-postgresql.ollama.example`          | Optional config for PostgreSQL + Ollama        | No       |
+| `.env-postgresql-external.ollama.example` | PostgreSQL connection for external DB + Ollama | Yes      |
+| `.env-sqlite.openai.example`              | OpenAI API key for SQLite + OpenAI             | Yes      |
+| `.env-postgresql.openai.example`          | OpenAI API key for PostgreSQL + OpenAI         | Yes      |
+| `.env-postgresql-external.openai.example` | OpenAI + PostgreSQL for external DB            | Yes      |
+
+### Other Files
+
+| File                                 | Description                                       |
+|--------------------------------------|---------------------------------------------------|
+| `Dockerfile`                         | Multi-stage MCP server image (repository root)    |
+| `deploy/docker/docker-entrypoint.sh` | Exit code handler to prevent infinite restart     |
+| `deploy/docker/ollama/Dockerfile`    | Custom Ollama image                               |
+| `deploy/docker/ollama/entrypoint.sh` | Auto model pull entrypoint                        |
+| `.dockerignore`                      | Build context optimization (repository root)      |
 
 ## Additional Resources
 

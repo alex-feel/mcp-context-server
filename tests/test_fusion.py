@@ -282,3 +282,79 @@ class TestCountUniqueResults:
         assert fts_only == 0  # Only id: 1, which overlaps
         assert semantic_only == 1  # id: 2
         assert overlap == 1  # id: 1
+
+
+class TestRRFPreservesRerankText:
+    """Tests for rerank_text field preservation through RRF fusion."""
+
+    def test_rrf_preserves_rerank_text_from_fts(self) -> None:
+        """Test that RRF fusion preserves rerank_text from FTS results."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': 1, 'score': 2.5, 'text_content': 'full doc 1', 'rerank_text': 'passage 1'},
+            {'id': 2, 'score': 1.8, 'text_content': 'full doc 2', 'rerank_text': 'passage 2'},
+        ]
+
+        results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
+
+        assert len(results) == 2
+        # Verify rerank_text is preserved for FTS-only results
+        result_by_id = {r.get('id'): r for r in results}
+        assert result_by_id[1].get('rerank_text') == 'passage 1'
+        assert result_by_id[2].get('rerank_text') == 'passage 2'
+
+    def test_rrf_preserves_rerank_text_from_semantic(self) -> None:
+        """Test that RRF fusion preserves rerank_text from semantic results."""
+        semantic_results: list[dict[str, Any]] = [
+            {'id': 3, 'distance': 0.3, 'text_content': 'full doc 3', 'rerank_text': 'chunk 3'},
+            {'id': 4, 'distance': 0.5, 'text_content': 'full doc 4', 'rerank_text': 'chunk 4'},
+        ]
+
+        results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
+
+        assert len(results) == 2
+        # Verify rerank_text is preserved for semantic-only results
+        result_by_id = {r.get('id'): r for r in results}
+        assert result_by_id[3].get('rerank_text') == 'chunk 3'
+        assert result_by_id[4].get('rerank_text') == 'chunk 4'
+
+    def test_rrf_preserves_rerank_text_for_overlapping_docs(self) -> None:
+        """Test that overlapping docs preserve rerank_text from first source (FTS)."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': 1, 'score': 2.5, 'text_content': 'full doc 1', 'rerank_text': 'fts passage 1'},
+            {'id': 2, 'score': 1.8, 'text_content': 'full doc 2', 'rerank_text': 'fts passage 2'},
+        ]
+        semantic_results: list[dict[str, Any]] = [
+            {'id': 2, 'distance': 0.3, 'text_content': 'full doc 2', 'rerank_text': 'semantic chunk 2'},
+            {'id': 3, 'distance': 0.5, 'text_content': 'full doc 3', 'rerank_text': 'semantic chunk 3'},
+        ]
+
+        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+
+        assert len(results) == 3
+        result_by_id = {r.get('id'): r for r in results}
+
+        # Doc 1 (FTS only) should have FTS passage
+        assert result_by_id[1].get('rerank_text') == 'fts passage 1'
+
+        # Doc 2 (both) should have FTS passage (FTS processed first)
+        assert result_by_id[2].get('rerank_text') == 'fts passage 2'
+
+        # Doc 3 (semantic only) should have semantic chunk
+        assert result_by_id[3].get('rerank_text') == 'semantic chunk 3'
+
+    def test_rrf_handles_missing_rerank_text(self) -> None:
+        """Test that RRF fusion handles results without rerank_text gracefully."""
+        fts_results: list[dict[str, Any]] = [
+            {'id': 1, 'score': 2.5, 'text_content': 'full doc 1'},  # No rerank_text
+        ]
+        semantic_results: list[dict[str, Any]] = [
+            {'id': 2, 'distance': 0.3, 'text_content': 'full doc 2'},  # No rerank_text
+        ]
+
+        results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
+
+        assert len(results) == 2
+        # Verify rerank_text is None when not provided
+        result_by_id = {r.get('id'): r for r in results}
+        assert result_by_id[1].get('rerank_text') is None
+        assert result_by_id[2].get('rerank_text') is None

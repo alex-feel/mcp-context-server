@@ -217,7 +217,7 @@ class TestSQLGeneration:
 
     def test_generate_create_index_sqlite(self) -> None:
         """Test SQLite CREATE INDEX SQL generation."""
-        from app.server import _generate_create_index_sqlite
+        from app.migrations.metadata import _generate_create_index_sqlite
 
         sql = _generate_create_index_sqlite('status')
         assert 'CREATE INDEX IF NOT EXISTS idx_metadata_status' in sql
@@ -227,7 +227,7 @@ class TestSQLGeneration:
 
     def test_generate_create_index_sqlite_field_names(self) -> None:
         """Test SQLite SQL generation for various field names."""
-        from app.server import _generate_create_index_sqlite
+        from app.migrations.metadata import _generate_create_index_sqlite
 
         fields = ['agent_name', 'task_name', 'priority', 'some_field_123']
         for field in fields:
@@ -237,7 +237,7 @@ class TestSQLGeneration:
 
     def test_generate_create_index_postgresql_string(self) -> None:
         """Test PostgreSQL CREATE INDEX SQL generation for string type."""
-        from app.server import _generate_create_index_postgresql
+        from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('status', 'string')
         assert 'CREATE INDEX IF NOT EXISTS idx_metadata_status' in sql
@@ -246,7 +246,7 @@ class TestSQLGeneration:
 
     def test_generate_create_index_postgresql_integer(self) -> None:
         """Test PostgreSQL CREATE INDEX SQL generation for integer type."""
-        from app.server import _generate_create_index_postgresql
+        from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('priority', 'integer')
         assert 'CREATE INDEX IF NOT EXISTS idx_metadata_priority' in sql
@@ -255,7 +255,7 @@ class TestSQLGeneration:
 
     def test_generate_create_index_postgresql_boolean(self) -> None:
         """Test PostgreSQL CREATE INDEX SQL generation for boolean type."""
-        from app.server import _generate_create_index_postgresql
+        from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('completed', 'boolean')
         assert 'CREATE INDEX IF NOT EXISTS idx_metadata_completed' in sql
@@ -263,7 +263,7 @@ class TestSQLGeneration:
 
     def test_generate_create_index_postgresql_float(self) -> None:
         """Test PostgreSQL CREATE INDEX SQL generation for float type."""
-        from app.server import _generate_create_index_postgresql
+        from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('score', 'float')
         assert 'CREATE INDEX IF NOT EXISTS idx_metadata_score' in sql
@@ -305,7 +305,7 @@ class TestIndexDetection:
         self, sqlite_backend_with_schema: StorageBackend,
     ) -> None:
         """Test detection of existing metadata indexes in SQLite."""
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         existing, orphan_compound = await _get_existing_metadata_indexes(sqlite_backend_with_schema)
 
@@ -323,7 +323,7 @@ class TestIndexDetection:
         self, sqlite_backend_with_schema: StorageBackend,
     ) -> None:
         """Test that compound indexes (idx_thread_metadata_*) are detected as orphans."""
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         existing, orphan_compound = await _get_existing_metadata_indexes(sqlite_backend_with_schema)
 
@@ -339,7 +339,7 @@ class TestIndexDetection:
     async def test_get_existing_metadata_indexes_empty_database(self, tmp_path: Path) -> None:
         """Test detection returns empty sets for database without metadata indexes."""
         from app.backends import create_backend
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         db_path = tmp_path / 'test_empty.db'
         backend = create_backend(backend_type='sqlite', db_path=db_path)
@@ -370,7 +370,7 @@ class TestIndexDetection:
     async def test_compound_indexes_detected_as_orphans(self, tmp_path: Path) -> None:
         """Test that idx_thread_metadata_* indexes are detected as orphans."""
         from app.backends import create_backend
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         db_path = tmp_path / 'test_compound_orphan.db'
         backend = create_backend(backend_type='sqlite', db_path=db_path)
@@ -450,8 +450,8 @@ class TestIndexCreation:
     @pytest.mark.asyncio
     async def test_create_metadata_index_sqlite(self, sqlite_backend_with_table: StorageBackend) -> None:
         """Test creating a metadata index in SQLite."""
-        from app.server import _create_metadata_index
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         # Initially no indexes
         existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
@@ -469,8 +469,8 @@ class TestIndexCreation:
         self, sqlite_backend_with_table: StorageBackend, caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test that array type indexes are skipped in SQLite."""
-        from app.server import _create_metadata_index
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         with caplog.at_level(logging.INFO):
             await _create_metadata_index(sqlite_backend_with_table, 'technologies', 'array')
@@ -487,8 +487,8 @@ class TestIndexCreation:
         self, sqlite_backend_with_table: StorageBackend, caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test that object type indexes are skipped in SQLite."""
-        from app.server import _create_metadata_index
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         with caplog.at_level(logging.INFO):
             await _create_metadata_index(sqlite_backend_with_table, 'references', 'object')
@@ -503,9 +503,9 @@ class TestIndexCreation:
     @pytest.mark.asyncio
     async def test_drop_metadata_index_sqlite(self, sqlite_backend_with_table: StorageBackend) -> None:
         """Test dropping a metadata index in SQLite."""
-        from app.server import _create_metadata_index
-        from app.server import _drop_metadata_index
-        from app.server import _get_existing_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
+        from app.migrations.metadata import _drop_metadata_index
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         # Create index first
         await _create_metadata_index(sqlite_backend_with_table, 'test_field', 'string')
@@ -522,7 +522,7 @@ class TestIndexCreation:
     @pytest.mark.asyncio
     async def test_drop_nonexistent_index_succeeds(self, sqlite_backend_with_table: StorageBackend) -> None:
         """Test that dropping a non-existent index doesn't raise error."""
-        from app.server import _drop_metadata_index
+        from app.migrations.metadata import _drop_metadata_index
 
         # Should not raise error
         await _drop_metadata_index(sqlite_backend_with_table, 'nonexistent_field')
@@ -569,14 +569,14 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
         """Test additive mode creates missing indexes."""
-        from app.server import _get_existing_metadata_indexes
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         # Initially no indexes
         existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert len(existing) == 0
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string', 'agent_name': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'additive'
 
@@ -592,16 +592,16 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
         """Test additive mode does not drop extra indexes."""
-        from app.server import _create_metadata_index
-        from app.server import _get_existing_metadata_indexes
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         # Create an extra index that's not in config
         await _create_metadata_index(sqlite_backend_with_table, 'extra_field', 'string')
         existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
         assert 'extra_field' in existing
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'additive'
 
@@ -617,14 +617,14 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
         """Test auto mode both adds missing and drops extra indexes."""
-        from app.server import _create_metadata_index
-        from app.server import _get_existing_metadata_indexes
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         # Create an extra index
         await _create_metadata_index(sqlite_backend_with_table, 'extra_field', 'string')
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string', 'agent_name': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'auto'
 
@@ -641,9 +641,9 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
         """Test strict mode raises RuntimeError on missing indexes."""
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'strict'
 
@@ -658,14 +658,14 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
         """Test strict mode raises RuntimeError on extra indexes."""
-        from app.server import _create_metadata_index
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
 
         # Create the expected index AND an extra one
         await _create_metadata_index(sqlite_backend_with_table, 'status', 'string')
         await _create_metadata_index(sqlite_backend_with_table, 'extra_field', 'string')
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'strict'
 
@@ -680,14 +680,14 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
         """Test strict mode succeeds when indexes match configuration exactly."""
-        from app.server import _create_metadata_index
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
 
         # Create exactly the expected indexes
         await _create_metadata_index(sqlite_backend_with_table, 'status', 'string')
         await _create_metadata_index(sqlite_backend_with_table, 'agent_name', 'string')
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string', 'agent_name': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'strict'
 
@@ -699,9 +699,9 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend, caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test warn mode logs warnings but continues startup."""
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
 
-        with caplog.at_level(logging.WARNING), patch('app.server.settings') as mock_settings:
+        with caplog.at_level(logging.WARNING), patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'warn'
 
@@ -715,10 +715,10 @@ class TestSyncModes:
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
         """Test array and object fields are excluded from index sync comparison."""
-        from app.server import _get_existing_metadata_indexes
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {
                 'status': 'string',
                 'technologies': 'array',  # Should be excluded
@@ -747,8 +747,8 @@ class TestMetadataIndexingIntegration:
     async def test_handle_metadata_indexes_idempotent(self, tmp_path: Path) -> None:
         """Test that handle_metadata_indexes can be called multiple times."""
         from app.backends import create_backend
-        from app.server import _get_existing_metadata_indexes
-        from app.server import handle_metadata_indexes
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
 
         db_path = tmp_path / 'test_idempotent.db'
         backend = create_backend(backend_type='sqlite', db_path=db_path)
@@ -769,7 +769,7 @@ class TestMetadataIndexingIntegration:
 
         await backend.execute_write(create_table)
 
-        with patch('app.server.settings') as mock_settings:
+        with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string', 'agent_name': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'additive'
 

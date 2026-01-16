@@ -149,8 +149,8 @@ search:
     language: "english"
   semantic:
     enabled: false
-    model: "embeddinggemma:latest"
-    dim: 768
+    model: "qwen3-embedding:0.6b"
+    dim: 1024
   hybrid:
     enabled: false
     rrfK: 60

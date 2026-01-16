@@ -333,11 +333,32 @@
           "name": "ENABLE_SEMANTIC_SEARCH"
         },
         {
+          "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_GENERATION"
+        },
+        {
           "description": "Ollama API host URL for embedding generation",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "OLLAMA_HOST"
+        },
+        {
+          "description": "Ollama truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "OLLAMA_TRUNCATE"
+        },
+        {
+          "description": "Ollama context window size in tokens (default: 4096, range: 512-131072)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "OLLAMA_NUM_CTX"
         },
         {
           "description": "Embedding model name for semantic search",
@@ -389,6 +410,20 @@
           "name": "FTS_LANGUAGE"
         },
         {
+          "description": "Characters of context around each FTS match for reranking passage extraction (default: 750)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_WINDOW_SIZE"
+        },
+        {
+          "description": "Merge FTS match regions within this character distance (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_GAP_MERGE"
+        },
+        {
           "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
           "isRequired": false,
           "format": "boolean",
@@ -401,6 +436,104 @@
           "format": "number",
           "isSecret": false,
           "name": "HYBRID_RRF_K"
+        },
+        {
+          "description": "Multiplier for over-fetching results before RRF fusion (default: 2)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_RRF_OVERFETCH"
+        },
+        {
+          "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SEARCH_DEFAULT_SORT_BY"
+        },
+        {
+          "description": "Enable text chunking for embedding generation (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_CHUNKING"
+        },
+        {
+          "description": "Target chunk size in characters (default: 1000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_SIZE"
+        },
+        {
+          "description": "Overlap between chunks in characters (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_OVERLAP"
+        },
+        {
+          "description": "Chunk score aggregation method: max (only 'max' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "CHUNK_AGGREGATION"
+        },
+        {
+          "description": "Multiplier for over-fetching chunks before deduplication (default: 5)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_DEDUP_OVERFETCH"
+        },
+        {
+          "description": "Enable cross-encoder reranking of search results (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_RERANKING"
+        },
+        {
+          "description": "Reranking provider (default: flashrank)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_PROVIDER"
+        },
+        {
+          "description": "Reranking model name (default: ms-marco-MiniLM-L-12-v2)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_MODEL"
+        },
+        {
+          "description": "Maximum input length for reranking in tokens (default: 512)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_MAX_LENGTH"
+        },
+        {
+          "description": "Multiplier for over-fetching results before reranking (default: 4)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_OVERFETCH"
+        },
+        {
+          "description": "Directory for caching reranking models",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_CACHE_DIR"
+        },
+        {
+          "description": "Estimated characters per token for passage size validation (default: 4.0, range: 2.0-8.0)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_CHARS_PER_TOKEN"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
@@ -473,7 +606,7 @@
           "name": "VOYAGE_API_KEY"
         },
         {
-          "description": "Voyage AI truncation mode (true/false)",
+          "description": "Voyage AI truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
@@ -967,11 +1100,32 @@
           "name": "ENABLE_SEMANTIC_SEARCH"
         },
         {
+          "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_GENERATION"
+        },
+        {
           "description": "Ollama API host URL for embedding generation",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
           "name": "OLLAMA_HOST"
+        },
+        {
+          "description": "Ollama truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "OLLAMA_TRUNCATE"
+        },
+        {
+          "description": "Ollama context window size in tokens (default: 4096, range: 512-131072)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "OLLAMA_NUM_CTX"
         },
         {
           "description": "Embedding model name for semantic search",
@@ -1023,6 +1177,20 @@
           "name": "FTS_LANGUAGE"
         },
         {
+          "description": "Characters of context around each FTS match for reranking passage extraction (default: 750)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_WINDOW_SIZE"
+        },
+        {
+          "description": "Merge FTS match regions within this character distance (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "FTS_RERANK_GAP_MERGE"
+        },
+        {
           "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
           "isRequired": false,
           "format": "boolean",
@@ -1035,6 +1203,104 @@
           "format": "number",
           "isSecret": false,
           "name": "HYBRID_RRF_K"
+        },
+        {
+          "description": "Multiplier for over-fetching results before RRF fusion (default: 2)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_RRF_OVERFETCH"
+        },
+        {
+          "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SEARCH_DEFAULT_SORT_BY"
+        },
+        {
+          "description": "Enable text chunking for embedding generation (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_CHUNKING"
+        },
+        {
+          "description": "Target chunk size in characters (default: 1000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_SIZE"
+        },
+        {
+          "description": "Overlap between chunks in characters (default: 100)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_OVERLAP"
+        },
+        {
+          "description": "Chunk score aggregation method: max (only 'max' supported in current version)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "CHUNK_AGGREGATION"
+        },
+        {
+          "description": "Multiplier for over-fetching chunks before deduplication (default: 5)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "CHUNK_DEDUP_OVERFETCH"
+        },
+        {
+          "description": "Enable cross-encoder reranking of search results (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_RERANKING"
+        },
+        {
+          "description": "Reranking provider (default: flashrank)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_PROVIDER"
+        },
+        {
+          "description": "Reranking model name (default: ms-marco-MiniLM-L-12-v2)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_MODEL"
+        },
+        {
+          "description": "Maximum input length for reranking in tokens (default: 512)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_MAX_LENGTH"
+        },
+        {
+          "description": "Multiplier for over-fetching results before reranking (default: 4)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_OVERFETCH"
+        },
+        {
+          "description": "Directory for caching reranking models",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "RERANKING_CACHE_DIR"
+        },
+        {
+          "description": "Estimated characters per token for passage size validation (default: 4.0, range: 2.0-8.0)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_CHARS_PER_TOKEN"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
@@ -1107,7 +1373,7 @@
           "name": "VOYAGE_API_KEY"
         },
         {
-          "description": "Voyage AI truncation mode (true/false)",
+          "description": "Voyage AI truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,

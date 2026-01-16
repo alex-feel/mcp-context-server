@@ -30,7 +30,6 @@ from typing import TypeVar
 from typing import cast
 from typing import override
 
-from app.logger_config import config_logger
 from app.settings import get_settings
 
 if TYPE_CHECKING:
@@ -38,10 +37,8 @@ if TYPE_CHECKING:
 else:
     pass
 
-# Get setting
+# Get settings (used for backend configuration)
 settings = get_settings()
-# Configure logging
-config_logger(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
@@ -491,7 +488,7 @@ class SQLiteBackend:
             It will gracefully skip loading if the package is not available.
         """
         # Only attempt to load if semantic search is enabled
-        if not settings.enable_semantic_search:
+        if not settings.semantic_search.enabled:
             return
 
         # Check if already loaded to avoid duplicate loading

@@ -5,11 +5,13 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from typing import Self
 
 from dotenv import find_dotenv
 from pydantic import Field
 from pydantic import SecretStr
 from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
@@ -29,6 +31,33 @@ class CommonSettings(BaseSettings):
         extra='ignore',
         populate_by_name=True,
     )
+
+
+class LoggingSettings(CommonSettings):
+    """Application logging configuration."""
+
+    level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(
+        default='ERROR',
+        alias='LOG_LEVEL',
+        description='Application log level',
+    )
+
+
+class ToolManagementSettings(CommonSettings):
+    """MCP tool availability configuration."""
+
+    disabled_raw: str = Field(
+        default='',
+        alias='DISABLED_TOOLS',
+        description='Comma-separated list of tools to disable (e.g., delete_context,update_context)',
+    )
+
+    @property
+    def disabled(self) -> set[str]:
+        """Parse comma-separated string into lowercase set of disabled tool names."""
+        if not self.disabled_raw or not self.disabled_raw.strip():
+            return set()
+        return {t.lower().strip() for t in self.disabled_raw.split(',') if t.strip()}
 
 
 class TransportSettings(CommonSettings):
@@ -79,6 +108,27 @@ class EmbeddingSettings(CommonSettings):
     for maximum compatibility and user familiarity.
     """
 
+    # Embedding generation toggle
+    # CRITICAL: generation_enabled default=True is INTENTIONAL and MUST NOT be changed.
+    #
+    # Rationale:
+    # 1. Embeddings are fundamental infrastructure - users should explicitly opt OUT, not opt IN
+    # 2. Fail-fast semantics prevent silent embedding gaps in stored content
+    # 3. Users who don't want embeddings MUST explicitly set ENABLE_EMBEDDING_GENERATION=false
+    # 4. This ensures no surprises - if embeddings are missing, user explicitly disabled them
+    # 5. ENABLE_SEMANTIC_SEARCH=true requires embeddings; if ENABLE_EMBEDDING_GENERATION=false
+    #    and ENABLE_SEMANTIC_SEARCH=true, semantic_search_context tool will NOT be registered
+    #
+    # DO NOT change this default without understanding the full architectural implications.
+    # This default=True is part of the breaking change in v1.0.0.
+    generation_enabled: bool = Field(
+        default=True,
+        alias='ENABLE_EMBEDDING_GENERATION',
+        description='Enable embedding generation for stored context entries. '
+                    'If true and dependencies are not met, server will NOT start. '
+                    'Set to false to disable embeddings entirely.',
+    )
+
     # Provider selection
     provider: Literal['ollama', 'openai', 'azure', 'huggingface', 'voyage'] = Field(
         default='ollama',
@@ -88,12 +138,12 @@ class EmbeddingSettings(CommonSettings):
 
     # Common settings
     model: str = Field(
-        default='embeddinggemma:latest',
+        default='qwen3-embedding:0.6b',
         alias='EMBEDDING_MODEL',
         description='Embedding model name',
     )
     dim: int = Field(
-        default=768,
+        default=1024,
         alias='EMBEDDING_DIM',
         gt=0,
         le=4096,
@@ -128,6 +178,21 @@ class EmbeddingSettings(CommonSettings):
         default='http://localhost:11434',
         alias='OLLAMA_HOST',
         description='Ollama server URL',
+    )
+    ollama_num_ctx: int = Field(
+        default=4096,
+        alias='OLLAMA_NUM_CTX',
+        ge=512,
+        le=131072,
+        description='Ollama context length in tokens. Default 4096. '
+                    'Must match or exceed model capabilities.',
+    )
+    ollama_truncate: bool = Field(
+        default=False,
+        alias='OLLAMA_TRUNCATE',
+        description='Control text truncation when exceeding context length. '
+                    'False (default): Returns error on exceeded context. '
+                    'True: Silently truncates input (may degrade embedding quality).',
     )
 
     # OpenAI-specific (matches LangChain docs: OPENAI_API_KEY)
@@ -182,10 +247,12 @@ class EmbeddingSettings(CommonSettings):
         alias='VOYAGE_API_KEY',
         description='Voyage AI API key',
     )
-    voyage_truncation: bool | None = Field(
-        default=None,
+    voyage_truncation: bool = Field(
+        default=False,
         alias='VOYAGE_TRUNCATION',
-        description='Whether to truncate texts exceeding context length (default: auto)',
+        description='Control text truncation when exceeding context length. '
+                    'False (default): Returns error on exceeded context. '
+                    'True: Silently truncates input (may degrade embedding quality).',
     )
     voyage_batch_size: int = Field(
         default=7,
@@ -234,6 +301,240 @@ class LangSmithSettings(CommonSettings):
         default='mcp-context-server',
         alias='LANGSMITH_PROJECT',
         description='LangSmith project name for grouping traces',
+    )
+
+
+class ChunkingSettings(CommonSettings):
+    """Text chunking settings for semantic search.
+
+    Controls how long documents are split into smaller chunks for embedding.
+    Chunking improves semantic search quality for documents longer than ~500 tokens.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        alias='ENABLE_CHUNKING',
+        description='Enable text chunking for embedding generation',
+    )
+    size: int = Field(
+        default=1000,
+        alias='CHUNK_SIZE',
+        ge=100,
+        le=10000,
+        description='Target chunk size in characters (default: 1000)',
+    )
+    overlap: int = Field(
+        default=100,
+        alias='CHUNK_OVERLAP',
+        ge=0,
+        le=500,
+        description='Overlap between chunks in characters (default: 100)',
+    )
+    aggregation: Literal['max'] = Field(
+        default='max',
+        alias='CHUNK_AGGREGATION',
+        description='How to aggregate chunk scores (currently only max is supported; '
+                    'avg and sum will be added in future releases)',
+    )
+    dedup_overfetch: int = Field(
+        default=5,
+        alias='CHUNK_DEDUP_OVERFETCH',
+        ge=1,
+        le=20,
+        description='Multiplier for fetching extra chunks before deduplication (default: 5)',
+    )
+
+    @model_validator(mode='after')
+    def validate_overlap_less_than_size(self) -> Self:
+        """Ensure overlap is strictly less than chunk size."""
+        if self.overlap >= self.size:
+            raise ValueError(
+                f'CHUNK_OVERLAP ({self.overlap}) must be less than CHUNK_SIZE ({self.size})',
+            )
+        return self
+
+
+class RerankingSettings(CommonSettings):
+    """Cross-encoder reranking settings.
+
+    Reranking improves search precision by using a cross-encoder model
+    to re-score and reorder initial search results.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        alias='ENABLE_RERANKING',
+        description='Enable cross-encoder reranking of search results',
+    )
+    provider: str = Field(
+        default='flashrank',
+        alias='RERANKING_PROVIDER',
+        description='Reranking provider (default: flashrank)',
+    )
+    model: str = Field(
+        default='ms-marco-MiniLM-L-12-v2',
+        alias='RERANKING_MODEL',
+        description='Reranking model name (default: ms-marco-MiniLM-L-12-v2, 34MB)',
+    )
+    max_length: int = Field(
+        default=512,
+        alias='RERANKING_MAX_LENGTH',
+        ge=128,
+        le=2048,
+        description='Maximum input length for reranking (default: 512 tokens)',
+    )
+    overfetch: int = Field(
+        default=4,
+        alias='RERANKING_OVERFETCH',
+        ge=1,
+        le=20,
+        description='Multiplier for over-fetching results before reranking (default: 4x)',
+    )
+    cache_dir: str | None = Field(
+        default=None,
+        alias='RERANKING_CACHE_DIR',
+        description='Directory for caching reranking models (default: system cache)',
+    )
+    chars_per_token: float = Field(
+        default=4.0,
+        alias='RERANKING_CHARS_PER_TOKEN',
+        ge=2.0,
+        le=8.0,
+        description='Estimated characters per token for passage size validation. '
+                    'Default 4.0 for English. Use 3.0-3.5 for multilingual/code.',
+    )
+
+
+class FtsPassageSettings(CommonSettings):
+    """FTS passage extraction settings for reranking.
+
+    Controls how text passages are extracted from FTS results with highlighted
+    matches for use in cross-encoder reranking. These settings affect the quality
+    and size of passages sent to the reranker.
+    """
+
+    rerank_window_size: int = Field(
+        default=750,
+        alias='FTS_RERANK_WINDOW_SIZE',
+        ge=100,
+        le=2000,
+        description='Characters of context around each FTS match for reranking passage extraction (default: 750)',
+    )
+
+    rerank_gap_merge: int = Field(
+        default=100,
+        alias='FTS_RERANK_GAP_MERGE',
+        ge=0,
+        le=500,
+        description='Merge FTS match regions within this character distance (default: 100)',
+    )
+
+
+class SemanticSearchSettings(CommonSettings):
+    """Semantic search feature configuration.
+
+    Controls whether semantic_search_context tool is registered.
+    Requires embedding provider to be available.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        alias='ENABLE_SEMANTIC_SEARCH',
+        description='Enable semantic search tool registration',
+    )
+
+
+class FtsSettings(CommonSettings):
+    """Full-text search feature configuration.
+
+    Controls FTS tool registration and language/tokenizer settings.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        alias='ENABLE_FTS',
+        description='Enable full-text search functionality',
+    )
+
+    language: str = Field(
+        default='english',
+        alias='FTS_LANGUAGE',
+        description='Language for FTS stemming (e.g., english, german, french)',
+    )
+
+    @field_validator('language')
+    @classmethod
+    def validate_language(cls, v: str) -> str:
+        """Validate FTS language is a known PostgreSQL text search configuration.
+
+        PostgreSQL FTS requires a valid text search configuration. Invalid values
+        cause runtime failures when applying migrations or executing queries.
+        This validator fails fast at startup to prevent runtime errors.
+
+        Returns:
+            str: The validated language name normalized to lowercase.
+
+        Raises:
+            ValueError: If the language is not a valid PostgreSQL text search configuration.
+        """
+        # PostgreSQL built-in text search configurations
+        # Full list: SELECT cfgname FROM pg_ts_config;
+        valid_languages = {
+            'simple', 'arabic', 'armenian', 'basque', 'catalan', 'danish', 'dutch',
+            'english', 'finnish', 'french', 'german', 'greek', 'hindi', 'hungarian',
+            'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian',
+            'portuguese', 'romanian', 'russian', 'serbian', 'spanish', 'swedish',
+            'tamil', 'turkish', 'yiddish',
+        }
+        v_lower = v.lower()
+        if v_lower not in valid_languages:
+            raise ValueError(
+                f"FTS_LANGUAGE='{v}' is not a valid PostgreSQL text search configuration. "
+                f'Valid options: {", ".join(sorted(valid_languages))}',
+            )
+        return v_lower
+
+
+class HybridSearchSettings(CommonSettings):
+    """Hybrid search configuration using Reciprocal Rank Fusion (RRF).
+
+    Combines FTS and semantic search results for improved relevance.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        alias='ENABLE_HYBRID_SEARCH',
+        description='Enable hybrid search combining FTS and semantic search',
+    )
+
+    rrf_k: int = Field(
+        default=60,
+        alias='HYBRID_RRF_K',
+        ge=1,
+        le=1000,
+        description='RRF smoothing constant for hybrid search (default 60)',
+    )
+
+    rrf_overfetch: int = Field(
+        default=2,
+        alias='HYBRID_RRF_OVERFETCH',
+        ge=1,
+        le=10,
+        description='Multiplier for over-fetching results before RRF fusion (default: 2x)',
+    )
+
+
+class SearchSettings(CommonSettings):
+    """General search behavior configuration.
+
+    Settings that apply across all search types (FTS, semantic, hybrid).
+    """
+
+    default_sort_by: Literal['relevance'] = Field(
+        default='relevance',
+        alias='SEARCH_DEFAULT_SORT_BY',
+        description='Default sort order for search results (currently only relevance is supported; '
+                    'created_at and updated_at will be added in future releases)',
     )
 
 
@@ -381,91 +682,196 @@ class StorageSettings(BaseSettings):
 
 
 class AppSettings(CommonSettings):
-    log_level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = Field(
-        default='ERROR',
-        alias='LOG_LEVEL',
-    )
-
+    # Core settings
+    logging: LoggingSettings = Field(default_factory=lambda: LoggingSettings())
+    tools: ToolManagementSettings = Field(default_factory=lambda: ToolManagementSettings())
     storage: StorageSettings = Field(default_factory=lambda: StorageSettings())
 
-    # Tool disabling - stored as raw string to avoid pydantic-settings JSON parsing
-    disabled_tools_raw: str = Field(
-        default='',
-        alias='DISABLED_TOOLS',
-        description='Comma-separated list of tools to disable (e.g., delete_context,update_context)',
-    )
+    # Search-related settings
+    search: SearchSettings = Field(default_factory=lambda: SearchSettings())
+    semantic_search: SemanticSearchSettings = Field(default_factory=lambda: SemanticSearchSettings())
+    fts: FtsSettings = Field(default_factory=lambda: FtsSettings())
+    hybrid_search: HybridSearchSettings = Field(default_factory=lambda: HybridSearchSettings())
+    fts_passage: FtsPassageSettings = Field(default_factory=lambda: FtsPassageSettings())
 
-    @property
-    def disabled_tools(self) -> set[str]:
-        """Parse comma-separated string into lowercase set of disabled tool names."""
-        if not self.disabled_tools_raw or not self.disabled_tools_raw.strip():
-            return set()
-        return {t.lower().strip() for t in self.disabled_tools_raw.split(',') if t.strip()}
-
-    # Semantic search settings
-    enable_semantic_search: bool = Field(default=False, alias='ENABLE_SEMANTIC_SEARCH')
-
-    # Full-text search settings
-    enable_fts: bool = Field(default=False, alias='ENABLE_FTS')
-    fts_language: str = Field(
-        default='english',
-        alias='FTS_LANGUAGE',
-        description='Language for FTS stemming (e.g., english, german, french)',
-    )
-
-    # Hybrid search settings
-    enable_hybrid_search: bool = Field(default=False, alias='ENABLE_HYBRID_SEARCH')
-    hybrid_rrf_k: int = Field(
-        default=60,
-        alias='HYBRID_RRF_K',
-        ge=1,
-        le=1000,
-        description='RRF smoothing constant for hybrid search (default 60)',
-    )
-
-    # Transport settings
-    transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
-
-    # Auth settings
-    auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
-
-    # Embedding provider settings (new structured settings for Phase 2+)
+    # Embedding and processing settings
     embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())
+    chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
+    reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
 
-    # LangSmith tracing settings
+    # Infrastructure settings
+    transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
+    auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
     langsmith: LangSmithSettings = Field(default_factory=lambda: LangSmithSettings())
 
-    @field_validator('fts_language')
-    @classmethod
-    def validate_fts_language(cls, v: str) -> str:
-        """Validate FTS language is a known PostgreSQL text search configuration.
+    @model_validator(mode='after')
+    def validate_chunk_size_vs_context_limit(self) -> Self:
+        """Validate CHUNK_SIZE against model context window from context_limits.py.
 
-        PostgreSQL FTS requires a valid text search configuration. Invalid values
-        cause runtime failures when applying migrations or executing queries.
-        This validator fails fast at startup to prevent runtime errors.
+        This is a UNIVERSAL validator that works for ALL embedding providers.
+
+        When ENABLE_CHUNKING=true:
+            - Validates CHUNK_SIZE against model's max_tokens
+            - Warns if chunk size may exceed context window
+
+        When ENABLE_CHUNKING=false:
+            - Warns about potential issues with large documents
+            - Document sizes are unknown at startup, so only general warning is possible
 
         Returns:
-            str: The validated language name normalized to lowercase.
-
-        Raises:
-            ValueError: If the language is not a valid PostgreSQL text search configuration.
+            Self: The validated settings instance.
         """
-        # PostgreSQL built-in text search configurations
-        # Full list: SELECT cfgname FROM pg_ts_config;
-        valid_languages = {
-            'simple', 'arabic', 'armenian', 'basque', 'catalan', 'danish', 'dutch',
-            'english', 'finnish', 'french', 'german', 'greek', 'hindi', 'hungarian',
-            'indonesian', 'irish', 'italian', 'lithuanian', 'nepali', 'norwegian',
-            'portuguese', 'romanian', 'russian', 'serbian', 'spanish', 'swedish',
-            'tamil', 'turkish', 'yiddish',
-        }
-        v_lower = v.lower()
-        if v_lower not in valid_languages:
-            raise ValueError(
-                f"FTS_LANGUAGE='{v}' is not a valid PostgreSQL text search configuration. "
-                f'Valid options: {", ".join(sorted(valid_languages))}',
+        # Import here to avoid circular imports at module load time
+        try:
+            from app.embeddings.context_limits import get_model_spec
+            from app.embeddings.context_limits import get_provider_default_context
+        except ImportError:
+            # context_limits module not available - skip validation
+            return self
+
+        # Get model specification from context_limits.py
+        model_spec = get_model_spec(self.embedding.model)
+
+        # Determine max_tokens for the model
+        # truncation_behavior can be 'error', 'silent', 'configurable', or None (unknown)
+        truncation_behavior: str | None
+        if model_spec:
+            max_tokens = model_spec.max_tokens
+            truncation_behavior = model_spec.truncation_behavior
+            source = f'model spec for {model_spec.model}'
+        else:
+            # Unknown model - use provider default
+            max_tokens = get_provider_default_context(self.embedding.provider)
+            truncation_behavior = None  # Unknown behavior
+            source = f'provider default for {self.embedding.provider}'
+            logger.warning(
+                f'[EMBEDDING CONFIG] Model "{self.embedding.model}" not found in context_limits.py. '
+                f'Using provider default context limit ({max_tokens} tokens). '
+                f'Consider adding model spec to app/embeddings/context_limits.py for accurate validation.',
             )
-        return v_lower
+
+        if not self.chunking.enabled:
+            # ENABLE_CHUNKING=false - warn about potential issues
+            if truncation_behavior == 'silent':
+                logger.warning(
+                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'Model "{self.embedding.model}" ALWAYS silently truncates (cannot be disabled). '
+                    f'Documents exceeding {max_tokens} tokens ({source}) will be truncated without warning.',
+                )
+            elif truncation_behavior == 'configurable':
+                # Determine current truncation setting for this provider
+                truncation_enabled = self._get_truncation_setting_for_provider()
+                if truncation_enabled:
+                    logger.warning(
+                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation enabled. '
+                        f'Large documents will be silently truncated to {max_tokens} tokens ({source}). '
+                        f'Consider enabling chunking for better embedding quality.',
+                    )
+                else:
+                    logger.warning(
+                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation disabled. '
+                        f'Documents exceeding {max_tokens} tokens ({source}) will cause embedding errors. '
+                        f'Consider enabling chunking to handle large documents.',
+                    )
+            elif truncation_behavior == 'error':
+                logger.warning(
+                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'Model "{self.embedding.model}" returns error on context exceed (no truncation). '
+                    f'Documents exceeding {max_tokens} tokens ({source}) will fail embedding. '
+                    f'Consider enabling chunking to handle large documents.',
+                )
+            else:
+                # Unknown truncation behavior
+                logger.warning(
+                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false. Document sizes unknown at startup. '
+                    f'Documents exceeding {max_tokens} tokens ({source}) may cause issues. '
+                    f'Consider enabling chunking for better reliability.',
+                )
+            return self
+
+        # ENABLE_CHUNKING=true - validate CHUNK_SIZE against max_tokens
+        # Heuristic: 1 token ~ 3-4 characters for English
+        chunk_tokens_estimate = self.chunking.size / 3
+
+        if chunk_tokens_estimate > max_tokens:
+            # Determine consequence based on truncation behavior
+            if truncation_behavior == 'silent':
+                consequence = 'will be silently truncated (quality degradation)'
+            elif truncation_behavior == 'configurable':
+                truncation_enabled = self._get_truncation_setting_for_provider()
+                consequence = 'will be silently truncated' if truncation_enabled else 'will cause embedding errors'
+            elif truncation_behavior == 'error':
+                consequence = 'will cause embedding errors'
+            else:
+                consequence = 'may cause issues'
+
+            logger.warning(
+                f'[EMBEDDING CONFIG] CHUNK_SIZE ({self.chunking.size} chars, '
+                f'~{int(chunk_tokens_estimate)} tokens estimate) exceeds '
+                f'model context limit ({max_tokens} tokens from {source}). '
+                f'Chunks {consequence}. '
+                f'Recommendation: Reduce CHUNK_SIZE to ~{int(max_tokens * 3 * 0.8)} chars '
+                f'(80% of context window).',
+            )
+
+        return self
+
+    @model_validator(mode='after')
+    def validate_fts_passage_vs_reranking(self) -> Self:
+        """Validate FTS passage settings against cross-encoder token limits.
+
+        When reranking is enabled, validates that FTS passage extraction settings
+        are configured appropriately for the cross-encoder's max_length limit.
+
+        Uses configurable chars_per_token ratio for token estimation, allowing
+        users to tune based on their content type (English prose ~4.5, code ~3.5).
+
+        Returns:
+            Self: The validated settings instance.
+        """
+        # Skip validation if reranking is disabled
+        if not self.reranking.enabled:
+            return self
+
+        # Calculate estimated passage size for a single FTS match with context windows
+        boundary_expansion = 400  # max_search * 2 from expand_to_boundary
+        single_match_estimate = self.fts_passage.rerank_window_size * 2 + boundary_expansion
+
+        # Estimate token usage
+        estimated_tokens = single_match_estimate / self.reranking.chars_per_token
+
+        if estimated_tokens > self.reranking.max_length:
+            optimal_window = int(
+                (self.reranking.max_length * self.reranking.chars_per_token - boundary_expansion) / 2,
+            )
+            logger.warning(
+                f'[FTS PASSAGE CONFIG] Single FTS match may produce ~{int(estimated_tokens)} tokens '
+                f'(using {self.reranking.chars_per_token} chars/token), exceeding RERANKING_MAX_LENGTH '
+                f'({self.reranking.max_length} tokens). Cross-encoder will truncate. '
+                f'Recommendations: '
+                f'1. Reduce FTS_RERANK_WINDOW_SIZE to ~{optimal_window} chars, OR '
+                f'2. Increase RERANKING_CHARS_PER_TOKEN if your content has longer words',
+            )
+
+        return self
+
+    def _get_truncation_setting_for_provider(self) -> bool:
+        """Get current truncation setting for the configured provider.
+
+        Returns:
+            bool: True if truncation is enabled, False otherwise
+        """
+        # Provider is Literal['ollama', 'openai', 'azure', 'huggingface', 'voyage']
+        # All cases are exhaustively covered
+        match self.embedding.provider:
+            case 'ollama':
+                return self.embedding.ollama_truncate
+            case 'voyage':
+                return self.embedding.voyage_truncation
+            case 'openai' | 'azure':
+                return False  # OpenAI/Azure always error on exceed
+            case 'huggingface':
+                return True  # HuggingFace always silently truncates
 
 
 @lru_cache

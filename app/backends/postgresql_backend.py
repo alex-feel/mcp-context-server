@@ -21,14 +21,11 @@ from urllib.parse import quote
 
 import asyncpg
 
-from app.logger_config import config_logger
 from app.schemas import load_schema
 from app.settings import get_settings
 
-# Get settings
+# Get settings (used for connection configuration)
 settings = get_settings()
-# Configure logging
-config_logger(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
@@ -285,7 +282,7 @@ class PostgreSQLBackend:
         try:
             # Pre-create pgvector extension if semantic search enabled
             # This prevents "unknown type: public.vector" warnings during pool initialization
-            if settings.enable_semantic_search:
+            if settings.semantic_search.enabled:
                 await self._ensure_pgvector_extension()
 
             # Define connection initialization function for pgvector support
