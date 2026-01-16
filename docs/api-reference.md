@@ -215,7 +215,7 @@ Perform full-text search with linguistic processing, relevance ranking, and high
 
 Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The implementation varies by backend:
 - **SQLite**: Uses FTS5 with BM25 ranking. Porter stemmer (English) or unicode61 tokenizer (multilingual).
-- **PostgreSQL**: Uses tsvector/tsquery with ts_rank ranking. Supports 29 languages with full stemming.
+- **PostgreSQL**: Uses tsvector/tsquery with ts_rank_cd ranking. Supports 29 languages with full stemming.
 
 **Parameters:**
 - `query` (str, required): Search query
@@ -499,6 +499,6 @@ Supported ISO 8601 formats:
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata operators
-- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
 - **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
 - **Main Documentation**: [README.md](../README.md) - overview and quick start

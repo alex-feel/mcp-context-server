@@ -728,7 +728,7 @@ RuntimeError: Embedding dimension mismatch detected!
 
 4. **Restart server** - new tables created automatically
 
-5. **Re-import data** - embeddings regenerate on access
+5. **Re-store data** - embeddings are generated at `store_context` and `store_context_batch` time (and regenerated when text changes via `update_context` or `update_context_batch`)
 
 ## Usage
 
@@ -790,7 +790,9 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
 Embeddings are generated automatically:
 
 - **On `store_context`**: Embeddings generated in background
+- **On `store_context_batch`**: Embeddings generated for each entry
 - **On `update_context`**: Embeddings regenerated when text changes
+- **On `update_context_batch`**: Embeddings regenerated for entries with text changes
 - **On `delete_context`**: Embeddings cascade deleted
 
 If embedding generation fails, context is still stored (graceful degradation).

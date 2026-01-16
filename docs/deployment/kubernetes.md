@@ -267,9 +267,9 @@ curl http://localhost:8000/health
 kubectl logs -l app.kubernetes.io/name=mcp-context-server -f
 ```
 
-### Metrics
+### Health Monitoring
 
-The server exposes metrics at `/metrics` (when enabled). Use Prometheus ServiceMonitor for scraping.
+Use the `/health` endpoint to monitor server status. The server does not expose a `/metrics` endpoint.
 
 ## Troubleshooting
 

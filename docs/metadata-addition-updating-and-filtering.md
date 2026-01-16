@@ -1664,7 +1664,7 @@ METADATA_INDEX_SYNC_MODE=auto
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - vector similarity search
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - linguistic search with stemming
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion
-- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
 - **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
 - **Main Documentation**: [README.md](../README.md) - overview and quick start
 - **Contributing**: [CONTRIBUTING.md](../CONTRIBUTING.md) - architecture and development guidelines

@@ -588,6 +588,6 @@ curl -v -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8000/mcp
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata filtering with operators
-- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - HTTP transport configuration
+- **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - HTTP transport configuration
 - **Main Documentation**: [README.md](../README.md) - overview and quick start
 - **FastMCP Authentication**: [FastMCP Auth](https://gofastmcp.com/servers/auth) - FastMCP auth documentation

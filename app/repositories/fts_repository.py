@@ -91,7 +91,7 @@ class FtsRepository(BaseRepository):
         """Execute full-text search with optional filters.
 
         SQLite: Uses FTS5 MATCH with BM25 scoring
-        PostgreSQL: Uses tsvector with ts_rank scoring
+        PostgreSQL: Uses tsvector with ts_rank_cd scoring
 
         Args:
             query: Full-text search query string

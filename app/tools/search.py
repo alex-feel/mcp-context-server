@@ -417,7 +417,8 @@ async def search_context(
 
     Performance tips:
     - Always specify thread_id to reduce search space
-    - Use indexed metadata fields: status, priority, agent_name, task_name, completed
+    - Use indexed metadata fields: status, agent_name, task_name, project, report_type
+      (PostgreSQL also indexes: references, technologies)
 
     Returns:
         Dict with results (list of ContextEntryDict), count (int), and

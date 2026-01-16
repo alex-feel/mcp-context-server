@@ -111,7 +111,7 @@ SQLite uses the FTS5 extension with external content mode for efficient full-tex
 PostgreSQL uses native tsvector/tsquery functionality with GIN indexing.
 
 **Features**:
-- **ts_rank scoring**: PostgreSQL's built-in relevance ranking
+- **ts_rank_cd scoring**: PostgreSQL's built-in relevance ranking with document coverage normalization
 - **29 language support**: Full linguistic stemming for all supported languages
 - **GIN index**: Optimized for fast full-text searches
 - **Generated column**: tsvector automatically computed and stored
@@ -498,6 +498,6 @@ Both operations automatically rebuild the index from existing data.
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - meaning-based search with embeddings
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - filtering results with metadata operators
-- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
 - **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
 - **Main Documentation**: [README.md](../README.md) - overview and quick start

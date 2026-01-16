@@ -606,7 +606,7 @@ Both FTS and semantic search should show as available for full hybrid functional
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - semantic search setup with Ollama
 - **Metadata Filtering**: [Metadata Guide](metadata-addition-updating-and-filtering.md) - metadata filtering with operators
-- **Docker Deployment**: [Docker Deployment Guide](docker-deployment.md) - containerized deployment
+- **Docker Deployment**: [Docker Deployment Guide](deployment/docker.md) - containerized deployment
 - **Authentication**: [Authentication Guide](authentication.md) - HTTP transport authentication
 - **Main Documentation**: [README.md](../README.md) - overview and quick start
 

@@ -47,9 +47,9 @@ async def store_context(
         MetadataDict | None,
         Field(
             description='Additional structured data. For optimal performance, consider using indexed field names: '
-            'status (state information), priority (numeric value for range queries), '
-            'agent_name (specific agent identifier), task_name (task title for string searches), '
-            'completed (boolean flag for completion state). '
+            'status (state information), agent_name (specific agent identifier), '
+            'task_name (task title for string searches), project (project name), '
+            'report_type (type of report). '
             'These fields are indexed for faster filtering but not required.',
         ),
     ] = None,
@@ -65,8 +65,8 @@ async def store_context(
     Notes:
         - Tags are normalized to lowercase and stored separately for efficient filtering
         - If semantic search is enabled, an embedding is automatically generated
-        - Use indexed metadata fields (status, priority, agent_name, task_name, completed)
-          for faster filtering in search_context
+        - Use indexed metadata fields for faster filtering in search_context:
+          status, agent_name, task_name, project, report_type
 
     Returns:
         StoreContextSuccessDict with success, context_id, thread_id, message fields.
