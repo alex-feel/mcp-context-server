@@ -625,6 +625,36 @@ class StorageSettings(BaseSettings):
         description='Recycle connections after this many queries (0 to disable)',
     )
 
+    # PostgreSQL asyncpg prepared statement cache settings
+    # For external pooler compatibility (PgBouncer transaction mode, Pgpool-II, etc.),
+    # set POSTGRESQL_STATEMENT_CACHE_SIZE=0 to disable caching
+    postgresql_statement_cache_size: int = Field(
+        default=100,
+        alias='POSTGRESQL_STATEMENT_CACHE_SIZE',
+        ge=0,
+        le=10000,
+        description='asyncpg prepared statement cache size. '
+                    'Default: 100 (asyncpg default). '
+                    'Set to 0 when using external connection poolers '
+                    '(PgBouncer transaction mode, Pgpool-II, etc.) to disable caching.',
+    )
+    postgresql_max_cached_statement_lifetime_s: int = Field(
+        default=300,
+        alias='POSTGRESQL_MAX_CACHED_STATEMENT_LIFETIME_S',
+        ge=0,
+        le=86400,
+        description='Maximum lifetime of cached prepared statements in seconds. '
+                    'Default: 300. Has no effect when statement_cache_size=0.',
+    )
+    postgresql_max_cacheable_statement_size: int = Field(
+        default=15360,
+        alias='POSTGRESQL_MAX_CACHEABLE_STATEMENT_SIZE',
+        ge=0,
+        le=1048576,
+        description='Maximum size of statement to cache in bytes. '
+                    'Default: 15360 (15KB). Has no effect when statement_cache_size=0.',
+    )
+
     # PostgreSQL SSL settings
     postgresql_ssl_mode: Literal['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'] = Field(
         default='prefer',
