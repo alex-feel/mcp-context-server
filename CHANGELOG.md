@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/alex-feel/mcp-context-server/compare/v1.1.0...v1.2.0) (2026-01-17)
+
+
+### Features
+
+* add configurable asyncpg prepared statement cache settings ([5ebf287](https://github.com/alex-feel/mcp-context-server/commit/5ebf2876bbee7c089f7b3901a54c9eebb8fac281))
+
 ## [1.1.0](https://github.com/alex-feel/mcp-context-server/compare/v1.0.0...v1.1.0) (2026-01-17)
 
 
