@@ -78,6 +78,7 @@ from app.startup.validation import validate_pool_timeout_for_embedding
 
 # Import tool functions and registration helpers from app.tools
 from app.tools import TOOL_ANNOTATIONS
+from app.tools import generate_fts_description
 from app.tools import is_tool_disabled
 from app.tools import register_tool
 
@@ -393,14 +394,20 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         # 16) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.fts.enabled:
+            # Generate backend-specific FTS description for AI agents
+            fts_description = generate_fts_description(
+                cast(Literal['sqlite', 'postgresql'], backend.backend_type),
+                settings.fts.language,
+            )
+
             # Always register the FTS tool when enabled (DISABLED_TOOLS takes priority)
             # The tool itself checks migration status and returns informative response
-            register_tool(mcp, fts_search_context)
+            register_tool(mcp, fts_search_context, description=fts_description)
 
             # Check if FTS is available and log status
             fts_available = await repos.fts.is_available()
             if fts_available:
-                logger.info('[OK] Full-text search enabled and available')
+                logger.info(f'[OK] Full-text search enabled and available (backend: {backend.backend_type})')
             else:
                 logger.warning('[!] FTS enabled but index may need initialization or migration')
         else:
