@@ -53,7 +53,8 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - Configured via `FASTMCP_SERVER_AUTH` and `MCP_AUTH_TOKEN`; settings in `AuthSettings`
 
 3. **Storage Backend Layer** (`app/backends/`):
-   - **StorageBackend Protocol** (`base.py`): Database-agnostic interface (7 methods)
+   - **StorageBackend Protocol** (`base.py`): Database-agnostic interface (8 methods including `begin_transaction()`)
+   - **TransactionContext Protocol** (`base.py`): Provides `connection` and `backend_type` for multi-operation atomic transactions
    - **SQLiteBackend**: Connection pooling, write queue, circuit breaker
    - **PostgreSQLBackend**: Async via asyncpg, connection pooling, MVCC, JSONB
    - **Backend Factory** (`factory.py`): Creates backend based on `STORAGE_BACKEND` env var
@@ -197,7 +198,7 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata), 
 3. **Async Operations**: SQLite ops are sync callables wrapped via `execute_write`/`execute_read`. PostgreSQL ops are native async. Repositories detect backend type automatically.
 
 4. **Design Patterns**:
-   - **Protocol** (`@runtime_checkable`): `StorageBackend` (backends), `EmbeddingProvider` (embeddings), `RerankingProvider` (reranking)
+   - **Protocol** (`@runtime_checkable`): `StorageBackend` (backends), `TransactionContext` (transactions), `EmbeddingProvider` (embeddings), `RerankingProvider` (reranking)
    - **Repository**: All SQL in `app/repositories/`, `BaseRepository` provides `_placeholder()`, `_placeholders()`, `_json_extract()` helpers
    - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_reranking_provider()` - dynamic imports via `PROVIDER_MODULES` dicts
    - **DI**: `RepositoryContainer` injects all repositories
@@ -275,7 +276,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Metadata Indexing**: `METADATA_INDEXED_FIELDS` (field:type format; default: status,agent_name,task_name,project,report_type,references:object,technologies:array), `METADATA_INDEX_SYNC_MODE` (additive*/strict/auto/warn)
 
-**PostgreSQL** (when STORAGE_BACKEND=postgresql): `POSTGRESQL_CONNECTION_STRING` (overrides individual settings), `_HOST` (localhost*), `_PORT` (5432*), `_USER` (postgres*), `_PASSWORD`, `_DATABASE` (mcp_context*), `_POOL_MIN` (2*), `_POOL_MAX` (20*), `_POOL_TIMEOUT_S` (10*), `_COMMAND_TIMEOUT_S` (60*), `_SSL_MODE` (prefer*), `_SCHEMA` (public*; required for Supabase)
+**PostgreSQL** (when STORAGE_BACKEND=postgresql): `POSTGRESQL_CONNECTION_STRING` (overrides individual settings), `_HOST` (localhost*), `_PORT` (5432*), `_USER` (postgres*), `_PASSWORD`, `_DATABASE` (mcp_context*), `_POOL_MIN` (2*), `_POOL_MAX` (20*), `_POOL_TIMEOUT_S` (120*), `_COMMAND_TIMEOUT_S` (60*), `_SSL_MODE` (prefer*), `_SCHEMA` (public*; required for Supabase), `_MAX_INACTIVE_LIFETIME_S` (300*), `_MAX_QUERIES` (10000*; 0 disables recycling), `_STATEMENT_CACHE_SIZE` (100*; 0 for PgBouncer/Pgpool-II compatibility), `_MAX_CACHED_STATEMENT_LIFETIME_S` (300*), `_MAX_CACHEABLE_STATEMENT_SIZE` (15360*)
 
 *\* = default value*. Additional tuning: connection pool, retry, circuit breaker settings in `app/settings.py`.
 
@@ -428,9 +429,13 @@ class NewEmbeddingProvider:
     def provider_name(self) -> str: return 'new'
 ```
 
+### Embedding-First Transactional Integrity
+
+**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` and embedding fails, NO data is saved - transaction rolls back completely. Embeddings generated OUTSIDE transaction, then all DB ops (context + tags + images + embeddings) in single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter.
+
 ### Repository Pattern Implementation
 
-All SQL in repositories (never server.py). Use `ensure_repositories()` from `app.startup`. Repositories detect backend type via `self.backend.backend_type`. SQLite: sync functions with `conn`. PostgreSQL: async functions with `conn`. Helper methods: `_placeholder()`, `_json_extract()`.
+All SQL in repositories (never server.py). Use `ensure_repositories()` from `app.startup`. Repositories detect backend type via `self.backend.backend_type`. SQLite: sync functions with `conn`. PostgreSQL: async functions with `conn`. Helper methods: `_placeholder()`, `_json_extract()`. Write methods accept optional `txn` for atomic multi-operation transactions.
 
 ### Update Context Tool
 
