@@ -6,6 +6,12 @@ This module contains the core context management tools:
 - get_context_by_ids: Retrieve specific context entries by ID
 - update_context: Update an existing context entry
 - delete_context: Delete context entries
+
+Embedding-First Pattern:
+This module implements atomic embedding + data storage. When embeddings are enabled:
+1. Embeddings are generated FIRST (outside any database transaction)
+2. If embedding generation fails, NO data is saved (returns error immediately)
+3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
 """
 
 import base64
@@ -19,10 +25,13 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.migrations import format_exception_message
+from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.startup import MAX_IMAGE_SIZE_MB
 from app.startup import MAX_TOTAL_SIZE_MB
 from app.startup import ensure_repositories
+from app.startup import get_chunking_service
 from app.startup import get_embedding_provider
 from app.startup.validation import deserialize_json_param
 from app.types import ContextEntryDict
@@ -33,6 +42,62 @@ from app.types import UpdateContextSuccessDict
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | None:
+    """Generate embeddings for text using configured provider.
+
+    This function implements the 'embedding-first' pattern by generating
+    embeddings BEFORE any database transaction is started. If embedding
+    generation fails, no data should be saved.
+
+    Args:
+        text: Text content to embed
+
+    Returns:
+        List of ChunkEmbedding objects with embedding vectors and boundaries,
+        or None if embedding generation is not enabled.
+
+    Raises:
+        ToolError: If embedding generation is enabled but fails.
+    """
+    embedding_provider = get_embedding_provider()
+    if embedding_provider is None:
+        return None
+
+    try:
+        chunking_service = get_chunking_service()
+        logger.debug(
+            f'[EMBEDDING-FIRST] Chunking service state: service={chunking_service}, '
+            f'enabled={chunking_service.is_enabled if chunking_service else "N/A"}',
+        )
+
+        if chunking_service is not None and chunking_service.is_enabled:
+            # Chunked embedding for long documents
+            chunks = chunking_service.split_text(text)
+            chunk_texts = [chunk.text for chunk in chunks]
+            logger.info(f'[EMBEDDING-FIRST] Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
+            embeddings = await embedding_provider.embed_documents(chunk_texts)
+            logger.info(f'[EMBEDDING-FIRST] Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
+
+            return [
+                ChunkEmbedding(
+                    embedding=emb,
+                    start_index=chunk.start_index,
+                    end_index=chunk.end_index,
+                )
+                for emb, chunk in zip(embeddings, chunks, strict=True)
+            ]
+        # Single embedding (chunking disabled)
+        logger.info(f'[EMBEDDING-FIRST] Generating single embedding: text_len={len(text)}')
+        embedding = await embedding_provider.embed_query(text)
+        logger.info('[EMBEDDING-FIRST] Single embedding generated')
+        return [ChunkEmbedding(embedding=embedding, start_index=0, end_index=len(text))]
+
+    except Exception as e:
+        # CRITICAL: Embedding generation failed - this error must be raised
+        # to prevent any data from being saved
+        raise ToolError(f'Embedding generation failed: {format_exception_message(e)}') from e
 
 
 async def store_context(
@@ -56,7 +121,12 @@ async def store_context(
     tags: Annotated[list[str] | None, Field(description='List of tags (normalized to lowercase)')] = None,
     ctx: Context | None = None,
 ) -> StoreContextSuccessDict:
-    """Store a context entry with optional images and metadata.
+    """Store a context entry with atomic embedding + data storage.
+
+    EMBEDDING-FIRST PATTERN:
+    1. Embeddings are generated FIRST (outside any database transaction)
+    2. If embedding generation fails, NO data is saved (returns error immediately)
+    3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
 
     All agents working on the same task should use the same thread_id to share context.
     If an entry with identical thread_id, source, and text already exists, it will be
@@ -72,9 +142,11 @@ async def store_context(
         StoreContextSuccessDict with success, context_id, thread_id, message fields.
 
     Raises:
-        ToolError: If validation fails or storage operation fails.
+        ToolError: If validation fails, embedding generation fails, or storage operation fails.
     """
     try:
+        # === PHASE 1: Input Validation (no DB operations) ===
+
         # Clean input strings - defensive try/except handles edge cases where Pydantic validation bypassed
         try:
             thread_id = thread_id.strip()
@@ -91,15 +163,6 @@ async def store_context(
         if not text:
             raise ToolError('text cannot be empty or whitespace')
 
-        # Validate images if provided
-        if images:
-            for idx, img in enumerate(images):
-                if 'data' in img:
-                    try:
-                        base64.b64decode(img['data'])
-                    except Exception:
-                        raise ToolError(f'Invalid base64 encoded data in image {idx}') from None
-
         # Log info if context is available
         if ctx:
             await ctx.info(f'Storing context for thread: {thread_id}')
@@ -112,34 +175,12 @@ async def store_context(
         metadata_raw = deserialize_json_param(cast(JsonValue | None, metadata))
         metadata = cast(MetadataDict | None, metadata_raw)
 
-        # Get repositories
-        repos = await ensure_repositories()
+        # Determine content type and validate images
+        content_type: Literal['text', 'multimodal'] = 'text'
+        validated_images: list[dict[str, str]] = []
 
-        # Determine content type
-        content_type = 'multimodal' if images else 'text'
-
-        # Store context entry with deduplication
-        context_id, was_updated = await repos.context.store_with_deduplication(
-            thread_id=thread_id,
-            source=source,
-            content_type=content_type,
-            text_content=text,
-            metadata=json.dumps(metadata, ensure_ascii=False) if metadata else None,
-        )
-
-        # Ensure we got a valid ID (not None or 0)
-        if not context_id:
-            raise ToolError('Failed to store context')
-
-        # Store normalized tags
-        if tags:
-            await repos.tags.store_tags(context_id, tags)
-
-        # Store images if provided
-        total_size: float = 0.0
-        valid_image_count = 0
         if images:
-            # Pre-validate ALL images before storing any
+            total_size: float = 0.0
             for idx, img in enumerate(images):
                 # Validate required data field
                 if 'data' not in img:
@@ -169,75 +210,55 @@ async def store_context(
                 if total_size > MAX_TOTAL_SIZE_MB:
                     raise ToolError(f'Total size exceeds {MAX_TOTAL_SIZE_MB}MB limit')
 
-                valid_image_count += 1
+            content_type = 'multimodal'
+            validated_images = images
+            logger.debug(f'Pre-validation passed for {len(validated_images)} images, total size: {total_size:.2f}MB')
 
-            # All validations passed, store the images
-            logger.debug(f'Pre-validation passed for {valid_image_count} images, total size: {total_size:.2f}MB')
-            try:
-                await repos.images.store_images(context_id, images)
-            except Exception as e:
-                raise ToolError(f'Failed to store images: {str(e)}') from e
+        # === PHASE 2: Generate Embedding FIRST (Outside Transaction) ===
+        # CRITICAL: Embedding generation happens BEFORE any database operations.
+        # If it fails, NO data is saved - this is the core of transactional integrity.
+        chunk_embeddings = await _generate_embeddings_for_text(text)
+        # If we get here, embedding either succeeded or is disabled (None)
+        embedding_generated = chunk_embeddings is not None
 
-        # Generate embedding if embedding generation is enabled (BLOCKING when enabled)
-        # If ENABLE_EMBEDDING_GENERATION=true (provider is not None), embedding failures are errors
-        # This ensures no silent embedding gaps when user expects embeddings to be created
-        embedding_generated = False
-        store_embedding_provider = get_embedding_provider()
-        if store_embedding_provider is not None:
-            try:
-                # Import lazily to avoid linter removing unused import at module level
-                from app.startup import get_chunking_service
+        # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
+        repos = await ensure_repositories()
+        backend = repos.context.backend
+        metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
 
-                chunking_service = get_chunking_service()
-                logger.debug(
-                    f'[EMBEDDING] Chunking service state: service={chunking_service}, '
-                    f'enabled={chunking_service.is_enabled if chunking_service else "N/A"}')
-                if chunking_service is not None and chunking_service.is_enabled:
-                    # Chunked embedding generation for long documents
-                    # Import ChunkEmbedding for boundary-aware storage
-                    from app.repositories.embedding_repository import ChunkEmbedding
+        async with backend.begin_transaction() as txn:
+            # Store context entry with deduplication
+            context_id, was_updated = await repos.context.store_with_deduplication(
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                text_content=text,
+                metadata=metadata_str,
+                txn=txn,
+            )
 
-                    chunks = chunking_service.split_text(text)
-                    chunk_texts = [chunk.text for chunk in chunks]
-                    logger.info(f'[EMBEDDING] Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
-                    embeddings = await store_embedding_provider.embed_documents(chunk_texts)
-                    logger.info(f'[EMBEDDING] Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
+            # Ensure we got a valid ID (not None or 0)
+            if not context_id:
+                raise ToolError('Failed to store context')
 
-                    # Create ChunkEmbedding objects with boundary information
-                    chunk_embeddings = [
-                        ChunkEmbedding(
-                            embedding=emb,
-                            start_index=chunk.start_index,
-                            end_index=chunk.end_index,
-                        )
-                        for emb, chunk in zip(embeddings, chunks, strict=True)
-                    ]
+            # Store normalized tags
+            if tags:
+                await repos.tags.store_tags(context_id, tags, txn=txn)
 
-                    await repos.embeddings.store_chunked(
-                        context_id=context_id,
-                        chunk_embeddings=chunk_embeddings,
-                        model=settings.embedding.model,
-                    )
-                    embedding_generated = True
-                    logger.debug(f'Generated {len(chunks)} chunk embeddings for context {context_id}')
-                else:
-                    # Single embedding (chunking disabled or not configured)
-                    embedding = await store_embedding_provider.embed_query(text)
-                    await repos.embeddings.store(
-                        context_id=context_id,
-                        embedding=embedding,
-                        model=settings.embedding.model,
-                    )
-                    embedding_generated = True
-                    logger.debug(f'Generated embedding for context {context_id}')
-            except Exception as e:
-                logger.error(f'Failed to generate/store embedding for context {context_id}: {e}')
-                # BLOCKING: If embedding generation is enabled, failure is an error
-                # The context was stored, but embedding failed - this is a data integrity issue
-                raise ToolError(
-                    f'Context stored (id={context_id}) but embedding generation failed: {str(e)}. '
-                    f'The entry exists but cannot be found via semantic search.',
-                ) from e
+            # Store images
+            if validated_images:
+                await repos.images.store_images(context_id, validated_images, txn=txn)
+
+            # Store embeddings (guaranteed to exist if we got here and embedding is enabled)
+            if chunk_embeddings is not None:
+                await repos.embeddings.store_chunked(
+                    context_id=context_id,
+                    chunk_embeddings=chunk_embeddings,
+                    model=settings.embedding.model,
+                    txn=txn,
+                )
+
+            # COMMIT happens here - all or nothing
 
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
@@ -246,14 +267,14 @@ async def store_context(
             success=True,
             context_id=context_id,
             thread_id=thread_id,
-            message=f'Context {action} with {len(images) if images else 0} images'
+            message=f'Context {action} with {len(validated_images)} images'
             + (' (embedding generated)' if embedding_generated else ''),
         )
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error storing context: {e}')
-        raise ToolError(f'Failed to store context: {str(e)}') from e
+        raise ToolError(f'Failed to store context: {format_exception_message(e)}') from e
 
 
 async def get_context_by_ids(
@@ -436,7 +457,12 @@ async def update_context(
     ] = None,
     ctx: Context | None = None,
 ) -> UpdateContextSuccessDict:
-    """Update an existing context entry. Only provided fields are modified.
+    """Update an existing context entry with atomic embedding + data storage.
+
+    EMBEDDING-FIRST PATTERN:
+    1. Embeddings are generated FIRST (outside any database transaction) if text changed
+    2. If embedding generation fails, NO data is saved (original data preserved)
+    3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
 
     Immutable fields: id, thread_id, source, created_at (cannot be changed)
     Auto-managed: content_type (recalculated based on images), updated_at
@@ -454,9 +480,11 @@ async def update_context(
         UpdateContextSuccessDict with success, context_id, updated_fields, message fields.
 
     Raises:
-        ToolError: If validation fails, entry not found, or update operation fails.
+        ToolError: If validation fails, embedding generation fails, entry not found, or update fails.
     """
     try:
+        # === PHASE 1: Input Validation (no DB operations) ===
+
         # Clean text input if provided
         if text is not None:
             text = text.strip()
@@ -480,18 +508,56 @@ async def update_context(
         if ctx:
             await ctx.info(f'Updating context entry {context_id}')
 
+        # Validate images early (before any operations)
+        validated_images: list[dict[str, str]] = []
+        if images is not None and len(images) > 0:
+            total_size = 0.0
+            for img in images:
+                if 'data' not in img or 'mime_type' not in img:
+                    raise ToolError('Each image must have "data" and "mime_type" fields')
+
+                # Check individual image size
+                try:
+                    img_data = base64.b64decode(img['data'])
+                except Exception:
+                    raise ToolError('Invalid base64 image data') from None
+
+                img_size_mb = len(img_data) / (1024 * 1024)
+                total_size += img_size_mb
+
+                if img_size_mb > MAX_IMAGE_SIZE_MB:
+                    raise ToolError(f'Image exceeds size limit of {MAX_IMAGE_SIZE_MB}MB')
+
+            # Check total size
+            if total_size > MAX_TOTAL_SIZE_MB:
+                raise ToolError(f'Total image size {total_size:.2f}MB exceeds limit of {MAX_TOTAL_SIZE_MB}MB')
+
+            validated_images = images
+
         # Get repositories
         repos = await ensure_repositories()
 
-        # Check if entry exists
+        # Check if entry exists (read-only, outside transaction)
         exists = await repos.context.check_entry_exists(context_id)
         if not exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
 
+        # === PHASE 2: Generate Embedding FIRST (Outside Transaction) ===
+        # CRITICAL: Embedding generation happens BEFORE any database modifications.
+        # If it fails, NO data is modified - original data is preserved.
+        chunk_embeddings: list[ChunkEmbedding] | None = None
+        embedding_generated = False
+
+        if text is not None:
+            # Only generate embedding if text is being changed
+            chunk_embeddings = await _generate_embeddings_for_text(text)
+            embedding_generated = chunk_embeddings is not None
+
+        # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
+        backend = repos.context.backend
         updated_fields: list[str] = []
 
-        # Start transaction-like operations
-        try:
+        async with backend.begin_transaction() as txn:
             # Update text content and/or metadata (full replacement) if provided
             if text is not None or metadata is not None:
                 # Prepare metadata JSON string if provided
@@ -504,6 +570,7 @@ async def update_context(
                     context_id=context_id,
                     text_content=text,
                     metadata=metadata_str,
+                    txn=txn,
                 )
 
                 if not success:
@@ -520,6 +587,7 @@ async def update_context(
                 success, fields = await repos.context.patch_metadata(
                     context_id=context_id,
                     patch=metadata_patch,
+                    txn=txn,
                 )
 
                 if not success:
@@ -530,7 +598,7 @@ async def update_context(
 
             # Replace tags if provided
             if tags is not None:
-                await repos.tags.replace_tags_for_context(context_id, tags)
+                await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
                 updated_fields.append('tags')
                 logger.debug(f'Replaced tags for context {context_id}')
 
@@ -538,43 +606,22 @@ async def update_context(
             if images is not None:
                 # If images list is empty (removing all images), update content_type to text
                 if len(images) == 0:
-                    await repos.images.replace_images_for_context(context_id, [])
-                    await repos.context.update_content_type(context_id, 'text')
+                    await repos.images.replace_images_for_context(context_id, [], txn=txn)
+                    await repos.context.update_content_type(context_id, 'text', txn=txn)
                     updated_fields.extend(['images', 'content_type'])
                     logger.debug(f'Removed all images from context {context_id}')
                 else:
-                    # Validate image data first
-                    total_size = 0.0
-                    for img in images:
-                        if 'data' not in img or 'mime_type' not in img:
-                            raise ToolError('Each image must have "data" and "mime_type" fields')
-
-                        # Check individual image size
-                        try:
-                            img_data = base64.b64decode(img['data'])
-                        except Exception:
-                            raise ToolError('Invalid base64 image data') from None
-
-                        img_size_mb = len(img_data) / (1024 * 1024)
-                        total_size += img_size_mb
-
-                        if img_size_mb > MAX_IMAGE_SIZE_MB:
-                            raise ToolError(f'Image exceeds size limit of {MAX_IMAGE_SIZE_MB}MB')
-
-                    # Check total size
-                    if total_size > MAX_TOTAL_SIZE_MB:
-                        raise ToolError(f'Total image size {total_size:.2f}MB exceeds limit of {MAX_TOTAL_SIZE_MB}MB')
-
-                    # Replace images
-                    await repos.images.replace_images_for_context(context_id, images)
+                    # Replace images with validated data
+                    await repos.images.replace_images_for_context(context_id, validated_images, txn=txn)
                     updated_fields.append('images')
 
                     # Update content_type to multimodal if images were added
-                    await repos.context.update_content_type(context_id, 'multimodal')
+                    await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
                     updated_fields.append('content_type')
                     logger.debug(f'Replaced images for context {context_id}')
 
             # Check if we need to update content_type based on current state
+            # Note: image count check is still read-only, safe to do inside transaction
             if images is None and (text is not None or metadata is not None):
                 # Check if there are existing images to determine content_type
                 image_count = await repos.images.count_images_for_context(context_id)
@@ -585,106 +632,38 @@ async def update_context(
 
                 # Update if different
                 if stored_content_type != current_content_type:
-                    await repos.context.update_content_type(context_id, current_content_type)
+                    await repos.context.update_content_type(context_id, current_content_type, txn=txn)
                     updated_fields.append('content_type')
 
-            # Regenerate embedding if text was changed and embedding generation is enabled (BLOCKING)
-            # If ENABLE_EMBEDDING_GENERATION=true (provider is not None), embedding failures are errors
-            update_embedding_provider = get_embedding_provider()
-            if text is not None and update_embedding_provider is not None:
-                try:
-                    # Import lazily to avoid linter removing unused import at module level
-                    from app.startup import get_chunking_service
+            # Store embeddings (guaranteed to exist if text changed and embedding is enabled)
+            if chunk_embeddings is not None:
+                # Delete existing chunks first (within the same transaction)
+                await repos.embeddings.delete_all_chunks(context_id, txn=txn)
 
-                    chunking_service = get_chunking_service()
-                    if chunking_service is not None and chunking_service.is_enabled:
-                        # Chunked embedding regeneration for long documents
-                        # Import ChunkEmbedding for boundary-aware storage
-                        from app.repositories.embedding_repository import ChunkEmbedding
+                # Store new embeddings
+                await repos.embeddings.store_chunked(
+                    context_id=context_id,
+                    chunk_embeddings=chunk_embeddings,
+                    model=settings.embedding.model,
+                    txn=txn,
+                )
+                updated_fields.append('embedding')
+                logger.debug(f'Updated {len(chunk_embeddings)} chunk embeddings for context {context_id}')
 
-                        # Delete existing chunks first
-                        await repos.embeddings.delete_all_chunks(context_id)
-                        # Generate and store new chunks with boundary info
-                        chunks = chunking_service.split_text(text)
-                        chunk_texts = [chunk.text for chunk in chunks]
-                        embeddings = await update_embedding_provider.embed_documents(chunk_texts)
+            # COMMIT happens here - all or nothing
 
-                        # Create ChunkEmbedding objects with boundary information
-                        chunk_embeddings = [
-                            ChunkEmbedding(
-                                embedding=emb,
-                                start_index=chunk.start_index,
-                                end_index=chunk.end_index,
-                            )
-                            for emb, chunk in zip(embeddings, chunks, strict=True)
-                        ]
+        logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
 
-                        await repos.embeddings.store_chunked(
-                            context_id=context_id,
-                            chunk_embeddings=chunk_embeddings,
-                            model=settings.embedding.model,
-                        )
-                        logger.debug(f'Regenerated {len(chunks)} chunk embeddings for context {context_id}')
-                    else:
-                        # Single embedding (chunking disabled or not configured)
-                        # Import ChunkEmbedding for boundary-aware storage
-                        from app.repositories.embedding_repository import ChunkEmbedding
-
-                        new_embedding = await update_embedding_provider.embed_query(text)
-
-                        # Check if embedding exists
-                        embedding_exists = await repos.embeddings.exists(context_id)
-
-                        # Create single ChunkEmbedding with full document boundaries
-                        single_chunk = ChunkEmbedding(
-                            embedding=new_embedding,
-                            start_index=0,
-                            end_index=len(text),
-                        )
-
-                        if embedding_exists:
-                            await repos.embeddings.update(
-                                context_id=context_id,
-                                chunk_embeddings=[single_chunk],
-                                model=settings.embedding.model,
-                            )
-                            logger.debug(f'Updated embedding for context {context_id}')
-                        else:
-                            await repos.embeddings.store(
-                                context_id=context_id,
-                                embedding=new_embedding,
-                                model=settings.embedding.model,
-                                start_index=0,
-                                end_index=len(text),
-                            )
-                            logger.debug(f'Created embedding for context {context_id}')
-
-                    updated_fields.append('embedding')
-                except Exception as e:
-                    logger.error(f'Failed to update embedding for context {context_id}: {e}')
-                    # BLOCKING: If embedding generation is enabled, failure is an error
-                    raise ToolError(
-                        f'Context updated but embedding regeneration failed: {str(e)}. '
-                        f'The text was updated but semantic search may return stale results.',
-                    ) from e
-
-            logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
-
-            return UpdateContextSuccessDict(
-                success=True,
-                context_id=context_id,
-                updated_fields=updated_fields,
-                message=f'Successfully updated {len(updated_fields)} field(s)',
-            )
-
-        except ToolError:
-            raise  # Re-raise ToolError as-is
-        except Exception as update_error:
-            logger.error(f'Error during context update: {update_error}')
-            raise ToolError(f'Update operation failed: {str(update_error)}') from update_error
+        return UpdateContextSuccessDict(
+            success=True,
+            context_id=context_id,
+            updated_fields=updated_fields,
+            message=f'Successfully updated {len(updated_fields)} field(s)'
+            + (' (embedding regenerated)' if embedding_generated else ''),
+        )
 
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error updating context: {e}')
-        raise ToolError(f'Unexpected error: {str(e)}') from e
+        raise ToolError(f'Failed to update context: {format_exception_message(e)}') from e

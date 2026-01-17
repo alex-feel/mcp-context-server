@@ -4,6 +4,8 @@ This module provides a production-grade PostgreSQL backend implementing the Stor
 protocol with asyncpg connection pooling, circuit breaker pattern, retry logic, and health monitoring.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import random
@@ -65,6 +67,33 @@ class RetryConfig:
     max_delay: float = 10.0
     jitter: bool = True
     backoff_factor: float = 2.0
+
+
+@dataclass
+class PostgreSQLTransactionContext:
+    """Transaction context for PostgreSQL backend.
+
+    Provides access to the asyncpg connection within an active transaction.
+    The transaction lifecycle is managed by PostgreSQLBackend.begin_transaction().
+
+    Note: PostgreSQL operations are ASYNCHRONOUS. All operations on the
+    connection must be awaited.
+
+    Attributes:
+        _connection: The asyncpg connection proxy for this transaction
+    """
+
+    _connection: asyncpg.pool.PoolConnectionProxy[asyncpg.Record]
+
+    @property
+    def connection(self) -> asyncpg.pool.PoolConnectionProxy[asyncpg.Record]:
+        """Get the asyncpg connection proxy."""
+        return self._connection
+
+    @property
+    def backend_type(self) -> str:
+        """Get backend type identifier."""
+        return 'postgresql'
 
 
 class CircuitBreaker:
@@ -338,18 +367,68 @@ class PostgreSQLBackend:
                     logger.error('Ensure pgvector extension is enabled and accessible')
                     raise RuntimeError(f'pgvector codec registration failed: {e}') from e
 
-            # Create connection pool with pgvector initialization
+            async def _reset_connection(conn: asyncpg.Connection) -> None:
+                """Validate and reset connection before returning to pool.
+
+                If validation fails, connection is terminated and pool creates a new one.
+                This catches corrupted connections before they cause protocol errors.
+
+                Called BEFORE connection returns to pool. If it raises, connection
+                is terminated (not returned to pool).
+                """
+                try:
+                    # Lightweight validation - catches protocol state mismatches
+                    await conn.fetchval('SELECT 1')
+                    # Reset session state (releases locks, closes cursors, etc.)
+                    await conn.execute('RESET ALL')
+                    logger.debug('Connection reset successful before pool return')
+                except Exception as e:
+                    logger.warning(f'Connection reset failed, connection will be terminated: {e}')
+                    raise  # asyncpg will terminate connection and create new one
+
+            async def _setup_connection(conn: asyncpg.Connection) -> None:
+                """Configure session before connection is acquired.
+
+                Sets statement_timeout to prevent queries from hanging indefinitely.
+                This runs AFTER init but BEFORE the connection is returned to caller.
+                """
+                try:
+                    # Set statement timeout to prevent infinite hangs
+                    # Use slightly less than command_timeout for graceful handling
+                    timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
+                    await conn.execute(f'SET statement_timeout = {timeout_ms}')
+                    logger.debug(f'Connection setup: statement_timeout={timeout_ms}ms')
+                except Exception as e:
+                    logger.warning(f'Connection setup failed: {e}')
+                    raise  # asyncpg will close connection and create new one
+
+            # Prepare pool configuration with hardening parameters
+            pool_kwargs: dict[str, Any] = {
+                'min_size': settings.storage.postgresql_pool_min,
+                'max_size': settings.storage.postgresql_pool_max,
+                'command_timeout': settings.storage.postgresql_command_timeout_s,
+                'timeout': settings.storage.postgresql_pool_timeout_s,
+                # Enable prepared statement cache
+                'max_cached_statement_lifetime': 300,
+                'max_cacheable_statement_size': 1024 * 15,
+                # Connection lifecycle callbacks
+                'init': _init_connection,  # Type registration (existing)
+                'setup': _setup_connection,  # Session config before acquire
+                'reset': _reset_connection,  # Health check before pool return
+            }
+
+            # Add connection recycling settings if configured (0 means disabled)
+            if settings.storage.postgresql_max_inactive_lifetime_s > 0:
+                pool_kwargs['max_inactive_connection_lifetime'] = (
+                    settings.storage.postgresql_max_inactive_lifetime_s
+                )
+            if settings.storage.postgresql_max_queries > 0:
+                pool_kwargs['max_queries'] = settings.storage.postgresql_max_queries
+
+            # Create connection pool with hardening configuration
             self._pool = await asyncpg.create_pool(
                 self.connection_string,
-                min_size=settings.storage.postgresql_pool_min,
-                max_size=settings.storage.postgresql_pool_max,
-                command_timeout=settings.storage.postgresql_command_timeout_s,
-                timeout=settings.storage.postgresql_pool_timeout_s,
-                # Enable prepared statement cache
-                max_cached_statement_lifetime=300,
-                max_cacheable_statement_size=1024 * 15,
-                # Initialize each connection with pgvector type registration
-                init=_init_connection,
+                **pool_kwargs,
             )
 
             # Verify connection and apply schema
@@ -641,6 +720,68 @@ class PostgreSQLBackend:
                 return result
             except Exception:
                 self.metrics.failed_queries += 1
+                raise
+
+    @asynccontextmanager
+    async def begin_transaction(self) -> AsyncGenerator[PostgreSQLTransactionContext, None]:
+        """Begin an atomic transaction spanning multiple operations.
+
+        This method acquires a connection from the pool and begins a transaction.
+        All operations within the context share the same transaction.
+
+        IMPORTANT: This method is intended for multi-operation atomic writes.
+        For single operations, use execute_write() which is more efficient.
+
+        Transaction semantics:
+        - Uses asyncpg's native transaction context manager
+        - Default isolation level: READ COMMITTED
+        - On successful context exit: COMMIT
+        - On exception: ROLLBACK
+
+        Yields:
+            PostgreSQLTransactionContext with the asyncpg connection
+
+        Raises:
+            RuntimeError: If backend is shutting down or circuit breaker is open
+
+        Example:
+            async with backend.begin_transaction() as txn:
+                conn = txn.connection
+                # All operations use same connection, same transaction
+                row = await conn.fetchrow(
+                    'INSERT INTO context_entries ... RETURNING id',
+                    ...
+                )
+                context_id = row['id']
+                await conn.execute('INSERT INTO tags ...', context_id, 'tag1')
+                # COMMIT on exit
+        """
+        if self._shutdown:
+            raise RuntimeError('PostgreSQL backend is shutting down')
+
+        # Check circuit breaker
+        if await self.circuit_breaker.is_open():
+            raise RuntimeError(
+                f'Database circuit breaker is open after {self.circuit_breaker.failures} failures',
+            )
+
+        assert self._pool is not None, 'Backend not initialized, call initialize() first'
+
+        # Acquire connection from pool and begin transaction
+        async with self._pool.acquire() as conn, conn.transaction():
+            # Create transaction context
+            txn_context = PostgreSQLTransactionContext(_connection=conn)
+
+            try:
+                yield txn_context
+                # Transaction commits automatically on successful exit
+                await self.circuit_breaker.record_success()
+                logger.debug('Transaction committed successfully')
+
+            except Exception as e:
+                # Transaction rolls back automatically on exception
+                logger.warning(f'Transaction failed, rolling back: {e}')
+                await self.circuit_breaker.record_failure()
                 raise
 
     def get_metrics(self) -> dict[str, Any]:

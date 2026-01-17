@@ -611,6 +611,20 @@ class StorageSettings(BaseSettings):
     postgresql_pool_timeout_s: float = Field(default=120.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
     postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
 
+    # PostgreSQL connection pool hardening settings
+    postgresql_max_inactive_lifetime_s: float = Field(
+        default=300.0,
+        alias='POSTGRESQL_MAX_INACTIVE_LIFETIME_S',
+        ge=0,
+        description='Close idle connections after this many seconds (0 to disable)',
+    )
+    postgresql_max_queries: int = Field(
+        default=10000,
+        alias='POSTGRESQL_MAX_QUERIES',
+        ge=0,
+        description='Recycle connections after this many queries (0 to disable)',
+    )
+
     # PostgreSQL SSL settings
     postgresql_ssl_mode: Literal['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'] = Field(
         default='prefer',

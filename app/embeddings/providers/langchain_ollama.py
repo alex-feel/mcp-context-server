@@ -48,6 +48,10 @@ class OllamaEmbeddingProvider:
         Raises:
             ImportError: If langchain-ollama is not installed
         """
+        # Import httpx here to avoid unused import warnings
+        # when Ollama provider is not used
+        import httpx
+
         try:
             from langchain_ollama import OllamaEmbeddings
         except ImportError as e:
@@ -56,6 +60,23 @@ class OllamaEmbeddingProvider:
                 'Install with: uv sync --extra embeddings-ollama',
             ) from e
 
+        settings = get_settings()
+
+        # Configure httpx limits for connection pooling
+        # This prevents per-request connection creation overhead
+        httpx_limits = httpx.Limits(
+            max_connections=20,  # Total connections allowed
+            max_keepalive_connections=10,  # Connections kept alive for reuse
+        )
+
+        # Configure timeouts aligned with embedding settings
+        httpx_timeout = httpx.Timeout(
+            connect=10.0,  # Connection establishment timeout
+            read=settings.embedding.timeout_s,  # Read timeout (matches EMBEDDING_TIMEOUT_S)
+            write=30.0,  # Write timeout
+            pool=5.0,  # Pool acquisition timeout
+        )
+
         # OllamaEmbeddings has no built-in retry
         # Universal wrapper handles all retry logic
         # Note: truncate parameter not supported by langchain-ollama library.
@@ -63,10 +84,16 @@ class OllamaEmbeddingProvider:
         self._embeddings = OllamaEmbeddings(
             model=self._model,
             base_url=self._base_url,
+            # httpx client configuration for connection reuse
+            client_kwargs={
+                'limits': httpx_limits,
+                'timeout': httpx_timeout,
+            },
         )
         logger.info(
             f'Initialized Ollama embedding provider: {self._model} at {self._base_url}, '
-            f'num_ctx={self._num_ctx}',
+            f'num_ctx={self._num_ctx}, httpx_limits=(max={httpx_limits.max_connections}, '
+            f'keepalive={httpx_limits.max_keepalive_connections})',
         )
         if not self._truncate:
             logger.info(

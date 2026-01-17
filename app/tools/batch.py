@@ -5,6 +5,13 @@ This module contains tools for bulk context management:
 - store_context_batch: Store multiple entries in one operation
 - update_context_batch: Update multiple entries in one operation
 - delete_context_batch: Delete entries by various criteria
+
+Embedding-First Pattern:
+This module implements atomic embedding + data storage for batch operations.
+When embeddings are enabled:
+1. ALL embeddings are generated FIRST (outside any database transaction)
+2. If ANY embedding generation fails in atomic mode, NO data is saved
+3. If ALL embeddings succeed, ALL database operations occur in a SINGLE atomic transaction
 """
 
 import base64
@@ -55,14 +62,15 @@ async def store_context_batch(
     ] = True,
     ctx: Context | None = None,
 ) -> BulkStoreResponseDict:
-    """Store multiple context entries in a single batch operation.
+    """Store multiple context entries with atomic embedding + data storage.
+
+    EMBEDDING-FIRST PATTERN:
+    - atomic=True: ALL embeddings generated FIRST. If ANY fails, NO data is saved.
+                   ALL database operations occur in a SINGLE atomic transaction.
+    - atomic=False: Each entry processed independently with its own embedding-first pattern.
 
     Batch processing is significantly faster than individual store_context calls
     when storing many entries. Use for migrations, imports, or bulk operations.
-
-    Atomicity modes:
-    - atomic=True (default): All-or-nothing. If ANY entry fails, ALL are rolled back.
-    - atomic=False: Best-effort. Each entry processed independently; partial success possible.
 
     Size limits:
     - Maximum 100 entries per batch
@@ -74,15 +82,19 @@ async def store_context_batch(
         failed (int), results (list of index, success, context_id, error), message (str).
 
     Raises:
-        ToolError: If validation fails in atomic mode or batch operation fails.
+        ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
+    # Import types at function level to avoid linter removing unused module-level imports
+    from app.repositories.embedding_repository import ChunkEmbedding
+    from app.startup import get_chunking_service
+
     try:
         if ctx:
             await ctx.info(f'Batch storing {len(entries)} context entries (atomic={atomic})')
 
         repos = await ensure_repositories()
 
-        # Phase 1: Validate all entries before processing
+        # === PHASE 1: Validate all entries before processing ===
         validated_entries: list[dict[str, Any]] = []
         validation_errors: list[tuple[int, str]] = []
 
@@ -153,7 +165,7 @@ async def store_context_batch(
                 'images': images,
             })
 
-        # Phase 2: In atomic mode, fail fast if any validation errors
+        # In atomic mode, fail fast if any validation errors
         if atomic and validation_errors:
             first_error = validation_errors[0]
             raise ToolError(
@@ -161,7 +173,6 @@ async def store_context_batch(
                 f'First error at index {first_error[0]}: {first_error[1]}',
             )
 
-        # Phase 3: Process validated entries through repository
         # Build results list including validation errors
         results: list[BulkStoreResultItemDict] = []
 
@@ -174,115 +185,208 @@ async def store_context_batch(
                 error=error,
             ))
 
-        if validated_entries:
-            # Prepare entries for repository batch operation
-            repo_entries = [
-                {
-                    'thread_id': e['thread_id'],
-                    'source': e['source'],
-                    'text_content': e['text_content'],
-                    'metadata': e['metadata'],
-                    'content_type': e['content_type'],
-                }
-                for e in validated_entries
+        if not validated_entries:
+            # All entries failed validation
+            return BulkStoreResponseDict(
+                success=False,
+                total=len(entries),
+                succeeded=0,
+                failed=len(entries),
+                results=results,
+                message='All entries failed validation',
+            )
+
+        # === PHASE 2: Generate ALL Embeddings FIRST (Outside Transaction) ===
+        # CRITICAL: Embedding generation happens BEFORE any database modifications.
+        # If it fails in atomic mode, NO data is saved.
+        embedding_provider = get_embedding_provider()
+        chunking_service = get_chunking_service()
+
+        # Mapping: validated_entry_index -> list[ChunkEmbedding] | None
+        entry_embeddings: dict[int, list[ChunkEmbedding] | None] = {}
+        embedding_errors: list[tuple[int, str]] = []  # (original_idx, error_message)
+
+        if embedding_provider is not None:
+            for ve_idx, entry in enumerate(validated_entries):
+                original_idx = entry['index']
+                text_content = entry['text_content']
+
+                try:
+                    if chunking_service is not None and chunking_service.is_enabled:
+                        # Chunked embedding for long documents
+                        chunks = chunking_service.split_text(text_content)
+                        chunk_texts = [chunk.text for chunk in chunks]
+                        embeddings = await embedding_provider.embed_documents(chunk_texts)
+
+                        chunk_embeddings = [
+                            ChunkEmbedding(
+                                embedding=emb,
+                                start_index=chunk.start_index,
+                                end_index=chunk.end_index,
+                            )
+                            for emb, chunk in zip(embeddings, chunks, strict=True)
+                        ]
+                        entry_embeddings[ve_idx] = chunk_embeddings
+                    else:
+                        # Single embedding (chunking disabled)
+                        embedding = await embedding_provider.embed_query(text_content)
+                        entry_embeddings[ve_idx] = [
+                            ChunkEmbedding(
+                                embedding=embedding,
+                                start_index=0,
+                                end_index=len(text_content),
+                            ),
+                        ]
+                except Exception as emb_err:
+                    logger.error(f'Embedding generation failed at index {original_idx}: {emb_err}')
+                    if atomic:
+                        # CRITICAL: In atomic mode, embedding failure fails the ENTIRE batch
+                        # NO data has been saved yet, so we can safely return error
+                        raise ToolError(
+                            f'Embedding generation failed at index {original_idx}: '
+                            f'{format_exception_message(emb_err)}. No data was saved.',
+                        ) from emb_err
+                    # Non-atomic mode: record error, skip this entry
+                    embedding_errors.append((original_idx, f'Embedding generation failed: {str(emb_err)}'))
+                    entry_embeddings[ve_idx] = None  # Mark as failed
+        else:
+            # No embedding provider - all entries get None
+            for ve_idx in range(len(validated_entries)):
+                entry_embeddings[ve_idx] = None
+
+        # In non-atomic mode, add embedding errors to results
+        if not atomic:
+            for original_idx, error in embedding_errors:
+                results.append(BulkStoreResultItemDict(
+                    index=original_idx,
+                    success=False,
+                    context_id=None,
+                    error=error,
+                ))
+
+        # Filter out entries with embedding failures in non-atomic mode
+        if not atomic and embedding_errors:
+            failed_indices = {idx for idx, _ in embedding_errors}
+            validated_entries_filtered = [
+                (ve_idx, e) for ve_idx, e in enumerate(validated_entries)
+                if e['index'] not in failed_indices
             ]
+        else:
+            validated_entries_filtered = list(enumerate(validated_entries))
 
-            # Execute batch store
-            batch_results = await repos.context.store_contexts_batch(repo_entries)
+        if not validated_entries_filtered:
+            # All entries failed (validation or embedding)
+            results.sort(key=operator.itemgetter('index'))
+            return BulkStoreResponseDict(
+                success=False,
+                total=len(entries),
+                succeeded=0,
+                failed=len(entries),
+                results=results,
+                message='All entries failed validation or embedding generation',
+            )
 
-            # Process repository results and store tags/images
-            for repo_idx, ctx_id, repo_error in batch_results:
-                original_entry = validated_entries[repo_idx]
-                original_idx = original_entry['index']
+        # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
+        backend = repos.context.backend
 
-                if ctx_id is not None and repo_error is None:
+        if atomic:
+            # ATOMIC MODE: All entries in a single transaction
+            async with backend.begin_transaction() as txn:
+                for ve_idx, entry in validated_entries_filtered:
+                    original_idx = entry['index']
+
+                    # Store context entry with deduplication
+                    context_id, was_updated = await repos.context.store_with_deduplication(
+                        thread_id=entry['thread_id'],
+                        source=entry['source'],
+                        content_type=entry['content_type'],
+                        text_content=entry['text_content'],
+                        metadata=entry['metadata'],
+                        txn=txn,
+                    )
+
+                    if not context_id:
+                        raise ToolError(f'Failed to store context at index {original_idx}')
+
                     # Store tags if provided
-                    if original_entry.get('tags'):
-                        await repos.tags.store_tags(ctx_id, original_entry['tags'])
+                    if entry.get('tags'):
+                        await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
 
                     # Store images if provided
-                    if original_entry.get('images'):
-                        await repos.images.store_images(ctx_id, original_entry['images'])
+                    if entry.get('images'):
+                        await repos.images.store_images(context_id, entry['images'], txn=txn)
 
-                    # Generate embedding if embedding generation enabled
-                    # Behavior depends on atomic flag:
-                    # - atomic=True: Embedding failure fails the ENTIRE batch
-                    # - atomic=False: Embedding failure is reported per-item, context is stored
-                    batch_store_embedding_provider = get_embedding_provider()
-                    if batch_store_embedding_provider is not None:
-                        try:
-                            # Import lazily to avoid linter removing unused import at module level
-                            from app.startup import get_chunking_service
-
-                            chunking_service = get_chunking_service()
-                            if chunking_service is not None and chunking_service.is_enabled:
-                                # Chunked embedding generation for long documents
-                                # Import ChunkEmbedding for boundary-aware storage
-                                from app.repositories.embedding_repository import ChunkEmbedding
-
-                                text_content = original_entry['text_content']
-                                chunks = chunking_service.split_text(text_content)
-                                chunk_texts = [chunk.text for chunk in chunks]
-                                embeddings = await batch_store_embedding_provider.embed_documents(chunk_texts)
-
-                                # Create ChunkEmbedding objects with boundary information
-                                chunk_embeddings = [
-                                    ChunkEmbedding(
-                                        embedding=emb,
-                                        start_index=chunk.start_index,
-                                        end_index=chunk.end_index,
-                                    )
-                                    for emb, chunk in zip(embeddings, chunks, strict=True)
-                                ]
-
-                                await repos.embeddings.store_chunked(
-                                    context_id=ctx_id,
-                                    chunk_embeddings=chunk_embeddings,
-                                    model=settings.embedding.model,
-                                )
-                            else:
-                                # Single embedding (chunking disabled or not configured)
-                                text_content = original_entry['text_content']
-                                embedding = await batch_store_embedding_provider.embed_query(text_content)
-                                await repos.embeddings.store(
-                                    context_id=ctx_id,
-                                    embedding=embedding,
-                                    model=settings.embedding.model,
-                                    start_index=0,
-                                    end_index=len(text_content),
-                                )
-                        except Exception as emb_err:
-                            logger.error(f'Failed to generate embedding for context {ctx_id}: {emb_err}')
-                            if atomic:
-                                # Atomic mode: Embedding failure fails the entire batch
-                                # Note: Context was already stored - in production, this would need
-                                # transaction support to rollback. For now, raise error with partial info.
-                                raise ToolError(
-                                    f'Batch operation failed at index {original_idx}: embedding generation failed '
-                                    f'for context {ctx_id}: {emb_err}. '
-                                    f'Some entries may have been stored without embeddings.',
-                                ) from emb_err
-                            # Non-atomic mode: Report per-item error, context was stored but no embedding
-                            results.append(BulkStoreResultItemDict(
-                                index=original_idx,
-                                success=False,
-                                context_id=ctx_id,
-                                error=f'Stored but embedding failed: {str(emb_err)}',
-                            ))
-                            continue  # Skip the success result below
+                    # Store embeddings (guaranteed to exist if embedding is enabled)
+                    entry_chunk_embeddings = entry_embeddings.get(ve_idx)
+                    if entry_chunk_embeddings is not None:
+                        await repos.embeddings.store_chunked(
+                            context_id=context_id,
+                            chunk_embeddings=entry_chunk_embeddings,
+                            model=settings.embedding.model,
+                            txn=txn,
+                        )
 
                     results.append(BulkStoreResultItemDict(
                         index=original_idx,
                         success=True,
-                        context_id=ctx_id,
+                        context_id=context_id,
                         error=None,
                     ))
-                else:
+
+                # COMMIT happens here - all or nothing
+        else:
+            # NON-ATOMIC MODE: Each entry in its own transaction
+            for ve_idx, entry in validated_entries_filtered:
+                original_idx = entry['index']
+
+                try:
+                    async with backend.begin_transaction() as txn:
+                        # Store context entry with deduplication
+                        context_id, was_updated = await repos.context.store_with_deduplication(
+                            thread_id=entry['thread_id'],
+                            source=entry['source'],
+                            content_type=entry['content_type'],
+                            text_content=entry['text_content'],
+                            metadata=entry['metadata'],
+                            txn=txn,
+                        )
+
+                        if not context_id:
+                            raise ToolError(f'Failed to store context at index {original_idx}')
+
+                        # Store tags if provided
+                        if entry.get('tags'):
+                            await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
+
+                        # Store images if provided
+                        if entry.get('images'):
+                            await repos.images.store_images(context_id, entry['images'], txn=txn)
+
+                        # Store embeddings
+                        entry_chunk_embeddings = entry_embeddings.get(ve_idx)
+                        if entry_chunk_embeddings is not None:
+                            await repos.embeddings.store_chunked(
+                                context_id=context_id,
+                                chunk_embeddings=entry_chunk_embeddings,
+                                model=settings.embedding.model,
+                                txn=txn,
+                            )
+
+                        # COMMIT happens here for this entry
+
+                    results.append(BulkStoreResultItemDict(
+                        index=original_idx,
+                        success=True,
+                        context_id=context_id,
+                        error=None,
+                    ))
+                except Exception as e:
+                    logger.error(f'Failed to store entry at index {original_idx}: {e}')
                     results.append(BulkStoreResultItemDict(
                         index=original_idx,
                         success=False,
                         context_id=None,
-                        error=repo_error or 'Unknown error',
+                        error=str(e),
                     ))
 
         # Sort results by index for consistent ordering
@@ -300,7 +404,8 @@ async def store_context_batch(
             succeeded=succeeded,
             failed=failed,
             results=results,
-            message=f'Stored {succeeded}/{len(entries)} entries successfully',
+            message=f'Stored {succeeded}/{len(entries)} entries successfully'
+            + (' (embeddings generated)' if embedding_provider is not None else ''),
         )
 
     except ToolError:
@@ -330,7 +435,12 @@ async def update_context_batch(
     ] = True,
     ctx: Context | None = None,
 ) -> BulkUpdateResponseDict:
-    """Update multiple context entries in a single batch operation.
+    """Update multiple context entries with atomic embedding + data storage.
+
+    EMBEDDING-FIRST PATTERN:
+    - atomic=True: ALL embeddings generated FIRST for text changes. If ANY fails, NO data is modified.
+                   ALL database operations occur in a SINGLE atomic transaction.
+    - atomic=False: Each update processed independently with its own embedding-first pattern.
 
     Similar semantics to update_context but for multiple entries:
     - Each update is identified by context_id
@@ -338,25 +448,25 @@ async def update_context_batch(
     - metadata vs metadata_patch are mutually exclusive per entry
     - Tags and images use replacement semantics
 
-    Atomicity modes:
-    - atomic=True (default): All-or-nothing transaction
-    - atomic=False: Best-effort with per-item error reporting
-
     Returns:
         BulkUpdateResponseDict with success (bool), total (int), succeeded (int),
         failed (int), results (list of index, context_id, success, updated_fields, error),
         message (str).
 
     Raises:
-        ToolError: If validation fails in atomic mode or batch operation fails.
+        ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
+    # Import types at function level to avoid linter removing unused module-level imports
+    from app.repositories.embedding_repository import ChunkEmbedding
+    from app.startup import get_chunking_service
+
     try:
         if ctx:
             await ctx.info(f'Batch updating {len(updates)} context entries (atomic={atomic})')
 
         repos = await ensure_repositories()
 
-        # Phase 1: Validate all updates before processing
+        # === PHASE 1: Validate all updates before processing ===
         validated_updates: list[dict[str, Any]] = []
         validation_errors: list[tuple[int, int, str]] = []  # (index, context_id, error)
 
@@ -442,7 +552,7 @@ async def update_context_batch(
                 'images': images,
             })
 
-        # Phase 2: In atomic mode, fail fast if any validation errors
+        # In atomic mode, fail fast if any validation errors
         if atomic and validation_errors:
             first_error = validation_errors[0]
             raise ToolError(
@@ -450,7 +560,7 @@ async def update_context_batch(
                 f'First error at context_id {first_error[1]}: {first_error[2]}',
             )
 
-        # Phase 3: Process validated updates
+        # Build results list including validation errors
         results: list[BulkUpdateResultItemDict] = []
 
         # Add validation errors to results
@@ -463,168 +573,322 @@ async def update_context_batch(
                 error=error,
             ))
 
-        # Process each validated update
+        if not validated_updates:
+            # All updates failed validation
+            return BulkUpdateResponseDict(
+                success=False,
+                total=len(updates),
+                succeeded=0,
+                failed=len(updates),
+                results=results,
+                message='All updates failed validation',
+            )
+
+        # === PHASE 1.5: Check all entries exist (fail fast in atomic mode) ===
+        existence_errors: list[tuple[int, int, str]] = []  # (index, context_id, error)
+
         for update in validated_updates:
             original_idx = update['index']
             context_id = update['context_id']
-            updated_fields: list[str] = []
 
-            try:
-                # Check if entry exists
-                exists = await repos.context.check_entry_exists(context_id)
-                if not exists:
-                    results.append(BulkUpdateResultItemDict(
-                        index=original_idx,
-                        context_id=context_id,
-                        success=False,
-                        updated_fields=None,
-                        error=f'Context entry {context_id} not found',
-                    ))
-                    continue
+            exists = await repos.context.check_entry_exists(context_id)
+            if not exists:
+                if atomic:
+                    raise ToolError(f'Context entry {context_id} not found at index {original_idx}')
+                existence_errors.append((original_idx, context_id, f'Context entry {context_id} not found'))
 
-                # Update text and/or metadata (full replacement)
-                if update.get('text') is not None or update.get('metadata') is not None:
-                    metadata_str = None
-                    if update.get('metadata') is not None:
-                        metadata_str = json.dumps(update['metadata'], ensure_ascii=False)
-
-                    success, fields = await repos.context.update_context_entry(
-                        context_id=context_id,
-                        text_content=update.get('text'),
-                        metadata=metadata_str,
-                    )
-                    if success:
-                        updated_fields.extend(fields)
-
-                # Apply metadata patch if provided
-                if update.get('metadata_patch') is not None:
-                    success, fields = await repos.context.patch_metadata(
-                        context_id=context_id,
-                        patch=update['metadata_patch'],
-                    )
-                    if success:
-                        updated_fields.extend(fields)
-
-                # Replace tags if provided
-                if update.get('tags') is not None:
-                    await repos.tags.replace_tags_for_context(context_id, update['tags'])
-                    updated_fields.append('tags')
-
-                # Replace images if provided
-                if update.get('images') is not None:
-                    images = update['images']
-                    if len(images) == 0:
-                        await repos.images.replace_images_for_context(context_id, [])
-                        await repos.context.update_content_type(context_id, 'text')
-                        updated_fields.extend(['images', 'content_type'])
-                    else:
-                        await repos.images.replace_images_for_context(context_id, images)
-                        await repos.context.update_content_type(context_id, 'multimodal')
-                        updated_fields.extend(['images', 'content_type'])
-
-                # Regenerate embedding if text changed and embedding generation enabled
-                # Behavior depends on atomic flag (same as store_context_batch)
-                batch_update_embedding_provider = get_embedding_provider()
-                if update.get('text') is not None and batch_update_embedding_provider is not None:
-                    try:
-                        # Import lazily to avoid linter removing unused import at module level
-                        from app.startup import get_chunking_service
-
-                        chunking_service = get_chunking_service()
-                        if chunking_service is not None and chunking_service.is_enabled:
-                            # Chunked embedding regeneration for long documents
-                            # Import ChunkEmbedding for boundary-aware storage
-                            from app.repositories.embedding_repository import ChunkEmbedding
-
-                            # Delete existing chunks first
-                            await repos.embeddings.delete_all_chunks(context_id)
-                            # Generate and store new chunks with boundary info
-                            text_content = update['text']
-                            chunks = chunking_service.split_text(text_content)
-                            chunk_texts = [chunk.text for chunk in chunks]
-                            embeddings = await batch_update_embedding_provider.embed_documents(chunk_texts)
-
-                            # Create ChunkEmbedding objects with boundary information
-                            chunk_embeddings = [
-                                ChunkEmbedding(
-                                    embedding=emb,
-                                    start_index=chunk.start_index,
-                                    end_index=chunk.end_index,
-                                )
-                                for emb, chunk in zip(embeddings, chunks, strict=True)
-                            ]
-
-                            await repos.embeddings.store_chunked(
-                                context_id=context_id,
-                                chunk_embeddings=chunk_embeddings,
-                                model=settings.embedding.model,
-                            )
-                        else:
-                            # Single embedding (chunking disabled or not configured)
-                            # Import ChunkEmbedding for boundary-aware storage
-                            from app.repositories.embedding_repository import ChunkEmbedding
-
-                            text_content = update['text']
-                            new_embedding = await batch_update_embedding_provider.embed_query(text_content)
-                            embedding_exists = await repos.embeddings.exists(context_id)
-
-                            # Create single ChunkEmbedding with full document boundaries
-                            single_chunk = ChunkEmbedding(
-                                embedding=new_embedding,
-                                start_index=0,
-                                end_index=len(text_content),
-                            )
-
-                            if embedding_exists:
-                                await repos.embeddings.update(
-                                    context_id=context_id,
-                                    chunk_embeddings=[single_chunk],
-                                    model=settings.embedding.model,
-                                )
-                            else:
-                                await repos.embeddings.store(
-                                    context_id=context_id,
-                                    embedding=new_embedding,
-                                    model=settings.embedding.model,
-                                    start_index=0,
-                                    end_index=len(text_content),
-                                )
-                        updated_fields.append('embedding')
-                    except Exception as emb_err:
-                        logger.error(f'Failed to update embedding for context {context_id}: {emb_err}')
-                        if atomic:
-                            # Atomic mode: Embedding failure fails the entire batch
-                            raise ToolError(
-                                f'Batch update failed at index {original_idx}: embedding regeneration failed '
-                                f'for context {context_id}: {emb_err}. '
-                                f'Some entries may have been updated without embedding changes.',
-                            ) from emb_err
-                        # Non-atomic mode: Report per-item error
-                        results.append(BulkUpdateResultItemDict(
-                            index=original_idx,
-                            context_id=context_id,
-                            success=False,
-                            updated_fields=updated_fields,  # Partial update succeeded
-                            error=f'Updated but embedding failed: {str(emb_err)}',
-                        ))
-                        continue  # Skip the success result below
-
-                results.append(BulkUpdateResultItemDict(
-                    index=original_idx,
-                    context_id=context_id,
-                    success=True,
-                    updated_fields=updated_fields,
-                    error=None,
-                ))
-
-            except Exception as e:
+        # In non-atomic mode, add existence errors to results
+        if not atomic:
+            for original_idx, context_id, error in existence_errors:
                 results.append(BulkUpdateResultItemDict(
                     index=original_idx,
                     context_id=context_id,
                     success=False,
                     updated_fields=None,
-                    error=str(e),
+                    error=error,
                 ))
+
+        # Filter out non-existent entries in non-atomic mode
+        if not atomic and existence_errors:
+            missing_ctx_ids = {ctx_id for _, ctx_id, _ in existence_errors}
+            validated_updates_filtered = [
+                (vu_idx, u) for vu_idx, u in enumerate(validated_updates)
+                if u['context_id'] not in missing_ctx_ids
+            ]
+        else:
+            validated_updates_filtered = list(enumerate(validated_updates))
+
+        if not validated_updates_filtered:
+            # All entries failed (validation or existence)
+            results.sort(key=operator.itemgetter('index'))
+            return BulkUpdateResponseDict(
+                success=False,
+                total=len(updates),
+                succeeded=0,
+                failed=len(updates),
+                results=results,
+                message='All updates failed validation or entry not found',
+            )
+
+        # === PHASE 2: Generate ALL Embeddings FIRST (Outside Transaction) ===
+        # CRITICAL: Embedding generation happens BEFORE any database modifications.
+        # If it fails in atomic mode, NO data is modified - original data is preserved.
+        embedding_provider = get_embedding_provider()
+        chunking_service = get_chunking_service()
+
+        # Mapping: validated_update_index -> list[ChunkEmbedding] | None
+        update_embeddings: dict[int, list[ChunkEmbedding] | None] = {}
+        embedding_errors: list[tuple[int, int, str]] = []  # (original_idx, context_id, error_message)
+
+        if embedding_provider is not None:
+            for vu_idx, update in validated_updates_filtered:
+                original_idx = update['index']
+                context_id = update['context_id']
+                text_content = update.get('text')
+
+                # Only generate embedding if text is being changed
+                if text_content is None:
+                    update_embeddings[vu_idx] = None  # No text change, no embedding needed
+                    continue
+
+                try:
+                    if chunking_service is not None and chunking_service.is_enabled:
+                        # Chunked embedding for long documents
+                        chunks = chunking_service.split_text(text_content)
+                        chunk_texts = [chunk.text for chunk in chunks]
+                        embeddings = await embedding_provider.embed_documents(chunk_texts)
+
+                        chunk_embeddings = [
+                            ChunkEmbedding(
+                                embedding=emb,
+                                start_index=chunk.start_index,
+                                end_index=chunk.end_index,
+                            )
+                            for emb, chunk in zip(embeddings, chunks, strict=True)
+                        ]
+                        update_embeddings[vu_idx] = chunk_embeddings
+                    else:
+                        # Single embedding (chunking disabled)
+                        embedding = await embedding_provider.embed_query(text_content)
+                        update_embeddings[vu_idx] = [
+                            ChunkEmbedding(
+                                embedding=embedding,
+                                start_index=0,
+                                end_index=len(text_content),
+                            ),
+                        ]
+                except Exception as emb_err:
+                    logger.error(f'Embedding generation failed for context {context_id} at index {original_idx}: {emb_err}')
+                    if atomic:
+                        # CRITICAL: In atomic mode, embedding failure fails the ENTIRE batch
+                        # NO data has been modified yet, so we can safely return error
+                        raise ToolError(
+                            f'Embedding generation failed for context {context_id} at index {original_idx}: '
+                            f'{format_exception_message(emb_err)}. No data was modified.',
+                        ) from emb_err
+                    # Non-atomic mode: record error, skip this entry
+                    embedding_errors.append((original_idx, context_id, f'Embedding generation failed: {str(emb_err)}'))
+                    update_embeddings[vu_idx] = None  # Mark as failed
+        else:
+            # No embedding provider - all entries get None
+            for vu_idx, _ in validated_updates_filtered:
+                update_embeddings[vu_idx] = None
+
+        # In non-atomic mode, add embedding errors to results
+        if not atomic:
+            for original_idx, context_id, error in embedding_errors:
+                results.append(BulkUpdateResultItemDict(
+                    index=original_idx,
+                    context_id=context_id,
+                    success=False,
+                    updated_fields=None,
+                    error=error,
+                ))
+
+        # Filter out entries with embedding failures in non-atomic mode
+        if not atomic and embedding_errors:
+            failed_ctx_ids = {ctx_id for _, ctx_id, _ in embedding_errors}
+            validated_updates_final = [
+                (vu_idx, u) for vu_idx, u in validated_updates_filtered
+                if u['context_id'] not in failed_ctx_ids
+            ]
+        else:
+            validated_updates_final = validated_updates_filtered
+
+        if not validated_updates_final:
+            # All entries failed (validation, existence, or embedding)
+            results.sort(key=operator.itemgetter('index'))
+            return BulkUpdateResponseDict(
+                success=False,
+                total=len(updates),
+                succeeded=0,
+                failed=len(updates),
+                results=results,
+                message='All updates failed validation, entry not found, or embedding generation',
+            )
+
+        # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
+        backend = repos.context.backend
+
+        if atomic:
+            # ATOMIC MODE: All updates in a single transaction
+            async with backend.begin_transaction() as txn:
+                for vu_idx, update in validated_updates_final:
+                    original_idx = update['index']
+                    context_id = update['context_id']
+                    updated_fields: list[str] = []
+
+                    # Update text and/or metadata (full replacement)
+                    if update.get('text') is not None or update.get('metadata') is not None:
+                        metadata_str = None
+                        if update.get('metadata') is not None:
+                            metadata_str = json.dumps(update['metadata'], ensure_ascii=False)
+
+                        success, fields = await repos.context.update_context_entry(
+                            context_id=context_id,
+                            text_content=update.get('text'),
+                            metadata=metadata_str,
+                            txn=txn,
+                        )
+                        if success:
+                            updated_fields.extend(fields)
+
+                    # Apply metadata patch if provided
+                    if update.get('metadata_patch') is not None:
+                        success, fields = await repos.context.patch_metadata(
+                            context_id=context_id,
+                            patch=update['metadata_patch'],
+                            txn=txn,
+                        )
+                        if success:
+                            updated_fields.extend(fields)
+
+                    # Replace tags if provided
+                    if update.get('tags') is not None:
+                        await repos.tags.replace_tags_for_context(context_id, update['tags'], txn=txn)
+                        updated_fields.append('tags')
+
+                    # Replace images if provided
+                    if update.get('images') is not None:
+                        update_images = update['images']
+                        if len(update_images) == 0:
+                            await repos.images.replace_images_for_context(context_id, [], txn=txn)
+                            await repos.context.update_content_type(context_id, 'text', txn=txn)
+                            updated_fields.extend(['images', 'content_type'])
+                        else:
+                            await repos.images.replace_images_for_context(context_id, update_images, txn=txn)
+                            await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
+                            updated_fields.extend(['images', 'content_type'])
+
+                    # Store embeddings (only if text was changed and embedding exists)
+                    entry_chunk_embeddings = update_embeddings.get(vu_idx)
+                    if entry_chunk_embeddings is not None:
+                        # Delete existing chunks first (within the same transaction)
+                        await repos.embeddings.delete_all_chunks(context_id, txn=txn)
+
+                        # Store new embeddings
+                        await repos.embeddings.store_chunked(
+                            context_id=context_id,
+                            chunk_embeddings=entry_chunk_embeddings,
+                            model=settings.embedding.model,
+                            txn=txn,
+                        )
+                        updated_fields.append('embedding')
+
+                    results.append(BulkUpdateResultItemDict(
+                        index=original_idx,
+                        context_id=context_id,
+                        success=True,
+                        updated_fields=updated_fields,
+                        error=None,
+                    ))
+
+                # COMMIT happens here - all or nothing
+        else:
+            # NON-ATOMIC MODE: Each update in its own transaction
+            for vu_idx, update in validated_updates_final:
+                original_idx = update['index']
+                context_id = update['context_id']
+
+                try:
+                    updated_fields_list: list[str] = []
+
+                    async with backend.begin_transaction() as txn:
+                        # Update text and/or metadata (full replacement)
+                        if update.get('text') is not None or update.get('metadata') is not None:
+                            metadata_str = None
+                            if update.get('metadata') is not None:
+                                metadata_str = json.dumps(update['metadata'], ensure_ascii=False)
+
+                            success, fields = await repos.context.update_context_entry(
+                                context_id=context_id,
+                                text_content=update.get('text'),
+                                metadata=metadata_str,
+                                txn=txn,
+                            )
+                            if success:
+                                updated_fields_list.extend(fields)
+
+                        # Apply metadata patch if provided
+                        if update.get('metadata_patch') is not None:
+                            success, fields = await repos.context.patch_metadata(
+                                context_id=context_id,
+                                patch=update['metadata_patch'],
+                                txn=txn,
+                            )
+                            if success:
+                                updated_fields_list.extend(fields)
+
+                        # Replace tags if provided
+                        if update.get('tags') is not None:
+                            await repos.tags.replace_tags_for_context(context_id, update['tags'], txn=txn)
+                            updated_fields_list.append('tags')
+
+                        # Replace images if provided
+                        if update.get('images') is not None:
+                            update_images = update['images']
+                            if len(update_images) == 0:
+                                await repos.images.replace_images_for_context(context_id, [], txn=txn)
+                                await repos.context.update_content_type(context_id, 'text', txn=txn)
+                                updated_fields_list.extend(['images', 'content_type'])
+                            else:
+                                await repos.images.replace_images_for_context(context_id, update_images, txn=txn)
+                                await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
+                                updated_fields_list.extend(['images', 'content_type'])
+
+                        # Store embeddings
+                        entry_chunk_embeddings = update_embeddings.get(vu_idx)
+                        if entry_chunk_embeddings is not None:
+                            # Delete existing chunks first (within the same transaction)
+                            await repos.embeddings.delete_all_chunks(context_id, txn=txn)
+
+                            # Store new embeddings
+                            await repos.embeddings.store_chunked(
+                                context_id=context_id,
+                                chunk_embeddings=entry_chunk_embeddings,
+                                model=settings.embedding.model,
+                                txn=txn,
+                            )
+                            updated_fields_list.append('embedding')
+
+                        # COMMIT happens here for this update
+
+                    results.append(BulkUpdateResultItemDict(
+                        index=original_idx,
+                        context_id=context_id,
+                        success=True,
+                        updated_fields=updated_fields_list,
+                        error=None,
+                    ))
+                except Exception as e:
+                    logger.error(f'Failed to update entry at index {original_idx}: {e}')
+                    results.append(BulkUpdateResultItemDict(
+                        index=original_idx,
+                        context_id=context_id,
+                        success=False,
+                        updated_fields=None,
+                        error=str(e),
+                    ))
 
         # Sort results by index for consistent ordering
         results.sort(key=operator.itemgetter('index'))
@@ -641,7 +905,8 @@ async def update_context_batch(
             succeeded=succeeded,
             failed=failed,
             results=results,
-            message=f'Updated {succeeded}/{len(updates)} entries successfully',
+            message=f'Updated {succeeded}/{len(updates)} entries successfully'
+            + (' (embeddings regenerated)' if embedding_provider is not None else ''),
         )
 
     except ToolError:

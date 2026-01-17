@@ -22,6 +22,8 @@ from app.types import ImageDict
 if TYPE_CHECKING:
     import asyncpg
 
+    from app.backends.base import TransactionContext
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,14 +99,20 @@ class ImageRepository(BaseRepository):
         self,
         context_id: int,
         images: list[dict[str, Any]],
+        txn: TransactionContext | None = None,
     ) -> None:
         """Store multiple image attachments for a context entry.
 
         Args:
             context_id: ID of the context entry
             images: List of image dictionaries containing data, mime_type, and optional metadata
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _store_images_sqlite(conn: sqlite3.Connection) -> None:
                 cursor = conn.cursor()
@@ -141,7 +149,10 @@ class ImageRepository(BaseRepository):
 
                 logger.debug(f'Stored {stored_count} images for context {context_id} (SQLite)')
 
-            await self.backend.execute_write(_store_images_sqlite)
+            if txn:
+                _store_images_sqlite(cast(sqlite3.Connection, txn.connection))
+            else:
+                await self.backend.execute_write(_store_images_sqlite)
         else:  # postgresql
 
             async def _store_images_postgresql(conn: asyncpg.Connection) -> None:
@@ -176,7 +187,10 @@ class ImageRepository(BaseRepository):
 
                 logger.debug(f'Stored {stored_count} images for context {context_id} (PostgreSQL)')
 
-            await self.backend.execute_write(cast(Any, _store_images_postgresql))
+            if txn:
+                await _store_images_postgresql(cast('asyncpg.Connection', txn.connection))
+            else:
+                await self.backend.execute_write(cast(Any, _store_images_postgresql))
 
     async def get_images_for_context(
         self,
@@ -419,6 +433,7 @@ class ImageRepository(BaseRepository):
         self,
         context_id: int,
         images: list[dict[str, Any]],
+        txn: TransactionContext | None = None,
     ) -> None:
         """Replace all images for a context entry.
 
@@ -429,8 +444,13 @@ class ImageRepository(BaseRepository):
         Args:
             context_id: ID of the context entry
             images: List of image dictionaries containing data, mime_type, and optional metadata
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _replace_images_sqlite(conn: sqlite3.Connection) -> None:
                 cursor = conn.cursor()
@@ -466,7 +486,10 @@ class ImageRepository(BaseRepository):
                         ),
                     )
 
-            await self.backend.execute_write(_replace_images_sqlite)
+            if txn:
+                _replace_images_sqlite(cast(sqlite3.Connection, txn.connection))
+            else:
+                await self.backend.execute_write(_replace_images_sqlite)
         else:  # postgresql
 
             async def _replace_images_postgresql(conn: asyncpg.Connection) -> None:
@@ -499,4 +522,7 @@ class ImageRepository(BaseRepository):
                         idx,
                     )
 
-            await self.backend.execute_write(cast(Any, _replace_images_postgresql))
+            if txn:
+                await _replace_images_postgresql(cast('asyncpg.Connection', txn.connection))
+            else:
+                await self.backend.execute_write(cast(Any, _replace_images_postgresql))
