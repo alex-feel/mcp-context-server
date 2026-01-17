@@ -80,6 +80,93 @@ export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
 
 **Note:** PostgreSQL settings are only needed when using PostgreSQL. The server uses SQLite by default if `STORAGE_BACKEND` is not set.
 
+## External Connection Pooler Compatibility
+
+When using external PostgreSQL connection poolers (PgBouncer in transaction mode, Pgpool-II, AWS RDS Proxy, etc.), you may encounter connection errors caused by asyncpg's prepared statement caching.
+
+### The Problem
+
+asyncpg (the PostgreSQL driver used by this server) caches prepared statements on the backend connection. When an external pooler reassigns backend connections between requests:
+
+1. The client sends a query referencing a cached prepared statement
+2. The backend connection has been reassigned - the statement does not exist on this connection
+3. Result: `"connection was closed in the middle of operation"` or similar errors
+
+### The Solution
+
+Disable prepared statement caching by setting:
+
+```bash
+POSTGRESQL_STATEMENT_CACHE_SIZE=0
+```
+
+### Configuration Reference
+
+| Environment Variable                         | Default | Description                                                                                     |
+|----------------------------------------------|---------|-------------------------------------------------------------------------------------------------|
+| `POSTGRESQL_STATEMENT_CACHE_SIZE`            | 100     | Prepared statement cache size. Set to `0` to disable caching for external pooler compatibility. |
+| `POSTGRESQL_MAX_CACHED_STATEMENT_LIFETIME_S` | 300     | Maximum lifetime of cached statements in seconds. Has no effect when cache size is 0.           |
+| `POSTGRESQL_MAX_CACHEABLE_STATEMENT_SIZE`    | 15360   | Maximum statement size to cache in bytes (15KB). Has no effect when cache size is 0.            |
+
+### Pooler-Specific Notes
+
+**Works without modification (cache enabled):**
+- Direct PostgreSQL connection (no pooler)
+- PgBouncer in **session mode** (1:1 client-to-backend mapping)
+- Supabase **Session Pooler** (maintains session state)
+
+**Requires `POSTGRESQL_STATEMENT_CACHE_SIZE=0`:**
+- PgBouncer in **transaction mode** (reassigns connections between transactions)
+- Pgpool-II (all modes - reassigns connections across clients)
+- AWS RDS Proxy (transaction-level pooling)
+- Supabase **Transaction Pooler** (serverless mode)
+- Any pooler that reassigns backend connections
+
+### Example Configuration
+
+For environments using external connection poolers:
+
+```json
+{
+  "mcpServers": {
+    "context-server": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--python", "3.12", "mcp-context-server"],
+      "env": {
+        "STORAGE_BACKEND": "postgresql",
+        "POSTGRESQL_HOST": "your-pooler-host",
+        "POSTGRESQL_USER": "postgres",
+        "POSTGRESQL_PASSWORD": "your-password",
+        "POSTGRESQL_DATABASE": "mcp_context",
+        "POSTGRESQL_STATEMENT_CACHE_SIZE": "0"
+      }
+    }
+  }
+}
+```
+
+### Diagnostic Steps
+
+If you encounter connection errors with PostgreSQL:
+
+1. **Check the error message**: Look for `"connection was closed in the middle of operation"`, `"prepared statement does not exist"`, or similar
+2. **Identify your pooler type**: Determine whether you're using an external pooler and its mode
+3. **Apply the fix**: Set `POSTGRESQL_STATEMENT_CACHE_SIZE=0` in your environment
+4. **Verify**: Restart the server and confirm operations complete successfully
+
+### Additional Considerations
+
+**Pgpool-II users**: Some Pgpool-II versions prior to 4.2.3 have known issues with asyncpg's extended query protocol. If disabling statement caching does not resolve issues, consider upgrading Pgpool-II.
+
+**Performance impact**: Disabling statement caching has minimal performance impact for this server. Embedding generation (which takes 800ms+) dominates latency; the overhead of re-preparing statements is negligible.
+
+### External References
+
+- [asyncpg FAQ: Using asyncpg with external poolers](https://magicstack.github.io/asyncpg/current/faq.html)
+- [asyncpg Issue #309: Connection closed during operation](https://github.com/MagicStack/asyncpg/issues/309)
+- [asyncpg Issue #573: Pgpool-II compatibility](https://github.com/MagicStack/asyncpg/issues/573)
+
 ## Using with Supabase
 
 Supabase is fully compatible with the PostgreSQL backend using direct database connection. No special configuration needed - Supabase IS PostgreSQL.

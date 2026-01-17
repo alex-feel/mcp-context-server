@@ -408,9 +408,12 @@ class PostgreSQLBackend:
                 'max_size': settings.storage.postgresql_pool_max,
                 'command_timeout': settings.storage.postgresql_command_timeout_s,
                 'timeout': settings.storage.postgresql_pool_timeout_s,
-                # Enable prepared statement cache
-                'max_cached_statement_lifetime': 300,
-                'max_cacheable_statement_size': 1024 * 15,
+                # Prepared statement cache configuration
+                # Set POSTGRESQL_STATEMENT_CACHE_SIZE=0 for external pooler compatibility
+                # (PgBouncer transaction mode, Pgpool-II, AWS RDS Proxy, etc.)
+                'statement_cache_size': settings.storage.postgresql_statement_cache_size,
+                'max_cached_statement_lifetime': settings.storage.postgresql_max_cached_statement_lifetime_s,
+                'max_cacheable_statement_size': settings.storage.postgresql_max_cacheable_statement_size,
                 # Connection lifecycle callbacks
                 'init': _init_connection,  # Type registration (existing)
                 'setup': _setup_connection,  # Session config before acquire
