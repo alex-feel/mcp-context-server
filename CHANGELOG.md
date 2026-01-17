@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/alex-feel/mcp-context-server/compare/v1.0.0...v1.1.0) (2026-01-17)
+
+
+### Features
+
+* implement embedding-first transactional integrity ([c9e4c12](https://github.com/alex-feel/mcp-context-server/commit/c9e4c12957018510732a7bf7815c2f98ebe9e88b))
+
 ## [1.0.0](https://github.com/alex-feel/mcp-context-server/compare/v0.17.0...v1.0.0) (2026-01-16)
 
 
