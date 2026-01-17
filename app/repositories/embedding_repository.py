@@ -22,6 +22,8 @@ from app.repositories.base import BaseRepository
 if TYPE_CHECKING:
     import asyncpg
 
+    from app.backends.base import TransactionContext
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,6 +123,7 @@ class EmbeddingRepository(BaseRepository):
         context_id: int,
         chunk_embeddings: list[ChunkEmbedding],
         model: str,
+        txn: TransactionContext | None = None,
     ) -> None:
         """Store multiple chunk embeddings with boundaries for a context entry atomically.
 
@@ -132,6 +135,9 @@ class EmbeddingRepository(BaseRepository):
             context_id: ID of the context entry
             chunk_embeddings: List of ChunkEmbedding objects (embedding + boundaries)
             model: Model identifier (from settings.embedding.model)
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
 
         Raises:
             ValueError: If chunk_embeddings list is empty
@@ -140,8 +146,9 @@ class EmbeddingRepository(BaseRepository):
             raise ValueError('chunk_embeddings list cannot be empty')
 
         chunk_count = len(chunk_embeddings)
+        backend_type = txn.backend_type if txn else self.backend.backend_type
 
-        if self.backend.backend_type == 'sqlite':
+        if backend_type == 'sqlite':
 
             def _store_chunked_sqlite(conn: sqlite3.Connection) -> None:
                 try:
@@ -181,7 +188,10 @@ class EmbeddingRepository(BaseRepository):
                     (context_id, model, len(chunk_embeddings[0].embedding), chunk_count),
                 )
 
-            await self.backend.execute_write(_store_chunked_sqlite)
+            if txn:
+                _store_chunked_sqlite(cast(sqlite3.Connection, txn.connection))
+            else:
+                await self.backend.execute_write(_store_chunked_sqlite)
             logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (SQLite)')
 
         else:  # postgresql
@@ -203,10 +213,17 @@ class EmbeddingRepository(BaseRepository):
                     context_id, model, len(chunk_embeddings[0].embedding), chunk_count,
                 )
 
-            await self.backend.execute_write(cast(Any, _store_chunked_postgresql))
+            if txn:
+                await _store_chunked_postgresql(cast('asyncpg.Connection', txn.connection))
+            else:
+                await self.backend.execute_write(cast(Any, _store_chunked_postgresql))
             logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (PostgreSQL)')
 
-    async def delete_all_chunks(self, context_id: int) -> int:
+    async def delete_all_chunks(
+        self,
+        context_id: int,
+        txn: TransactionContext | None = None,
+    ) -> int:
         """Delete all chunk embeddings for a context entry.
 
         Used before re-embedding when content is updated.
@@ -214,11 +231,16 @@ class EmbeddingRepository(BaseRepository):
 
         Args:
             context_id: ID of the context entry
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
 
         Returns:
             Number of chunk embeddings deleted
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _delete_all_chunks_sqlite(conn: sqlite3.Connection) -> int:
                 # Step 1: Get vec_rowids from embedding_chunks
@@ -252,7 +274,10 @@ class EmbeddingRepository(BaseRepository):
 
                 return len(vec_rowids)
 
-            deleted_count = await self.backend.execute_write(_delete_all_chunks_sqlite)
+            if txn:
+                deleted_count = _delete_all_chunks_sqlite(cast(sqlite3.Connection, txn.connection))
+            else:
+                deleted_count = await self.backend.execute_write(_delete_all_chunks_sqlite)
             logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (SQLite)')
             return deleted_count
 
@@ -282,7 +307,10 @@ class EmbeddingRepository(BaseRepository):
 
             return count
 
-        deleted_count = await self.backend.execute_write(cast(Any, _delete_all_chunks_postgresql))
+        if txn:
+            deleted_count = await _delete_all_chunks_postgresql(cast('asyncpg.Connection', txn.connection))
+        else:
+            deleted_count = await self.backend.execute_write(cast(Any, _delete_all_chunks_postgresql))
         logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (PostgreSQL)')
         return deleted_count
 

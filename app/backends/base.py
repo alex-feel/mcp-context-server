@@ -21,6 +21,48 @@ T = TypeVar('T')
 
 
 @runtime_checkable
+class TransactionContext(Protocol):
+    """Protocol for transaction context providing connection access.
+
+    TransactionContext is yielded by begin_transaction() and provides:
+    - Access to the underlying database connection
+    - Backend type identification for SQL generation
+
+    The transaction lifecycle (begin, commit, rollback) is managed by
+    the begin_transaction() context manager, not by TransactionContext itself.
+
+    Example Usage:
+        async with backend.begin_transaction() as txn:
+            # For PostgreSQL: txn.connection is asyncpg.Connection
+            # For SQLite: txn.connection is sqlite3.Connection
+
+            if txn.backend_type == 'postgresql':
+                await txn.connection.execute('INSERT INTO ...')
+            else:
+                txn.connection.execute('INSERT INTO ...')
+    """
+
+    @property
+    def connection(self) -> object:
+        """Get the underlying database connection.
+
+        Returns:
+            For SQLite: sqlite3.Connection
+            For PostgreSQL: asyncpg.Connection
+        """
+        ...
+
+    @property
+    def backend_type(self) -> str:
+        """Get the backend type identifier.
+
+        Returns:
+            'sqlite' or 'postgresql'
+        """
+        ...
+
+
+@runtime_checkable
 class StorageBackend(Protocol):
     """
     Protocol defining the interface for storage backend implementations.
@@ -307,6 +349,57 @@ class StorageBackend(Protocol):
                 return row
 
             entry = await backend.execute_read(get_context_by_id, 123)
+        """
+        ...
+
+    def begin_transaction(self) -> AbstractAsyncContextManager['TransactionContext']:
+        """Begin a database transaction that can span multiple operations.
+
+        This method returns an async context manager that yields a TransactionContext.
+        All operations executed within the context share the same transaction:
+        - On successful exit: transaction is committed
+        - On exception: transaction is rolled back
+
+        Use this when multiple repository operations must succeed or fail atomically.
+
+        For single operations, continue using execute_write() which handles
+        transactions automatically.
+
+        Yields:
+            TransactionContext with access to the connection and backend_type
+
+        For SQLite:
+            - Acquires writer connection with exclusive lock
+            - Begins deferred transaction implicitly
+            - Commits on context exit, rollbacks on exception
+            - Operations must be SYNC callables
+
+        For PostgreSQL:
+            - Acquires connection from pool
+            - Begins transaction via asyncpg transaction context manager
+            - Commits on context exit, rollbacks on exception
+            - Operations must be ASYNC callables
+
+        Raises:
+            RuntimeError: If backend is shut down or circuit breaker is open
+
+        Example (Embedding-First Pattern):
+            # Generate embedding OUTSIDE transaction (may be slow/fail)
+            embedding = await embedding_provider.embed_query(text)
+
+            # All DB operations in single atomic transaction
+            async with backend.begin_transaction() as txn:
+                context_id = await _store_context(txn, text, metadata)
+                await _store_tags(txn, context_id, tags)
+                await _store_embedding(txn, context_id, embedding)
+                # COMMIT happens here only if ALL succeed
+
+        Example (Rollback Scenario):
+            async with backend.begin_transaction() as txn:
+                context_id = await _store_context(txn, ...)
+                await _store_tags(txn, context_id, tags)
+                # If this raises, context + tags are rolled back
+                await _store_embedding(txn, context_id, embedding)
         """
         ...
 

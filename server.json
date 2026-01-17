@@ -312,6 +312,20 @@
           "name": "POSTGRESQL_COMMAND_TIMEOUT_S"
         },
         {
+          "description": "Close idle PostgreSQL connections after this many seconds (0 to disable, default: 300)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_MAX_INACTIVE_LIFETIME_S"
+        },
+        {
+          "description": "Recycle PostgreSQL connections after this many queries (0 to disable, default: 10000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_MAX_QUERIES"
+        },
+        {
           "description": "PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)",
           "isRequired": false,
           "format": "string",
@@ -1077,6 +1091,20 @@
           "format": "number",
           "isSecret": false,
           "name": "POSTGRESQL_COMMAND_TIMEOUT_S"
+        },
+        {
+          "description": "Close idle PostgreSQL connections after this many seconds (0 to disable, default: 300)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_MAX_INACTIVE_LIFETIME_S"
+        },
+        {
+          "description": "Recycle PostgreSQL connections after this many queries (0 to disable, default: 10000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_MAX_QUERIES"
         },
         {
           "description": "PostgreSQL SSL mode (disable, allow, prefer, require, verify-ca, verify-full)",

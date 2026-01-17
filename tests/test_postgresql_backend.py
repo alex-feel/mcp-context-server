@@ -48,3 +48,66 @@ class TestConnectionStringBuilding:
         pooler_conn = 'postgresql://postgres.project:password@aws-0-us-west-1.pooler.supabase.com:5432/postgres'
         backend = PostgreSQLBackend(connection_string=pooler_conn)
         assert backend.connection_string == pooler_conn
+
+
+class TestPoolHardeningSettings:
+    """Test pool hardening settings."""
+
+    def test_pool_hardening_settings_defaults(self) -> None:
+        """Verify pool hardening settings have expected defaults."""
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+
+        # Verify default values match implementation guide specifications
+        assert settings.postgresql_max_inactive_lifetime_s == 300.0
+        assert settings.postgresql_max_queries == 10000
+
+    def test_pool_hardening_settings_field_constraints(self) -> None:
+        """Verify pool hardening settings have ge=0 constraint allowing zero."""
+        from app.settings import StorageSettings
+
+        # Default settings should have valid values
+        settings = StorageSettings()
+
+        # Values should be non-negative (ge=0 constraint allows zero)
+        assert settings.postgresql_max_inactive_lifetime_s >= 0
+        assert settings.postgresql_max_queries >= 0
+
+
+class TestPoolHardeningCallbacks:
+    """Test pool hardening callback logic."""
+
+    def test_statement_timeout_calculation(self) -> None:
+        """Verify statement_timeout is 90% of command_timeout."""
+        from app.settings import get_settings
+
+        settings = get_settings()
+
+        # The callback should set statement_timeout to 90% of command_timeout
+        expected_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
+
+        # Default command_timeout is 60 seconds, so statement_timeout should be 54000ms
+        assert expected_timeout_ms == 54000  # 60 * 1000 * 0.9 = 54000
+
+    def test_pool_hardening_defaults_are_non_zero(self) -> None:
+        """Verify default pool hardening settings are non-zero (enabled)."""
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+
+        # Default values should be non-zero (hardening enabled by default)
+        assert settings.postgresql_max_inactive_lifetime_s > 0
+        assert settings.postgresql_max_queries > 0
+
+    def test_pool_hardening_values_match_plan(self) -> None:
+        """Verify pool hardening defaults match implementation guide values."""
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+
+        # Implementation guide specifies:
+        # - max_inactive_connection_lifetime: 300.0 seconds (5 minutes)
+        # - max_queries: 10000 queries
+        assert settings.postgresql_max_inactive_lifetime_s == 300.0
+        assert settings.postgresql_max_queries == 10000

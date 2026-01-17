@@ -27,11 +27,38 @@ class TestUTF8Encoding:
 
     @pytest.fixture(autouse=True)
     def setup(self) -> None:
-        """Set up test fixtures."""
+        """Set up test fixtures.
+
+        Note: Phase 3 Transactional Integrity introduced backend.begin_transaction()
+        and txn parameter to repository methods.
+        """
+        from contextlib import asynccontextmanager
+        from unittest.mock import Mock
+
         self.mock_repos = MagicMock(spec=RepositoryContainer)
+
+        # Mock backend with begin_transaction() support (Phase 3)
+        mock_backend = Mock()
+
+        @asynccontextmanager
+        async def mock_begin_transaction():
+            txn = Mock()
+            txn.backend_type = 'sqlite'
+            txn.connection = Mock()
+            yield txn
+
+        mock_backend.begin_transaction = mock_begin_transaction
+
         self.mock_repos.context = AsyncMock()
+        self.mock_repos.context.backend = mock_backend
         self.mock_repos.tags = AsyncMock()
         self.mock_repos.images = AsyncMock()
+
+        # Mock embeddings repository (Phase 3)
+        self.mock_repos.embeddings = AsyncMock()
+        self.mock_repos.embeddings.store = AsyncMock(return_value=None)
+        self.mock_repos.embeddings.store_chunked = AsyncMock(return_value=None)
+        self.mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
     @pytest.mark.asyncio
     async def test_russian_text_encoding(self) -> None:

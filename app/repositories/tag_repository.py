@@ -18,6 +18,8 @@ from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from app.backends.base import TransactionContext
 else:
     with contextlib.suppress(ImportError):
         import asyncpg
@@ -38,14 +40,24 @@ class TagRepository(BaseRepository):
         """
         super().__init__(backend)
 
-    async def store_tags(self, context_id: int, tags: list[str]) -> None:
+    async def store_tags(
+        self,
+        context_id: int,
+        tags: list[str],
+        txn: TransactionContext | None = None,
+    ) -> None:
         """Store normalized tags for a context entry.
 
         Args:
             context_id: ID of the context entry
             tags: List of tags to store (will be normalized)
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _store_tags_sqlite(conn: sqlite3.Connection) -> None:
                 cursor = conn.cursor()
@@ -57,7 +69,10 @@ class TagRepository(BaseRepository):
                         )
                         cursor.execute(query, (context_id, tag))
 
-            await self.backend.execute_write(_store_tags_sqlite)
+            if txn:
+                _store_tags_sqlite(cast(sqlite3.Connection, txn.connection))
+            else:
+                await self.backend.execute_write(_store_tags_sqlite)
         else:  # postgresql
 
             async def _store_tags_postgresql(conn: asyncpg.Connection) -> None:
@@ -69,7 +84,10 @@ class TagRepository(BaseRepository):
                         )
                         await conn.execute(query, context_id, tag)
 
-            await self.backend.execute_write(cast(Any, _store_tags_postgresql))
+            if txn:
+                await _store_tags_postgresql(cast('asyncpg.Connection', txn.connection))
+            else:
+                await self.backend.execute_write(cast(Any, _store_tags_postgresql))
 
     async def get_tags_for_context(self, context_id: int) -> list[str]:
         """Get all tags for a specific context entry.
@@ -166,7 +184,12 @@ class TagRepository(BaseRepository):
 
         return await self.backend.execute_read(_get_tags_batch_postgresql)
 
-    async def replace_tags_for_context(self, context_id: int, tags: list[str]) -> None:
+    async def replace_tags_for_context(
+        self,
+        context_id: int,
+        tags: list[str],
+        txn: TransactionContext | None = None,
+    ) -> None:
         """Replace all tags for a context entry.
 
         This method performs a complete replacement of tags:
@@ -176,8 +199,13 @@ class TagRepository(BaseRepository):
         Args:
             context_id: ID of the context entry
             tags: New list of tags (will be normalized)
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _replace_tags_sqlite(conn: sqlite3.Connection) -> None:
                 cursor = conn.cursor()
@@ -193,7 +221,10 @@ class TagRepository(BaseRepository):
                         )
                         cursor.execute(insert_query, (context_id, tag))
 
-            await self.backend.execute_write(_replace_tags_sqlite)
+            if txn:
+                _replace_tags_sqlite(cast(sqlite3.Connection, txn.connection))
+            else:
+                await self.backend.execute_write(_replace_tags_sqlite)
         else:  # postgresql
 
             async def _replace_tags_postgresql(conn: asyncpg.Connection) -> None:
@@ -208,4 +239,7 @@ class TagRepository(BaseRepository):
                         )
                         await conn.execute(insert_query, context_id, tag)
 
-            await self.backend.execute_write(cast(Any, _replace_tags_postgresql))
+            if txn:
+                await _replace_tags_postgresql(cast('asyncpg.Connection', txn.connection))
+            else:
+                await self.backend.execute_write(cast(Any, _replace_tags_postgresql))

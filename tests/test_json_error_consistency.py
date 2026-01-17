@@ -26,12 +26,40 @@ get_statistics = app.server.get_statistics
 
 @pytest.fixture
 def mock_repos():
-    """Create a mock repository container."""
+    """Create a mock repository container with transaction support.
+
+    Returns:
+        MagicMock: The mock repository container.
+    """
+    from contextlib import asynccontextmanager
+    from unittest.mock import Mock
+
     repos = MagicMock()
+
+    # Mock backend with begin_transaction() support (Phase 3)
+    mock_backend = Mock()
+
+    @asynccontextmanager
+    async def mock_begin_transaction():
+        txn = Mock()
+        txn.backend_type = 'sqlite'
+        txn.connection = Mock()
+        yield txn
+
+    mock_backend.begin_transaction = mock_begin_transaction
+
     repos.context = AsyncMock()
+    repos.context.backend = mock_backend
     repos.tags = AsyncMock()
     repos.images = AsyncMock()
     repos.statistics = AsyncMock()
+
+    # Mock embeddings repository (Phase 3)
+    repos.embeddings = AsyncMock()
+    repos.embeddings.store = AsyncMock(return_value=None)
+    repos.embeddings.store_chunked = AsyncMock(return_value=None)
+    repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
+
     return repos
 
 
@@ -112,7 +140,7 @@ class TestJSONErrorConsistency:
         # Test update_context database error
         mock_server_dependencies.context.check_entry_exists.return_value = True
         mock_server_dependencies.context.update_context_entry.side_effect = Exception('Update failed')
-        with pytest.raises(ToolError, match='Update operation failed'):
+        with pytest.raises(ToolError, match='Failed to update context'):
             await update_context(context_id=1, text='new text')
 
         # Test search_context database error

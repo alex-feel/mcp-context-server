@@ -31,11 +31,34 @@ def mock_context():
 
 @pytest.fixture
 def mock_repositories():
-    """Create mock repository container with all necessary repositories."""
+    """Create mock repository container with all necessary repositories.
+
+    Note: Phase 3 Transactional Integrity introduced backend.begin_transaction()
+    and txn parameter to repository methods. Tests checking repository call
+    arguments should use unittest.mock.ANY for the txn parameter.
+
+    Returns:
+        Mock: Repository container with mocked repositories.
+    """
+    from contextlib import asynccontextmanager
+
     repos = Mock()
+
+    # Mock backend with begin_transaction() support (Phase 3)
+    mock_backend = Mock()
+
+    @asynccontextmanager
+    async def mock_begin_transaction():
+        txn = Mock()
+        txn.backend_type = 'sqlite'
+        txn.connection = Mock()
+        yield txn
+
+    mock_backend.begin_transaction = mock_begin_transaction
 
     # Mock context repository
     repos.context = Mock()
+    repos.context.backend = mock_backend
     repos.context.check_entry_exists = AsyncMock(return_value=True)
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -50,6 +73,12 @@ def mock_repositories():
     repos.images = Mock()
     repos.images.replace_images_for_context = AsyncMock()
     repos.images.count_images_for_context = AsyncMock(return_value=0)
+
+    # Mock embeddings repository (Phase 3)
+    repos.embeddings = Mock()
+    repos.embeddings.store = AsyncMock(return_value=None)
+    repos.embeddings.store_chunked = AsyncMock(return_value=None)
+    repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
     return repos
 
@@ -77,10 +106,12 @@ class TestUpdateContext:
 
             # Verify repository calls
             mock_repositories.context.check_entry_exists.assert_called_once_with(123)
+            from unittest.mock import ANY
             mock_repositories.context.update_context_entry.assert_called_once_with(
                 context_id=123,
                 text_content='Updated text content',
                 metadata=None,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -105,11 +136,13 @@ class TestUpdateContext:
             assert 'metadata' in result['updated_fields']
 
             # Verify metadata was JSON-encoded
+            from unittest.mock import ANY
             expected_metadata_str = json.dumps(metadata)
             mock_repositories.context.update_context_entry.assert_called_once_with(
                 context_id=456,
                 text_content=None,
                 metadata=expected_metadata_str,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -132,7 +165,8 @@ class TestUpdateContext:
             assert 'tags' in result['updated_fields']
 
             # Verify tags were replaced
-            mock_repositories.tags.replace_tags_for_context.assert_called_once_with(789, tags)
+            from unittest.mock import ANY
+            mock_repositories.tags.replace_tags_for_context.assert_called_once_with(789, tags, txn=ANY)
 
     @pytest.mark.asyncio
     async def test_update_images_with_content_type_change(self, mock_context, mock_repositories):
@@ -164,8 +198,9 @@ class TestUpdateContext:
             assert 'content_type' in result['updated_fields']
 
             # Verify images were replaced and content_type updated
-            mock_repositories.images.replace_images_for_context.assert_called_once_with(111, images)
-            mock_repositories.context.update_content_type.assert_called_once_with(111, 'multimodal')
+            from unittest.mock import ANY
+            mock_repositories.images.replace_images_for_context.assert_called_once_with(111, images, txn=ANY)
+            mock_repositories.context.update_content_type.assert_called_once_with(111, 'multimodal', txn=ANY)
 
     @pytest.mark.asyncio
     async def test_remove_all_images_updates_content_type(self, mock_context, mock_repositories):
@@ -186,8 +221,9 @@ class TestUpdateContext:
             assert 'content_type' in result['updated_fields']
 
             # Verify images were cleared and content_type set to text
-            mock_repositories.images.replace_images_for_context.assert_called_once_with(222, [])
-            mock_repositories.context.update_content_type.assert_called_once_with(222, 'text')
+            from unittest.mock import ANY
+            mock_repositories.images.replace_images_for_context.assert_called_once_with(222, [], txn=ANY)
+            mock_repositories.context.update_content_type.assert_called_once_with(222, 'text', txn=ANY)
 
     @pytest.mark.asyncio
     async def test_update_multiple_fields(self, mock_context, mock_repositories):
@@ -388,7 +424,8 @@ class TestUpdateContext:
             assert 'content_type' in result['updated_fields']
 
             # Verify content_type was corrected to multimodal
-            mock_repositories.context.update_content_type.assert_called_once_with(1111, 'multimodal')
+            from unittest.mock import ANY
+            mock_repositories.context.update_content_type.assert_called_once_with(1111, 'multimodal', txn=ANY)
 
     @pytest.mark.asyncio
     async def test_exception_handling_during_update(self, mock_context, mock_repositories):
@@ -397,7 +434,7 @@ class TestUpdateContext:
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            pytest.raises(ToolError, match='Update operation failed'),
+            pytest.raises(ToolError, match='Failed to update context'),
         ):
             await update_context(
                 context_id=2222,
@@ -442,7 +479,7 @@ class TestUpdateContext:
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            pytest.raises(ToolError, match='Update operation failed'),
+            pytest.raises(ToolError, match='Failed to update context'),
         ):
             await update_context(
                 context_id=4444,
@@ -531,9 +568,11 @@ class TestMetadataPatchIntegration:
             assert 'metadata' in result['updated_fields']
 
             # Verify patch_metadata was called with correct parameters
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=100,
                 patch={'status': 'updated'},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -670,9 +709,11 @@ class TestMetadataPatchIntegration:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=800,
                 patch={},
+                txn=ANY,
             )
 
 
@@ -711,9 +752,11 @@ class TestMetadataPatchRFC7396Semantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7007,
                 patch=nested_patch,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -734,9 +777,11 @@ class TestMetadataPatchRFC7396Semantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7013,
                 patch={'a': 1},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -759,9 +804,11 @@ class TestMetadataPatchRFC7396Semantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7015,
                 patch=deep_patch,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -783,7 +830,9 @@ class TestMetadataPatchRFC7396Semantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7100,
                 patch={'a': {'b': 'updated'}},
+                txn=ANY,
             )

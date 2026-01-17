@@ -22,6 +22,8 @@ from app.repositories.base import BaseRepository
 if TYPE_CHECKING:
     import asyncpg
 
+    from app.backends.base import TransactionContext
+
 logger = logging.getLogger(__name__)
 
 # Explicit column list to avoid exposing internal database columns (e.g., text_search_vector)
@@ -53,6 +55,7 @@ class ContextRepository(BaseRepository):
         content_type: str,
         text_content: str,
         metadata: str | None = None,
+        txn: TransactionContext | None = None,
     ) -> tuple[int, bool]:
         """Store context entry with deduplication logic.
 
@@ -65,12 +68,17 @@ class ContextRepository(BaseRepository):
             content_type: 'text' or 'multimodal'
             text_content: The actual text content
             metadata: JSON metadata string or None
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
 
         Returns:
             Tuple of (context_id, was_updated) where was_updated=True means
             an existing entry was updated, False means new entry was inserted.
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _store_sqlite(conn: sqlite3.Connection) -> tuple[int, bool]:
                 cursor = conn.cursor()
@@ -115,6 +123,8 @@ class ContextRepository(BaseRepository):
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
                 return new_id, False
 
+            if txn:
+                return _store_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_store_sqlite)
 
         # PostgreSQL
@@ -164,6 +174,8 @@ class ContextRepository(BaseRepository):
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
             return new_id, False
 
+        if txn:
+            return await _store_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_store_postgresql)
 
     async def search_contexts(
@@ -518,11 +530,18 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_fetch_postgresql)
 
-    async def delete_by_ids(self, context_ids: list[int]) -> int:
+    async def delete_by_ids(
+        self,
+        context_ids: list[int],
+        txn: TransactionContext | None = None,
+    ) -> int:
         """Delete context entries by their IDs.
 
         Args:
             context_ids: List of context entry IDs to delete
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
 
         Returns:
             Number of deleted entries
@@ -532,7 +551,9 @@ class ContextRepository(BaseRepository):
         if not context_ids:
             return 0
 
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _delete_by_ids_sqlite(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
@@ -543,6 +564,8 @@ class ContextRepository(BaseRepository):
                 )
                 return cursor.rowcount
 
+            if txn:
+                return _delete_by_ids_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_delete_by_ids_sqlite)
 
         # PostgreSQL
@@ -555,6 +578,8 @@ class ContextRepository(BaseRepository):
             # asyncpg returns "DELETE N" where N is the count
             return int(result.split()[-1]) if result else 0
 
+        if txn:
+            return await _delete_by_ids_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_delete_by_ids_postgresql)
 
     async def delete_by_thread(self, thread_id: str) -> int:
@@ -594,6 +619,7 @@ class ContextRepository(BaseRepository):
         context_id: int,
         text_content: str | None = None,
         metadata: str | None = None,
+        txn: TransactionContext | None = None,
     ) -> tuple[bool, list[str]]:
         """Update text content and/or metadata of a context entry.
 
@@ -601,11 +627,16 @@ class ContextRepository(BaseRepository):
             context_id: ID of the context entry to update
             text_content: New text content (if provided)
             metadata: New metadata JSON string (if provided)
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
 
         Returns:
             Tuple of (success, list_of_updated_fields)
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _update_entry_sqlite(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
                 cursor = conn.cursor()
@@ -652,6 +683,8 @@ class ContextRepository(BaseRepository):
 
                 return False, []
 
+            if txn:
+                return _update_entry_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_update_entry_sqlite)
 
         # PostgreSQL
@@ -700,6 +733,8 @@ class ContextRepository(BaseRepository):
 
             return False, []
 
+        if txn:
+            return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_entry_postgresql)
 
     async def check_entry_exists(self, context_id: int) -> bool:
@@ -765,17 +800,27 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_get_content_type_postgresql)
 
-    async def update_content_type(self, context_id: int, content_type: str) -> bool:
+    async def update_content_type(
+        self,
+        context_id: int,
+        content_type: str,
+        txn: TransactionContext | None = None,
+    ) -> bool:
         """Update the content type of a context entry.
 
         Args:
             context_id: ID of the context entry
             content_type: New content type ('text' or 'multimodal')
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
 
         Returns:
             True if updated successfully, False otherwise
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
 
             def _update_content_type_sqlite(conn: sqlite3.Connection) -> bool:
                 cursor = conn.cursor()
@@ -788,6 +833,8 @@ class ContextRepository(BaseRepository):
                 cursor.execute(query, (content_type, context_id))
                 return cursor.rowcount > 0
 
+            if txn:
+                return _update_content_type_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_update_content_type_sqlite)
 
         # PostgreSQL
@@ -802,12 +849,15 @@ class ContextRepository(BaseRepository):
             # asyncpg returns "UPDATE N" where N is the count
             return int(result.split()[-1]) > 0 if result else False
 
+        if txn:
+            return await _update_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_content_type_postgresql)
 
     async def patch_metadata(
         self,
         context_id: int,
         patch: dict[str, Any],
+        txn: TransactionContext | None = None,
     ) -> tuple[bool, list[str]]:
         """Apply RFC 7396 JSON Merge Patch to metadata atomically.
 
@@ -836,6 +886,9 @@ class ContextRepository(BaseRepository):
         Args:
             context_id: ID of the context entry to update
             patch: Dictionary containing the merge patch to apply
+            txn: Optional transaction context for atomic multi-repository operations.
+                When provided, uses the transaction's connection directly.
+                When None, uses execute_write() for standalone operation.
 
         Returns:
             Tuple of (success, list_of_updated_fields).
@@ -843,8 +896,9 @@ class ContextRepository(BaseRepository):
         """
         # Convert patch dict to JSON string for database operations
         patch_json = json.dumps(patch, ensure_ascii=False)
+        backend_type = txn.backend_type if txn else self.backend.backend_type
 
-        if self.backend.backend_type == 'sqlite':
+        if backend_type == 'sqlite':
 
             def _patch_metadata_sqlite(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
                 cursor = conn.cursor()
@@ -878,6 +932,8 @@ class ContextRepository(BaseRepository):
 
                 return False, []
 
+            if txn:
+                return _patch_metadata_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_patch_metadata_sqlite)
 
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
@@ -932,6 +988,8 @@ class ContextRepository(BaseRepository):
 
             return False, []
 
+        if txn:
+            return await _patch_metadata_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_patch_metadata_postgresql)
 
     @staticmethod

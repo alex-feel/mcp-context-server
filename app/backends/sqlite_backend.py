@@ -135,6 +135,33 @@ class PoolConfig:
             self.health_check_interval = 5.0  # More frequent health checks in tests
 
 
+@dataclass
+class SQLiteTransactionContext:
+    """Transaction context for SQLite backend.
+
+    Provides access to the writer connection within an active transaction.
+    The transaction lifecycle is managed by SQLiteBackend.begin_transaction().
+
+    Note: SQLite operations are SYNCHRONOUS. When using this context,
+    wrap operations in asyncio.run_in_executor() for async compatibility.
+
+    Attributes:
+        _connection: The sqlite3.Connection for this transaction
+    """
+
+    _connection: sqlite3.Connection
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Get the SQLite connection."""
+        return self._connection
+
+    @property
+    def backend_type(self) -> str:
+        """Get backend type identifier."""
+        return 'sqlite'
+
+
 class CircuitBreaker:
     """Circuit breaker pattern for fault tolerance."""
 
@@ -1040,6 +1067,74 @@ class SQLiteBackend:
                 return await loop.run_in_executor(None, _execute)
             except Exception:
                 self.metrics.failed_queries += 1
+                raise
+
+    @asynccontextmanager
+    async def begin_transaction(self) -> AsyncGenerator[SQLiteTransactionContext, None]:
+        """Begin an atomic transaction spanning multiple operations.
+
+        This method bypasses the write queue and acquires the writer connection
+        directly, providing exclusive access for the duration of the transaction.
+
+        IMPORTANT: This method is intended for multi-operation atomic writes.
+        For single operations, use execute_write() which is more efficient.
+
+        Transaction semantics:
+        - SQLite uses isolation_level='DEFERRED', transaction begins on first write
+        - On successful context exit: COMMIT
+        - On exception: ROLLBACK
+
+        Yields:
+            SQLiteTransactionContext with the writer connection
+
+        Raises:
+            RuntimeError: If backend is shutting down or circuit breaker is open
+
+        Example:
+            async with backend.begin_transaction() as txn:
+                conn = txn.connection
+                # All operations use same connection, same transaction
+                cursor = conn.execute('INSERT INTO context_entries ...')
+                context_id = cursor.lastrowid
+                conn.execute('INSERT INTO tags ...', (context_id, 'tag1'))
+                # COMMIT on exit
+        """
+        assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
+
+        if self._shutdown:
+            raise RuntimeError('Connection manager is shutting down')
+
+        # Check circuit breaker
+        if self.circuit_breaker.is_open():
+            raise RuntimeError(
+                f'Database circuit breaker is open after {self.circuit_breaker.failures} failures',
+            )
+
+        # Acquire writer lock to ensure exclusive access
+        async with self._writer_lock:
+            writer = await self._ensure_writer_connection()
+            loop = asyncio.get_event_loop()
+
+            # Create transaction context
+            txn_context = SQLiteTransactionContext(_connection=writer)
+
+            try:
+                yield txn_context
+
+                # Success: commit transaction
+                await loop.run_in_executor(None, writer.commit)
+                self.circuit_breaker.record_success()
+                logger.debug('Transaction committed successfully')
+
+            except Exception as e:
+                # Failure: rollback transaction
+                logger.warning(f'Transaction failed, rolling back: {e}')
+                try:
+                    await loop.run_in_executor(None, writer.rollback)
+                except Exception as rollback_error:
+                    logger.error(f'Rollback failed: {rollback_error}')
+
+                self.circuit_breaker.record_failure()
                 raise
 
     def get_metrics(self) -> dict[str, Any]:
