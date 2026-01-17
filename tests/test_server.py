@@ -129,7 +129,7 @@ class TestStoreContext:
     @pytest.mark.asyncio
     async def test_store_context_invalid_base64(self) -> None:
         """Test error with invalid base64 image data."""
-        with pytest.raises(ToolError, match='Invalid base64 encoded data'):
+        with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await store_context(
                 thread_id='test_thread',
                 source='agent',

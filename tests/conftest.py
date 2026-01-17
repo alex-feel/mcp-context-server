@@ -240,6 +240,39 @@ load_dotenv()
 os.environ['STORAGE_BACKEND'] = 'sqlite'
 
 
+# ============================================================================
+# Mock Backend Helper for Transaction Support (Phase 3 Transactional Integrity)
+# ============================================================================
+def create_mock_backend_with_transaction_support() -> MagicMock:
+    """Create a mock backend that supports begin_transaction() as async context manager.
+
+    This helper is needed because Phase 3 of the Transactional Integrity Fix
+    introduced backend.begin_transaction() calls in tools. Tests that mock
+    ensure_repositories() must also provide a backend that supports transactions.
+
+    Returns:
+        MagicMock: A mock backend with begin_transaction() async context manager support.
+
+    Usage:
+        mock_backend = create_mock_backend_with_transaction_support()
+        repos.context.backend = mock_backend
+    """
+    from contextlib import asynccontextmanager
+
+    mock_backend = MagicMock()
+
+    @asynccontextmanager
+    async def mock_begin_transaction():
+        """Mock async context manager for begin_transaction."""
+        txn = MagicMock()
+        txn.backend_type = 'sqlite'
+        txn.connection = MagicMock()
+        yield txn
+
+    mock_backend.begin_transaction = mock_begin_transaction
+    return mock_backend
+
+
 # Global fixture to ensure NO test uses the default database
 @pytest.fixture(autouse=True, scope='session')
 def prevent_default_db_pollution():

@@ -42,11 +42,34 @@ def mock_context():
 
 @pytest.fixture
 def mock_repositories():
-    """Create mock repository container with all necessary repositories."""
+    """Create mock repository container with all necessary repositories.
+
+    Note: Phase 3 Transactional Integrity introduced backend.begin_transaction()
+    and txn parameter to repository methods. Tests checking repository call
+    arguments should use unittest.mock.ANY for the txn parameter.
+
+    Returns:
+        Mock: Repository container with mocked repositories.
+    """
+    from contextlib import asynccontextmanager
+
     repos = Mock()
+
+    # Mock backend with begin_transaction() support (Phase 3)
+    mock_backend = Mock()
+
+    @asynccontextmanager
+    async def mock_begin_transaction():
+        txn = Mock()
+        txn.backend_type = 'sqlite'
+        txn.connection = Mock()
+        yield txn
+
+    mock_backend.begin_transaction = mock_begin_transaction
 
     # Mock context repository
     repos.context = Mock()
+    repos.context.backend = mock_backend
     repos.context.check_entry_exists = AsyncMock(return_value=True)
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -61,6 +84,12 @@ def mock_repositories():
     repos.images = Mock()
     repos.images.replace_images_for_context = AsyncMock()
     repos.images.count_images_for_context = AsyncMock(return_value=0)
+
+    # Mock embeddings repository (Phase 3)
+    repos.embeddings = Mock()
+    repos.embeddings.store = AsyncMock(return_value=None)
+    repos.embeddings.store_chunked = AsyncMock(return_value=None)
+    repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
     return repos
 
@@ -90,9 +119,11 @@ class TestMetadataPatchBasicOperations:
             assert 'metadata' in result['updated_fields']
 
             # Verify patch_metadata was called with correct arguments
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=123,
                 patch={'new_field': 'new_value'},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -115,9 +146,11 @@ class TestMetadataPatchBasicOperations:
             assert result['success'] is True
             assert 'metadata' in result['updated_fields']
 
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=456,
                 patch={'status': 'completed'},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -141,9 +174,11 @@ class TestMetadataPatchBasicOperations:
             assert result['success'] is True
             assert 'metadata' in result['updated_fields']
 
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=789,
                 patch={'field_to_delete': None},
+                txn=ANY,
             )
 
 
@@ -178,9 +213,11 @@ class TestMetadataPatchNestedOperations:
             assert result['success'] is True
             assert 'metadata' in result['updated_fields']
 
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=111,
                 patch=nested_patch,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -208,9 +245,11 @@ class TestMetadataPatchNestedOperations:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=222,
                 patch=deep_patch,
+                txn=ANY,
             )
 
 
@@ -239,9 +278,11 @@ class TestMetadataPatchMultipleFields:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=333,
                 patch=multi_patch,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -271,9 +312,11 @@ class TestMetadataPatchMultipleFields:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=444,
                 patch=mixed_patch,
+                txn=ANY,
             )
 
 
@@ -298,9 +341,11 @@ class TestMetadataPatchEdgeCases:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=555,
                 patch={},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -368,9 +413,11 @@ class TestMetadataPatchEdgeCases:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=888,
                 patch=array_patch,
+                txn=ANY,
             )
 
 
@@ -546,9 +593,11 @@ class TestMetadataPatchSpecialValues:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=6666,
                 patch={'completed': True, 'active': False},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -566,9 +615,11 @@ class TestMetadataPatchSpecialValues:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7777,
                 patch={'priority': 5, 'score': 98.6},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -633,9 +684,11 @@ class TestRFC7396DeepMergeSemantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7396,
                 patch=nested_patch,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -661,9 +714,11 @@ class TestRFC7396DeepMergeSemantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7413,
                 patch={'a': 1},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -697,9 +752,11 @@ class TestRFC7396DeepMergeSemantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7415,
                 patch=deep_patch,
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -724,9 +781,11 @@ class TestRFC7396DeepMergeSemantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7400,
                 patch={'a': {'b': 'updated'}},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -751,9 +810,11 @@ class TestRFC7396DeepMergeSemantics:
             )
 
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7401,
                 patch={'a': {'b': None}},
+                txn=ANY,
             )
 
 
@@ -780,9 +841,11 @@ class TestMetadataPatchRFC7396AppendixA:
                 ctx=mock_context,
             )
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7301,
                 patch={'a': 'c'},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -799,9 +862,11 @@ class TestMetadataPatchRFC7396AppendixA:
                 ctx=mock_context,
             )
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7302,
                 patch={'b': 'c'},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -818,9 +883,11 @@ class TestMetadataPatchRFC7396AppendixA:
                 ctx=mock_context,
             )
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7303,
                 patch={'a': None},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -837,9 +904,11 @@ class TestMetadataPatchRFC7396AppendixA:
                 ctx=mock_context,
             )
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7304,
                 patch={'a': None},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -856,9 +925,11 @@ class TestMetadataPatchRFC7396AppendixA:
                 ctx=mock_context,
             )
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7305,
                 patch={'a': 'c'},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -875,9 +946,11 @@ class TestMetadataPatchRFC7396AppendixA:
                 ctx=mock_context,
             )
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7306,
                 patch={'a': ['b']},
+                txn=ANY,
             )
 
     @pytest.mark.asyncio
@@ -894,9 +967,11 @@ class TestMetadataPatchRFC7396AppendixA:
                 ctx=mock_context,
             )
             assert result['success'] is True
+            from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
                 context_id=7308,
                 patch={'a': [1]},
+                txn=ANY,
             )
 
 

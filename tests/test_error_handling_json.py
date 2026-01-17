@@ -25,12 +25,43 @@ get_statistics = app.server.get_statistics
 
 @pytest.fixture
 def mock_repos():
-    """Create a mock repository container."""
+    """Create a mock repository container.
+
+    Note: Phase 3 Transactional Integrity introduced backend.begin_transaction()
+    and txn parameter to repository methods.
+
+    Returns:
+        MagicMock: Repository container with mocked repositories.
+    """
+    from contextlib import asynccontextmanager
+    from unittest.mock import Mock
+
     repos = MagicMock()
+
+    # Mock backend with begin_transaction() support (Phase 3)
+    mock_backend = Mock()
+
+    @asynccontextmanager
+    async def mock_begin_transaction():
+        txn = Mock()
+        txn.backend_type = 'sqlite'
+        txn.connection = Mock()
+        yield txn
+
+    mock_backend.begin_transaction = mock_begin_transaction
+
     repos.context = AsyncMock()
+    repos.context.backend = mock_backend
     repos.tags = AsyncMock()
     repos.images = AsyncMock()
     repos.statistics = AsyncMock()
+
+    # Mock embeddings repository (Phase 3)
+    repos.embeddings = AsyncMock()
+    repos.embeddings.store = AsyncMock(return_value=None)
+    repos.embeddings.store_chunked = AsyncMock(return_value=None)
+    repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
+
     return repos
 
 
@@ -124,7 +155,7 @@ class TestStoreContextErrors:
     async def test_invalid_base64_image(self, mock_server_dependencies):
         """Test that invalid base64 image data raises ToolError."""
         _ = mock_server_dependencies  # Fixture needed for mocking
-        with pytest.raises(ToolError, match='Invalid base64 encoded data in image 0'):
+        with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await store_context(
                 thread_id='test-thread',
                 source='user',

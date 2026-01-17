@@ -29,11 +29,31 @@ get_statistics = app.server.get_statistics
 
 @pytest.fixture
 def mock_repos():
-    """Mock repository container for testing."""
+    """Mock repository container for testing.
+
+    Returns:
+        MagicMock: The mock repository container with transaction support.
+    """
+    from contextlib import asynccontextmanager
+    from unittest.mock import Mock
+
     repos = MagicMock(spec=RepositoryContainer)
+
+    # Mock backend with begin_transaction() support (Phase 3)
+    mock_backend = Mock()
+
+    @asynccontextmanager
+    async def mock_begin_transaction():
+        txn = Mock()
+        txn.backend_type = 'sqlite'
+        txn.connection = Mock()
+        yield txn
+
+    mock_backend.begin_transaction = mock_begin_transaction
 
     # Mock context repository
     repos.context = AsyncMock()
+    repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
     repos.context.check_entry_exists = AsyncMock(return_value=True)
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
@@ -58,6 +78,12 @@ def mock_repos():
     repos.statistics = AsyncMock()
     repos.statistics.get_thread_list = AsyncMock(return_value=[])
     repos.statistics.get_database_statistics = AsyncMock(return_value={'total_entries': 0})
+
+    # Mock embeddings repository (Phase 3)
+    repos.embeddings = AsyncMock()
+    repos.embeddings.store = AsyncMock(return_value=None)
+    repos.embeddings.store_chunked = AsyncMock(return_value=None)
+    repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
     return repos
 
