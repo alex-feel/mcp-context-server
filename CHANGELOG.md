@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/alex-feel/mcp-context-server/compare/v1.2.0...v1.2.1) (2026-01-18)
+
+
+### Bug Fixes
+
+* add backend-specific FTS tool descriptions ([09113cd](https://github.com/alex-feel/mcp-context-server/commit/09113cd9fef0e5aec83c9dbc73be2b77f3b311e0))
+
 ## [1.2.0](https://github.com/alex-feel/mcp-context-server/compare/v1.1.0...v1.2.0) (2026-01-17)
 
 
