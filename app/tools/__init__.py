@@ -25,6 +25,7 @@ from app.tools.context import delete_context
 from app.tools.context import get_context_by_ids
 from app.tools.context import store_context
 from app.tools.context import update_context
+from app.tools.descriptions import generate_fts_description
 from app.tools.discovery import get_statistics
 from app.tools.discovery import list_threads
 from app.tools.search import fts_search_context
@@ -126,6 +127,7 @@ def register_tool(
     mcp_instance: 'FastMCP[None]',
     func: Callable[..., Any],
     name: str | None = None,
+    description: str | None = None,
 ) -> bool:
     """Register a tool only if it's not in the disabled list.
 
@@ -133,6 +135,7 @@ def register_tool(
         mcp_instance: The FastMCP server instance to register the tool with
         func: The tool function to register
         name: Optional explicit tool name (defaults to function name)
+        description: Optional custom description (overrides function docstring)
 
     Returns:
         True if tool was registered, False if disabled
@@ -145,7 +148,12 @@ def register_tool(
 
     # Get annotations from centralized mapping
     annotations = TOOL_ANNOTATIONS.get(tool_name, {})
-    mcp_instance.tool(annotations=annotations)(func)
+
+    # Pass description if provided (overrides docstring in FastMCP)
+    if description:
+        mcp_instance.tool(description=description, annotations=annotations)(func)
+    else:
+        mcp_instance.tool(annotations=annotations)(func)
 
     logger.info(f'[OK] {tool_name} registered')
     return True
@@ -155,6 +163,7 @@ def register_tool(
 __all__ = [
     # Tool registration infrastructure
     'TOOL_ANNOTATIONS',
+    'generate_fts_description',
     'is_tool_disabled',
     'register_tool',
     # Context CRUD tools
