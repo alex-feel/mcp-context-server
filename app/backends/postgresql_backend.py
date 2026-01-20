@@ -182,6 +182,9 @@ class PostgreSQLBackend:
     Implements the StorageBackend protocol to enable database-agnostic repositories.
     """
 
+    # Pgpool-II detection result (set during initialize() by _detect_pgpool_ii())
+    _pgpool_version: str | None
+
     def __init__(
         self,
         connection_string: str | None = None,
@@ -437,6 +440,9 @@ class PostgreSQLBackend:
             # Verify connection and apply schema
             await self._initialize_schema()
 
+            # Detect Pgpool-II and log result
+            await self._detect_pgpool_ii()
+
             logger.info('PostgreSQL backend initialized successfully')
 
         except Exception as e:
@@ -495,6 +501,36 @@ class PostgreSQLBackend:
                         raise
 
         logger.info('Database schema initialized')
+
+    async def _detect_pgpool_ii(self) -> None:
+        """Detect if connected through Pgpool-II and log result.
+
+        Uses SHOW POOL_VERSION command which is Pgpool-II specific.
+        On direct PostgreSQL connections, this command raises UndefinedObjectError
+        (error code 42704: unrecognized configuration parameter).
+        """
+        assert self._pool is not None, 'Pool not initialized'
+
+        try:
+            async with self._pool.acquire() as conn:
+                version = await conn.fetchval('SHOW POOL_VERSION')
+                if version:
+                    logger.warning(
+                        f'Pgpool-II detected: version {version}. '
+                        f'Recommended to set POSTGRESQL_STATEMENT_CACHE_SIZE=0.',
+                    )
+                    self._pgpool_version = str(version)
+                else:
+                    logger.info('Looks like direct PostgreSQL connection (at least, no Pgpool-II)')
+                    self._pgpool_version = None
+        except asyncpg.exceptions.UndefinedObjectError:
+            # Expected when not behind Pgpool-II - pool_version is not a known parameter
+            logger.info('Looks like direct PostgreSQL connection (at least, no Pgpool-II)')
+            self._pgpool_version = None
+        except Exception as e:
+            # Log but do not fail initialization
+            logger.warning(f'Pgpool-II detection check failed: {e}')
+            self._pgpool_version = None
 
     async def shutdown(self) -> None:
         """Gracefully shut down the PostgreSQL backend."""
@@ -815,5 +851,10 @@ class PostgreSQLBackend:
         # We'll use the last known state from metrics
         pool_metrics['circuit_state'] = self.metrics.circuit_state.value
         pool_metrics['consecutive_failures'] = self.circuit_breaker.failures
+
+        # Add Pgpool-II detection info (only if detection has run)
+        if hasattr(self, '_pgpool_version'):
+            pool_metrics['pgpool_detected'] = self._pgpool_version is not None
+            pool_metrics['pgpool_version'] = self._pgpool_version
 
         return pool_metrics
