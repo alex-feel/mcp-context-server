@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/alex-feel/mcp-context-server/compare/v1.2.1...v1.3.0) (2026-01-20)
+
+
+### Features
+
+* add Pgpool-II detection for PostgreSQL backend ([e64f082](https://github.com/alex-feel/mcp-context-server/commit/e64f0826238417bfd5624de10d94dd31b3da83cf))
+
 ## [1.2.1](https://github.com/alex-feel/mcp-context-server/compare/v1.2.0...v1.2.1) (2026-01-18)
 
 
