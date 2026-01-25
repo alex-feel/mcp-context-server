@@ -1,0 +1,16 @@
+# MCP Context Server - Trivy Vulnerability Ignore List
+#
+# This file contains CVEs that have been assessed and determined to have
+# low actual risk to this project. Each entry includes:
+# - Risk assessment rationale
+# - Expiration date for re-evaluation
+# - Reference to security ticket
+
+# CVE-2026-0994 - protobuf DoS vulnerability in json_format.ParseDict()
+# Severity: HIGH (per CVE), Actual Risk: LOW (for this project)
+# Reason: Transitive dependency via flashrank->onnxruntime->protobuf
+#         The vulnerable function (json_format.ParseDict) is NOT used.
+#         protobuf is used only for ONNX model serialization.
+# Upstream Fix: protocolbuffers/protobuf#25239 (pending)
+# Expires: 2026-04-25 (re-evaluate quarterly or when fix is available)
+CVE-2026-0994 exp:2026-04-25
