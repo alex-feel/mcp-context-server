@@ -309,6 +309,8 @@ Each result includes a `scores` object with:
 - `semantic_distance`: Original semantic distance (L2, lower = more similar)
 - `rerank_score`: Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled
 
+**Note:** When `ENABLE_RERANKING=true` (default), results are re-ordered by `rerank_score` after initial retrieval. The original scores (`fts_score`, `semantic_distance`) are preserved for debugging but `rerank_score` determines final ordering.
+
 **Graceful Degradation:**
 - If only FTS is available, returns FTS results only
 - If only semantic search is available, returns semantic results only

@@ -795,7 +795,20 @@ Embeddings are generated automatically:
 - **On `update_context_batch`**: Embeddings regenerated for entries with text changes
 - **On `delete_context`**: Embeddings cascade deleted
 
-If embedding generation fails, context is still stored (graceful degradation).
+## Embedding-First Transactional Integrity
+
+**CRITICAL:** When `ENABLE_EMBEDDING_GENERATION=true` (default when semantic search is enabled), embedding generation follows an "embedding-first" pattern:
+
+1. Embeddings are generated FIRST (outside any database transaction)
+2. If embedding generation fails, **NO data is saved** (operation returns error immediately)
+3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+
+This ensures data consistency: you never have context entries without their corresponding embeddings when embedding generation is enabled.
+
+**Key Implications:**
+- Embedding failures prevent data storage (not graceful degradation)
+- Network issues with embedding provider will cause store_context to fail
+- Consider retry logic in client code for transient embedding failures
 
 ### Example Use Cases
 
