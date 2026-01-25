@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.1](https://github.com/alex-feel/mcp-context-server/compare/v1.3.0...v1.3.1) (2026-01-25)
+
+
+### Bug Fixes
+
+* classify PostgreSQL backend errors to control container restart behavior ([f5ed4c8](https://github.com/alex-feel/mcp-context-server/commit/f5ed4c8ac0cec0d7ead6d85d018dcb7dc44bc1ea))
+* upgrade FastMCP to 2.14.4 ([8780345](https://github.com/alex-feel/mcp-context-server/commit/8780345f35fee558af266f9d33c226592ccdf9e0))
+
 ## [1.3.0](https://github.com/alex-feel/mcp-context-server/compare/v1.2.1...v1.3.0) (2026-01-20)
 
 
