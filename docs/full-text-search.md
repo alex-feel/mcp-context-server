@@ -277,6 +277,48 @@ fts_search_context(query="python OR javascript NOT typescript", mode="boolean")
    ```
    Returns `highlighted` field with `<mark>` tags around matched terms.
 
+## Cross-Encoder Reranking
+
+When reranking is enabled (default), FTS results are refined using a cross-encoder model for improved precision.
+
+### How FTS Reranking Works
+
+1. **Over-fetching**: FTS retrieves `limit * RERANKING_OVERFETCH` candidates
+2. **Passage Extraction**: For each candidate, a passage around the FTS match is extracted
+3. **Cross-Encoder Scoring**: FlashRank scores query-passage pairs
+4. **Re-ordering**: Results are sorted by cross-encoder score
+5. **Final Selection**: Top `limit` results returned
+
+### Configuration
+
+| Variable                 | Default                   | Description                                    |
+|--------------------------|---------------------------|------------------------------------------------|
+| `ENABLE_RERANKING`       | `true`                    | Enable cross-encoder reranking                 |
+| `RERANKING_PROVIDER`     | `flashrank`               | Reranking provider                             |
+| `RERANKING_MODEL`        | `ms-marco-MiniLM-L-12-v2` | Model (~34MB, downloads on first use)          |
+| `RERANKING_OVERFETCH`    | `4`                       | Multiplier for over-fetching before reranking  |
+| `FTS_RERANK_WINDOW_SIZE` | `750`                     | Characters around match for passage extraction |
+| `FTS_RERANK_GAP_MERGE`   | `100`                     | Gap threshold for merging adjacent highlights  |
+
+### FTS-Specific Passage Extraction
+
+Unlike semantic search which uses full text, FTS reranking uses intelligent passage extraction:
+
+- **Window Size**: Expands around FTS match highlights by `FTS_RERANK_WINDOW_SIZE` characters
+- **Boundary Alignment**: Aligns to sentence/paragraph boundaries when possible
+- **Gap Merging**: Merges nearby highlights if gap is less than `FTS_RERANK_GAP_MERGE` characters
+
+This ensures the cross-encoder sees the most relevant context around each match.
+
+### When to Disable FTS Reranking
+
+Set `ENABLE_RERANKING=false` if:
+- Search latency is critical (reranking adds ~50-100ms)
+- Running on resource-constrained systems
+- BM25/ts_rank ranking is sufficient for your use case
+
+For more details, see [Semantic Search - Cross-Encoder Reranking](semantic-search.md#cross-encoder-reranking).
+
 ### Performance Characteristics
 
 - **Index Updates**: Automatic via triggers (SQLite) or generated column (PostgreSQL)

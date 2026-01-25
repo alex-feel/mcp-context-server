@@ -1,6 +1,6 @@
 # MCP Context Server
 
-[![PyPI](https://img.shields.io/pypi/v/mcp-context-server.svg)](https://pypi.org/project/mcp-context-server/) [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-blue?logo=anthropic)](https://github.com/modelcontextprotocol/registry) [![GitHub License](https://img.shields.io/github/license/alex-feel/mcp-context-server)](https://github.com/alex-feel/mcp-context-server/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/mcp-context-server)
+[![PyPI](https://img.shields.io/pypi/v/mcp-context-server.svg)](https://pypi.org/project/mcp-context-server/) [![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-blue?logo=anthropic)](https://registry.modelcontextprotocol.io/?q=io.github.alex-feel%2Fmcp-context-server) [![GitHub License](https://img.shields.io/github/license/alex-feel/mcp-context-server)](https://github.com/alex-feel/mcp-context-server/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/mcp-context-server)
 
 A high-performance Model Context Protocol (MCP) server providing persistent multimodal context storage for LLM agents. Built with FastMCP, this server enables seamless context sharing across multiple agents working on the same task through thread-based scoping.
 
@@ -12,9 +12,10 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 16 powerful operators
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
-- **Full-Text Search**: Optional linguistic search with stemming, ranking, and boolean queries (FTS5/tsvector)
-- **Semantic Search**: Optional vector similarity search for meaning-based retrieval
-- **Hybrid Search**: Optional combined FTS + semantic search using Reciprocal Rank Fusion (RRF)
+- **Full-Text Search**: Optional linguistic search with stemming, ranking, boolean queries (FTS5/tsvector), and cross-encoder reranking
+- **Semantic Search**: Optional vector similarity search for meaning-based retrieval with cross-encoder reranking
+- **Hybrid Search**: Optional combined FTS + semantic search using Reciprocal Rank Fusion (RRF) with cross-encoder reranking
+- **Cross-Encoder Reranking**: Automatic result refinement using FlashRank cross-encoder models for improved search precision (enabled by default)
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
 - **High Performance**: WAL mode (SQLite) / MVCC (PostgreSQL), strategic indexing, and async operations
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client

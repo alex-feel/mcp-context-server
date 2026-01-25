@@ -23,6 +23,8 @@ from urllib.parse import quote
 
 import asyncpg
 
+from app.errors import ConfigurationError
+from app.errors import DependencyError
 from app.schemas import load_schema
 from app.settings import get_settings
 
@@ -278,7 +280,8 @@ class PostgreSQLBackend:
         On Supabase: Enable via Dashboard → Extensions → vector (recommended).
 
         Raises:
-            RuntimeError: If pgvector extension cannot be created or is inaccessible
+            ConfigurationError: For permission/auth errors requiring human intervention
+            DependencyError: For connection errors that may resolve with retry
         """
         try:
             conn = await asyncpg.connect(
@@ -299,13 +302,40 @@ class PostgreSQLBackend:
                 'Supabase: Dashboard → Extensions → vector, '
                 'AWS RDS: rds_superuser privileges required',
             )
-            raise RuntimeError(
+            raise ConfigurationError(
                 f'pgvector extension required but cannot be created (insufficient privileges): {e}',
+            ) from e
+
+        except (
+            OSError,  # Includes ConnectionRefusedError, TimeoutError
+            asyncpg.exceptions.ConnectionDoesNotExistError,
+            asyncpg.exceptions.InterfaceError,
+            asyncpg.exceptions.TooManyConnectionsError,
+        ) as e:
+            logger.error(f'Failed to connect to PostgreSQL: {e}')
+            raise DependencyError(
+                f'PostgreSQL connection failed: {e}. '
+                'Ensure PostgreSQL is running and accessible.',
+            ) from e
+
+        except asyncpg.exceptions.InvalidPasswordError as e:
+            logger.error(f'PostgreSQL authentication failed: {e}')
+            raise ConfigurationError(
+                f'PostgreSQL authentication failed: {e}. '
+                'Check POSTGRESQL_USER and POSTGRESQL_PASSWORD.',
+            ) from e
+
+        except asyncpg.exceptions.InvalidCatalogNameError as e:
+            logger.error(f'PostgreSQL database does not exist: {e}')
+            raise ConfigurationError(
+                f'PostgreSQL database does not exist: {e}. '
+                'Create the database or check POSTGRESQL_DATABASE.',
             ) from e
 
         except Exception as e:
             logger.error(f'Failed to ensure pgvector extension: {e}')
-            raise RuntimeError(f'pgvector extension is required but could not be created: {e}') from e
+            # Default to DependencyError for unknown errors (safer - allows retry)
+            raise DependencyError(f'pgvector extension is required but could not be created: {e}') from e
 
     async def initialize(self) -> None:
         """Initialize the PostgreSQL backend with connection pool and schema."""
@@ -328,7 +358,7 @@ class PostgreSQLBackend:
                 - AWS RDS / custom: pgvector in any schema
 
                 Raises:
-                    RuntimeError: If pgvector extension is not installed or codec registration fails
+                    ConfigurationError: If pgvector extension is not installed or codec registration fails
                 """
                 try:
                     from pgvector.asyncpg import register_vector
@@ -344,7 +374,7 @@ class PostgreSQLBackend:
 
                     if not result:
                         # Extension not installed - fail fast with clear instructions
-                        raise RuntimeError(
+                        raise ConfigurationError(
                             'pgvector extension is not installed. '
                             'Enable it via: CREATE EXTENSION vector; (PostgreSQL) '
                             'or Dashboard → Extensions → vector (Supabase)',
@@ -364,11 +394,15 @@ class PostgreSQLBackend:
                     # ImportError is OK - semantic search is optional
                     logger.debug('pgvector not installed, skipping vector type registration')
 
+                except ConfigurationError:
+                    # Re-raise ConfigurationError as-is (from "extension not installed" check above)
+                    raise
+
                 except Exception as e:
                     # STRICT: All other errors are FATAL
                     logger.error(f'Failed to register pgvector type codec: {e}')
                     logger.error('Ensure pgvector extension is enabled and accessible')
-                    raise RuntimeError(f'pgvector codec registration failed: {e}') from e
+                    raise ConfigurationError(f'pgvector codec registration failed: {e}') from e
 
             async def _reset_connection(conn: asyncpg.Connection) -> None:
                 """Validate and reset connection before returning to pool.
