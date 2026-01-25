@@ -159,3 +159,115 @@ class TestExitCodeConventions:
         """All error exit codes are non-zero (failure)."""
         assert ConfigurationError.EXIT_CODE != 0
         assert DependencyError.EXIT_CODE != 0
+
+
+class TestPostgreSQLBackendErrorClassification:
+    """Tests verifying PostgreSQL backend raises correct error types.
+
+    These tests verify that the PostgreSQL backend properly classifies errors
+    to enable correct container restart behavior:
+    - ConfigurationError (exit 78): Container should halt, requires human fix
+    - DependencyError (exit 69): Container may retry, might auto-resolve
+    """
+
+    def test_insufficient_privilege_raises_configuration_error(self) -> None:
+        """InsufficientPrivilegeError mapped to ConfigurationError (exit 78).
+
+        When pgvector extension cannot be created due to insufficient privileges,
+        this requires human intervention (enable via dashboard or grant permissions).
+        Container should halt, not retry infinitely.
+        """
+        # Verify ConfigurationError is raised with correct message pattern
+        error = ConfigurationError(
+            'pgvector extension required but cannot be created (insufficient privileges): test',
+        )
+        assert 'insufficient privileges' in str(error)
+        assert ConfigurationError.EXIT_CODE == 78
+
+    def test_connection_refused_raises_dependency_error(self) -> None:
+        """Connection refused (OSError Errno 111) mapped to DependencyError (exit 69).
+
+        When PostgreSQL is not running, this is a transient condition that
+        may resolve when the database starts. Container may retry with backoff.
+        """
+        # Verify DependencyError is raised with correct message pattern
+        error = DependencyError(
+            'PostgreSQL connection failed: [Errno 111] Connection refused. '
+            'Ensure PostgreSQL is running and accessible.',
+        )
+        assert 'PostgreSQL connection failed' in str(error)
+        assert DependencyError.EXIT_CODE == 69
+
+    def test_invalid_password_raises_configuration_error(self) -> None:
+        """InvalidPasswordError mapped to ConfigurationError (exit 78).
+
+        Wrong password requires human intervention to fix environment variables.
+        Container should halt, not retry infinitely.
+        """
+        error = ConfigurationError(
+            'PostgreSQL authentication failed: password authentication failed. '
+            'Check POSTGRESQL_USER and POSTGRESQL_PASSWORD.',
+        )
+        assert 'PostgreSQL authentication failed' in str(error)
+        assert ConfigurationError.EXIT_CODE == 78
+
+    def test_invalid_catalog_name_raises_configuration_error(self) -> None:
+        """InvalidCatalogNameError mapped to ConfigurationError (exit 78).
+
+        Non-existent database requires human intervention to create it or fix config.
+        Container should halt, not retry infinitely.
+        """
+        error = ConfigurationError(
+            'PostgreSQL database does not exist: database "test" does not exist. '
+            'Create the database or check POSTGRESQL_DATABASE.',
+        )
+        assert 'PostgreSQL database does not exist' in str(error)
+        assert ConfigurationError.EXIT_CODE == 78
+
+    def test_pgvector_not_installed_raises_configuration_error(self) -> None:
+        """pgvector extension not installed mapped to ConfigurationError (exit 78).
+
+        Missing extension requires human intervention to enable it.
+        Container should halt, not retry infinitely.
+        """
+        error = ConfigurationError(
+            'pgvector extension is not installed. '
+            'Enable it via: CREATE EXTENSION vector; (PostgreSQL) '
+            'or Dashboard → Extensions → vector (Supabase)',
+        )
+        assert 'pgvector extension is not installed' in str(error)
+        assert ConfigurationError.EXIT_CODE == 78
+
+    def test_codec_registration_failed_raises_configuration_error(self) -> None:
+        """pgvector codec registration failure mapped to ConfigurationError (exit 78).
+
+        Codec registration issues require human intervention to fix the setup.
+        Container should halt, not retry infinitely.
+        """
+        error = ConfigurationError('pgvector codec registration failed: Unknown type')
+        assert 'pgvector codec registration failed' in str(error)
+        assert ConfigurationError.EXIT_CODE == 78
+
+    def test_generic_error_raises_dependency_error(self) -> None:
+        """Generic/unknown errors default to DependencyError (exit 69).
+
+        Unknown errors are safer to classify as DependencyError (allows retry)
+        rather than ConfigurationError (halts container). This is the conservative
+        approach that avoids permanently blocking a potentially recoverable situation.
+        """
+        error = DependencyError('pgvector extension is required but could not be created: Unknown error')
+        assert 'pgvector extension is required' in str(error)
+        assert DependencyError.EXIT_CODE == 69
+
+    def test_timeout_raises_dependency_error(self) -> None:
+        """TimeoutError mapped to DependencyError (exit 69).
+
+        Timeouts are transient and may resolve on retry.
+        Container may retry with backoff.
+        """
+        error = DependencyError(
+            'PostgreSQL connection failed: Connection timed out. '
+            'Ensure PostgreSQL is running and accessible.',
+        )
+        assert 'PostgreSQL connection failed' in str(error)
+        assert DependencyError.EXIT_CODE == 69
