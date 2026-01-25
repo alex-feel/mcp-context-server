@@ -544,13 +544,18 @@ grep OPENAI_API_KEY deploy/docker/.env
 
 ### Common Error Messages
 
-| Error                | Cause                      | Solution                                            |
-|----------------------|----------------------------|-----------------------------------------------------|
-| `connection refused` | Service not running        | Check container status with `docker compose ps`     |
-| `model not found`    | Embedding model not pulled | Wait for automatic download or pull manually        |
-| `permission denied`  | Volume permission issue    | Check volume ownership matches UID 10001            |
-| `database is locked` | SQLite concurrent access   | Expected for SQLite; use PostgreSQL for concurrency |
-| `Invalid API Key`    | OpenAI key incorrect       | Verify OPENAI_API_KEY in .env file                  |
+| Error                                  | Cause                          | Solution                                                    |
+|----------------------------------------|--------------------------------|-------------------------------------------------------------|
+| `connection refused`                   | Service not running            | Check container status with `docker compose ps`             |
+| `model not found`                      | Embedding model not pulled     | Wait for automatic download or pull manually                |
+| `permission denied`                    | Volume permission issue        | Check volume ownership matches UID 10001                    |
+| `database is locked`                   | SQLite concurrent access       | Expected for SQLite; use PostgreSQL for concurrency         |
+| `Invalid API Key`                      | OpenAI key incorrect           | Verify OPENAI_API_KEY in .env file                          |
+| `password authentication failed`       | Wrong PostgreSQL password      | Fix POSTGRESQL_PASSWORD and restart (exit 78)               |
+| `database "..." does not exist`        | PostgreSQL database not found  | Create database or fix POSTGRESQL_DATABASE (exit 78)        |
+| `pgvector extension is not installed`  | pgvector not enabled           | Enable via dashboard or CREATE EXTENSION (exit 78)          |
+| `insufficient privileges`              | Cannot create pgvector         | Grant permissions via dashboard (exit 78)                   |
+| `[Errno 111] Connection refused`       | PostgreSQL not running         | Wait for PostgreSQL to start (exit 69, will retry)          |
 
 ## Advanced Configuration
 
@@ -662,7 +667,7 @@ The MCP Context Server uses BSD sysexits.h exit codes to signal different failur
 
 **Exit Code 69 (EX_UNAVAILABLE)** indicates external dependencies are temporarily unavailable:
 - Ollama service not running (may start later)
-- Database temporarily unreachable
+- Database temporarily unreachable (PostgreSQL connection refused, network timeout)
 - Network connectivity issues
 
 **Exit Code 78 (EX_CONFIG)** indicates configuration problems requiring human intervention:
@@ -670,6 +675,9 @@ The MCP Context Server uses BSD sysexits.h exit codes to signal different failur
 - Missing required packages
 - Invalid configuration values
 - Embedding model not found (requires `ollama pull` or fix EMBEDDING_MODEL)
+- PostgreSQL authentication errors (wrong password, database doesn't exist, missing pgvector extension)
+
+**For detailed PostgreSQL error scenarios,** see [PostgreSQL Backend Error Scenarios](#postgresql-backend-error-scenarios) below.
 
 ### Entrypoint Wrapper Script
 
@@ -742,6 +750,95 @@ services:
       start_period: 10s
       retries: 3
 ```
+
+### PostgreSQL Backend Error Scenarios
+
+When using the PostgreSQL backend, the server classifies initialization errors to control container restart behavior. This prevents infinite restart loops on configuration errors while allowing retry for transient connectivity issues.
+
+**Error Classification:**
+
+| Error Scenario            | Exception Type                   | Exit Code               | Container Behavior    | Fix Required                                 |
+|---------------------------|----------------------------------|-------------------------|-----------------------|----------------------------------------------|
+| PostgreSQL not running    | Connection refused (Errno 111)   | 69 (DependencyError)    | Retry with backoff    | Wait for PostgreSQL to start                 |
+| Network timeout           | `TimeoutError`, `InterfaceError` | 69 (DependencyError)    | Retry with backoff    | Check network connectivity                   |
+| Too many connections      | `TooManyConnectionsError`        | 69 (DependencyError)    | Retry with backoff    | Increase `max_connections` or wait           |
+| Wrong password            | `InvalidPasswordError`           | 78 (ConfigurationError) | Halt (sleep infinity) | Fix `POSTGRESQL_PASSWORD`                    |
+| Database does not exist   | `InvalidCatalogNameError`        | 78 (ConfigurationError) | Halt (sleep infinity) | Create database or fix `POSTGRESQL_DATABASE` |
+| pgvector not installed    | Extension check failure          | 78 (ConfigurationError) | Halt (sleep infinity) | Enable pgvector extension                    |
+| Insufficient privileges   | `InsufficientPrivilegeError`     | 78 (ConfigurationError) | Halt (sleep infinity) | Grant permissions via dashboard              |
+| Codec registration failed | pgvector codec error             | 78 (ConfigurationError) | Halt (sleep infinity) | Check pgvector installation                  |
+
+**Examples:**
+
+**Scenario 1: PostgreSQL Not Running (Exit 69)**
+```
+[ERROR] Failed to connect to PostgreSQL: [Errno 111] Connection refused
+[docker-entrypoint] Server exited with code 69
+```
+- **Container behavior:** Restarts up to 5 times (restart policy)
+- **Why retry makes sense:** PostgreSQL service may start soon
+- **Fix:** Ensure PostgreSQL container is running and healthy
+
+**Scenario 2: Wrong Database Password (Exit 78)**
+```
+[ERROR] PostgreSQL authentication failed: password authentication failed
+[docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
+[docker-entrypoint] Server exited with code 78
+```
+- **Container behavior:** Halts (remains running but idle with `sleep infinity`)
+- **Why halt:** Password won't fix itself - requires human intervention
+- **Fix:** Update `POSTGRESQL_PASSWORD` in `.env` file and restart container
+
+**Scenario 3: pgvector Extension Not Installed (Exit 78)**
+```
+[ERROR] pgvector extension is not installed
+[docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
+[docker-entrypoint] Server exited with code 78
+```
+- **Container behavior:** Halts (remains running but idle)
+- **Why halt:** Extension must be manually enabled
+- **Fix:** Enable pgvector via Supabase Dashboard → Extensions or `CREATE EXTENSION vector;`
+
+**Scenario 4: Database Does Not Exist (Exit 78)**
+```
+[ERROR] PostgreSQL database does not exist: database "mcp_context" does not exist
+[docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
+[docker-entrypoint] Server exited with code 78
+```
+- **Container behavior:** Halts (remains running but idle)
+- **Why halt:** Database must be created manually
+- **Fix:** Create database or fix `POSTGRESQL_DATABASE` environment variable
+
+**Recovery Steps for Configuration Errors (Exit 78):**
+
+1. **Check container logs** to identify specific error:
+   ```bash
+   docker logs <container_name>
+   ```
+
+2. **Fix the configuration** based on error message:
+   - Wrong password: Update `.env` file with correct `POSTGRESQL_PASSWORD`
+   - Missing database: Create database or fix `POSTGRESQL_DATABASE`
+   - Missing extension: Enable pgvector via dashboard or SQL
+   - Permission denied: Grant required permissions (Supabase: use dashboard)
+
+3. **Stop and restart** the container:
+   ```bash
+   docker stop <container_name>
+   docker compose -f <your-compose-file>.yml up -d
+   ```
+
+**Understanding Exit Code 69 vs 78:**
+
+- **Exit 69 (Dependency Error):** External dependency temporarily unavailable
+  - Examples: PostgreSQL starting up, network hiccup, connection pool exhausted
+  - Container restarts automatically (may succeed when dependency becomes available)
+  - No human intervention needed
+
+- **Exit 78 (Configuration Error):** Configuration problem requiring human fix
+  - Examples: Wrong password, missing database, missing extension
+  - Container halts to prevent infinite restart loop
+  - Requires manual fix and restart
 
 ### Troubleshooting Container Halted State
 
