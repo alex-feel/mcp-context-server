@@ -182,47 +182,60 @@ async def _apply_chunking_migration_with_backend(
             cast(Any, _check_chunking_migration_applied_postgresql),
         )
 
+        # Early return if migration already applied (avoid unnecessary SQL execution)
+        if already_applied:
+            logger.info('Chunking migration: already applied for PostgreSQL, skipping SQL execution')
+            return
+
         # Template the migration SQL with configured schema
         schema = settings.storage.postgresql_schema
         migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
+        # Get migration timeout from settings
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _apply_postgresql(conn: asyncpg.Connection) -> None:
-            # Parse SQL statements, handling dollar-quoted DO blocks
-            statements: list[str] = []
-            current_stmt: list[str] = []
-            in_dollar_quote = False
+            # Set extended statement timeout for migration DDL operations
+            migration_timeout_ms = int(migration_timeout_s * 1000)
+            await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
 
-            for line in migration_sql.split('\n'):
-                stripped = line.strip()
-                # Skip comment-only lines outside dollar quotes
-                if stripped.startswith('--') and not in_dollar_quote:
-                    continue
-                # Track dollar-quoted strings (DO blocks)
-                if '$$' in stripped:
-                    in_dollar_quote = not in_dollar_quote
-                if stripped:
-                    current_stmt.append(line)
-                # End of statement: semicolon when not in dollar quotes
-                if stripped.endswith(';') and not in_dollar_quote:
+            try:
+                # Parse SQL statements, handling dollar-quoted DO blocks
+                statements: list[str] = []
+                current_stmt: list[str] = []
+                in_dollar_quote = False
+
+                for line in migration_sql.split('\n'):
+                    stripped = line.strip()
+                    # Skip comment-only lines outside dollar quotes
+                    if stripped.startswith('--') and not in_dollar_quote:
+                        continue
+                    # Track dollar-quoted strings (DO blocks)
+                    if '$$' in stripped:
+                        in_dollar_quote = not in_dollar_quote
+                    if stripped:
+                        current_stmt.append(line)
+                    # End of statement: semicolon when not in dollar quotes
+                    if stripped.endswith(';') and not in_dollar_quote:
+                        statements.append('\n'.join(current_stmt))
+                        current_stmt = []
+
+                # Add any remaining statement
+                if current_stmt:
                     statements.append('\n'.join(current_stmt))
-                    current_stmt = []
 
-            # Add any remaining statement
-            if current_stmt:
-                statements.append('\n'.join(current_stmt))
-
-            # Execute each statement
-            for stmt in statements:
-                stmt = stmt.strip()
-                if stmt and not stmt.startswith('--'):
-                    await conn.execute(stmt)
+                # Execute each statement
+                for stmt in statements:
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        await conn.execute(stmt)
+            finally:
+                # Restore default statement timeout after migration
+                default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
+                await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
 
         await manager.execute_write(cast(Any, _apply_postgresql))
-
-        if not already_applied:
-            logger.info('Applied chunking migration for PostgreSQL: 1:N embedding relationship enabled')
-        else:
-            logger.info('Chunking migration: verified for PostgreSQL')
+        logger.info('Applied chunking migration for PostgreSQL: 1:N embedding relationship enabled')
 
     else:  # sqlite
         # Check if already applied

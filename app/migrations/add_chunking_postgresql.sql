@@ -68,18 +68,26 @@ BEGIN
     END IF;
 END $$;
 
--- Step 7: Drop existing HNSW index (may reference old schema)
-DROP INDEX IF EXISTS {SCHEMA}.idx_vec_context_embeddings_hnsw;
+-- Step 7: Conditionally create HNSW index (idempotent)
+-- Only create if index does not exist; never drop/recreate
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname = '{SCHEMA}'
+        AND indexname = 'idx_vec_context_embeddings_hnsw'
+    ) THEN
+        CREATE INDEX idx_vec_context_embeddings_hnsw
+        ON {SCHEMA}.vec_context_embeddings
+        USING hnsw (embedding vector_l2_ops)
+        WITH (m = 16, ef_construction = 64);
+        RAISE NOTICE 'Chunking migration: HNSW index created';
+    ELSE
+        RAISE NOTICE 'Chunking migration: HNSW index already exists, skipping';
+    END IF;
+END $$;
 
--- Step 8: Recreate HNSW index for vector search
--- Using L2 distance (Euclidean distance) via vector_l2_ops
--- Parameters: m=16 (max connections per layer), ef_construction=64 (build quality)
-CREATE INDEX IF NOT EXISTS idx_vec_context_embeddings_hnsw
-ON {SCHEMA}.vec_context_embeddings
-USING hnsw (embedding vector_l2_ops)
-WITH (m = 16, ef_construction = 64);
-
--- Step 9: Add chunk_count column to embedding_metadata
+-- Step 8: Add chunk_count column to embedding_metadata
 -- This tracks how many chunks exist for each context_id
 ALTER TABLE {SCHEMA}.embedding_metadata
     ADD COLUMN IF NOT EXISTS chunk_count INTEGER NOT NULL DEFAULT 1;

@@ -569,7 +569,7 @@ class TestApplyChunkingMigrationPostgreSQL:
 
     @pytest.mark.asyncio
     async def test_migration_postgresql_idempotent(self) -> None:
-        """Verify PostgreSQL migration is idempotent (id column already exists)."""
+        """Verify PostgreSQL migration skips SQL execution when already applied."""
         env = {
             'MCP_TEST_MODE': '1',
             'STORAGE_BACKEND': 'postgresql',
@@ -582,7 +582,7 @@ class TestApplyChunkingMigrationPostgreSQL:
         with patch.dict(os.environ, env, clear=False):
             mock_backend = MagicMock()
             mock_backend.backend_type = 'postgresql'
-            # id column already exists
+            # id column already exists (migration already applied)
             mock_backend.execute_read = AsyncMock(return_value=True)
             mock_backend.execute_write = AsyncMock()
 
@@ -591,9 +591,10 @@ class TestApplyChunkingMigrationPostgreSQL:
             # Should not raise
             await apply_chunking_migration(backend=mock_backend)
 
-            # Should still write (SQL uses IF NOT EXISTS / IF EXISTS patterns)
+            # execute_read called to check if migration already applied
             mock_backend.execute_read.assert_called_once()
-            mock_backend.execute_write.assert_called_once()
+            # execute_write should NOT be called (early return when already applied)
+            mock_backend.execute_write.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_chunk_index_column_postgresql_sql(self) -> None:

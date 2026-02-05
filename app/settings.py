@@ -610,6 +610,16 @@ class StorageSettings(BaseSettings):
     postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX')
     postgresql_pool_timeout_s: float = Field(default=120.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
     postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
+    postgresql_migration_timeout_s: float = Field(
+        default=300.0,
+        alias='POSTGRESQL_MIGRATION_TIMEOUT_S',
+        gt=0,
+        le=3600,
+        description='Timeout in seconds for PostgreSQL migration operations. '
+                    'Migrations may run DDL operations (CREATE INDEX, ALTER TABLE) '
+                    'that require longer timeouts than regular queries. '
+                    'Default: 300 seconds (5 minutes).',
+    )
 
     # PostgreSQL connection pool hardening settings
     postgresql_max_inactive_lifetime_s: float = Field(
