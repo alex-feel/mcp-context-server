@@ -7,7 +7,7 @@ authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
-    "fastmcp==2.14.4",
+    "fastmcp==2.14.5",
     "pydantic-settings==2.12.0",
     "pydantic==2.12.5",
     "python-dotenv==1.2.1",
@@ -30,6 +30,7 @@ packages = ["app"]
 
 [tool.uv]
 package = true
+constraint-dependencies = ["python-multipart>=0.0.22"]  # CVE-2026-24486 fix
 
 [project.optional-dependencies]
 # Embedding providers - install ONE based on EMBEDDING_PROVIDER setting

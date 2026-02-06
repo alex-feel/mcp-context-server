@@ -312,6 +312,13 @@
           "name": "POSTGRESQL_COMMAND_TIMEOUT_S"
         },
         {
+          "description": "Timeout in seconds for PostgreSQL migration operations (default: 300)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_MIGRATION_TIMEOUT_S"
+        },
+        {
           "description": "Close idle PostgreSQL connections after this many seconds (0 to disable, default: 300)",
           "isRequired": false,
           "format": "number",
@@ -1112,6 +1119,13 @@
           "format": "number",
           "isSecret": false,
           "name": "POSTGRESQL_COMMAND_TIMEOUT_S"
+        },
+        {
+          "description": "Timeout in seconds for PostgreSQL migration operations (default: 300)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_MIGRATION_TIMEOUT_S"
         },
         {
           "description": "Close idle PostgreSQL connections after this many seconds (0 to disable, default: 300)",

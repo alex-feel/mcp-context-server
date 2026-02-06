@@ -249,14 +249,29 @@ async def store_context(
             if validated_images:
                 await repos.images.store_images(context_id, validated_images, txn=txn)
 
-            # Store embeddings (guaranteed to exist if we got here and embedding is enabled)
+            # Store embeddings only if:
+            # 1. New entry (not was_updated) - always store embeddings, OR
+            # 2. Deduplicated entry (was_updated) but no embeddings exist yet - store embeddings
+            # Skip if: Deduplicated entry AND embeddings already exist
             if chunk_embeddings is not None:
-                await repos.embeddings.store_chunked(
-                    context_id=context_id,
-                    chunk_embeddings=chunk_embeddings,
-                    model=settings.embedding.model,
-                    txn=txn,
-                )
+                should_store_embedding = True
+                if was_updated:
+                    embedding_exists = await repos.embeddings.exists(context_id)
+                    should_store_embedding = not embedding_exists
+                    if not should_store_embedding:
+                        logger.debug(
+                            f'Skipping embedding storage for deduplicated context {context_id} '
+                            f'(embeddings already exist)',
+                        )
+
+                if should_store_embedding:
+                    await repos.embeddings.store_chunked(
+                        context_id=context_id,
+                        chunk_embeddings=chunk_embeddings,
+                        model=settings.embedding.model,
+                        txn=txn,
+                        upsert=was_updated,
+                    )
 
             # COMMIT happens here - all or nothing
 

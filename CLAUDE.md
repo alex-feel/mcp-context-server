@@ -41,6 +41,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
      - `search.py`: search_context, semantic_search_context, fts_search_context, hybrid_search_context
      - `discovery.py`: list_threads, get_statistics
      - `batch.py`: store_context_batch, update_context_batch, delete_context_batch
+     - `descriptions.py`: Backend-specific dynamic tool descriptions (FTS: SQLite FTS5 vs PostgreSQL tsvector)
    - Dynamic tool registration via `register_tool()` from `app/tools/__init__.py`
    - Supports multiple transports: stdio (default), HTTP, streamable-http, SSE
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
@@ -56,7 +57,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - **StorageBackend Protocol** (`base.py`): Database-agnostic interface (8 methods including `begin_transaction()`)
    - **TransactionContext Protocol** (`base.py`): Provides `connection` and `backend_type` for multi-operation atomic transactions
    - **SQLiteBackend**: Connection pooling, write queue, circuit breaker
-   - **PostgreSQLBackend**: Async via asyncpg, connection pooling, MVCC, JSONB
+   - **PostgreSQLBackend**: Async via asyncpg, connection pooling, MVCC, JSONB, Pgpool-II detection, classified error handling
    - **Backend Factory** (`factory.py`): Creates backend based on `STORAGE_BACKEND` env var
 
 4. **Repository Pattern** (`app/repositories/`):
@@ -103,6 +104,12 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - 3 tables: `context_entries`, `tags`, `image_attachments`
    - SQLite: JSON, BLOB, WAL mode | PostgreSQL: JSONB, BYTEA, MVCC
    - Thread-scoped isolation, strategic indexing, cascade deletes
+
+12. **Error Classification** (`app/errors.py`):
+   - **ConfigurationError** (exit 78): Missing config, invalid env vars - supervisor NEVER retries
+   - **DependencyError** (exit 69): External service unavailable - supervisor MAY retry with backoff
+   - **classify_provider_error()**: Classifies embedding provider failures for container orchestration
+   - BSD sysexits.h exit codes for Docker/Kubernetes restart policies
 
 ### Modular Package Structure
 
@@ -156,6 +163,7 @@ app/
 │   └── dependencies.py, utils.py
 ├── auth/                  # Authentication
 │   └── simple_token.py   # SimpleTokenVerifier for HTTP transport
+├── errors.py              # ConfigurationError, DependencyError (exit codes 78, 69)
 ├── metadata_types.py      # MetadataFilter (16 operators)
 ├── query_builder.py       # Backend-aware SQL generation
 └── schemas/               # SQL schema files (sqlite_schema.sql, postgresql_schema.sql)
@@ -225,7 +233,7 @@ Optional linguistic search via `fts_search_context`. SQLite: FTS5 with BM25, Por
 
 ### Migration System
 
-Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, chunking (1:N embeddings). Changing `FTS_LANGUAGE` requires FTS table rebuild.
+Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, chunking (1:N embeddings). PostgreSQL migrations use `POSTGRESQL_MIGRATION_TIMEOUT_S` (300s default) for DDL operations (CREATE INDEX, ALTER TABLE). Changing `FTS_LANGUAGE` requires FTS table rebuild.
 
 ### Hybrid Search Implementation
 
@@ -276,7 +284,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Metadata Indexing**: `METADATA_INDEXED_FIELDS` (field:type format; default: status,agent_name,task_name,project,report_type,references:object,technologies:array), `METADATA_INDEX_SYNC_MODE` (additive*/strict/auto/warn)
 
-**PostgreSQL** (when STORAGE_BACKEND=postgresql): `POSTGRESQL_CONNECTION_STRING` (overrides individual settings), `_HOST` (localhost*), `_PORT` (5432*), `_USER` (postgres*), `_PASSWORD`, `_DATABASE` (mcp_context*), `_POOL_MIN` (2*), `_POOL_MAX` (20*), `_POOL_TIMEOUT_S` (120*), `_COMMAND_TIMEOUT_S` (60*), `_SSL_MODE` (prefer*), `_SCHEMA` (public*; required for Supabase), `_MAX_INACTIVE_LIFETIME_S` (300*), `_MAX_QUERIES` (10000*; 0 disables recycling), `_STATEMENT_CACHE_SIZE` (100*; 0 for PgBouncer/Pgpool-II compatibility), `_MAX_CACHED_STATEMENT_LIFETIME_S` (300*), `_MAX_CACHEABLE_STATEMENT_SIZE` (15360*)
+**PostgreSQL** (when STORAGE_BACKEND=postgresql): `POSTGRESQL_CONNECTION_STRING` (overrides individual settings), `_HOST` (localhost*), `_PORT` (5432*), `_USER` (postgres*), `_PASSWORD`, `_DATABASE` (mcp_context*), `_POOL_MIN` (2*), `_POOL_MAX` (20*), `_POOL_TIMEOUT_S` (120*), `_COMMAND_TIMEOUT_S` (60*), `_MIGRATION_TIMEOUT_S` (300*; DDL operations timeout), `_SSL_MODE` (prefer*), `_SCHEMA` (public*; required for Supabase), `_MAX_INACTIVE_LIFETIME_S` (300*), `_MAX_QUERIES` (10000*; 0 disables recycling), `_STATEMENT_CACHE_SIZE` (100*; 0 for PgBouncer/Pgpool-II compatibility), `_MAX_CACHED_STATEMENT_LIFETIME_S` (300*), `_MAX_CACHEABLE_STATEMENT_SIZE` (15360*)
 
 *\* = default value*. Additional tuning: connection pool, retry, circuit breaker settings in `app/settings.py`.
 
@@ -293,7 +301,7 @@ docker run --name pgvector18 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=post
 export STORAGE_BACKEND=postgresql
 uv run mcp-context-server  # Auto-initializes schema, enables pgvector
 ```
-MVCC (10x+ throughput), asyncpg pooling, JSONB/GIN indexes, pgvector. Multi-user/high-traffic.
+MVCC (10x+ throughput), asyncpg pooling, JSONB/GIN indexes, pgvector. Multi-user/high-traffic. Pgpool-II auto-detected (disables prepared statements). Classified error handling: ConfigurationError (exit 78, no retry) vs DependencyError (exit 69, retry with backoff).
 
 ### Supabase
 `STORAGE_BACKEND=postgresql` + `POSTGRESQL_CONNECTION_STRING`. Session Pooler for IPv4. "getaddrinfo failed" = switch from Direct to Session Pooler. Enable pgvector via Dashboard → Extensions.
@@ -404,7 +412,7 @@ async def my_tool(
     return {'success': True}
 ```
 
-**Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `test_real_server.py` 7) Update `server.json` if new env vars
+**Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `test_real_server.py` 7) Update `server.json` if new env vars 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py`
 
 **Annotation categories**: READ_ONLY (readOnlyHint=True), ADDITIVE (destructiveHint=False), UPDATE (destructiveHint=True, idempotentHint=False), DELETE (destructiveHint=True, idempotentHint=True)
 
@@ -451,4 +459,4 @@ Repository pattern, automatic connection pooling, parameterized queries, retry w
 
 ### Testing Conventions
 
-Unit: `mock_server_dependencies`. Integration: `initialized_server` (SQLite temp DB). Always add `test_real_server.py` tests. SQLite-only test suite (PostgreSQL is production-only).
+Unit: `mock_server_dependencies`. Integration: `initialized_server` (SQLite temp DB). Always add `test_real_server.py` tests. SQLite-only test suite (PostgreSQL is production-only). Race condition tests: `test_embedding_deduplication_race.py`. Error classification tests: `test_errors.py`. Pgpool-II detection tests: `test_pgpool_detection.py`.

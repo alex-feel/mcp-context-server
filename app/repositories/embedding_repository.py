@@ -124,6 +124,8 @@ class EmbeddingRepository(BaseRepository):
         chunk_embeddings: list[ChunkEmbedding],
         model: str,
         txn: TransactionContext | None = None,
+        *,
+        upsert: bool = False,
     ) -> None:
         """Store multiple chunk embeddings with boundaries for a context entry atomically.
 
@@ -138,12 +140,25 @@ class EmbeddingRepository(BaseRepository):
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
+            upsert: If True, delete existing embeddings before storing new ones.
+                Use this for defense-in-depth when deduplication is possible.
+                Default is False for backward compatibility.
 
         Raises:
             ValueError: If chunk_embeddings list is empty
         """
         if not chunk_embeddings:
             raise ValueError('chunk_embeddings list cannot be empty')
+
+        # Defense-in-depth: if upsert enabled, delete existing embeddings first
+        # This ensures idempotency - calling multiple times produces same result
+        if upsert:
+            deleted_count = await self.delete_all_chunks(context_id, txn=txn)
+            if deleted_count > 0:
+                logger.debug(
+                    f'UPSERT mode: deleted {deleted_count} existing chunk embeddings '
+                    f'for context {context_id} before storing new ones',
+                )
 
         chunk_count = len(chunk_embeddings)
         backend_type = txn.backend_type if txn else self.backend.backend_type

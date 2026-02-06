@@ -25,6 +25,9 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 
 - `uv` package manager ([install instructions](https://docs.astral.sh/uv/getting-started/installation/))
 - An MCP-compatible client (Claude Code, LangGraph, or any MCP client)
+- Ollama (for embedding generation - default behavior):
+  - Install from [ollama.com/download](https://ollama.com/download)
+  - Pull embedding model: `ollama pull qwen3-embedding:0.6b`
 
 ## Adding the Server to Claude Code
 
@@ -33,20 +36,12 @@ There are two ways to add the MCP Context Server to Claude Code:
 ### Method 1: Using CLI Command
 
 ```bash
-# From PyPI (recommended) - includes reranking enabled by default
-claude mcp add context-server -- uvx --python 3.12 --with mcp-context-server[reranking] mcp-context-server
-
-# Or from GitHub (latest development version)
-claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with mcp-context-server[reranking] mcp-context-server
-
-# Or with semantic search using Ollama (for setup instructions, see docs/semantic-search.md)
+# Default setup (recommended) - embeddings + reranking
+# Requires: Ollama installed + model pulled (see Prerequisites)
 claude mcp add context-server -- uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
 
-# Or from GitHub (latest development version) with semantic search
+# From GitHub (latest development version)
 claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
-
-# Available embedding providers: embeddings-ollama (default), embeddings-openai, embeddings-azure, embeddings-huggingface, embeddings-voyage
-# Note: The `--extra reranking` is necessary to enable reranking.
 ```
 
 For more details, see: https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server
@@ -61,18 +56,18 @@ Add the following to your `.mcp.json` file in your project directory:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[reranking]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"],
       "env": {}
     }
   }
 }
 ```
 
-**Note:** The `--extra reranking` is necessary to enable reranking.
+**Prerequisites:** Ollama must be installed with the embedding model pulled (`ollama pull qwen3-embedding:0.6b`).
 
 For the latest development version from GitHub, use:
 ```json
-"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "--with", "mcp-context-server[reranking]", "mcp-context-server"]
+"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"]
 ```
 
 For configuration file locations and details, see: https://docs.claude.com/en/docs/claude-code/settings#settings-files
@@ -101,7 +96,7 @@ Example configuration with environment variables:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[reranking]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"],
       "env": {
         "LOG_LEVEL": "${LOG_LEVEL:-INFO}",
         "DB_PATH": "${DB_PATH:-~/.mcp/context_storage.db}",
