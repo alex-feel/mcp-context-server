@@ -316,15 +316,27 @@ async def store_context_batch(
                     if entry.get('images'):
                         await repos.images.store_images(context_id, entry['images'], txn=txn)
 
-                    # Store embeddings (guaranteed to exist if embedding is enabled)
+                    # Store embeddings only if needed (skip for deduplicated entries with existing embeddings)
                     entry_chunk_embeddings = entry_embeddings.get(ve_idx)
                     if entry_chunk_embeddings is not None:
-                        await repos.embeddings.store_chunked(
-                            context_id=context_id,
-                            chunk_embeddings=entry_chunk_embeddings,
-                            model=settings.embedding.model,
-                            txn=txn,
-                        )
+                        should_store_embedding = True
+                        if was_updated:
+                            embedding_exists = await repos.embeddings.exists(context_id)
+                            should_store_embedding = not embedding_exists
+                            if not should_store_embedding:
+                                logger.debug(
+                                    f'Skipping embedding storage for deduplicated context {context_id} '
+                                    f'at index {original_idx} (embeddings already exist)',
+                                )
+
+                        if should_store_embedding:
+                            await repos.embeddings.store_chunked(
+                                context_id=context_id,
+                                chunk_embeddings=entry_chunk_embeddings,
+                                model=settings.embedding.model,
+                                txn=txn,
+                                upsert=was_updated,
+                            )
 
                     results.append(BulkStoreResultItemDict(
                         index=original_idx,
@@ -362,15 +374,27 @@ async def store_context_batch(
                         if entry.get('images'):
                             await repos.images.store_images(context_id, entry['images'], txn=txn)
 
-                        # Store embeddings
+                        # Store embeddings only if needed (skip for deduplicated entries with existing embeddings)
                         entry_chunk_embeddings = entry_embeddings.get(ve_idx)
                         if entry_chunk_embeddings is not None:
-                            await repos.embeddings.store_chunked(
-                                context_id=context_id,
-                                chunk_embeddings=entry_chunk_embeddings,
-                                model=settings.embedding.model,
-                                txn=txn,
-                            )
+                            should_store_embedding = True
+                            if was_updated:
+                                embedding_exists = await repos.embeddings.exists(context_id)
+                                should_store_embedding = not embedding_exists
+                                if not should_store_embedding:
+                                    logger.debug(
+                                        f'Skipping embedding storage for deduplicated context {context_id} '
+                                        f'at index {original_idx} (embeddings already exist)',
+                                    )
+
+                            if should_store_embedding:
+                                await repos.embeddings.store_chunked(
+                                    context_id=context_id,
+                                    chunk_embeddings=entry_chunk_embeddings,
+                                    model=settings.embedding.model,
+                                    txn=txn,
+                                    upsert=was_updated,
+                                )
 
                         # COMMIT happens here for this entry
 
