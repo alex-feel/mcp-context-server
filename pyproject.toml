@@ -30,6 +30,7 @@ packages = ["app"]
 
 [tool.uv]
 package = true
+constraint-dependencies = ["python-multipart>=0.0.22"]  # CVE-2026-24486 fix
 
 [project.optional-dependencies]
 # Embedding providers - install ONE based on EMBEDDING_PROVIDER setting
