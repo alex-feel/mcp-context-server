@@ -1,0 +1,69 @@
+# Docker Compose for MCP Context Server with SQLite + Ollama Embeddings
+# Usage: docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml up -d
+#
+# Optional: For additional configuration (LangSmith tracing, log level):
+#   1. Copy .env-sqlite.ollama.example to .env
+#   2. Configure desired settings in .env
+#   3. Run normally - the .env file will be loaded automatically
+
+services:
+  mcp-context-server:
+    image: mcp-context-server
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    pull_policy: build
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - MCP_TRANSPORT=http
+      - FASTMCP_HOST=0.0.0.0
+      - FASTMCP_PORT=8000
+      - LOG_LEVEL=INFO
+      - STORAGE_BACKEND=sqlite
+      - DB_PATH=/data/context_storage.db
+      - ENABLE_SEMANTIC_SEARCH=true
+      # Embedding provider selection (default: ollama)
+      - EMBEDDING_PROVIDER=ollama
+      - OLLAMA_HOST=http://ollama:11434
+      - EMBEDDING_MODEL=qwen3-embedding:0.6b
+      - EMBEDDING_DIM=1024
+      - ENABLE_FTS=true
+      - ENABLE_HYBRID_SEARCH=true
+      # LangSmith tracing (optional, disabled by default)
+      # - LANGSMITH_TRACING=false
+      # - LANGSMITH_API_KEY=
+      # - LANGSMITH_PROJECT=mcp-context-server
+    volumes:
+      - mcp-data:/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: on-failure
+
+  ollama:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/ollama/Dockerfile
+    pull_policy: build
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - MODEL=qwen3-embedding:0.6b
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q \"$${MODEL%%:*}\" || exit 1"]
+      interval: 10s
+      timeout: 30s
+      retries: 30
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  mcp-data:
+    name: mcp-context-sqlite-ollama-data
+  ollama-data:
+    name: ollama-models
