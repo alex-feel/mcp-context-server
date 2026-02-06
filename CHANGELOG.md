@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.2](https://github.com/alex-feel/mcp-context-server/compare/v1.3.1...v1.3.2) (2026-02-06)
+
+
+### Bug Fixes
+
+* add python-multipart constraint for CVE-2026-24486 ([9c6d2ea](https://github.com/alex-feel/mcp-context-server/commit/9c6d2ea7d39f7f2f579559ccdbc32c42031afa8f))
+* resolve embedding deduplication race condition ([89f6596](https://github.com/alex-feel/mcp-context-server/commit/89f6596d18bbc10e18662ed86f62c46fe80fd5a1))
+* resolve PostgreSQL migration timeout and idempotency issues ([d2f8f8e](https://github.com/alex-feel/mcp-context-server/commit/d2f8f8e3787c891ef6bde67652ec9fb3c8522406))
+
 ## [1.3.1](https://github.com/alex-feel/mcp-context-server/compare/v1.3.0...v1.3.1) (2026-01-25)
 
 

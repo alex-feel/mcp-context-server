@@ -6,13 +6,13 @@
     "url": "https://github.com/alex-feel/mcp-context-server",
     "source": "github"
   },
-  "version": "1.3.1",
+  "version": "1.3.2",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "mcp-context-server",
-      "version": "1.3.1",
+      "version": "1.3.2",
       "transport": {
         "type": "stdio"
       },
@@ -819,7 +819,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/alex-feel/mcp-context-server:1.3.1",
+      "identifier": "ghcr.io/alex-feel/mcp-context-server:1.3.2",
       "runtimeHint": "docker",
       "transport": {
         "type": "streamable-http",
