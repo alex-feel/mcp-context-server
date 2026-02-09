@@ -407,16 +407,25 @@ class PostgreSQLBackend:
             async def _reset_connection(conn: asyncpg.Connection) -> None:
                 """Validate and reset connection before returning to pool.
 
-                If validation fails, connection is terminated and pool creates a new one.
+                Ensures clean state by:
+                1. Rolling back any active transaction (safe no-op if none active)
+                2. Validating connection health with lightweight query
+                3. Resetting session GUC parameters
+
+                If any step fails, connection is terminated and pool creates a new one.
                 This catches corrupted connections before they cause protocol errors.
 
                 Called BEFORE connection returns to pool. If it raises, connection
                 is terminated (not returned to pool).
                 """
                 try:
+                    # Abort any active transaction FIRST
+                    # ROLLBACK is safe even if no transaction is active (no-op)
+                    # This handles cases where request cancellation left uncommitted work
+                    await conn.execute('ROLLBACK')
                     # Lightweight validation - catches protocol state mismatches
                     await conn.fetchval('SELECT 1')
-                    # Reset session state (releases locks, closes cursors, etc.)
+                    # Reset session state (GUC parameters only, NOT transactions)
                     await conn.execute('RESET ALL')
                     logger.debug('Connection reset successful before pool return')
                 except Exception as e:
