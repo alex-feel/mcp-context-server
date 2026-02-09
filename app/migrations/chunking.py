@@ -195,44 +195,50 @@ async def _apply_chunking_migration_with_backend(
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
         async def _apply_postgresql(conn: asyncpg.Connection) -> None:
-            # Set extended statement timeout for migration DDL operations
-            migration_timeout_ms = int(migration_timeout_s * 1000)
-            await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
-
+            # Acquire advisory lock for multi-pod DDL safety
+            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
             try:
-                # Parse SQL statements, handling dollar-quoted DO blocks
-                statements: list[str] = []
-                current_stmt: list[str] = []
-                in_dollar_quote = False
+                # Set extended statement timeout for migration DDL operations
+                migration_timeout_ms = int(migration_timeout_s * 1000)
+                await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
 
-                for line in migration_sql.split('\n'):
-                    stripped = line.strip()
-                    # Skip comment-only lines outside dollar quotes
-                    if stripped.startswith('--') and not in_dollar_quote:
-                        continue
-                    # Track dollar-quoted strings (DO blocks)
-                    if '$$' in stripped:
-                        in_dollar_quote = not in_dollar_quote
-                    if stripped:
-                        current_stmt.append(line)
-                    # End of statement: semicolon when not in dollar quotes
-                    if stripped.endswith(';') and not in_dollar_quote:
+                try:
+                    # Parse SQL statements, handling dollar-quoted DO blocks
+                    statements: list[str] = []
+                    current_stmt: list[str] = []
+                    in_dollar_quote = False
+
+                    for line in migration_sql.split('\n'):
+                        stripped = line.strip()
+                        # Skip comment-only lines outside dollar quotes
+                        if stripped.startswith('--') and not in_dollar_quote:
+                            continue
+                        # Track dollar-quoted strings (DO blocks)
+                        if '$$' in stripped:
+                            in_dollar_quote = not in_dollar_quote
+                        if stripped:
+                            current_stmt.append(line)
+                        # End of statement: semicolon when not in dollar quotes
+                        if stripped.endswith(';') and not in_dollar_quote:
+                            statements.append('\n'.join(current_stmt))
+                            current_stmt = []
+
+                    # Add any remaining statement
+                    if current_stmt:
                         statements.append('\n'.join(current_stmt))
-                        current_stmt = []
 
-                # Add any remaining statement
-                if current_stmt:
-                    statements.append('\n'.join(current_stmt))
-
-                # Execute each statement
-                for stmt in statements:
-                    stmt = stmt.strip()
-                    if stmt and not stmt.startswith('--'):
-                        await conn.execute(stmt)
+                    # Execute each statement
+                    for stmt in statements:
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith('--'):
+                            await conn.execute(stmt)
+                finally:
+                    # Restore default statement timeout after migration
+                    default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
+                    await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
             finally:
-                # Restore default statement timeout after migration
-                default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
-                await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
+                # Always release lock, even on error
+                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
 
         await manager.execute_write(cast(Any, _apply_postgresql))
         logger.info('Applied chunking migration for PostgreSQL: 1:N embedding relationship enabled')

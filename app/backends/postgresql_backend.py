@@ -494,7 +494,12 @@ class PostgreSQLBackend:
             raise
 
     async def _initialize_schema(self) -> None:
-        """Initialize database schema if tables don't exist."""
+        """Initialize database schema if tables don't exist.
+
+        Uses advisory lock to serialize DDL execution across multiple pods
+        in Kubernetes deployments, preventing 'tuple concurrently updated' errors
+        when concurrent instances attempt schema initialization simultaneously.
+        """
         schema_sql_template = load_schema(self.backend_type)
 
         # Template the schema SQL with configured schema name
@@ -529,19 +534,25 @@ class PostgreSQLBackend:
         if current_statement:
             statements.append('\n'.join(current_statement))
 
-        # Execute each statement
+        # Execute each statement with advisory lock for multi-pod safety
         assert self._pool is not None, 'Pool not initialized'
         async with self._pool.acquire() as conn:
-            for i, stmt in enumerate(statements):
-                stmt = stmt.strip()
-                if stmt and not stmt.startswith('--'):
-                    try:
-                        await conn.execute(stmt)
-                        logger.debug(f'Schema statement {i + 1}/{len(statements)}: SUCCESS')
-                    except Exception as e:
-                        logger.error(f'Schema statement {i + 1} FAILED: {e}')
-                        logger.error(f'Statement: {stmt[:200]}...')
-                        raise
+            # Acquire advisory lock to serialize DDL across pods
+            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
+            try:
+                for i, stmt in enumerate(statements):
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        try:
+                            await conn.execute(stmt)
+                            logger.debug(f'Schema statement {i + 1}/{len(statements)}: SUCCESS')
+                        except Exception as e:
+                            logger.error(f'Schema statement {i + 1} FAILED: {e}')
+                            logger.error(f'Statement: {stmt[:200]}...')
+                            raise
+            finally:
+                # Always release lock, even on error
+                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
 
         logger.info('Database schema initialized')
 
