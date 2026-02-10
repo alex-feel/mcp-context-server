@@ -475,6 +475,41 @@ If you want to use semantic search with Supabase, you must enable the pgvector e
 
 **Note:** The pgvector extension is available on all Supabase projects but must be manually enabled. The server will automatically create the necessary vector columns and indexes on first run.
 
+## Connection Resilience
+
+The PostgreSQL backend includes multi-layered protection against connection drops caused by network intermediaries (NAT, firewalls, proxies) that may close idle connections.
+
+### TCP Keepalive (Automatic)
+
+TCP keepalive is enabled by default on all PostgreSQL connections:
+
+| Setting        | Env Variable                           | Default | Description                             |
+|----------------|----------------------------------------|---------|-----------------------------------------|
+| Idle timeout   | `POSTGRESQL_TCP_KEEPALIVES_IDLE_S`     | 15      | Seconds before first keepalive probe    |
+| Probe interval | `POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S` | 5       | Seconds between keepalive probes        |
+| Probe count    | `POSTGRESQL_TCP_KEEPALIVES_COUNT`      | 3       | Failed probes before connection is dead |
+
+**How it works:**
+- **Client-side** (PRIMARY): Configured via `setsockopt()` on each connection's socket. Works through Supavisor, PgBouncer, and all connection proxies.
+- **Server-side** (SECONDARY): Configured via PostgreSQL GUC parameters. Effective for direct connections; silently ignored by Supavisor/PgBouncer.
+
+**Cross-platform:** Uses `hasattr()` checks for socket constants. Works on Linux, macOS, and Windows 10 v1703+.
+
+To disable TCP keepalive, set all three values to 0:
+```
+POSTGRESQL_TCP_KEEPALIVES_IDLE_S=0
+POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S=0
+POSTGRESQL_TCP_KEEPALIVES_COUNT=0
+```
+
+### Transaction Heartbeat
+
+Long-running transactions (e.g., storing context with embeddings) include periodic `SELECT 1` heartbeat queries between sequential database operations. This prevents intermediaries from classifying the connection as idle during inter-operation gaps.
+
+### Transaction Retry
+
+If a transaction fails due to a connection error, it is automatically retried up to 2 times with exponential backoff (0.5s, 1.0s). Only connection-level errors trigger retry; logical errors are raised immediately. Operations using deduplication are safe to retry.
+
 ## Why Direct Connection?
 
 - **Recommended by Supabase** for backend services and server-side applications
