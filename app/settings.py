@@ -635,6 +635,28 @@ class StorageSettings(BaseSettings):
         description='Recycle connections after this many queries (0 to disable)',
     )
 
+    # PostgreSQL TCP keepalive settings
+    # Configures client-side TCP keepalive to prevent network intermediaries
+    # (NAT, firewalls, proxies, Supavisor) from closing idle connections
+    postgresql_tcp_keepalives_idle_s: int = Field(
+        default=15,
+        alias='POSTGRESQL_TCP_KEEPALIVES_IDLE_S',
+        ge=0,
+        description='Seconds of idle time before sending first TCP keepalive probe (0 to disable)',
+    )
+    postgresql_tcp_keepalives_interval_s: int = Field(
+        default=5,
+        alias='POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S',
+        ge=0,
+        description='Seconds between subsequent TCP keepalive probes (0 to disable)',
+    )
+    postgresql_tcp_keepalives_count: int = Field(
+        default=3,
+        alias='POSTGRESQL_TCP_KEEPALIVES_COUNT',
+        ge=0,
+        description='Number of failed TCP keepalive probes before connection is considered dead (0 to disable)',
+    )
+
     # PostgreSQL asyncpg prepared statement cache settings
     # For external pooler compatibility (PgBouncer transaction mode, Pgpool-II, etc.),
     # set POSTGRESQL_STATEMENT_CACHE_SIZE=0 to disable caching

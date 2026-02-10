@@ -14,6 +14,7 @@ When embeddings are enabled:
 3. If ALL embeddings succeed, ALL database operations occur in a SINGLE atomic transaction
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -32,6 +33,8 @@ from app.startup import MAX_IMAGE_SIZE_MB
 from app.startup import MAX_TOTAL_SIZE_MB
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
+from app.tools.context import is_connection_error
+from app.tools.context import transaction_heartbeat
 from app.types import BulkDeleteResponseDict
 from app.types import BulkStoreResponseDict
 from app.types import BulkStoreResultItemDict
@@ -290,62 +293,90 @@ async def store_context_batch(
         backend = repos.context.backend
 
         if atomic:
-            # ATOMIC MODE: All entries in a single transaction
-            async with backend.begin_transaction() as txn:
-                for ve_idx, entry in validated_entries_filtered:
-                    original_idx = entry['index']
+            # ATOMIC MODE: All entries in a single transaction with retry
+            max_retries = 2
 
-                    # Store context entry with deduplication
-                    context_id, was_updated = await repos.context.store_with_deduplication(
-                        thread_id=entry['thread_id'],
-                        source=entry['source'],
-                        content_type=entry['content_type'],
-                        text_content=entry['text_content'],
-                        metadata=entry['metadata'],
-                        txn=txn,
-                    )
+            for attempt in range(max_retries + 1):
+                try:
+                    results_attempt: list[BulkStoreResultItemDict] = []
 
-                    if not context_id:
-                        raise ToolError(f'Failed to store context at index {original_idx}')
+                    async with backend.begin_transaction() as txn:
+                        for idx, (ve_idx, entry) in enumerate(validated_entries_filtered):
+                            original_idx = entry['index']
 
-                    # Store tags if provided
-                    if entry.get('tags'):
-                        await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
+                            # Heartbeat between entries (skip first)
+                            if idx > 0:
+                                await transaction_heartbeat(txn)
 
-                    # Store images if provided
-                    if entry.get('images'):
-                        await repos.images.store_images(context_id, entry['images'], txn=txn)
-
-                    # Store embeddings only if needed (skip for deduplicated entries with existing embeddings)
-                    entry_chunk_embeddings = entry_embeddings.get(ve_idx)
-                    if entry_chunk_embeddings is not None:
-                        should_store_embedding = True
-                        if was_updated:
-                            embedding_exists = await repos.embeddings.exists(context_id)
-                            should_store_embedding = not embedding_exists
-                            if not should_store_embedding:
-                                logger.debug(
-                                    f'Skipping embedding storage for deduplicated context {context_id} '
-                                    f'at index {original_idx} (embeddings already exist)',
-                                )
-
-                        if should_store_embedding:
-                            await repos.embeddings.store_chunked(
-                                context_id=context_id,
-                                chunk_embeddings=entry_chunk_embeddings,
-                                model=settings.embedding.model,
+                            # Store context entry with deduplication
+                            context_id, was_updated = await repos.context.store_with_deduplication(
+                                thread_id=entry['thread_id'],
+                                source=entry['source'],
+                                content_type=entry['content_type'],
+                                text_content=entry['text_content'],
+                                metadata=entry['metadata'],
                                 txn=txn,
-                                upsert=was_updated,
                             )
 
-                    results.append(BulkStoreResultItemDict(
-                        index=original_idx,
-                        success=True,
-                        context_id=context_id,
-                        error=None,
-                    ))
+                            if not context_id:
+                                raise ToolError(f'Failed to store context at index {original_idx}')
 
-                # COMMIT happens here - all or nothing
+                            # Store tags if provided
+                            if entry.get('tags'):
+                                await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
+
+                            # Store images if provided
+                            if entry.get('images'):
+                                await repos.images.store_images(context_id, entry['images'], txn=txn)
+
+                            # Store embeddings only if needed (skip for deduplicated entries with existing embeddings)
+                            entry_chunk_embeddings = entry_embeddings.get(ve_idx)
+                            if entry_chunk_embeddings is not None:
+                                should_store_embedding = True
+                                if was_updated:
+                                    embedding_exists = await repos.embeddings.exists(context_id)
+                                    should_store_embedding = not embedding_exists
+                                    if not should_store_embedding:
+                                        logger.debug(
+                                            f'Skipping embedding storage for deduplicated context {context_id} '
+                                            f'at index {original_idx} (embeddings already exist)',
+                                        )
+
+                                if should_store_embedding:
+                                    await repos.embeddings.store_chunked(
+                                        context_id=context_id,
+                                        chunk_embeddings=entry_chunk_embeddings,
+                                        model=settings.embedding.model,
+                                        txn=txn,
+                                        upsert=was_updated,
+                                    )
+
+                            results_attempt.append(BulkStoreResultItemDict(
+                                index=original_idx,
+                                success=True,
+                                context_id=context_id,
+                                error=None,
+                            ))
+
+                        # COMMIT happens here - all or nothing
+
+                    # Transaction committed successfully
+                    results.extend(results_attempt)
+                    break
+
+                except ToolError:
+                    raise  # Logical error — do not retry
+                except Exception as e:
+                    if is_connection_error(e) and attempt < max_retries:
+                        delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                        logger.warning(
+                            'Atomic batch store transaction failed, retrying in %.1fs '
+                            '(attempt %d/%d): %s',
+                            delay, attempt + 1, max_retries, e,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise  # Non-connection error or max retries exceeded
         else:
             # NON-ATOMIC MODE: Each entry in its own transaction
             for ve_idx, entry in validated_entries_filtered:
@@ -366,6 +397,9 @@ async def store_context_batch(
                         if not context_id:
                             raise ToolError(f'Failed to store context at index {original_idx}')
 
+                        # Heartbeat between sub-operations
+                        await transaction_heartbeat(txn)
+
                         # Store tags if provided
                         if entry.get('tags'):
                             await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
@@ -377,6 +411,8 @@ async def store_context_batch(
                         # Store embeddings only if needed (skip for deduplicated entries with existing embeddings)
                         entry_chunk_embeddings = entry_embeddings.get(ve_idx)
                         if entry_chunk_embeddings is not None:
+                            # Heartbeat before potentially long embedding storage
+                            await transaction_heartbeat(txn)
                             should_store_embedding = True
                             if was_updated:
                                 embedding_exists = await repos.embeddings.exists(context_id)
@@ -755,79 +791,110 @@ async def update_context_batch(
         backend = repos.context.backend
 
         if atomic:
-            # ATOMIC MODE: All updates in a single transaction
-            async with backend.begin_transaction() as txn:
-                for vu_idx, update in validated_updates_final:
-                    original_idx = update['index']
-                    context_id = update['context_id']
-                    updated_fields: list[str] = []
+            # ATOMIC MODE: All updates in a single transaction with retry
+            max_retries = 2
 
-                    # Update text and/or metadata (full replacement)
-                    if update.get('text') is not None or update.get('metadata') is not None:
-                        metadata_str = None
-                        if update.get('metadata') is not None:
-                            metadata_str = json.dumps(update['metadata'], ensure_ascii=False)
+            for attempt in range(max_retries + 1):
+                try:
+                    results_attempt: list[BulkUpdateResultItemDict] = []
 
-                        success, fields = await repos.context.update_context_entry(
-                            context_id=context_id,
-                            text_content=update.get('text'),
-                            metadata=metadata_str,
-                            txn=txn,
+                    async with backend.begin_transaction() as txn:
+                        for idx, (vu_idx, update) in enumerate(validated_updates_final):
+                            original_idx = update['index']
+                            context_id = update['context_id']
+                            updated_fields: list[str] = []
+
+                            # Heartbeat between entries (skip first)
+                            if idx > 0:
+                                await transaction_heartbeat(txn)
+
+                            # Update text and/or metadata (full replacement)
+                            if update.get('text') is not None or update.get('metadata') is not None:
+                                metadata_str = None
+                                if update.get('metadata') is not None:
+                                    metadata_str = json.dumps(update['metadata'], ensure_ascii=False)
+
+                                success, fields = await repos.context.update_context_entry(
+                                    context_id=context_id,
+                                    text_content=update.get('text'),
+                                    metadata=metadata_str,
+                                    txn=txn,
+                                )
+                                if success:
+                                    updated_fields.extend(fields)
+
+                            # Apply metadata patch if provided
+                            if update.get('metadata_patch') is not None:
+                                success, fields = await repos.context.patch_metadata(
+                                    context_id=context_id,
+                                    patch=update['metadata_patch'],
+                                    txn=txn,
+                                )
+                                if success:
+                                    updated_fields.extend(fields)
+
+                            # Replace tags if provided
+                            if update.get('tags') is not None:
+                                await repos.tags.replace_tags_for_context(context_id, update['tags'], txn=txn)
+                                updated_fields.append('tags')
+
+                            # Replace images if provided
+                            if update.get('images') is not None:
+                                update_images = update['images']
+                                if len(update_images) == 0:
+                                    await repos.images.replace_images_for_context(context_id, [], txn=txn)
+                                    await repos.context.update_content_type(context_id, 'text', txn=txn)
+                                    updated_fields.extend(['images', 'content_type'])
+                                else:
+                                    await repos.images.replace_images_for_context(context_id, update_images, txn=txn)
+                                    await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
+                                    updated_fields.extend(['images', 'content_type'])
+
+                            # Store embeddings (only if text was changed and embedding exists)
+                            entry_chunk_embeddings = update_embeddings.get(vu_idx)
+                            if entry_chunk_embeddings is not None:
+                                # Heartbeat before embedding operations
+                                await transaction_heartbeat(txn)
+
+                                # Delete existing chunks first (within the same transaction)
+                                await repos.embeddings.delete_all_chunks(context_id, txn=txn)
+
+                                # Store new embeddings
+                                await repos.embeddings.store_chunked(
+                                    context_id=context_id,
+                                    chunk_embeddings=entry_chunk_embeddings,
+                                    model=settings.embedding.model,
+                                    txn=txn,
+                                )
+                                updated_fields.append('embedding')
+
+                            results_attempt.append(BulkUpdateResultItemDict(
+                                index=original_idx,
+                                context_id=context_id,
+                                success=True,
+                                updated_fields=updated_fields,
+                                error=None,
+                            ))
+
+                        # COMMIT happens here - all or nothing
+
+                    # Transaction committed successfully
+                    results.extend(results_attempt)
+                    break
+
+                except ToolError:
+                    raise  # Logical error — do not retry
+                except Exception as e:
+                    if is_connection_error(e) and attempt < max_retries:
+                        delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                        logger.warning(
+                            'Atomic batch update transaction failed, retrying in %.1fs '
+                            '(attempt %d/%d): %s',
+                            delay, attempt + 1, max_retries, e,
                         )
-                        if success:
-                            updated_fields.extend(fields)
-
-                    # Apply metadata patch if provided
-                    if update.get('metadata_patch') is not None:
-                        success, fields = await repos.context.patch_metadata(
-                            context_id=context_id,
-                            patch=update['metadata_patch'],
-                            txn=txn,
-                        )
-                        if success:
-                            updated_fields.extend(fields)
-
-                    # Replace tags if provided
-                    if update.get('tags') is not None:
-                        await repos.tags.replace_tags_for_context(context_id, update['tags'], txn=txn)
-                        updated_fields.append('tags')
-
-                    # Replace images if provided
-                    if update.get('images') is not None:
-                        update_images = update['images']
-                        if len(update_images) == 0:
-                            await repos.images.replace_images_for_context(context_id, [], txn=txn)
-                            await repos.context.update_content_type(context_id, 'text', txn=txn)
-                            updated_fields.extend(['images', 'content_type'])
-                        else:
-                            await repos.images.replace_images_for_context(context_id, update_images, txn=txn)
-                            await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
-                            updated_fields.extend(['images', 'content_type'])
-
-                    # Store embeddings (only if text was changed and embedding exists)
-                    entry_chunk_embeddings = update_embeddings.get(vu_idx)
-                    if entry_chunk_embeddings is not None:
-                        # Delete existing chunks first (within the same transaction)
-                        await repos.embeddings.delete_all_chunks(context_id, txn=txn)
-
-                        # Store new embeddings
-                        await repos.embeddings.store_chunked(
-                            context_id=context_id,
-                            chunk_embeddings=entry_chunk_embeddings,
-                            model=settings.embedding.model,
-                            txn=txn,
-                        )
-                        updated_fields.append('embedding')
-
-                    results.append(BulkUpdateResultItemDict(
-                        index=original_idx,
-                        context_id=context_id,
-                        success=True,
-                        updated_fields=updated_fields,
-                        error=None,
-                    ))
-
-                # COMMIT happens here - all or nothing
+                        await asyncio.sleep(delay)
+                        continue
+                    raise  # Non-connection error or max retries exceeded
         else:
             # NON-ATOMIC MODE: Each update in its own transaction
             for vu_idx, update in validated_updates_final:
@@ -883,6 +950,9 @@ async def update_context_batch(
                         # Store embeddings
                         entry_chunk_embeddings = update_embeddings.get(vu_idx)
                         if entry_chunk_embeddings is not None:
+                            # Heartbeat before embedding operations
+                            await transaction_heartbeat(txn)
+
                             # Delete existing chunks first (within the same transaction)
                             await repos.embeddings.delete_all_chunks(context_id, txn=txn)
 

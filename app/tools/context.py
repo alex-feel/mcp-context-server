@@ -14,6 +14,7 @@ This module implements atomic embedding + data storage. When embeddings are enab
 3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -21,6 +22,7 @@ from typing import Annotated
 from typing import Literal
 from typing import cast
 
+import asyncpg
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
@@ -98,6 +100,56 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
         # CRITICAL: Embedding generation failed - this error must be raised
         # to prevent any data from being saved
         raise ToolError(f'Embedding generation failed: {format_exception_message(e)}') from e
+
+
+async def transaction_heartbeat(txn: object) -> None:
+    """Send lightweight heartbeat to prevent network intermediary idle timeout.
+
+    Executes SELECT 1 on the connection to generate wire-protocol traffic,
+    preventing NAT/firewall/proxy from classifying the connection as idle
+    and closing it during long-running transactions.
+
+    This is a defense-in-depth measure complementing TCP keepalive:
+    - TCP keepalive operates at kernel level (probes every ~15s)
+    - Heartbeat operates at application level (between sequential DB operations)
+    - Together they provide maximum protection against intermediary timeouts
+
+    For SQLite connections this is a no-op since SQLite does not use network
+    connections and is not subject to intermediary idle timeouts.
+
+    Args:
+        txn: Transaction context (TransactionContext) providing connection and backend_type.
+             Accepts object type for compatibility across backends.
+    """
+    backend_type = getattr(txn, 'backend_type', None)
+    if backend_type != 'postgresql':
+        return
+    conn = getattr(txn, 'connection', None)
+    if conn is None:
+        return
+    pg_conn = cast(asyncpg.Connection, conn)
+    await pg_conn.execute('SELECT 1')
+
+
+def is_connection_error(exc: Exception) -> bool:
+    """Check if an exception indicates a connection-level failure.
+
+    These errors are safe to retry because they indicate the connection
+    was lost (not a logical/data error). Operations using deduplication
+    (store_context) or idempotent updates are safe to retry.
+
+    Args:
+        exc: The exception to classify
+
+    Returns:
+        True if the exception is a connection error safe for retry
+    """
+    return isinstance(exc, (
+        asyncpg.InterfaceError,
+        asyncpg.ConnectionDoesNotExistError,
+        ConnectionResetError,
+        OSError,
+    ))
 
 
 async def store_context(
@@ -226,54 +278,84 @@ async def store_context(
         backend = repos.context.backend
         metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
 
-        async with backend.begin_transaction() as txn:
-            # Store context entry with deduplication
-            context_id, was_updated = await repos.context.store_with_deduplication(
-                thread_id=thread_id,
-                source=source,
-                content_type=content_type,
-                text_content=text,
-                metadata=metadata_str,
-                txn=txn,
-            )
+        max_retries = 2
+        context_id = 0
+        was_updated = False
 
-            # Ensure we got a valid ID (not None or 0)
-            if not context_id:
-                raise ToolError('Failed to store context')
-
-            # Store normalized tags
-            if tags:
-                await repos.tags.store_tags(context_id, tags, txn=txn)
-
-            # Store images
-            if validated_images:
-                await repos.images.store_images(context_id, validated_images, txn=txn)
-
-            # Store embeddings only if:
-            # 1. New entry (not was_updated) - always store embeddings, OR
-            # 2. Deduplicated entry (was_updated) but no embeddings exist yet - store embeddings
-            # Skip if: Deduplicated entry AND embeddings already exist
-            if chunk_embeddings is not None:
-                should_store_embedding = True
-                if was_updated:
-                    embedding_exists = await repos.embeddings.exists(context_id)
-                    should_store_embedding = not embedding_exists
-                    if not should_store_embedding:
-                        logger.debug(
-                            f'Skipping embedding storage for deduplicated context {context_id} '
-                            f'(embeddings already exist)',
-                        )
-
-                if should_store_embedding:
-                    await repos.embeddings.store_chunked(
-                        context_id=context_id,
-                        chunk_embeddings=chunk_embeddings,
-                        model=settings.embedding.model,
+        for attempt in range(max_retries + 1):
+            try:
+                async with backend.begin_transaction() as txn:
+                    # Store context entry with deduplication
+                    context_id, was_updated = await repos.context.store_with_deduplication(
+                        thread_id=thread_id,
+                        source=source,
+                        content_type=content_type,
+                        text_content=text,
+                        metadata=metadata_str,
                         txn=txn,
-                        upsert=was_updated,
                     )
 
-            # COMMIT happens here - all or nothing
+                    # Ensure we got a valid ID (not None or 0)
+                    if not context_id:
+                        raise ToolError('Failed to store context')
+
+                    # Heartbeat: keep connection alive between sequential operations
+                    await transaction_heartbeat(txn)
+
+                    # Store normalized tags
+                    if tags:
+                        await repos.tags.store_tags(context_id, tags, txn=txn)
+
+                    # Store images
+                    if validated_images:
+                        await repos.images.store_images(context_id, validated_images, txn=txn)
+
+                    # Heartbeat before potentially long embedding storage
+                    if chunk_embeddings is not None:
+                        await transaction_heartbeat(txn)
+
+                    # Store embeddings only if:
+                    # 1. New entry (not was_updated) - always store embeddings, OR
+                    # 2. Deduplicated entry (was_updated) but no embeddings exist yet - store embeddings
+                    # Skip if: Deduplicated entry AND embeddings already exist
+                    if chunk_embeddings is not None:
+                        should_store_embedding = True
+                        if was_updated:
+                            embedding_exists = await repos.embeddings.exists(context_id)
+                            should_store_embedding = not embedding_exists
+                            if not should_store_embedding:
+                                logger.debug(
+                                    f'Skipping embedding storage for deduplicated context {context_id} '
+                                    f'(embeddings already exist)',
+                                )
+
+                        if should_store_embedding:
+                            await repos.embeddings.store_chunked(
+                                context_id=context_id,
+                                chunk_embeddings=chunk_embeddings,
+                                model=settings.embedding.model,
+                                txn=txn,
+                                upsert=was_updated,
+                            )
+
+                    # COMMIT happens here - all or nothing
+
+                # Transaction committed successfully — break retry loop
+                break
+
+            except ToolError:
+                raise  # ToolError is a logical error, not connection error — do not retry
+            except Exception as e:
+                if is_connection_error(e) and attempt < max_retries:
+                    delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    logger.warning(
+                        'Transaction failed with connection error, retrying in %.1fs '
+                        '(attempt %d/%d): %s',
+                        delay, attempt + 1, max_retries, e,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise  # Non-connection error or max retries exceeded
 
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
@@ -572,100 +654,127 @@ async def update_context(
         backend = repos.context.backend
         updated_fields: list[str] = []
 
-        async with backend.begin_transaction() as txn:
-            # Update text content and/or metadata (full replacement) if provided
-            if text is not None or metadata is not None:
-                # Prepare metadata JSON string if provided
-                metadata_str: str | None = None
-                if metadata is not None:
-                    metadata_str = json.dumps(metadata, ensure_ascii=False)
+        max_retries = 2
 
-                # Update context entry
-                success, fields = await repos.context.update_context_entry(
-                    context_id=context_id,
-                    text_content=text,
-                    metadata=metadata_str,
-                    txn=txn,
-                )
+        for attempt in range(max_retries + 1):
+            try:
+                updated_fields = []  # Reset on each attempt
 
-                if not success:
-                    raise ToolError('Failed to update context entry')
+                async with backend.begin_transaction() as txn:
+                    # Update text content and/or metadata (full replacement) if provided
+                    if text is not None or metadata is not None:
+                        # Prepare metadata JSON string if provided
+                        metadata_str: str | None = None
+                        if metadata is not None:
+                            metadata_str = json.dumps(metadata, ensure_ascii=False)
 
-                updated_fields.extend(fields)
+                        # Update context entry
+                        success, fields = await repos.context.update_context_entry(
+                            context_id=context_id,
+                            text_content=text,
+                            metadata=metadata_str,
+                            txn=txn,
+                        )
 
-            # Apply metadata patch (partial update) if provided
-            # RFC 7396 JSON Merge Patch: merges with existing metadata
-            # - New keys are added
-            # - Existing keys are replaced with new values
-            # - null values DELETE keys (cannot store null values with patch)
-            if metadata_patch is not None:
-                success, fields = await repos.context.patch_metadata(
-                    context_id=context_id,
-                    patch=metadata_patch,
-                    txn=txn,
-                )
+                        if not success:
+                            raise ToolError('Failed to update context entry')
 
-                if not success:
-                    raise ToolError('Failed to patch metadata')
+                        updated_fields.extend(fields)
 
-                updated_fields.extend(fields)
-                logger.debug(f'Applied metadata patch to context {context_id}')
+                    # Apply metadata patch (partial update) if provided
+                    # RFC 7396 JSON Merge Patch: merges with existing metadata
+                    # - New keys are added
+                    # - Existing keys are replaced with new values
+                    # - null values DELETE keys (cannot store null values with patch)
+                    if metadata_patch is not None:
+                        success, fields = await repos.context.patch_metadata(
+                            context_id=context_id,
+                            patch=metadata_patch,
+                            txn=txn,
+                        )
 
-            # Replace tags if provided
-            if tags is not None:
-                await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
-                updated_fields.append('tags')
-                logger.debug(f'Replaced tags for context {context_id}')
+                        if not success:
+                            raise ToolError('Failed to patch metadata')
 
-            # Replace images if provided
-            if images is not None:
-                # If images list is empty (removing all images), update content_type to text
-                if len(images) == 0:
-                    await repos.images.replace_images_for_context(context_id, [], txn=txn)
-                    await repos.context.update_content_type(context_id, 'text', txn=txn)
-                    updated_fields.extend(['images', 'content_type'])
-                    logger.debug(f'Removed all images from context {context_id}')
-                else:
-                    # Replace images with validated data
-                    await repos.images.replace_images_for_context(context_id, validated_images, txn=txn)
-                    updated_fields.append('images')
+                        updated_fields.extend(fields)
+                        logger.debug(f'Applied metadata patch to context {context_id}')
 
-                    # Update content_type to multimodal if images were added
-                    await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
-                    updated_fields.append('content_type')
-                    logger.debug(f'Replaced images for context {context_id}')
+                    # Heartbeat between operation groups
+                    await transaction_heartbeat(txn)
 
-            # Check if we need to update content_type based on current state
-            # Note: image count check is still read-only, safe to do inside transaction
-            if images is None and (text is not None or metadata is not None):
-                # Check if there are existing images to determine content_type
-                image_count = await repos.images.count_images_for_context(context_id)
-                current_content_type = 'multimodal' if image_count > 0 else 'text'
+                    # Replace tags if provided
+                    if tags is not None:
+                        await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
+                        updated_fields.append('tags')
+                        logger.debug(f'Replaced tags for context {context_id}')
 
-                # Get the stored content type
-                stored_content_type = await repos.context.get_content_type(context_id)
+                    # Replace images if provided
+                    if images is not None:
+                        # If images list is empty (removing all images), update content_type to text
+                        if len(images) == 0:
+                            await repos.images.replace_images_for_context(context_id, [], txn=txn)
+                            await repos.context.update_content_type(context_id, 'text', txn=txn)
+                            updated_fields.extend(['images', 'content_type'])
+                            logger.debug(f'Removed all images from context {context_id}')
+                        else:
+                            # Replace images with validated data
+                            await repos.images.replace_images_for_context(context_id, validated_images, txn=txn)
+                            updated_fields.append('images')
 
-                # Update if different
-                if stored_content_type != current_content_type:
-                    await repos.context.update_content_type(context_id, current_content_type, txn=txn)
-                    updated_fields.append('content_type')
+                            # Update content_type to multimodal if images were added
+                            await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
+                            updated_fields.append('content_type')
+                            logger.debug(f'Replaced images for context {context_id}')
 
-            # Store embeddings (guaranteed to exist if text changed and embedding is enabled)
-            if chunk_embeddings is not None:
-                # Delete existing chunks first (within the same transaction)
-                await repos.embeddings.delete_all_chunks(context_id, txn=txn)
+                    # Check if we need to update content_type based on current state
+                    # Note: image count check is still read-only, safe to do inside transaction
+                    if images is None and (text is not None or metadata is not None):
+                        # Check if there are existing images to determine content_type
+                        image_count = await repos.images.count_images_for_context(context_id)
+                        current_content_type = 'multimodal' if image_count > 0 else 'text'
 
-                # Store new embeddings
-                await repos.embeddings.store_chunked(
-                    context_id=context_id,
-                    chunk_embeddings=chunk_embeddings,
-                    model=settings.embedding.model,
-                    txn=txn,
-                )
-                updated_fields.append('embedding')
-                logger.debug(f'Updated {len(chunk_embeddings)} chunk embeddings for context {context_id}')
+                        # Get the stored content type
+                        stored_content_type = await repos.context.get_content_type(context_id)
 
-            # COMMIT happens here - all or nothing
+                        # Update if different
+                        if stored_content_type != current_content_type:
+                            await repos.context.update_content_type(context_id, current_content_type, txn=txn)
+                            updated_fields.append('content_type')
+
+                    # Heartbeat before embedding storage
+                    if chunk_embeddings is not None:
+                        await transaction_heartbeat(txn)
+                        # Delete existing chunks first (within the same transaction)
+                        await repos.embeddings.delete_all_chunks(context_id, txn=txn)
+
+                        # Store new embeddings
+                        await repos.embeddings.store_chunked(
+                            context_id=context_id,
+                            chunk_embeddings=chunk_embeddings,
+                            model=settings.embedding.model,
+                            txn=txn,
+                        )
+                        updated_fields.append('embedding')
+                        logger.debug(f'Updated {len(chunk_embeddings)} chunk embeddings for context {context_id}')
+
+                    # COMMIT happens here - all or nothing
+
+                # Transaction committed — break retry loop
+                break
+
+            except ToolError:
+                raise  # ToolError is a logical error, not connection error — do not retry
+            except Exception as e:
+                if is_connection_error(e) and attempt < max_retries:
+                    delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    logger.warning(
+                        'Transaction failed with connection error, retrying in %.1fs '
+                        '(attempt %d/%d): %s',
+                        delay, attempt + 1, max_retries, e,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise  # Non-connection error or max retries exceeded
 
         logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
 
