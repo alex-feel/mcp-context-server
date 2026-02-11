@@ -333,6 +333,27 @@
           "name": "POSTGRESQL_MAX_QUERIES"
         },
         {
+          "description": "Seconds of idle time before sending first TCP keepalive probe (0 to disable, default: 15)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_TCP_KEEPALIVES_IDLE_S"
+        },
+        {
+          "description": "Seconds between subsequent TCP keepalive probes (0 to disable, default: 5)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S"
+        },
+        {
+          "description": "Number of failed TCP keepalive probes before connection is considered dead (0 to disable, default: 3)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_TCP_KEEPALIVES_COUNT"
+        },
+        {
           "description": "asyncpg prepared statement cache size. Set to 0 for external pooler compatibility (PgBouncer transaction mode, Pgpool-II, etc.). Default: 100",
           "isRequired": false,
           "format": "number",
@@ -1140,6 +1161,27 @@
           "format": "number",
           "isSecret": false,
           "name": "POSTGRESQL_MAX_QUERIES"
+        },
+        {
+          "description": "Seconds of idle time before sending first TCP keepalive probe (0 to disable, default: 15)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_TCP_KEEPALIVES_IDLE_S"
+        },
+        {
+          "description": "Seconds between subsequent TCP keepalive probes (0 to disable, default: 5)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S"
+        },
+        {
+          "description": "Number of failed TCP keepalive probes before connection is considered dead (0 to disable, default: 3)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_TCP_KEEPALIVES_COUNT"
         },
         {
           "description": "asyncpg prepared statement cache size. Set to 0 for external pooler compatibility (PgBouncer transaction mode, Pgpool-II, etc.). Default: 100",

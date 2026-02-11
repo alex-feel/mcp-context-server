@@ -344,6 +344,89 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
 - **Try Direct Connection first** - it's simpler and faster
 - **Switch to Session Pooler if you get "getaddrinfo failed" errors** (indicates IPv6 connectivity issues)
 
+### Session Pooler Connection Limits
+
+**IMPORTANT:** Supabase Session Pooler enforces a `pool_size` limit on total concurrent connections. The default application pool settings (`POSTGRESQL_POOL_MAX=20`) may exceed this limit, causing connection errors.
+
+#### Supabase Session Pooler Limits by Tier
+
+| Plan                     | pool_size | Notes                 |
+|--------------------------|-----------|-----------------------|
+| Free (Nano)              | 15        | Shared infrastructure |
+| Pro (Micro/Small/Medium) | 15        | Dedicated compute     |
+| Pro (Large+)             | 30+       | Scales with compute   |
+
+**Note:** These are Session Pooler limits. Direct Connection has higher limits (60-500+ depending on tier). Check your Supabase Dashboard -> Settings -> Database for exact values.
+
+#### Pool Sizing Configuration
+
+Configure the application connection pool to fit within Supabase limits:
+
+**Single replica deployment:**
+
+```json
+{
+  "env": {
+    "POSTGRESQL_POOL_MIN": "1",
+    "POSTGRESQL_POOL_MAX": "10"
+  }
+}
+```
+
+**Multi-replica deployment (Kubernetes):**
+
+Use this formula to calculate safe pool settings:
+
+```
+POSTGRESQL_POOL_MAX = floor(pool_size / replica_count) - 1
+```
+
+| Replicas | Supabase pool_size | Recommended POSTGRESQL_POOL_MAX |
+|----------|--------------------|---------------------------------|
+| 1        | 15                 | 10                              |
+| 2        | 15                 | 6                               |
+| 3        | 15                 | 4                               |
+| 4        | 15                 | 3                               |
+
+**Example for 3-replica Kubernetes deployment with Supabase Free tier:**
+
+```json
+{
+  "env": {
+    "POSTGRESQL_POOL_MIN": "1",
+    "POSTGRESQL_POOL_MAX": "4"
+  }
+}
+```
+
+**Why leave headroom?** Reserve connections for:
+- Administrative queries (Supabase Dashboard)
+- Connection spikes during pod restarts
+- Other applications sharing the pooler
+
+### "MaxClientsInSessionMode" Error
+
+**Symptom:**
+```
+MaxClientsInSessionMode: max clients reached - in Session mode max clients are limited to pool_size
+```
+
+**Cause:** Application pool exceeds Supabase Session Pooler's `pool_size` limit.
+
+**Solution:**
+
+1. **Reduce pool settings:**
+   ```bash
+   export POSTGRESQL_POOL_MIN=1
+   export POSTGRESQL_POOL_MAX=5
+   ```
+
+2. **Check replica count:** If running multiple replicas, divide pool size across all replicas using the formula above.
+
+3. **Consider upgrading:** Higher Supabase tiers have larger pool_size limits.
+
+4. **Use Direct Connection:** If your network supports IPv6, Direct Connection has much higher connection limits (60-500+).
+
 ## Troubleshooting
 
 ### "getaddrinfo failed" Error
@@ -391,6 +474,41 @@ If you want to use semantic search with Supabase, you must enable the pgvector e
    ```
 
 **Note:** The pgvector extension is available on all Supabase projects but must be manually enabled. The server will automatically create the necessary vector columns and indexes on first run.
+
+## Connection Resilience
+
+The PostgreSQL backend includes multi-layered protection against connection drops caused by network intermediaries (NAT, firewalls, proxies) that may close idle connections.
+
+### TCP Keepalive (Automatic)
+
+TCP keepalive is enabled by default on all PostgreSQL connections:
+
+| Setting        | Env Variable                           | Default | Description                             |
+|----------------|----------------------------------------|---------|-----------------------------------------|
+| Idle timeout   | `POSTGRESQL_TCP_KEEPALIVES_IDLE_S`     | 15      | Seconds before first keepalive probe    |
+| Probe interval | `POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S` | 5       | Seconds between keepalive probes        |
+| Probe count    | `POSTGRESQL_TCP_KEEPALIVES_COUNT`      | 3       | Failed probes before connection is dead |
+
+**How it works:**
+- **Client-side** (PRIMARY): Configured via `setsockopt()` on each connection's socket. Works through Supavisor, PgBouncer, and all connection proxies.
+- **Server-side** (SECONDARY): Configured via PostgreSQL GUC parameters. Effective for direct connections; silently ignored by Supavisor/PgBouncer.
+
+**Cross-platform:** Uses `hasattr()` checks for socket constants. Works on Linux, macOS, and Windows 10 v1703+.
+
+To disable TCP keepalive, set all three values to 0:
+```
+POSTGRESQL_TCP_KEEPALIVES_IDLE_S=0
+POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S=0
+POSTGRESQL_TCP_KEEPALIVES_COUNT=0
+```
+
+### Transaction Heartbeat
+
+Long-running transactions (e.g., storing context with embeddings) include periodic `SELECT 1` heartbeat queries between sequential database operations. This prevents intermediaries from classifying the connection as idle during inter-operation gaps.
+
+### Transaction Retry
+
+If a transaction fails due to a connection error, it is automatically retried up to 2 times with exponential backoff (0.5s, 1.0s). Only connection-level errors trigger retry; logical errors are raised immediately. Operations using deduplication are safe to retry.
 
 ## Why Direct Connection?
 

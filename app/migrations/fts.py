@@ -291,29 +291,35 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts.language)
 
         async def _apply_fts_pg(conn: asyncpg.Connection) -> None:
-            statements: list[str] = []
-            current_stmt: list[str] = []
-            in_function = False
+            # Acquire advisory lock for multi-pod DDL safety
+            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
+            try:
+                statements: list[str] = []
+                current_stmt: list[str] = []
+                in_function = False
 
-            for line in migration_sql.split('\n'):
-                stripped = line.strip()
-                if stripped.startswith('--'):
-                    continue
-                if '$$' in stripped:
-                    in_function = not in_function
-                if stripped:
-                    current_stmt.append(line)
-                if stripped.endswith(';') and not in_function:
+                for line in migration_sql.split('\n'):
+                    stripped = line.strip()
+                    if stripped.startswith('--'):
+                        continue
+                    if '$$' in stripped:
+                        in_function = not in_function
+                    if stripped:
+                        current_stmt.append(line)
+                    if stripped.endswith(';') and not in_function:
+                        statements.append('\n'.join(current_stmt))
+                        current_stmt = []
+
+                if current_stmt:
                     statements.append('\n'.join(current_stmt))
-                    current_stmt = []
 
-            if current_stmt:
-                statements.append('\n'.join(current_stmt))
-
-            for stmt in statements:
-                stmt = stmt.strip()
-                if stmt and not stmt.startswith('--'):
-                    await conn.execute(stmt)
+                for stmt in statements:
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        await conn.execute(stmt)
+            finally:
+                # Always release lock, even on error
+                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
 
         await manager.execute_write(cast(Any, _apply_fts_pg))
         logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts.language}')

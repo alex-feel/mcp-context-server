@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import socket
 import time
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
@@ -347,19 +348,50 @@ class PostgreSQLBackend:
             if settings.semantic_search.enabled:
                 await self._ensure_pgvector_extension()
 
-            # Define connection initialization function for pgvector support
+            # Define connection initialization function for TCP keepalive and pgvector support
             async def _init_connection(conn: asyncpg.Connection) -> None:
-                """Initialize each connection with pgvector type registration.
+                """Initialize each connection with TCP keepalive and pgvector type registration.
 
-                Auto-detects the schema where pgvector extension is installed and registers
-                the vector type codec. Works universally for all PostgreSQL variants:
-                - Local PostgreSQL: pgvector in 'public' schema (default)
-                - Supabase: pgvector in 'extensions' schema (managed)
-                - AWS RDS / custom: pgvector in any schema
+                Configures TCP keepalive on the client socket to prevent network intermediaries
+                (NAT, firewalls, proxies, Supavisor) from closing idle connections.
+
+                Also auto-detects the schema where pgvector extension is installed and registers
+                the vector type codec for semantic search support.
 
                 Raises:
                     ConfigurationError: If pgvector extension is not installed or codec registration fails
                 """
+                # === TCP Keepalive Configuration ===
+                # Set keepalive on the client socket via setsockopt.
+                # This is the PRIMARY mechanism for connections through Supavisor/PgBouncer,
+                # which silently ignore server_settings GUC parameters.
+                tcp_idle = settings.storage.postgresql_tcp_keepalives_idle_s
+                tcp_interval = settings.storage.postgresql_tcp_keepalives_interval_s
+                tcp_count = settings.storage.postgresql_tcp_keepalives_count
+
+                if tcp_idle > 0 or tcp_interval > 0 or tcp_count > 0:
+                    try:
+                        transport = getattr(conn, '_transport', None)
+                        raw_sock = transport.get_extra_info('socket') if transport is not None else None
+                        if raw_sock is not None:
+                            raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                            if tcp_idle > 0 and hasattr(socket, 'TCP_KEEPIDLE'):
+                                raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, tcp_idle)
+                            if tcp_interval > 0 and hasattr(socket, 'TCP_KEEPINTVL'):
+                                raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, tcp_interval)
+                            if tcp_count > 0 and hasattr(socket, 'TCP_KEEPCNT'):
+                                raw_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, tcp_count)
+                            logger.debug(
+                                'TCP keepalive configured: idle=%ds, interval=%ds, count=%d',
+                                tcp_idle, tcp_interval, tcp_count,
+                            )
+                        else:
+                            logger.warning('Could not access socket for TCP keepalive configuration')
+                    except Exception as e:
+                        # TCP keepalive failure is non-fatal — log and continue
+                        logger.warning('Failed to configure TCP keepalive: %s', e)
+
+                # === pgvector Type Registration ===
                 try:
                     from pgvector.asyncpg import register_vector
 
@@ -407,16 +439,25 @@ class PostgreSQLBackend:
             async def _reset_connection(conn: asyncpg.Connection) -> None:
                 """Validate and reset connection before returning to pool.
 
-                If validation fails, connection is terminated and pool creates a new one.
+                Ensures clean state by:
+                1. Rolling back any active transaction (safe no-op if none active)
+                2. Validating connection health with lightweight query
+                3. Resetting session GUC parameters
+
+                If any step fails, connection is terminated and pool creates a new one.
                 This catches corrupted connections before they cause protocol errors.
 
                 Called BEFORE connection returns to pool. If it raises, connection
                 is terminated (not returned to pool).
                 """
                 try:
+                    # Abort any active transaction FIRST
+                    # ROLLBACK is safe even if no transaction is active (no-op)
+                    # This handles cases where request cancellation left uncommitted work
+                    await conn.execute('ROLLBACK')
                     # Lightweight validation - catches protocol state mismatches
                     await conn.fetchval('SELECT 1')
-                    # Reset session state (releases locks, closes cursors, etc.)
+                    # Reset session state (GUC parameters only, NOT transactions)
                     await conn.execute('RESET ALL')
                     logger.debug('Connection reset successful before pool return')
                 except Exception as e:
@@ -452,10 +493,27 @@ class PostgreSQLBackend:
                 'max_cached_statement_lifetime': settings.storage.postgresql_max_cached_statement_lifetime_s,
                 'max_cacheable_statement_size': settings.storage.postgresql_max_cacheable_statement_size,
                 # Connection lifecycle callbacks
-                'init': _init_connection,  # Type registration (existing)
+                'init': _init_connection,  # TCP keepalive + type registration
                 'setup': _setup_connection,  # Session config before acquire
                 'reset': _reset_connection,  # Health check before pool return
             }
+
+            # Add server-side TCP keepalive via GUC parameters (SECONDARY mechanism)
+            # These are effective for direct PostgreSQL connections but silently ignored
+            # by Supavisor/PgBouncer. The PRIMARY mechanism is client-side setsockopt
+            # configured in _init_connection above.
+            tcp_idle_guc = settings.storage.postgresql_tcp_keepalives_idle_s
+            tcp_interval_guc = settings.storage.postgresql_tcp_keepalives_interval_s
+            tcp_count_guc = settings.storage.postgresql_tcp_keepalives_count
+            if tcp_idle_guc > 0 or tcp_interval_guc > 0 or tcp_count_guc > 0:
+                server_settings: dict[str, str] = {}
+                if tcp_idle_guc > 0:
+                    server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
+                if tcp_interval_guc > 0:
+                    server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
+                if tcp_count_guc > 0:
+                    server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
+                pool_kwargs['server_settings'] = server_settings
 
             # Add connection recycling settings if configured (0 means disabled)
             if settings.storage.postgresql_max_inactive_lifetime_s > 0:
@@ -485,7 +543,12 @@ class PostgreSQLBackend:
             raise
 
     async def _initialize_schema(self) -> None:
-        """Initialize database schema if tables don't exist."""
+        """Initialize database schema if tables don't exist.
+
+        Uses advisory lock to serialize DDL execution across multiple pods
+        in Kubernetes deployments, preventing 'tuple concurrently updated' errors
+        when concurrent instances attempt schema initialization simultaneously.
+        """
         schema_sql_template = load_schema(self.backend_type)
 
         # Template the schema SQL with configured schema name
@@ -520,19 +583,25 @@ class PostgreSQLBackend:
         if current_statement:
             statements.append('\n'.join(current_statement))
 
-        # Execute each statement
+        # Execute each statement with advisory lock for multi-pod safety
         assert self._pool is not None, 'Pool not initialized'
         async with self._pool.acquire() as conn:
-            for i, stmt in enumerate(statements):
-                stmt = stmt.strip()
-                if stmt and not stmt.startswith('--'):
-                    try:
-                        await conn.execute(stmt)
-                        logger.debug(f'Schema statement {i + 1}/{len(statements)}: SUCCESS')
-                    except Exception as e:
-                        logger.error(f'Schema statement {i + 1} FAILED: {e}')
-                        logger.error(f'Statement: {stmt[:200]}...')
-                        raise
+            # Acquire advisory lock to serialize DDL across pods
+            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
+            try:
+                for i, stmt in enumerate(statements):
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        try:
+                            await conn.execute(stmt)
+                            logger.debug(f'Schema statement {i + 1}/{len(statements)}: SUCCESS')
+                        except Exception as e:
+                            logger.error(f'Schema statement {i + 1} FAILED: {e}')
+                            logger.error(f'Statement: {stmt[:200]}...')
+                            raise
+            finally:
+                # Always release lock, even on error
+                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
 
         logger.info('Database schema initialized')
 
