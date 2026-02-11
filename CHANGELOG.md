@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.3](https://github.com/alex-feel/mcp-context-server/compare/v1.3.2...v1.3.3) (2026-02-11)
+
+
+### Bug Fixes
+
+* add advisory locks to PostgreSQL migrations and schema initialization ([d637cc5](https://github.com/alex-feel/mcp-context-server/commit/d637cc547d32fa5ab565930abe57321f68aa3ec9))
+* add PostgreSQL connection resilience defensive hardening ([e0ae6da](https://github.com/alex-feel/mcp-context-server/commit/e0ae6da0becdea7f93da63596287c116fa8f3131))
+* add ROLLBACK to PostgreSQL backend ([bb69f45](https://github.com/alex-feel/mcp-context-server/commit/bb69f45dd0129dfcbb8c48d57e60571ab2e3c1d8))
+
 ## [1.3.2](https://github.com/alex-feel/mcp-context-server/compare/v1.3.1...v1.3.2) (2026-02-06)
 
 
