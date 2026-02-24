@@ -201,41 +201,40 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
 
         async def _apply_migration_postgresql(conn: asyncpg.Connection) -> None:
             # PostgreSQL: pgvector extension registration happens in backend initialization
-            # Acquire advisory lock for multi-pod DDL safety
-            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-            try:
-                # Parse and execute migration SQL statements
-                statements: list[str] = []
-                current_stmt: list[str] = []
-                in_function = False
+            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
+            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
+            # aligning with execute_write()'s conn.transaction() wrapper.
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
 
-                for line in migration_sql.split('\n'):
-                    stripped = line.strip()
-                    # Skip comment-only lines
-                    if stripped.startswith('--'):
-                        continue
-                    # Track dollar-quoted strings (function bodies)
-                    if '$$' in stripped:
-                        in_function = not in_function
-                    if stripped:
-                        current_stmt.append(line)
-                    # End of statement: semicolon when not in dollar quotes
-                    if stripped.endswith(';') and not in_function:
-                        statements.append('\n'.join(current_stmt))
-                        current_stmt = []
+            # Parse and execute migration SQL statements
+            statements: list[str] = []
+            current_stmt: list[str] = []
+            in_function = False
 
-                # Add any remaining statement
-                if current_stmt:
+            for line in migration_sql.split('\n'):
+                stripped = line.strip()
+                # Skip comment-only lines
+                if stripped.startswith('--'):
+                    continue
+                # Track dollar-quoted strings (function bodies)
+                if '$$' in stripped:
+                    in_function = not in_function
+                if stripped:
+                    current_stmt.append(line)
+                # End of statement: semicolon when not in dollar quotes
+                if stripped.endswith(';') and not in_function:
                     statements.append('\n'.join(current_stmt))
+                    current_stmt = []
 
-                # Execute each statement
-                for stmt in statements:
-                    stmt = stmt.strip()
-                    if stmt and not stmt.startswith('--'):
-                        await conn.execute(stmt)
-            finally:
-                # Always release lock, even on error
-                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
+            # Add any remaining statement
+            if current_stmt:
+                statements.append('\n'.join(current_stmt))
+
+            # Execute each statement
+            for stmt in statements:
+                stmt = stmt.strip()
+                if stmt and not stmt.startswith('--'):
+                    await conn.execute(stmt)
 
         await manager.execute_write(cast(Any, _apply_migration_postgresql))
 
@@ -319,41 +318,40 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
             function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
             async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
-                # Acquire advisory lock for multi-pod DDL safety
-                await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-                try:
-                    # Parse SQL statements, handling dollar-quoted function bodies
-                    statements: list[str] = []
-                    current_stmt: list[str] = []
-                    in_function = False
+                # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
+                # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
+                # aligning with execute_write()'s conn.transaction() wrapper.
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
 
-                    for line in migration_sql.split('\n'):
-                        stripped = line.strip()
-                        # Skip comment-only lines (but preserve function comments)
-                        if stripped.startswith('--') and not in_function:
-                            continue
-                        # Track dollar-quoted strings (function bodies)
-                        if '$$' in stripped:
-                            in_function = not in_function
-                        if stripped:
-                            current_stmt.append(line)
-                        # End of statement: semicolon when not in dollar quotes
-                        if stripped.endswith(';') and not in_function:
-                            statements.append('\n'.join(current_stmt))
-                            current_stmt = []
+                # Parse SQL statements, handling dollar-quoted function bodies
+                statements: list[str] = []
+                current_stmt: list[str] = []
+                in_function = False
 
-                    # Add any remaining statement
-                    if current_stmt:
+                for line in migration_sql.split('\n'):
+                    stripped = line.strip()
+                    # Skip comment-only lines (but preserve function comments)
+                    if stripped.startswith('--') and not in_function:
+                        continue
+                    # Track dollar-quoted strings (function bodies)
+                    if '$$' in stripped:
+                        in_function = not in_function
+                    if stripped:
+                        current_stmt.append(line)
+                    # End of statement: semicolon when not in dollar quotes
+                    if stripped.endswith(';') and not in_function:
                         statements.append('\n'.join(current_stmt))
+                        current_stmt = []
 
-                    # Execute each statement
-                    for stmt in statements:
-                        stmt = stmt.strip()
-                        if stmt and not stmt.startswith('--'):
-                            await conn.execute(stmt)
-                finally:
-                    # Always release lock, even on error
-                    await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
+                # Add any remaining statement
+                if current_stmt:
+                    statements.append('\n'.join(current_stmt))
+
+                # Execute each statement
+                for stmt in statements:
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        await conn.execute(stmt)
 
             await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
 
@@ -378,35 +376,34 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
                 function_exists = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
                 async def _apply_jsonb_merge_patch_temp(conn: asyncpg.Connection) -> None:
-                    # Acquire advisory lock for multi-pod DDL safety
-                    await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-                    try:
-                        statements: list[str] = []
-                        current_stmt: list[str] = []
-                        in_function = False
+                    # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
+                    # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
+                    # aligning with execute_write()'s conn.transaction() wrapper.
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
 
-                        for line in migration_sql.split('\n'):
-                            stripped = line.strip()
-                            if stripped.startswith('--') and not in_function:
-                                continue
-                            if '$$' in stripped:
-                                in_function = not in_function
-                            if stripped:
-                                current_stmt.append(line)
-                            if stripped.endswith(';') and not in_function:
-                                statements.append('\n'.join(current_stmt))
-                                current_stmt = []
+                    statements: list[str] = []
+                    current_stmt: list[str] = []
+                    in_function = False
 
-                        if current_stmt:
+                    for line in migration_sql.split('\n'):
+                        stripped = line.strip()
+                        if stripped.startswith('--') and not in_function:
+                            continue
+                        if '$$' in stripped:
+                            in_function = not in_function
+                        if stripped:
+                            current_stmt.append(line)
+                        if stripped.endswith(';') and not in_function:
                             statements.append('\n'.join(current_stmt))
+                            current_stmt = []
 
-                        for stmt in statements:
-                            stmt = stmt.strip()
-                            if stmt and not stmt.startswith('--'):
-                                await conn.execute(stmt)
-                    finally:
-                        # Always release lock, even on error
-                        await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
+                    if current_stmt:
+                        statements.append('\n'.join(current_stmt))
+
+                    for stmt in statements:
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith('--'):
+                            await conn.execute(stmt)
 
                 await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
 
@@ -475,40 +472,39 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
         if backend is not None:
 
             async def _apply_search_path_fix(conn: asyncpg.Connection) -> None:
-                # Acquire advisory lock for multi-pod DDL safety
-                await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-                try:
-                    # Parse SQL statements, handling dollar-quoted DO blocks
-                    statements: list[str] = []
-                    current_stmt: list[str] = []
-                    in_dollar_quote = False
+                # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
+                # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
+                # aligning with execute_write()'s conn.transaction() wrapper.
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
 
-                    for line in migration_sql.split('\n'):
-                        stripped = line.strip()
-                        # Skip comment-only lines outside dollar quotes
-                        if stripped.startswith('--') and not in_dollar_quote:
-                            continue
-                        # Track dollar-quoted strings (DO blocks and function bodies)
-                        if '$$' in stripped:
-                            in_dollar_quote = not in_dollar_quote
-                        if stripped:
-                            current_stmt.append(line)
-                        # End of statement: semicolon when not in dollar quotes
-                        if stripped.endswith(';') and not in_dollar_quote:
-                            statements.append('\n'.join(current_stmt))
-                            current_stmt = []
+                # Parse SQL statements, handling dollar-quoted DO blocks
+                statements: list[str] = []
+                current_stmt: list[str] = []
+                in_dollar_quote = False
 
-                    # Add any remaining statement
-                    if current_stmt:
+                for line in migration_sql.split('\n'):
+                    stripped = line.strip()
+                    # Skip comment-only lines outside dollar quotes
+                    if stripped.startswith('--') and not in_dollar_quote:
+                        continue
+                    # Track dollar-quoted strings (DO blocks and function bodies)
+                    if '$$' in stripped:
+                        in_dollar_quote = not in_dollar_quote
+                    if stripped:
+                        current_stmt.append(line)
+                    # End of statement: semicolon when not in dollar quotes
+                    if stripped.endswith(';') and not in_dollar_quote:
                         statements.append('\n'.join(current_stmt))
+                        current_stmt = []
 
-                    for stmt in statements:
-                        stmt = stmt.strip()
-                        if stmt and not stmt.startswith('--'):
-                            await conn.execute(stmt)
-                finally:
-                    # Always release lock, even on error
-                    await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
+                # Add any remaining statement
+                if current_stmt:
+                    statements.append('\n'.join(current_stmt))
+
+                for stmt in statements:
+                    stmt = stmt.strip()
+                    if stmt and not stmt.startswith('--'):
+                        await conn.execute(stmt)
 
             await backend.execute_write(cast(Any, _apply_search_path_fix))
             logger.info('Applied function search_path security fix for PostgreSQL')
@@ -519,35 +515,34 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
             try:
 
                 async def _apply_search_path_fix_temp(conn: asyncpg.Connection) -> None:
-                    # Acquire advisory lock for multi-pod DDL safety
-                    await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-                    try:
-                        statements: list[str] = []
-                        current_stmt: list[str] = []
-                        in_dollar_quote = False
+                    # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
+                    # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
+                    # aligning with execute_write()'s conn.transaction() wrapper.
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
 
-                        for line in migration_sql.split('\n'):
-                            stripped = line.strip()
-                            if stripped.startswith('--') and not in_dollar_quote:
-                                continue
-                            if '$$' in stripped:
-                                in_dollar_quote = not in_dollar_quote
-                            if stripped:
-                                current_stmt.append(line)
-                            if stripped.endswith(';') and not in_dollar_quote:
-                                statements.append('\n'.join(current_stmt))
-                                current_stmt = []
+                    statements: list[str] = []
+                    current_stmt: list[str] = []
+                    in_dollar_quote = False
 
-                        if current_stmt:
+                    for line in migration_sql.split('\n'):
+                        stripped = line.strip()
+                        if stripped.startswith('--') and not in_dollar_quote:
+                            continue
+                        if '$$' in stripped:
+                            in_dollar_quote = not in_dollar_quote
+                        if stripped:
+                            current_stmt.append(line)
+                        if stripped.endswith(';') and not in_dollar_quote:
                             statements.append('\n'.join(current_stmt))
+                            current_stmt = []
 
-                        for stmt in statements:
-                            stmt = stmt.strip()
-                            if stmt and not stmt.startswith('--'):
-                                await conn.execute(stmt)
-                    finally:
-                        # Always release lock, even on error
-                        await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
+                    if current_stmt:
+                        statements.append('\n'.join(current_stmt))
+
+                    for stmt in statements:
+                        stmt = stmt.strip()
+                        if stmt and not stmt.startswith('--'):
+                            await conn.execute(stmt)
 
                 await temp_manager.execute_write(cast(Any, _apply_search_path_fix_temp))
                 logger.info('Applied function search_path security fix for PostgreSQL')

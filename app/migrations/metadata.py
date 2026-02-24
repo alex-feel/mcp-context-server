@@ -189,13 +189,11 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
         sql = _generate_create_index_postgresql(field, type_hint)
 
         async def _create_postgresql_index(conn: asyncpg.Connection) -> None:
-            # Acquire advisory lock for multi-pod DDL safety
-            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-            try:
-                await conn.execute(sql)
-            finally:
-                # Always release lock, even on error
-                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
+            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
+            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
+            # aligning with execute_write()'s conn.transaction() wrapper.
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            await conn.execute(sql)
 
         await backend.execute_write(cast(Any, _create_postgresql_index))
 
@@ -225,17 +223,15 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
         # Use schema-qualified DROP to ensure correct index is dropped
         # This handles multi-schema environments like Supabase
         async def _drop_postgresql_index(conn: asyncpg.Connection) -> None:
-            # Acquire advisory lock for multi-pod DDL safety
-            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-            try:
-                # Use configured schema for qualified drop
-                # This ensures correct schema is used in Supabase environments
-                schema = settings.storage.postgresql_schema
-                sql = f'DROP INDEX IF EXISTS {schema}.{index_name};'
-                await conn.execute(sql)
-            finally:
-                # Always release lock, even on error
-                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
+            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
+            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
+            # aligning with execute_write()'s conn.transaction() wrapper.
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # Use configured schema for qualified drop.
+            # This ensures correct schema is used in Supabase environments.
+            schema = settings.storage.postgresql_schema
+            sql = f'DROP INDEX IF EXISTS {schema}.{index_name};'
+            await conn.execute(sql)
 
         await backend.execute_write(cast(Any, _drop_postgresql_index))
 
