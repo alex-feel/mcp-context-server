@@ -223,6 +223,6 @@ For Kubernetes deployments, a Helm chart is provided with configurable values fo
 
 ## Authentication
 
-For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token, Google OAuth, and Azure AD configuration options.
+For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token configuration.
 
 <!-- mcp-name: io.github.alex-feel/mcp-context-server -->

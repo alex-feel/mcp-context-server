@@ -767,74 +767,11 @@
           "name": "MCP_AUTH_CLIENT_ID"
         },
         {
-          "description": "Authentication provider class path (e.g., app.auth.simple_token.SimpleTokenVerifier)",
+          "description": "Authentication provider: none (default), simple_token",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH"
-        },
-        {
-          "description": "Google OAuth Client ID (required when using GoogleProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_ID"
-        },
-        {
-          "description": "Google OAuth Client Secret (required when using GoogleProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_SECRET"
-        },
-        {
-          "description": "Server base URL for OAuth callbacks (required when using GoogleProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_BASE_URL"
-        },
-        {
-          "description": "Required OAuth scopes (comma-separated, e.g., openid,email)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_REQUIRED_SCOPES"
-        },
-        {
-          "description": "Azure OAuth Client ID (required when using AzureProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_CLIENT_ID"
-        },
-        {
-          "description": "Azure OAuth Client Secret (required when using AzureProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_CLIENT_SECRET"
-        },
-        {
-          "description": "Azure Tenant ID - use specific GUID for org-only access, 'organizations' for multi-tenant, or 'consumers' for personal accounts",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_TENANT_ID"
-        },
-        {
-          "description": "Server base URL for OAuth callbacks (required when using AzureProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_BASE_URL"
-        },
-        {
-          "description": "Required OAuth scopes for Azure (comma-separated, e.g., read,write)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_REQUIRED_SCOPES"
+          "name": "MCP_AUTH_PROVIDER"
         }
       ]
     },
@@ -1597,74 +1534,11 @@
           "name": "MCP_AUTH_CLIENT_ID"
         },
         {
-          "description": "Authentication provider class path (e.g., app.auth.simple_token.SimpleTokenVerifier)",
+          "description": "Authentication provider: none (default), simple_token",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH"
-        },
-        {
-          "description": "Google OAuth Client ID (required when using GoogleProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_ID"
-        },
-        {
-          "description": "Google OAuth Client Secret (required when using GoogleProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_CLIENT_SECRET"
-        },
-        {
-          "description": "Server base URL for OAuth callbacks (required when using GoogleProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_BASE_URL"
-        },
-        {
-          "description": "Required OAuth scopes (comma-separated, e.g., openid,email)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_GOOGLE_REQUIRED_SCOPES"
-        },
-        {
-          "description": "Azure OAuth Client ID (required when using AzureProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_CLIENT_ID"
-        },
-        {
-          "description": "Azure OAuth Client Secret (required when using AzureProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": true,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_CLIENT_SECRET"
-        },
-        {
-          "description": "Azure Tenant ID - use specific GUID for org-only access, 'organizations' for multi-tenant, or 'consumers' for personal accounts",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_TENANT_ID"
-        },
-        {
-          "description": "Server base URL for OAuth callbacks (required when using AzureProvider)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_BASE_URL"
-        },
-        {
-          "description": "Required OAuth scopes for Azure (comma-separated, e.g., read,write)",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "name": "FASTMCP_SERVER_AUTH_AZURE_REQUIRED_SCOPES"
+          "name": "MCP_AUTH_PROVIDER"
         }
       ]
     }

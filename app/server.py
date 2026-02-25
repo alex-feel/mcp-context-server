@@ -31,6 +31,9 @@ settings = get_settings()
 config_logger(settings.logging.level)
 logger = logging.getLogger(__name__)
 
+# Import auth factory for explicit auth configuration
+from app.auth import create_auth_provider
+
 # Import startup module for global state access
 from app.backends import create_backend
 from app.embeddings import create_embedding_provider
@@ -485,22 +488,6 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
     logger.info('MCP Context Server shutdown complete')
 
 
-# Initialize FastMCP server with lifespan management
-# mask_error_details=False exposes validation errors for LLM autocorrection
-mcp = FastMCP(name='mcp-context-server', lifespan=lifespan, mask_error_details=False)
-
-
-@mcp.custom_route('/health', methods=['GET'])
-async def health(_: Request) -> JSONResponse:
-    """Health check endpoint for container orchestration.
-
-    Returns simple status for Docker/Kubernetes liveness probes.
-    This endpoint is only available when running in HTTP transport mode.
-    """
-    return JSONResponse({'status': 'ok'})
-
-
-# Main entry point
 def main() -> None:
     """Main entry point for the MCP Context Server.
 
@@ -508,7 +495,7 @@ def main() -> None:
     - stdio: Default for local process spawning (uv run mcp-context-server)
     - http: For Docker/remote deployments (set MCP_TRANSPORT=http)
 
-    Initialization and shutdown are handled by the @mcp.startup and @mcp.shutdown decorators.
+    Initialization and shutdown are handled by the lifespan context manager.
 
     Exit codes follow BSD sysexits.h convention for supervisor integration:
     - 0: Normal shutdown
@@ -517,8 +504,27 @@ def main() -> None:
     - 1: General error (unknown cause)
     """
     try:
-        # Log server version at startup
+        # Log server version first (before any subsystem messages)
         logger.info(f'MCP Context Server v{SERVER_VERSION}')
+
+        # Initialize authentication provider (logs auth configuration)
+        auth_provider = create_auth_provider()
+
+        # Create FastMCP server with lifespan management and explicit auth
+        # mask_error_details=False exposes validation errors for LLM autocorrection
+        mcp = FastMCP(
+            name='mcp-context-server',
+            lifespan=lifespan,
+            mask_error_details=False,
+            auth=auth_provider,
+        )
+
+        # Register health check endpoint for container orchestration
+        async def _health_handler(_: Request) -> JSONResponse:
+            """Health check endpoint for Docker/Kubernetes liveness probes."""
+            return JSONResponse({'status': 'ok'})
+
+        mcp.custom_route('/health', methods=['GET'])(_health_handler)
 
         transport = settings.transport.transport
 

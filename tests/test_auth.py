@@ -189,25 +189,77 @@ class TestSimpleTokenVerifierIntegration:
         """Clear the settings cache before each test."""
         get_settings.cache_clear()
 
-    def test_verifier_can_be_imported_by_fastmcp_path(self) -> None:
-        """Verifier should be importable via the path used by FASTMCP_SERVER_AUTH."""
-        # This simulates how FastMCP loads the class via ImportString
-        from pydantic import ImportString
-        from pydantic import TypeAdapter
+    def test_auth_factory_creates_simple_token_verifier(self) -> None:
+        """Auth factory should create SimpleTokenVerifier when provider is simple_token."""
+        with patch.dict(
+            os.environ,
+            {'MCP_AUTH_PROVIDER': 'simple_token', 'MCP_AUTH_TOKEN': 'test-token'},
+            clear=False,
+        ):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.auth.simple_token import SimpleTokenVerifier
 
-        type_adapter = TypeAdapter(ImportString)
-        auth_class = type_adapter.validate_python('app.auth.simple_token.SimpleTokenVerifier')
-
-        # Should return the class, not an instance
-        from app.auth.simple_token import SimpleTokenVerifier
-
-        assert auth_class is SimpleTokenVerifier
+            provider = create_auth_provider()
+            assert isinstance(provider, SimpleTokenVerifier)
 
     def test_verifier_instantiates_with_no_args(self) -> None:
-        """Verifier should be instantiable with no arguments (required by FastMCP)."""
+        """Verifier should be instantiable with no arguments (required by auth factory)."""
         with patch.dict(os.environ, {'MCP_AUTH_TOKEN': 'test-token'}, clear=False):
             from app.auth.simple_token import SimpleTokenVerifier
 
-            # FastMCP calls the class with no arguments: auth_class()
             verifier = SimpleTokenVerifier()
             assert verifier is not None
+
+
+class TestAuthFactory:
+    """Tests for the auth provider factory."""
+
+    @pytest.fixture(autouse=True)
+    def clear_settings_cache(self) -> None:
+        """Clear the settings cache before each test."""
+        get_settings.cache_clear()
+
+    def test_factory_returns_none_when_no_auth(self) -> None:
+        """Factory should return None when MCP_AUTH_PROVIDER=none."""
+        with patch.dict(os.environ, {'MCP_AUTH_PROVIDER': 'none'}, clear=False):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            result = create_auth_provider()
+            assert result is None
+
+    def test_factory_returns_none_by_default(self) -> None:
+        """Factory should return None when MCP_AUTH_PROVIDER is not set (default is none)."""
+        env = {k: v for k, v in os.environ.items() if k != 'MCP_AUTH_PROVIDER'}
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            result = create_auth_provider()
+            assert result is None
+
+    def test_factory_creates_simple_token_verifier(self) -> None:
+        """Factory should create SimpleTokenVerifier when provider is simple_token."""
+        with patch.dict(
+            os.environ,
+            {'MCP_AUTH_PROVIDER': 'simple_token', 'MCP_AUTH_TOKEN': 'test-token'},
+            clear=False,
+        ):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.auth.simple_token import SimpleTokenVerifier
+
+            provider = create_auth_provider()
+            assert isinstance(provider, SimpleTokenVerifier)
+
+    def test_factory_raises_when_simple_token_without_token(self) -> None:
+        """Factory should raise ValueError when simple_token provider but no MCP_AUTH_TOKEN."""
+        env = {k: v for k, v in os.environ.items() if k != 'MCP_AUTH_TOKEN'}
+        env['MCP_AUTH_PROVIDER'] = 'simple_token'
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+
+            with pytest.raises(ValueError, match='MCP_AUTH_TOKEN is required'):
+                create_auth_provider()

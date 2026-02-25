@@ -918,7 +918,7 @@ If your container shows "Running" but the server is not responding:
 - **Full-Text Search**: [Full-Text Search Guide](../full-text-search.md) - FTS configuration and usage
 - **Hybrid Search**: [Hybrid Search Guide](../hybrid-search.md) - combined search with RRF fusion
 - **Metadata Filtering**: [Metadata Guide](../metadata-addition-updating-and-filtering.md) - metadata filtering with operators
-- **Authentication**: [Authentication Guide](../authentication.md) - bearer token and OAuth authentication
+- **Authentication**: [Authentication Guide](../authentication.md) - bearer token authentication
 - **Main Documentation**: [README.md](../../README.md) - overview and quick start
 
 ### Kubernetes Deployment

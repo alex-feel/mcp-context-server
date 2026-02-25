@@ -51,7 +51,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 2. **Authentication Layer** (`app/auth/`):
    - **SimpleTokenVerifier** (`simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison
-   - Configured via `FASTMCP_SERVER_AUTH` and `MCP_AUTH_TOKEN`; settings in `AuthSettings`
+   - Configured via `MCP_AUTH_PROVIDER` and `MCP_AUTH_TOKEN`; settings in `AuthSettings`
 
 3. **Storage Backend Layer** (`app/backends/`):
    - **StorageBackend Protocol** (`base.py`): Database-agnostic interface (8 methods including `begin_transaction()`)
@@ -259,7 +259,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*)
 
-**Auth**: `FASTMCP_SERVER_AUTH` (verifier class), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
+**Auth**: `MCP_AUTH_PROVIDER` (none*/simple_token), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
 
 **FTS**: `ENABLE_FTS` (false*), `FTS_LANGUAGE` (english*; PostgreSQL: 29 languages, SQLite: Porter/unicode61), `FTS_RERANK_WINDOW_SIZE` (750*), `FTS_RERANK_GAP_MERGE` (100*)
 

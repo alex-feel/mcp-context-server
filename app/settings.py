@@ -85,19 +85,28 @@ class TransportSettings(CommonSettings):
 class AuthSettings(CommonSettings):
     """Authentication settings for HTTP transport.
 
-    These settings are used by the SimpleTokenVerifier when
-    FASTMCP_SERVER_AUTH=app.auth.simple_token.SimpleTokenVerifier is set.
+    Configures the authentication provider passed to FastMCP's auth= parameter.
+    Supported providers: 'none' (default), 'simple_token'.
     """
 
+    provider: Literal['none', 'simple_token'] = Field(
+        default='none',
+        alias='MCP_AUTH_PROVIDER',
+        description=(
+            'Authentication provider: '
+            'none (no auth, default), '
+            'simple_token (bearer token)'
+        ),
+    )
     auth_token: SecretStr | None = Field(
         default=None,
         alias='MCP_AUTH_TOKEN',
-        description='Bearer token for HTTP authentication',
+        description='Bearer token for HTTP authentication (required when MCP_AUTH_PROVIDER=simple_token)',
     )
     auth_client_id: str = Field(
         default='mcp-client',
         alias='MCP_AUTH_CLIENT_ID',
-        description='Client ID to assign to authenticated requests',
+        description='Client ID to assign to authenticated requests (used with simple_token)',
     )
 
 
