@@ -262,6 +262,8 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (false*)
 
+**FastMCP Logging** (deployment-only, not in `app/settings.py`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud to prevent multi-line log wrapping). It is read directly by FastMCP at import time and have no `mcp.run()` parameter; see [FASTMCP_* Env Var Governance](#fastmcp_-env-var-governance) below.
+
 **Auth**: `MCP_AUTH_PROVIDER` (none*/simple_token), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
 
 **Instructions**: `MCP_SERVER_INSTRUCTIONS` (overrides default instructions text; empty string disables)
@@ -396,6 +398,26 @@ Existing settings classes by domain:
 - `RerankingSettings`: Cross-encoder reranking
 - `FtsPassageSettings`: FTS passage extraction
 - `LangSmithSettings`: LangSmith tracing
+
+### FASTMCP_* Env Var Governance
+
+**Governing Principle**: A `FASTMCP_*` env var belongs in `app/settings.py` (and therefore `server.json`) when the project can take **programmatic action** with its value:
+1. It can be passed as an explicit argument to `mcp.run()` (e.g., `host`, `port`, `stateless_http`)
+2. The project uses it in application logic (logging, conditional behavior)
+3. The project sets a DIFFERENT default from FastMCP's default
+
+Env vars consumed by FastMCP independently at import time, with no `mcp.run()` parameter and no application code access path, should **NOT** be in `settings.py`. Document them in deployment configs and this file instead.
+
+**Current FASTMCP_* classification:**
+
+| Env Var                       | In settings.py            | Reason                                                                                       |
+|-------------------------------|---------------------------|----------------------------------------------------------------------------------------------|
+| `FASTMCP_HOST`                | YES (`TransportSettings`) | Passed to `mcp.run(host=...)`                                                                |
+| `FASTMCP_PORT`                | YES (`TransportSettings`) | Passed to `mcp.run(port=...)`                                                                |
+| `FASTMCP_STATELESS_HTTP`      | YES (`TransportSettings`) | Passed to `mcp.run(stateless_http=...)`                                                      |
+| `FASTMCP_ENABLE_RICH_LOGGING` | NO                        | Consumed at FastMCP import time; no `mcp.run()` parameter; dead code if added to settings.py |
+
+**When a NEW `FASTMCP_*` env var appears** (FastMCP update): Check whether it has a corresponding `mcp.run()` parameter or application code path. If yes, add to `settings.py`. If no, document in deployment configs and CLAUDE.md only.
 
 ### FastMCP-Specific Requirements
 

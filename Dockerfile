@@ -50,7 +50,8 @@ COPY --chown=appuser:appuser app/ ./app/
 # Runtime environment variables
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    FASTMCP_ENABLE_RICH_LOGGING=false
 
 # Create data directory for SQLite
 RUN mkdir -p /data && chown appuser:appuser /data
