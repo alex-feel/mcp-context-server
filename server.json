@@ -779,6 +779,13 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_AUTH_PROVIDER"
+        },
+        {
+          "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_SERVER_INSTRUCTIONS"
         }
       ]
     },
@@ -1553,6 +1560,13 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_AUTH_PROVIDER"
+        },
+        {
+          "description": "Custom server instructions text. Overrides built-in default. Set to empty string to disable.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "MCP_SERVER_INSTRUCTIONS"
         }
       ]
     }

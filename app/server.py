@@ -510,10 +510,16 @@ def main() -> None:
         # Initialize authentication provider (logs auth configuration)
         auth_provider = create_auth_provider()
 
+        # Resolve server instructions (env var override or default)
+        from app.instructions import resolve_instructions
+
+        instructions_text = resolve_instructions(settings.instructions)
+
         # Create FastMCP server with lifespan management and explicit auth
         # mask_error_details=False exposes validation errors for LLM autocorrection
         mcp = FastMCP(
             name='mcp-context-server',
+            instructions=instructions_text or None,
             lifespan=lifespan,
             mask_error_details=False,
             auth=auth_provider,

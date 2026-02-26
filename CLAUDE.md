@@ -122,6 +122,7 @@ app/
 ├── types.py               # 40+ TypedDicts for API responses (ScoresDict, ContextEntryDict, etc.)
 ├── models.py              # Pydantic models (ContextEntry, ImageAttachment, StoreContextRequest)
 ├── fusion.py              # RRF fusion algorithm for hybrid search
+├── instructions.py        # DEFAULT_INSTRUCTIONS constant, resolve_instructions()
 ├── tools/                 # MCP tool implementations
 │   ├── __init__.py       # Tool registration, TOOL_ANNOTATIONS
 │   ├── context.py        # CRUD: store_context, get_context_by_ids, update_context, delete_context
@@ -215,6 +216,8 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata), 
 
 5. **Error Handling**: Pydantic validation, DB constraints (CHECK clauses), size limits (10MB/image, 100MB total), transaction rollback on failures.
 
+6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`, sent to clients during initialization. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Set to empty string to disable. Settings in `InstructionsSettings`.
+
 ### Semantic Search Implementation
 
 Optional vector similarity search via `semantic_search_context`. SQLite uses `sqlite-vec` (BLOB, `vec_distance_l2()`), PostgreSQL uses `pgvector` (native vector, `<->` L2 distance).
@@ -260,6 +263,8 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 **Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (false*)
 
 **Auth**: `MCP_AUTH_PROVIDER` (none*/simple_token), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
+
+**Instructions**: `MCP_SERVER_INSTRUCTIONS` (overrides default instructions text; empty string disables)
 
 **FTS**: `ENABLE_FTS` (false*), `FTS_LANGUAGE` (english*; PostgreSQL: 29 languages, SQLite: Porter/unicode61), `FTS_RERANK_WINDOW_SIZE` (750*), `FTS_RERANK_GAP_MERGE` (100*)
 
@@ -348,7 +353,7 @@ Ruff (127 chars, single quotes), mypy/pyright strict for `app/`. **Never** `from
 
 **Never use `os.environ`/`os.getenv()` directly** - always `get_settings()` from `app/settings.py`.
 
-Settings classes: AppSettings, StorageSettings, TransportSettings, AuthSettings, EmbeddingSettings, LangSmithSettings, ChunkingSettings, RerankingSettings, FtsPassageSettings. Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` for new vars.
+Settings classes: AppSettings, StorageSettings, TransportSettings, AuthSettings, InstructionsSettings, EmbeddingSettings, LangSmithSettings, ChunkingSettings, RerankingSettings, FtsPassageSettings. Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` for new vars.
 
 ```python
 # WRONG: os.getenv('DB_PATH')
@@ -381,6 +386,7 @@ Existing settings classes by domain:
 - `ToolManagementSettings`: Tool availability (disabled tools)
 - `TransportSettings`: HTTP transport (host, port)
 - `AuthSettings`: Authentication (tokens, client IDs)
+- `InstructionsSettings`: Server instructions sent to MCP clients
 - `StorageSettings`: Database backend configuration (includes metadata indexing settings)
 - `EmbeddingSettings`: Embedding provider configuration
 - `SemanticSearchSettings`: Semantic search toggle

@@ -127,7 +127,9 @@ extend-include = ["tests/**/*.py"]
 #   backend module loading). This ensures logging is configured before any backend code runs.
 # - tests/conftest.py: E402 required - Windows event loop policy and LangSmith env vars MUST be set
 #   BEFORE importing app.server (which triggers httpx import). See conftest.py comments for details.
-extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"] }
+# - app/instructions.py: E501, W293 required - DEFAULT_INSTRUCTIONS is a triple-quoted Markdown string
+#   where long lines and indented blank lines are intentional content formatting.
+extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "app/instructions.py" = ["E501", "W293"] }
 
 [tool.ruff.lint]
 # Ignore specific rules

@@ -117,6 +117,17 @@ class AuthSettings(CommonSettings):
     )
 
 
+class InstructionsSettings(CommonSettings):
+    """Server instructions sent to MCP clients during initialization."""
+
+    server_instructions: str | None = Field(
+        default=None,
+        alias='MCP_SERVER_INSTRUCTIONS',
+        description='Custom server instructions text. Overrides the built-in default instructions. '
+                    'Set to empty string to disable instructions entirely.',
+    )
+
+
 class EmbeddingSettings(CommonSettings):
     """Embedding provider settings following LangChain conventions.
 
@@ -794,6 +805,7 @@ class AppSettings(CommonSettings):
     # Infrastructure settings
     transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
     auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
+    instructions: InstructionsSettings = Field(default_factory=lambda: InstructionsSettings())
     langsmith: LangSmithSettings = Field(default_factory=lambda: LangSmithSettings())
 
     @model_validator(mode='after')
