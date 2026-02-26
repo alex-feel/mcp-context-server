@@ -232,3 +232,30 @@ class TestAuthProviderSetting:
 
         with env_var('MCP_AUTH_PROVIDER', 'invalid'), pytest.raises(ValidationError):
             AuthSettings()
+
+
+class TestTransportStatelessHttp:
+    """Tests for FASTMCP_STATELESS_HTTP setting in TransportSettings."""
+
+    def test_stateless_http_default_is_false(self) -> None:
+        """FASTMCP_STATELESS_HTTP should default to False."""
+        from app.settings import TransportSettings
+
+        settings = TransportSettings()
+        assert settings.stateless_http is False
+
+    def test_stateless_http_enabled_via_env(self) -> None:
+        """FASTMCP_STATELESS_HTTP=true should enable stateless mode."""
+        from app.settings import TransportSettings
+
+        with env_var('FASTMCP_STATELESS_HTTP', 'true'):
+            settings = TransportSettings()
+            assert settings.stateless_http is True
+
+    def test_stateless_http_disabled_via_env(self) -> None:
+        """FASTMCP_STATELESS_HTTP=false should keep stateless mode disabled."""
+        from app.settings import TransportSettings
+
+        with env_var('FASTMCP_STATELESS_HTTP', 'false'):
+            settings = TransportSettings()
+            assert settings.stateless_http is False

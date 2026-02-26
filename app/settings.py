@@ -80,6 +80,13 @@ class TransportSettings(CommonSettings):
         le=65535,
         description='HTTP port number',
     )
+    stateless_http: bool = Field(
+        default=False,
+        alias='FASTMCP_STATELESS_HTTP',
+        description='Enable stateless HTTP mode for horizontal scaling. '
+                    'Each request creates a fresh context, eliminating session affinity requirements. '
+                    'Required when running multiple server replicas behind a load balancer.',
+    )
 
 
 class AuthSettings(CommonSettings):

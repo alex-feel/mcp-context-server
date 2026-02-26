@@ -9,6 +9,7 @@ data:
   MCP_TRANSPORT: {{ .Values.env.MCP_TRANSPORT | quote }}
   FASTMCP_HOST: {{ .Values.env.FASTMCP_HOST | quote }}
   FASTMCP_PORT: {{ .Values.env.FASTMCP_PORT | quote }}
+  FASTMCP_STATELESS_HTTP: {{ .Values.env.FASTMCP_STATELESS_HTTP | quote }}
   LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
   # Storage backend
   STORAGE_BACKEND: {{ .Values.storage.backend | quote }}

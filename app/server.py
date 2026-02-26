@@ -534,12 +534,16 @@ def main() -> None:
         else:
             host = settings.transport.host
             port = settings.transport.port
+            stateless_http = settings.transport.stateless_http
             logger.info('Transport: HTTP')
             logger.info(f'Server URL: http://{host}:{port}/mcp')
+            if stateless_http:
+                logger.info('Stateless HTTP mode: enabled (horizontal scaling)')
             mcp.run(
                 transport=cast(Literal['stdio', 'http', 'sse', 'streamable-http'], transport),
                 host=host,
                 port=port,
+                stateless_http=stateless_http,
             )
 
     except KeyboardInterrupt:

@@ -746,6 +746,13 @@
           "name": "FASTMCP_PORT"
         },
         {
+          "description": "Enable stateless HTTP mode for horizontal scaling (required for multiple replicas behind a load balancer)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "FASTMCP_STATELESS_HTTP"
+        },
+        {
           "description": "Comma-separated list of tools to disable (e.g., delete_context,update_context)",
           "isRequired": false,
           "format": "string",
@@ -1511,6 +1518,13 @@
           "format": "number",
           "isSecret": false,
           "name": "FASTMCP_PORT"
+        },
+        {
+          "description": "Enable stateless HTTP mode for horizontal scaling (required for multiple replicas behind a load balancer)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "FASTMCP_STATELESS_HTTP"
         },
         {
           "description": "Comma-separated list of tools to disable (e.g., delete_context,update_context)",
