@@ -55,15 +55,15 @@ The `metadata` field accepts any JSON-serializable structure with no predefined 
 
 The following metadata fields are indexed by default for faster filtering:
 
-| Field | Type Hint | SQLite | PostgreSQL | Use Case |
-|-------|-----------|--------|------------|----------|
-| `status` | string | B-tree | B-tree | State tracking (`"pending"`, `"active"`, `"done"`) |
-| `agent_name` | string | B-tree | B-tree | Agent identification (`"planner"`, `"developer"`) |
-| `task_name` | string | B-tree | B-tree | Task identification (`"auth-impl"`, `"data-export"`) |
-| `project` | string | B-tree | B-tree | Project filtering (`"my-app"`, `"backend"`) |
-| `report_type` | string | B-tree | B-tree | Report categorization (`"research"`, `"implementation"`) |
-| `references` | object | Not indexed | GIN | Cross-references (uses containment queries) |
-| `technologies` | array | Not indexed | GIN | Technology stack (uses containment queries) |
+| Field          | Type Hint | SQLite      | PostgreSQL | Use Case                                                 |
+|----------------|-----------|-------------|------------|----------------------------------------------------------|
+| `status`       | string    | B-tree      | B-tree     | State tracking (`"pending"`, `"active"`, `"done"`)       |
+| `agent_name`   | string    | B-tree      | B-tree     | Agent identification (`"planner"`, `"developer"`)        |
+| `task_name`    | string    | B-tree      | B-tree     | Task identification (`"auth-impl"`, `"data-export"`)     |
+| `project`      | string    | B-tree      | B-tree     | Project filtering (`"my-app"`, `"backend"`)              |
+| `report_type`  | string    | B-tree      | B-tree     | Report categorization (`"research"`, `"implementation"`) |
+| `references`   | object    | Not indexed | GIN        | Cross-references (uses containment queries)              |
+| `technologies` | array     | Not indexed | GIN        | Technology stack (uses containment queries)              |
 
 **Backend Differences:**
 - **SQLite**: Only scalar fields (string, integer, boolean, float) can be indexed using expression indexes. Array and object fields cannot be efficiently indexed.
@@ -230,13 +230,13 @@ The `update_context` tool provides two ways to modify metadata on existing conte
 
 ### When to Use Each Method
 
-| Scenario | Use | Parameter |
-|----------|-----|-----------|
-| Replace entire metadata object | Full replacement | `metadata` |
-| Update a single field | Partial update | `metadata_patch` |
-| Add new fields while preserving existing | Partial update | `metadata_patch` |
-| Delete specific fields | Partial update | `metadata_patch` |
-| Clear all metadata | Full replacement | `metadata={}` |
+| Scenario                                 | Use              | Parameter        |
+|------------------------------------------|------------------|------------------|
+| Replace entire metadata object           | Full replacement | `metadata`       |
+| Update a single field                    | Partial update   | `metadata_patch` |
+| Add new fields while preserving existing | Partial update   | `metadata_patch` |
+| Delete specific fields                   | Partial update   | `metadata_patch` |
+| Clear all metadata                       | Full replacement | `metadata={}`    |
 
 **Mutual Exclusivity:** You cannot use both `metadata` and `metadata_patch` in the same call.
 
@@ -1132,13 +1132,13 @@ Pattern matching operations (`contains`, `starts_with`, `ends_with`) are slower 
 
 Based on test suite results with typical workloads:
 
-| Query Type | Execution Time | Notes |
-|------------|----------------|-------|
-| Single indexed field | < 10ms | Uses database index |
-| Multiple indexed fields | < 20ms | AND conditions, indexed |
-| Non-indexed field | < 50ms | Full table scan on filtered results |
-| Complex pattern match | < 100ms | String operations |
-| Nested JSON path | < 50ms | Uses json_extract() |
+| Query Type              | Execution Time | Notes                               |
+|-------------------------|----------------|-------------------------------------|
+| Single indexed field    | < 10ms         | Uses database index                 |
+| Multiple indexed fields | < 20ms         | AND conditions, indexed             |
+| Non-indexed field       | < 50ms         | Full table scan on filtered results |
+| Complex pattern match   | < 100ms        | String operations                   |
+| Nested JSON path        | < 50ms         | Uses json_extract()                 |
 
 **Acceptable Scale:** Up to 100,000 context entries with acceptable performance using indexed fields.
 
@@ -1635,12 +1635,12 @@ Control how the server handles index mismatches at startup.
 - **Default**: `additive`
 - **Options**: `strict`, `auto`, `warn`, `additive`
 
-| Mode | Missing Indexes | Extra Indexes | Behavior |
-|------|-----------------|---------------|----------|
-| `strict` | Fail startup | Fail startup | Requires exact match - use for production safety |
-| `auto` | Create | Drop | Full synchronization - may drop indexes |
-| `warn` | Log warning | Log warning | Continue startup with warnings |
-| `additive` | Create | Keep (log info) | Add missing, never drop - safest for upgrades |
+| Mode       | Missing Indexes | Extra Indexes   | Behavior                                         |
+|------------|-----------------|-----------------|--------------------------------------------------|
+| `strict`   | Fail startup    | Fail startup    | Requires exact match - use for production safety |
+| `auto`     | Create          | Drop            | Full synchronization - may drop indexes          |
+| `warn`     | Log warning     | Log warning     | Continue startup with warnings                   |
+| `additive` | Create          | Keep (log info) | Add missing, never drop - safest for upgrades    |
 
 **Examples:**
 

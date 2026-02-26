@@ -278,7 +278,7 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
    - You'll see: `postgresql://postgres.[PROJECT-REF]:[YOUR_PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres`
 
    **Example:**
-   ```
+   ```text
    postgresql://postgres.abcdefghijklmno:your-password@aws-0-us-east-1.pooler.supabase.com:5432/postgres
    ```
 
@@ -331,14 +331,14 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
 
 ### Which Connection Method Should I Use?
 
-| Consideration | Direct Connection | Session Pooler |
-|--------------|-------------------|----------------|
-| **IPv6 Required** | Yes (or paid IPv4 add-on) | No - IPv4 compatible |
-| **Latency** | Lowest (~15-20ms) | +5-10ms overhead |
-| **Windows Compatibility** | May require IPv6 config | Works universally |
-| **Corporate Networks** | May be blocked | Usually works |
-| **Configuration** | Simpler (standard PostgreSQL) | Requires correct hostname |
-| **Best For** | VMs, servers with IPv6 | Windows, restricted networks |
+| Consideration             | Direct Connection             | Session Pooler               |
+|---------------------------|-------------------------------|------------------------------|
+| **IPv6 Required**         | Yes (or paid IPv4 add-on)     | No - IPv4 compatible         |
+| **Latency**               | Lowest (~15-20ms)             | +5-10ms overhead             |
+| **Windows Compatibility** | May require IPv6 config       | Works universally            |
+| **Corporate Networks**    | May be blocked                | Usually works                |
+| **Configuration**         | Simpler (standard PostgreSQL) | Requires correct hostname    |
+| **Best For**              | VMs, servers with IPv6        | Windows, restricted networks |
 
 **Recommendation:**
 - **Try Direct Connection first** - it's simpler and faster
@@ -377,7 +377,7 @@ Configure the application connection pool to fit within Supabase limits:
 
 Use this formula to calculate safe pool settings:
 
-```
+```text
 POSTGRESQL_POOL_MAX = floor(pool_size / replica_count) - 1
 ```
 
@@ -407,7 +407,7 @@ POSTGRESQL_POOL_MAX = floor(pool_size / replica_count) - 1
 ### "MaxClientsInSessionMode" Error
 
 **Symptom:**
-```
+```text
 MaxClientsInSessionMode: max clients reached - in Session mode max clients are limited to pool_size
 ```
 
@@ -432,7 +432,7 @@ MaxClientsInSessionMode: max clients reached - in Session mode max clients are l
 ### "getaddrinfo failed" Error
 
 If you see this error with Direct Connection:
-```
+```text
 Error: getaddrinfo ENOTFOUND db.[PROJECT-REF].supabase.co
 ```
 
@@ -496,7 +496,7 @@ TCP keepalive is enabled by default on all PostgreSQL connections:
 **Cross-platform:** Uses `hasattr()` checks for socket constants. Works on Linux, macOS, and Windows 10 v1703+.
 
 To disable TCP keepalive, set all three values to 0:
-```
+```bash
 POSTGRESQL_TCP_KEEPALIVES_IDLE_S=0
 POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S=0
 POSTGRESQL_TCP_KEEPALIVES_COUNT=0

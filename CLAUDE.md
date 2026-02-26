@@ -115,7 +115,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 The server codebase is organized into focused packages:
 
-```
+```text
 app/
 ├── server.py              # Entry point, lifespan, FastMCP (~550 lines)
 ├── settings.py            # ALL env vars via get_settings() - centralized configuration
@@ -293,7 +293,6 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 *\* = default value*. Additional tuning: connection pool, retry, circuit breaker settings in `app/settings.py`.
 
-
 ## Storage Backend Configuration
 
 ### SQLite (Default)
@@ -315,10 +314,10 @@ MVCC (10x+ throughput), asyncpg pooling, JSONB/GIN indexes, pgvector. Multi-user
 
 SQLite: B-tree via `json_extract` for scalar fields only. PostgreSQL: B-tree for scalars, GIN for arrays/objects.
 
-| Field | SQLite | PostgreSQL |
-|-------|--------|------------|
-| `status`, `agent_name`, `task_name`, `project`, `report_type` | B-tree | B-tree |
-| `references` (object), `technologies` (array) | **NOT INDEXED** | GIN |
+| Field                                                         | SQLite          | PostgreSQL |
+|---------------------------------------------------------------|-----------------|------------|
+| `status`, `agent_name`, `task_name`, `project`, `report_type` | B-tree          | B-tree     |
+| `references` (object), `technologies` (array)                 | **NOT INDEXED** | GIN        |
 
 **Note**: Array/object queries require full table scan in SQLite. Use PostgreSQL for high-performance containment queries: `WHERE metadata @> '{"technologies": ["python"]}'`
 

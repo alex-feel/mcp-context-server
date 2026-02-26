@@ -61,7 +61,7 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ### Components
 
-```
+```text
 +-------------------+     +------------------+     +------------------+
 |   MCP Client      |---->|  Ingress/Service |---->| MCP Context      |
 | (Claude, etc.)    |     |                  |     | Server Pod       |

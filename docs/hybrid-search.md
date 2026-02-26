@@ -125,7 +125,7 @@ Add to your `.mcp.json` file:
 
 Reciprocal Rank Fusion combines results from multiple search methods using a simple yet effective formula:
 
-```
+```text
 RRF_score(d) = sum(1 / (k + rank_i(d))) for each search method i
 ```
 
@@ -139,11 +139,11 @@ Where:
 **1. Rank-based, not score-based:** RRF uses positions rather than raw scores, avoiding the need to normalize different scoring systems (BM25 vs L2 distance).
 
 **2. Documents in both lists score higher:** A document ranked #1 in FTS and #1 in semantic search gets:
-```
+```text
 RRF = 1/(60+1) + 1/(60+1) = 0.0328
 ```
 While a document ranked #1 in only one list gets:
-```
+```text
 RRF = 1/(60+1) = 0.0164
 ```
 
@@ -151,7 +151,7 @@ RRF = 1/(60+1) = 0.0164
 
 ### Visual Example
 
-```
+```text
 FTS Results:           Semantic Results:      After RRF Fusion:
 1. Doc A (score 2.5)   1. Doc B (dist 0.15)   1. Doc B (rrf 0.0328) [in both]
 2. Doc B (score 2.1)   2. Doc C (dist 0.22)   2. Doc A (rrf 0.0164) [FTS only]
@@ -175,7 +175,7 @@ This ensures documents found by both methods rank highest, then reranking optimi
 
 For a request with `limit=5`, the pipeline applies multiple over-fetch multipliers:
 
-```
+```text
 User requests: limit=5
     |
     v
@@ -445,7 +445,7 @@ Hybrid search executes FTS and semantic search in parallel for optimal performan
    uv run mcp-context-server
    ```
    Look for:
-   ```
+   ```text
    [OK] Hybrid search enabled
    [OK] hybrid_search_context registered
    ```

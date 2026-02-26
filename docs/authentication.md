@@ -101,7 +101,7 @@ MCP_AUTH_CLIENT_ID=my-service
 
 Clients must include the bearer token in the `Authorization` header:
 
-```
+```text
 Authorization: Bearer your-secret-token-here
 ```
 

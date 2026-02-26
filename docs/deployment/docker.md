@@ -705,7 +705,7 @@ The Docker image includes an entrypoint wrapper script (`docker-entrypoint.sh`) 
 
 **How it works:**
 
-```
+```text
 Docker starts container
     |
     v
@@ -791,7 +791,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 **Examples:**
 
 **Scenario 1: PostgreSQL Not Running (Exit 69)**
-```
+```text
 [ERROR] Failed to connect to PostgreSQL: [Errno 111] Connection refused
 [docker-entrypoint] Server exited with code 69
 ```
@@ -800,7 +800,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 - **Fix:** Ensure PostgreSQL container is running and healthy
 
 **Scenario 2: Wrong Database Password (Exit 78)**
-```
+```text
 [ERROR] PostgreSQL authentication failed: password authentication failed
 [docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
 [docker-entrypoint] Server exited with code 78
@@ -810,7 +810,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 - **Fix:** Update `POSTGRESQL_PASSWORD` in `.env` file and restart container
 
 **Scenario 3: pgvector Extension Not Installed (Exit 78)**
-```
+```text
 [ERROR] pgvector extension is not installed
 [docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
 [docker-entrypoint] Server exited with code 78
@@ -820,7 +820,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 - **Fix:** Enable pgvector via Supabase Dashboard → Extensions or `CREATE EXTENSION vector;`
 
 **Scenario 4: Database Does Not Exist (Exit 78)**
-```
+```text
 [ERROR] PostgreSQL database does not exist: database "mcp_context" does not exist
 [docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
 [docker-entrypoint] Server exited with code 78
@@ -870,7 +870,7 @@ If your container shows "Running" but the server is not responding:
    ```
 
 2. **Look for "CONFIGURATION ERROR - CONTAINER HALTED" message:**
-   ```
+   ```text
    ==============================================
    [FATAL] CONFIGURATION ERROR - CONTAINER HALTED
    ==============================================
