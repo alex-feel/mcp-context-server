@@ -56,8 +56,7 @@ class FlashRankProvider:
             _ = Ranker
         except ImportError as e:
             raise ImportError(
-                'flashrank package required. '
-                'Install with: uv sync --extra reranking',
+                'flashrank package required',
             ) from e
 
         logger.info(

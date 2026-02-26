@@ -26,10 +26,6 @@ PROVIDER_CLASSES: dict[str, str] = {
     'flashrank': 'FlashRankProvider',
 }
 
-PROVIDER_INSTALL_INSTRUCTIONS: dict[str, str] = {
-    'flashrank': 'uv sync --extra reranking',
-}
-
 
 def create_reranking_provider() -> RerankingProvider:
     """Create a reranking provider based on settings.
@@ -56,7 +52,6 @@ def create_reranking_provider() -> RerankingProvider:
 
     module_path = PROVIDER_MODULES[provider_name]
     class_name = PROVIDER_CLASSES[provider_name]
-    install_cmd = PROVIDER_INSTALL_INSTRUCTIONS[provider_name]
 
     try:
         module = importlib.import_module(module_path)
@@ -67,6 +62,5 @@ def create_reranking_provider() -> RerankingProvider:
         return provider
     except ImportError as e:
         raise ImportError(
-            f"Optional dependencies for '{provider_name}' not installed. "
-            f'Install with: {install_cmd}',
+            f"Optional dependencies for '{provider_name}' not installed",
         ) from e
