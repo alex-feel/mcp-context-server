@@ -53,6 +53,13 @@ repos:
       name: Check shebang scripts
       description: Check that text files with a shebang are executable
 
+- repo: https://github.com/DavidAnson/markdownlint-cli2
+  rev: v0.20.0
+  hooks:
+    - id: markdownlint-cli2
+      name: Markdown Lint
+      exclude: ^CHANGELOG\.md$
+
 - repo: https://github.com/astral-sh/uv-pre-commit
   rev: 0.9.20
   hooks:
