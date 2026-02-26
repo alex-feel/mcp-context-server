@@ -933,13 +933,6 @@ async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
-    search_modes: Annotated[
-        list[Literal['fts', 'semantic']] | None,
-        Field(
-            description="Search modes to use: 'fts' (full-text), 'semantic' (vector similarity), "
-            "or both ['fts', 'semantic'] (default). Modes are executed in parallel.",
-        ),
-    ] = None,
     fusion_method: Annotated[
         Literal['rrf'],
         Field(description="Fusion algorithm: 'rrf' (Reciprocal Rank Fusion, default)"),
@@ -1037,10 +1030,6 @@ async def hybrid_search_context(
             'Also ensure ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
         )
 
-    # Use default search modes if not specified
-    if search_modes is None:
-        search_modes = ['fts', 'semantic']
-
     # Use settings default if rrf_k not specified
     effective_rrf_k = rrf_k if rrf_k is not None else settings.hybrid_search.rrf_k
 
@@ -1048,24 +1037,24 @@ async def hybrid_search_context(
     fts_available = settings.fts.enabled
     semantic_available = settings.semantic_search.enabled and get_embedding_provider() is not None
 
-    # Filter requested modes to available ones
+    # Collect all available modes
     available_modes: list[str] = []
-    if 'fts' in search_modes and fts_available:
+    if fts_available:
         available_modes.append('fts')
-    if 'semantic' in search_modes and semantic_available:
+    if semantic_available:
         available_modes.append('semantic')
 
     if not available_modes:
         unavailable_reasons: list[str] = []
-        if 'fts' in search_modes and not fts_available:
+        if not fts_available:
             unavailable_reasons.append('FTS requires ENABLE_FTS=true')
-        if 'semantic' in search_modes and not semantic_available:
+        if not semantic_available:
             unavailable_reasons.append(
                 f'Semantic search requires ENABLE_SEMANTIC_SEARCH=true and '
                 f'{settings.embedding.provider} provider properly configured',
             )
         raise ToolError(
-            f'No search modes available. Requested: {search_modes}. '
+            f'No search modes available. '
             f'Issues: {"; ".join(unavailable_reasons)}',
         )
 

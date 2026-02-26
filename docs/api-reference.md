@@ -277,7 +277,6 @@ Note: This tool is only available when hybrid search is enabled via `ENABLE_HYBR
 - `query` (str, required): Natural language search query
 - `limit` (int, optional): Maximum results to return (1-100, default: 5)
 - `offset` (int, optional): Pagination offset (default: 0)
-- `search_modes` (list, optional): Search modes to use - `['fts', 'semantic']` (default: both)
 - `fusion_method` (str, optional): Fusion algorithm - `'rrf'` (default)
 - `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from HYBRID_RRF_K env var)
 - `thread_id` (str, optional): Optional filter by thread
@@ -330,12 +329,6 @@ hybrid_search_context(
     metadata={"status": "completed"},
     metadata_filters=[{"key": "priority", "operator": "gte", "value": 7}]
 )
-
-# Single mode through hybrid API (for consistent interface)
-hybrid_search_context(
-    query="exact phrase",
-    search_modes=["fts"]
-)
 ```
 
 For detailed configuration and troubleshooting, see the [Hybrid Search Guide](hybrid-search.md).
@@ -344,19 +337,19 @@ For detailed configuration and troubleshooting, see the [Hybrid Search Guide](hy
 
 All search tools return consistent response structures with common fields and tool-specific additions:
 
-| Field | search_context | semantic_search_context | fts_search_context | hybrid_search_context |
-|-------|----------------|------------------------|-------------------|----------------------|
-| `results` | List of entries | List of entries | List of entries | List of entries |
-| `count` | Yes | Yes | Yes | Yes |
-| `query` | No | Yes | Yes | Yes |
-| `stats` | explain_query=True | explain_query=True | explain_query=True | explain_query=True |
-| `model` | No | Yes (embedding model) | No | No |
-| `mode` | No | No | Yes (search mode) | No |
-| `language` | No | No | Yes (FTS language) | No |
-| `fusion_method` | No | No | No | Yes |
-| `search_modes_used` | No | No | No | Yes |
-| `fts_count` | No | No | No | Yes |
-| `semantic_count` | No | No | No | Yes |
+| Field               | search_context     | semantic_search_context | fts_search_context | hybrid_search_context |
+|---------------------|--------------------|-------------------------|--------------------|-----------------------|
+| `results`           | List of entries    | List of entries         | List of entries    | List of entries       |
+| `count`             | Yes                | Yes                     | Yes                | Yes                   |
+| `query`             | No                 | Yes                     | Yes                | Yes                   |
+| `stats`             | explain_query=True | explain_query=True      | explain_query=True | explain_query=True    |
+| `model`             | No                 | Yes (embedding model)   | No                 | No                    |
+| `mode`              | No                 | No                      | Yes (search mode)  | No                    |
+| `language`          | No                 | No                      | Yes (FTS language) | No                    |
+| `fusion_method`     | No                 | No                      | No                 | Yes                   |
+| `search_modes_used` | No                 | No                      | No                 | Yes                   |
+| `fts_count`         | No                 | No                      | No                 | Yes                   |
+| `semantic_count`    | No                 | No                      | No                 | Yes                   |
 
 **Entry Fields by Tool:**
 
