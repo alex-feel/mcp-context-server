@@ -424,10 +424,10 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml ps
 docker compose -f deploy/docker/docker-compose.sqlite.openai.yml ps
 
 # Expected output: all services "healthy"
-NAME                  STATUS
-mcp-context-server    Up (healthy)
-ollama                Up (healthy)   # Ollama only
-postgres              Up (healthy)   # PostgreSQL only
+NAME                                    STATUS
+context-server-mcp-context-server-1     Up (healthy)
+context-server-ollama-1                 Up (healthy)   # Ollama only
+context-server-postgres-1               Up (healthy)   # PostgreSQL only
 ```
 
 ### Model Availability (Ollama Only)
