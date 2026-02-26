@@ -6,6 +6,8 @@
 #   2. Add your OPENAI_API_KEY to the .env file
 #   3. Run: docker compose -f deploy/docker/docker-compose.sqlite.openai.yml up -d
 
+name: context-server
+
 services:
   mcp-context-server:
     image: mcp-context-server

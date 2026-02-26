@@ -6,6 +6,8 @@
 #   2. Configure desired settings in .env
 #   3. Run normally - the .env file will be loaded automatically
 
+name: context-server
+
 services:
   mcp-context-server:
     image: mcp-context-server

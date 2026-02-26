@@ -6,6 +6,8 @@
 #   2. Fill in your PostgreSQL connection details in .env
 #   3. Run: docker compose -f deploy/docker/docker-compose.postgresql-external.ollama.yml up -d
 
+name: context-server
+
 services:
   mcp-context-server:
     image: ghcr.io/alex-feel/mcp-context-server:latest
