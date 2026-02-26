@@ -44,22 +44,23 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ### Key Values
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `image.repository` | Image repository | `ghcr.io/alex-feel/mcp-context-server` |
-| `image.tag` | Image tag | `Chart.appVersion` |
-| `replicaCount` | Number of replicas | `1` |
-| `service.type` | Kubernetes service type | `ClusterIP` |
-| `service.port` | Service port | `8000` |
-| `storage.backend` | Storage backend (sqlite/postgresql) | `sqlite` |
-| `search.fts.enabled` | Enable full-text search | `true` |
-| `search.semantic.enabled` | Enable semantic search | `false` |
-| `search.hybrid.enabled` | Enable hybrid search | `false` |
-| `search.chunking.enabled` | Enable text chunking for embeddings | `true` |
-| `search.chunking.size` | Chunk size in characters | `1000` |
-| `search.reranking.enabled` | Enable cross-encoder reranking | `true` |
-| `search.reranking.model` | Reranking model name | `ms-marco-MiniLM-L-12-v2` |
-| `ollama.enabled` | Enable Ollama sidecar | `false` |
+| Parameter                    | Description                                | Default                                |
+|------------------------------|--------------------------------------------|----------------------------------------|
+| `image.repository`           | Image repository                           | `ghcr.io/alex-feel/mcp-context-server` |
+| `image.tag`                  | Image tag                                  | `Chart.appVersion`                     |
+| `replicaCount`               | Number of replicas                         | `1`                                    |
+| `env.FASTMCP_STATELESS_HTTP` | Stateless HTTP mode for horizontal scaling | `"false"`                              |
+| `service.type`               | Kubernetes service type                    | `ClusterIP`                            |
+| `service.port`               | Service port                               | `8000`                                 |
+| `storage.backend`            | Storage backend (sqlite/postgresql)        | `sqlite`                               |
+| `search.fts.enabled`         | Enable full-text search                    | `true`                                 |
+| `search.semantic.enabled`    | Enable semantic search                     | `false`                                |
+| `search.hybrid.enabled`      | Enable hybrid search                       | `false`                                |
+| `search.chunking.enabled`    | Enable text chunking for embeddings        | `true`                                 |
+| `search.chunking.size`       | Chunk size in characters                   | `1000`                                 |
+| `search.reranking.enabled`   | Enable cross-encoder reranking             | `true`                                 |
+| `search.reranking.model`     | Reranking model name                       | `ms-marco-MiniLM-L-12-v2`              |
+| `ollama.enabled`             | Enable Ollama sidecar                      | `false`                                |
 
 ### Storage Configuration
 

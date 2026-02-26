@@ -249,7 +249,7 @@ uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+.
 
 ## MCP Registry and server.json Maintenance
 
-`server.json` enables MCP client discovery ([spec](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md)). All env vars must match `app/settings.py` Fields with `alias` parameter. Release Please auto-updates version.
+`server.json` enables MCP client discovery ([spec](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md)). Every `Field(alias=...)` in `app/settings.py` MUST have a corresponding entry in `server.json` `environmentVariables`. This invariant is enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
 
 ## Environment Variables
 
@@ -257,7 +257,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Core**: `STORAGE_BACKEND` (sqlite*/postgresql), `LOG_LEVEL` (ERROR*), `DB_PATH` (~/.mcp/context_storage.db*), `MAX_IMAGE_SIZE_MB` (10*), `MAX_TOTAL_SIZE_MB` (100*), `DISABLED_TOOLS`
 
-**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*)
+**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (false*)
 
 **Auth**: `MCP_AUTH_PROVIDER` (none*/simple_token), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
 
