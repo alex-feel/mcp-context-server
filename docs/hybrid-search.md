@@ -34,11 +34,11 @@ ENABLE_HYBRID_SEARCH=true
 
 **Dependencies by Search Mode:**
 
-| Search Mode | Dependencies | Setup Guide |
-|-------------|--------------|-------------|
-| FTS only | None (built-in) | [Full-Text Search Guide](full-text-search.md) |
-| Semantic only | Ollama, embedding model, sqlite-vec/pgvector | [Semantic Search Guide](semantic-search.md) |
-| Both (recommended) | All above | Both guides |
+| Search Mode        | Dependencies                                 | Setup Guide                                   |
+|--------------------|----------------------------------------------|-----------------------------------------------|
+| FTS only           | None (built-in)                              | [Full-Text Search Guide](full-text-search.md) |
+| Semantic only      | Ollama, embedding model, sqlite-vec/pgvector | [Semantic Search Guide](semantic-search.md)   |
+| Both (recommended) | All above                                    | Both guides                                   |
 
 ## Installation
 
@@ -83,11 +83,11 @@ Enable hybrid search by setting these environment variables in your MCP configur
 
 **Understanding RRF k Parameter:**
 
-| k Value | Behavior |
-|---------|----------|
+| k Value       | Behavior                                                                      |
+|---------------|-------------------------------------------------------------------------------|
 | Lower (10-30) | More emphasis on top-ranked documents; larger score differences between ranks |
-| Default (60) | Balanced approach; industry standard used by Elasticsearch |
-| Higher (100+) | More uniform treatment across all ranks; smaller score differences |
+| Default (60)  | Balanced approach; industry standard used by Elasticsearch                    |
+| Higher (100+) | More uniform treatment across all ranks; smaller score differences            |
 
 ### MCP Configuration Example
 
@@ -125,7 +125,7 @@ Add to your `.mcp.json` file:
 
 Reciprocal Rank Fusion combines results from multiple search methods using a simple yet effective formula:
 
-```
+```text
 RRF_score(d) = sum(1 / (k + rank_i(d))) for each search method i
 ```
 
@@ -139,11 +139,11 @@ Where:
 **1. Rank-based, not score-based:** RRF uses positions rather than raw scores, avoiding the need to normalize different scoring systems (BM25 vs L2 distance).
 
 **2. Documents in both lists score higher:** A document ranked #1 in FTS and #1 in semantic search gets:
-```
+```text
 RRF = 1/(60+1) + 1/(60+1) = 0.0328
 ```
 While a document ranked #1 in only one list gets:
-```
+```text
 RRF = 1/(60+1) = 0.0164
 ```
 
@@ -151,7 +151,7 @@ RRF = 1/(60+1) = 0.0164
 
 ### Visual Example
 
-```
+```text
 FTS Results:           Semantic Results:      After RRF Fusion:
 1. Doc A (score 2.5)   1. Doc B (dist 0.15)   1. Doc B (rrf 0.0328) [in both]
 2. Doc B (score 2.1)   2. Doc C (dist 0.22)   2. Doc A (rrf 0.0164) [FTS only]
@@ -175,7 +175,7 @@ This ensures documents found by both methods rank highest, then reranking optimi
 
 For a request with `limit=5`, the pipeline applies multiple over-fetch multipliers:
 
-```
+```text
 User requests: limit=5
     |
     v
@@ -212,7 +212,6 @@ When hybrid search is enabled and at least one underlying search method is avail
 - `query` (str, required): Natural language search query
 - `limit` (int, optional): Maximum results to return (1-100, default: 5)
 - `offset` (int, optional): Pagination offset (default: 0)
-- `search_modes` (list, optional): Which search modes to use - `['fts', 'semantic']` (default: both)
 - `fusion_method` (str, optional): Fusion algorithm - currently only `'rrf'` supported
 - `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from settings)
 - `thread_id` (str, optional): Optional filter by thread
@@ -291,12 +290,12 @@ When hybrid search is enabled and at least one underlying search method is avail
 
 When `explain_query=True`, the response includes a `stats` object with detailed execution statistics:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `execution_time_ms` | float | Total hybrid search execution time |
-| `fts_stats` | object or null | FTS search statistics (null if FTS not used) |
-| `semantic_stats` | object or null | Semantic search statistics (null if semantic not used) |
-| `fusion_stats` | object | RRF fusion statistics |
+| Field               | Type           | Description                                            |
+|---------------------|----------------|--------------------------------------------------------|
+| `execution_time_ms` | float          | Total hybrid search execution time                     |
+| `fts_stats`         | object or null | FTS search statistics (null if FTS not used)           |
+| `semantic_stats`    | object or null | Semantic search statistics (null if semantic not used) |
+| `fusion_stats`      | object         | RRF fusion statistics                                  |
 
 **FTS Stats:**
 - `execution_time_ms`: FTS search execution time
@@ -341,12 +340,12 @@ Each result includes a `scores` object with detailed breakdown:
 
 Hybrid search automatically adapts when search methods are unavailable:
 
-| FTS Available | Semantic Available | Behavior |
-|---------------|-------------------|----------|
-| Yes | Yes | Full hybrid search with RRF fusion |
-| Yes | No | FTS results only (semantic_rank always null) |
-| No | Yes | Semantic results only (fts_rank always null) |
-| No | No | Error: "No search modes available" |
+| FTS Available | Semantic Available | Behavior                                     |
+|---------------|--------------------|----------------------------------------------|
+| Yes           | Yes                | Full hybrid search with RRF fusion           |
+| Yes           | No                 | FTS results only (semantic_rank always null) |
+| No            | Yes                | Semantic results only (fts_rank always null) |
+| No            | No                 | Error: "No search modes available"           |
 
 **Common scenarios for partial availability:**
 
@@ -392,17 +391,7 @@ hybrid_search_context(
 )
 ```
 
-**5. Single-mode hybrid search:**
-Use hybrid infrastructure but restrict to one method:
-```python
-# FTS only through hybrid API
-hybrid_search_context(query="exact phrase match", search_modes=["fts"])
-
-# Semantic only through hybrid API
-hybrid_search_context(query="conceptually similar", search_modes=["semantic"])
-```
-
-**6. Tuning RRF for your use case:**
+**5. Tuning RRF for your use case:**
 Adjust k parameter for different ranking behaviors:
 ```python
 # Emphasize top results more (lower k)
@@ -416,12 +405,12 @@ hybrid_search_context(query="general information", rrf_k=100)
 
 Hybrid search executes FTS and semantic search in parallel for optimal performance:
 
-| Operation | SQLite | PostgreSQL |
-|-----------|--------|------------|
-| FTS search | 10-50ms | 5-30ms |
-| Semantic search | 50-200ms | 30-100ms |
-| Hybrid (parallel) | 55-220ms | 35-115ms |
-| RRF fusion | <1ms | <1ms |
+| Operation         | SQLite   | PostgreSQL |
+|-------------------|----------|------------|
+| FTS search        | 10-50ms  | 5-30ms     |
+| Semantic search   | 50-200ms | 30-100ms   |
+| Hybrid (parallel) | 55-220ms | 35-115ms   |
+| RRF fusion        | <1ms     | <1ms       |
 
 **Performance notes:**
 
@@ -456,7 +445,7 @@ Hybrid search executes FTS and semantic search in parallel for optimal performan
    uv run mcp-context-server
    ```
    Look for:
-   ```
+   ```text
    [OK] Hybrid search enabled
    [OK] hybrid_search_context registered
    ```
@@ -565,31 +554,31 @@ Both FTS and semantic search should show as available for full hybrid functional
    export OLLAMA_KEEP_ALIVE=3600  # Keep model loaded
    ```
 
-3. **Consider single-mode search** if only keywords needed:
+3. **Use dedicated search tools** if only keywords needed:
    ```python
-   hybrid_search_context(query="exact match", search_modes=["fts"])
+   fts_search_context(query="exact match")
    ```
 
 ### Common Error Messages
 
-| Error Message | Cause | Solution |
-|---------------|-------|----------|
-| `Hybrid search is not available` | Feature not enabled | Set `ENABLE_HYBRID_SEARCH=true` |
-| `No search modes available` | Neither FTS nor semantic enabled | Enable at least one search method |
-| `FTS requires ENABLE_FTS=true` | Requested FTS but not enabled | Set `ENABLE_FTS=true` |
-| `Semantic search requires...` | Requested semantic but dependencies missing | Set up Ollama and semantic search |
-| `All search modes failed` | Both FTS and semantic errored | Check individual search method status |
+| Error Message                    | Cause                            | Solution                              |
+|----------------------------------|----------------------------------|---------------------------------------|
+| `Hybrid search is not available` | Feature not enabled              | Set `ENABLE_HYBRID_SEARCH=true`       |
+| `No search modes available`      | Neither FTS nor semantic enabled | Enable at least one search method     |
+| `FTS requires ENABLE_FTS=true`   | FTS not enabled                  | Set `ENABLE_FTS=true`                 |
+| `Semantic search requires...`    | Semantic dependencies missing    | Set up Ollama and semantic search     |
+| `All search modes failed`        | Both FTS and semantic errored    | Check individual search method status |
 
 ## Comparison: Hybrid vs Individual Search Methods
 
-| Feature | FTS | Semantic | Hybrid |
-|---------|-----|----------|--------|
-| **Query Type** | Keywords/phrases | Natural language meaning | Both |
-| **Result Ranking** | BM25/ts_rank score | L2 distance | RRF combined score |
-| **Best For** | Exact matches, known terms | Concept discovery | High-confidence matches |
-| **Performance** | Fastest | Slower | Similar to semantic (parallel) |
-| **Dependencies** | None | Ollama + model | At least one method |
-| **Graceful Degradation** | N/A | N/A | Falls back to available method |
+| Feature                  | FTS                        | Semantic                 | Hybrid                         |
+|--------------------------|----------------------------|--------------------------|--------------------------------|
+| **Query Type**           | Keywords/phrases           | Natural language meaning | Both                           |
+| **Result Ranking**       | BM25/ts_rank score         | L2 distance              | RRF combined score             |
+| **Best For**             | Exact matches, known terms | Concept discovery        | High-confidence matches        |
+| **Performance**          | Fastest                    | Slower                   | Similar to semantic (parallel) |
+| **Dependencies**         | None                       | Ollama + model           | At least one method            |
+| **Graceful Degradation** | N/A                        | N/A                      | Falls back to available method |
 
 **When to use each:**
 

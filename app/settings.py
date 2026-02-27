@@ -80,24 +80,51 @@ class TransportSettings(CommonSettings):
         le=65535,
         description='HTTP port number',
     )
+    stateless_http: bool = Field(
+        default=False,
+        alias='FASTMCP_STATELESS_HTTP',
+        description='Enable stateless HTTP mode for horizontal scaling. '
+                    'Each request creates a fresh context, eliminating session affinity requirements. '
+                    'Required when running multiple server replicas behind a load balancer.',
+    )
 
 
 class AuthSettings(CommonSettings):
     """Authentication settings for HTTP transport.
 
-    These settings are used by the SimpleTokenVerifier when
-    FASTMCP_SERVER_AUTH=app.auth.simple_token.SimpleTokenVerifier is set.
+    Configures the authentication provider passed to FastMCP's auth= parameter.
+    Supported providers: 'none' (default), 'simple_token'.
     """
 
+    provider: Literal['none', 'simple_token'] = Field(
+        default='none',
+        alias='MCP_AUTH_PROVIDER',
+        description=(
+            'Authentication provider: '
+            'none (no auth, default), '
+            'simple_token (bearer token)'
+        ),
+    )
     auth_token: SecretStr | None = Field(
         default=None,
         alias='MCP_AUTH_TOKEN',
-        description='Bearer token for HTTP authentication',
+        description='Bearer token for HTTP authentication (required when MCP_AUTH_PROVIDER=simple_token)',
     )
     auth_client_id: str = Field(
         default='mcp-client',
         alias='MCP_AUTH_CLIENT_ID',
-        description='Client ID to assign to authenticated requests',
+        description='Client ID to assign to authenticated requests (used with simple_token)',
+    )
+
+
+class InstructionsSettings(CommonSettings):
+    """Server instructions sent to MCP clients during initialization."""
+
+    server_instructions: str | None = Field(
+        default=None,
+        alias='MCP_SERVER_INSTRUCTIONS',
+        description='Custom server instructions text. Overrides the built-in default instructions. '
+                    'Set to empty string to disable instructions entirely.',
     )
 
 
@@ -778,6 +805,7 @@ class AppSettings(CommonSettings):
     # Infrastructure settings
     transport: TransportSettings = Field(default_factory=lambda: TransportSettings())
     auth: AuthSettings = Field(default_factory=lambda: AuthSettings())
+    instructions: InstructionsSettings = Field(default_factory=lambda: InstructionsSettings())
     langsmith: LangSmithSettings = Field(default_factory=lambda: LangSmithSettings())
 
     @model_validator(mode='after')

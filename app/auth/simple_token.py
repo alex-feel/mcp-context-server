@@ -1,18 +1,18 @@
 """Simple token verifier for bearer token authentication.
 
 This module provides a simple token verifier that validates tokens against
-a single static token configured via environment variables. Designed to work
-with FastMCP's `FASTMCP_SERVER_AUTH` auto-configuration mechanism.
+a single static token configured via environment variables. Used as an
+auth provider with FastMCP's explicit auth= parameter.
 
 Usage:
     Set the following environment variables:
-    - FASTMCP_SERVER_AUTH=app.auth.simple_token.SimpleTokenVerifier
+    - MCP_AUTH_PROVIDER=simple_token
     - MCP_AUTH_TOKEN=your-secret-token
 
 Example:
     ```bash
     # Enable simple token authentication
-    export FASTMCP_SERVER_AUTH=app.auth.simple_token.SimpleTokenVerifier
+    export MCP_AUTH_PROVIDER=simple_token
     export MCP_AUTH_TOKEN=my-secret-token-123
 
     # Run the server
@@ -43,11 +43,11 @@ logger = logging.getLogger(__name__)
 class SimpleTokenVerifier(TokenVerifier):
     """Token verifier using a single static token from environment.
 
-    This verifier is designed to work with FastMCP's `FASTMCP_SERVER_AUTH`
-    environment variable mechanism. When configured, FastMCP will automatically
-    import and instantiate this class.
+    This verifier is instantiated by the auth factory in app.auth when
+    MCP_AUTH_PROVIDER=simple_token. The resulting instance is passed
+    to FastMCP's auth= constructor parameter.
 
-    The verifier reads the expected token from the `MCP_AUTH_TOKEN` environment
+    The verifier reads the expected token from the MCP_AUTH_TOKEN environment
     variable (via centralized AuthSettings). Tokens are compared using constant-time
     comparison to prevent timing attacks.
 

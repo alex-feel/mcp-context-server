@@ -82,11 +82,11 @@ class TestCreateEmbeddingProvider:
         with pytest.raises(ValueError, match='Supported providers:'):
             create_embedding_provider('nonexistent')
 
-    def test_create_provider_import_error_includes_install_command(
+    def test_create_provider_import_error_includes_provider_name(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Test factory provides helpful error message on ImportError."""
+        """Test factory provides descriptive error message on ImportError."""
         import importlib
 
         def mock_import_module(name: str) -> None:
@@ -94,26 +94,19 @@ class TestCreateEmbeddingProvider:
 
         monkeypatch.setattr(importlib, 'import_module', mock_import_module)
 
-        with pytest.raises(ImportError, match='uv sync --extra embeddings-ollama'):
+        with pytest.raises(ImportError, match="Optional dependencies for 'ollama' not installed"):
             create_embedding_provider('ollama')
 
     @pytest.mark.parametrize(
-        ('provider', 'expected_install'),
-        [
-            ('ollama', 'uv sync --extra embeddings-ollama'),
-            ('openai', 'uv sync --extra embeddings-openai'),
-            ('azure', 'uv sync --extra embeddings-azure'),
-            ('huggingface', 'uv sync --extra embeddings-huggingface'),
-            ('voyage', 'uv sync --extra embeddings-voyage'),
-        ],
+        'provider',
+        ['ollama', 'openai', 'azure', 'huggingface', 'voyage'],
     )
     def test_import_error_messages_per_provider(
         self,
         monkeypatch: pytest.MonkeyPatch,
         provider: str,
-        expected_install: str,
     ) -> None:
-        """Test each provider shows correct install command on ImportError."""
+        """Test each provider shows descriptive error message on ImportError."""
         import importlib
 
         def mock_import_module(name: str) -> None:
@@ -121,7 +114,7 @@ class TestCreateEmbeddingProvider:
 
         monkeypatch.setattr(importlib, 'import_module', mock_import_module)
 
-        with pytest.raises(ImportError, match=expected_install):
+        with pytest.raises(ImportError, match=f"Optional dependencies for '{provider}' not installed"):
             create_embedding_provider(provider)
 
     def test_create_provider_uses_settings_when_no_override(self) -> None:

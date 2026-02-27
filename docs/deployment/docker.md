@@ -249,11 +249,12 @@ All Docker Compose files use environment variables for configuration. Key settin
 
 **Transport Settings:**
 
-| Variable        | Default   | Description                               |
-|-----------------|-----------|-------------------------------------------|
-| `MCP_TRANSPORT` | `http`    | Transport mode (set to `http` for Docker) |
-| `FASTMCP_HOST`  | `0.0.0.0` | HTTP bind address                         |
-| `FASTMCP_PORT`  | `8000`    | HTTP port                                 |
+| Variable                  | Default   | Description                                              |
+|---------------------------|-----------|----------------------------------------------------------|
+| `MCP_TRANSPORT`           | `http`    | Transport mode (set to `http` for Docker)                |
+| `FASTMCP_HOST`            | `0.0.0.0` | HTTP bind address                                        |
+| `FASTMCP_PORT`            | `8000`    | HTTP port                                                |
+| `FASTMCP_STATELESS_HTTP`  | `false`   | Stateless HTTP mode (required for horizontal scaling)    |
 
 **Search Features:**
 
@@ -424,10 +425,10 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml ps
 docker compose -f deploy/docker/docker-compose.sqlite.openai.yml ps
 
 # Expected output: all services "healthy"
-NAME                  STATUS
-mcp-context-server    Up (healthy)
-ollama                Up (healthy)   # Ollama only
-postgres              Up (healthy)   # PostgreSQL only
+NAME                                    STATUS
+context-server-mcp-context-server-1     Up (healthy)
+context-server-ollama-1                 Up (healthy)   # Ollama only
+context-server-postgres-1               Up (healthy)   # PostgreSQL only
 ```
 
 ### Model Availability (Ollama Only)
@@ -654,6 +655,25 @@ docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-al
 
 **Note:** The OpenAI Docker Compose configurations automatically pass the correct build argument. If using Ollama configurations, no build argument is needed (default is `embeddings-ollama`).
 
+### Horizontal Scaling with Docker Compose
+
+For horizontal scaling with Docker Compose, use a PostgreSQL configuration with `FASTMCP_STATELESS_HTTP=true`:
+
+```yaml
+services:
+  mcp-context-server:
+    environment:
+      - FASTMCP_STATELESS_HTTP=true
+    deploy:
+      replicas: 3
+```
+
+**Requirements:**
+- PostgreSQL backend (`STORAGE_BACKEND=postgresql`) -- SQLite does not support multiple writers
+- `FASTMCP_STATELESS_HTTP=true` -- eliminates server-side session state so any replica can handle any request
+
+For production horizontal scaling, Kubernetes with Helm is recommended. See the [Kubernetes Deployment Guide](kubernetes.md#horizontal-scaling).
+
 ### Restart Policies and Exit Codes
 
 The MCP Context Server uses BSD sysexits.h exit codes to signal different failure types to container supervisors:
@@ -685,7 +705,7 @@ The Docker image includes an entrypoint wrapper script (`docker-entrypoint.sh`) 
 
 **How it works:**
 
-```
+```text
 Docker starts container
     |
     v
@@ -771,7 +791,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 **Examples:**
 
 **Scenario 1: PostgreSQL Not Running (Exit 69)**
-```
+```text
 [ERROR] Failed to connect to PostgreSQL: [Errno 111] Connection refused
 [docker-entrypoint] Server exited with code 69
 ```
@@ -780,7 +800,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 - **Fix:** Ensure PostgreSQL container is running and healthy
 
 **Scenario 2: Wrong Database Password (Exit 78)**
-```
+```text
 [ERROR] PostgreSQL authentication failed: password authentication failed
 [docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
 [docker-entrypoint] Server exited with code 78
@@ -790,7 +810,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 - **Fix:** Update `POSTGRESQL_PASSWORD` in `.env` file and restart container
 
 **Scenario 3: pgvector Extension Not Installed (Exit 78)**
-```
+```text
 [ERROR] pgvector extension is not installed
 [docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
 [docker-entrypoint] Server exited with code 78
@@ -800,7 +820,7 @@ When using the PostgreSQL backend, the server classifies initialization errors t
 - **Fix:** Enable pgvector via Supabase Dashboard → Extensions or `CREATE EXTENSION vector;`
 
 **Scenario 4: Database Does Not Exist (Exit 78)**
-```
+```text
 [ERROR] PostgreSQL database does not exist: database "mcp_context" does not exist
 [docker-entrypoint] CONFIGURATION ERROR - CONTAINER HALTED
 [docker-entrypoint] Server exited with code 78
@@ -850,7 +870,7 @@ If your container shows "Running" but the server is not responding:
    ```
 
 2. **Look for "CONFIGURATION ERROR - CONTAINER HALTED" message:**
-   ```
+   ```text
    ==============================================
    [FATAL] CONFIGURATION ERROR - CONTAINER HALTED
    ==============================================
@@ -918,7 +938,7 @@ If your container shows "Running" but the server is not responding:
 - **Full-Text Search**: [Full-Text Search Guide](../full-text-search.md) - FTS configuration and usage
 - **Hybrid Search**: [Hybrid Search Guide](../hybrid-search.md) - combined search with RRF fusion
 - **Metadata Filtering**: [Metadata Guide](../metadata-addition-updating-and-filtering.md) - metadata filtering with operators
-- **Authentication**: [Authentication Guide](../authentication.md) - bearer token and OAuth authentication
+- **Authentication**: [Authentication Guide](../authentication.md) - bearer token authentication
 - **Main Documentation**: [README.md](../../README.md) - overview and quick start
 
 ### Kubernetes Deployment

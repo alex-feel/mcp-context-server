@@ -61,7 +61,7 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ### Components
 
-```
+```text
 +-------------------+     +------------------+     +------------------+
 |   MCP Client      |---->|  Ingress/Service |---->| MCP Context      |
 | (Claude, etc.)    |     |                  |     | Server Pod       |
@@ -100,22 +100,79 @@ helm install mcp ./deploy/helm/mcp-context-server \
 - Supports multiple replicas
 - Recommended for production
 
+## Horizontal Scaling
+
+MCP Context Server supports horizontal scaling with multiple replicas when configured correctly.
+
+### Requirements
+
+Horizontal scaling requires ALL of the following:
+
+| Requirement         | Setting                       | Why                                   |
+|---------------------|-------------------------------|---------------------------------------|
+| HTTP transport      | `MCP_TRANSPORT=http`          | stdio does not support network access |
+| Stateless HTTP mode | `FASTMCP_STATELESS_HTTP=true` | Eliminates server-side session state  |
+| PostgreSQL backend  | `STORAGE_BACKEND=postgresql`  | SQLite is file-based, single-writer   |
+
+**Why stateless HTTP mode is required:**
+
+By default, FastMCP maintains server-side sessions in memory. When running multiple replicas behind a load balancer, requests from the same client may be routed to different instances, causing session context to be lost. Setting `FASTMCP_STATELESS_HTTP=true` creates a fresh transport context for each request, eliminating the need for session affinity (sticky sessions).
+
+This is safe for MCP Context Server because all tools are stateless -- none use server-side session state.
+
+### Helm Configuration
+
+```yaml
+# values-horizontal-scaling.yaml
+replicaCount: 3
+
+env:
+  MCP_TRANSPORT: "http"
+  FASTMCP_STATELESS_HTTP: "true"
+
+storage:
+  backend: postgresql
+  sqlite:
+    enabled: false
+  postgresql:
+    enabled: true
+    host: "postgresql-host"
+    password: ""  # Set via --set or existingSecret
+```
+
+Apply with:
+
+```bash
+helm install mcp ./deploy/helm/mcp-context-server \
+  -f ./deploy/helm/mcp-context-server/values-postgresql.yaml \
+  -f values-horizontal-scaling.yaml \
+  --set storage.postgresql.host=your-postgres-host \
+  --set storage.postgresql.password=your-password
+```
+
+### Important Notes
+
+- **SQLite does NOT support horizontal scaling** -- it uses a single file on disk with single-writer limitation
+- Each replica maintains its own connection pool to PostgreSQL
+- Rolling updates work seamlessly since each request is independent
+
 ## Configuration
 
 ### Environment Variables
 
 The deployment uses a ConfigMap for non-sensitive configuration:
 
-| Variable | Description |
-|----------|-------------|
-| `MCP_TRANSPORT` | Transport mode (http for Kubernetes) |
-| `FASTMCP_HOST` | HTTP bind address |
-| `FASTMCP_PORT` | HTTP port |
-| `LOG_LEVEL` | Logging level |
-| `STORAGE_BACKEND` | sqlite or postgresql |
-| `ENABLE_FTS` | Full-text search |
-| `ENABLE_SEMANTIC_SEARCH` | Semantic search |
-| `ENABLE_HYBRID_SEARCH` | Hybrid search |
+| Variable                 | Description                                |
+|--------------------------|--------------------------------------------|
+| `MCP_TRANSPORT`          | Transport mode (http for Kubernetes)       |
+| `FASTMCP_HOST`           | HTTP bind address                          |
+| `FASTMCP_PORT`           | HTTP port                                  |
+| `FASTMCP_STATELESS_HTTP` | Stateless HTTP mode for horizontal scaling |
+| `LOG_LEVEL`              | Logging level                              |
+| `STORAGE_BACKEND`        | sqlite or postgresql                       |
+| `ENABLE_FTS`             | Full-text search                           |
+| `ENABLE_SEMANTIC_SEARCH` | Semantic search                            |
+| `ENABLE_HYBRID_SEARCH`   | Hybrid search                              |
 
 ### Secrets
 

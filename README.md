@@ -4,7 +4,6 @@
 
 A high-performance Model Context Protocol (MCP) server providing persistent multimodal context storage for LLM agents. Built with FastMCP, this server enables seamless context sharing across multiple agents working on the same task through thread-based scoping.
 
-
 ## Key Features
 
 - **Multimodal Context Storage**: Store and retrieve both text and images
@@ -44,7 +43,7 @@ claude mcp add context-server -- uvx --python 3.12 --with "mcp-context-server[em
 claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
 ```
 
-For more details, see: https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server
+For more details, see: <https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server>
 
 ### Method 2: Direct File Configuration
 
@@ -70,7 +69,7 @@ For the latest development version from GitHub, use:
 "args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"]
 ```
 
-For configuration file locations and details, see: https://docs.claude.com/en/docs/claude-code/settings#settings-files
+For configuration file locations and details, see: <https://docs.claude.com/en/docs/claude-code/settings#settings-files>
 
 ### Verifying Installation
 
@@ -108,7 +107,7 @@ Example configuration with environment variables:
 }
 ```
 
-For more details on environment variable expansion, see: https://docs.claude.com/en/docs/claude-code/mcp#environment-variable-expansion-in-mcp-json
+For more details on environment variable expansion, see: <https://docs.claude.com/en/docs/claude-code/mcp#environment-variable-expansion-in-mcp-json>
 
 ### Supported Environment Variables
 
@@ -146,7 +145,7 @@ For more details on environment variable expansion, see: https://docs.claude.com
 - **EMBEDDING_DIM**: Embedding vector dimensions - defaults to 1024. **Note**: Changing this after initial setup requires database migration (see [Semantic Search Guide](docs/semantic-search.md#changing-embedding-dimensions))
 
 **Provider-Specific Settings** (see [Semantic Search Guide](docs/semantic-search.md) for complete details):
-- **OLLAMA_HOST**: Ollama API URL (default: http://localhost:11434)
+- **OLLAMA_HOST**: Ollama API URL (default: `http://localhost:11434`)
 - **OPENAI_API_KEY**: OpenAI API key (for `openai` provider)
 - **AZURE_OPENAI_API_KEY**, **AZURE_OPENAI_ENDPOINT**, **AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME**: Azure OpenAI settings
 - **HUGGINGFACEHUB_API_TOKEN**: HuggingFace Hub token (for `huggingface` provider)
@@ -223,6 +222,6 @@ For Kubernetes deployments, a Helm chart is provided with configurable values fo
 
 ## Authentication
 
-For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token, Google OAuth, and Azure AD configuration options.
+For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token configuration.
 
 <!-- mcp-name: io.github.alex-feel/mcp-context-server -->

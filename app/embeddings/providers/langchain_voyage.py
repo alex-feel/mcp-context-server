@@ -51,8 +51,7 @@ class VoyageEmbeddingProvider:
             from langchain_voyageai import VoyageAIEmbeddings
         except ImportError as e:
             raise ImportError(
-                'langchain-voyageai package required. '
-                'Install with: uv sync --extra embeddings-voyage',
+                'langchain-voyageai package required',
             ) from e
 
         if self._api_key is None:

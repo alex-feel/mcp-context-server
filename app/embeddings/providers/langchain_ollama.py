@@ -56,8 +56,7 @@ class OllamaEmbeddingProvider:
             from langchain_ollama import OllamaEmbeddings
         except ImportError as e:
             raise ImportError(
-                'langchain-ollama package required. '
-                'Install with: uv sync --extra embeddings-ollama',
+                'langchain-ollama package required',
             ) from e
 
         settings = get_settings()

@@ -48,8 +48,7 @@ class HuggingFaceEmbeddingProvider:
             from langchain_huggingface import HuggingFaceEndpointEmbeddings
         except ImportError as e:
             raise ImportError(
-                'langchain-huggingface package required. '
-                'Install with: uv sync --extra embeddings-huggingface',
+                'langchain-huggingface package required',
             ) from e
 
         if self._api_token is None:

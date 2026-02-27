@@ -49,7 +49,7 @@ Enable full-text search by setting these environment variables in your MCP confi
 
 **Supported Languages** (29 total):
 
-```
+```text
 arabic, armenian, basque, catalan, danish, dutch, english, finnish, french,
 german, greek, hindi, hungarian, indonesian, irish, italian, lithuanian,
 nepali, norwegian, portuguese, romanian, russian, serbian, simple, spanish,
@@ -99,10 +99,10 @@ SQLite uses the FTS5 extension with external content mode for efficient full-tex
 
 **Tokenizer Behavior**:
 
-| FTS_LANGUAGE | Tokenizer | Stemming | "running" matches "run" |
-|--------------|-----------|----------|-------------------------|
-| `english` | `porter unicode61` | Yes | Yes |
-| Other languages | `unicode61` | No | No |
+| FTS_LANGUAGE    | Tokenizer          | Stemming | "running" matches "run" |
+|-----------------|--------------------|----------|-------------------------|
+| `english`       | `porter unicode61` | Yes      | Yes                     |
+| Other languages | `unicode61`        | No       | No                      |
 
 **SQLite Stemming Limitation**: SQLite FTS5 only supports English stemming via the Porter stemmer. For non-English languages, use PostgreSQL for full stemming support, or use prefix mode (`mode='prefix'`) to match word beginnings.
 
@@ -194,7 +194,7 @@ When FTS is enabled, a new MCP tool becomes available.
 
 Standard word matching with implicit AND between terms.
 
-```
+```python
 fts_search_context(query="error handling", mode="match")
 ```
 
@@ -204,7 +204,7 @@ Finds entries containing both "error" AND "handling" (with stemming applied).
 
 Matches words starting with the query terms. Useful for autocomplete-style searches.
 
-```
+```python
 fts_search_context(query="implement", mode="prefix")
 ```
 
@@ -217,7 +217,7 @@ Finds entries containing words starting with "implement" (implements, implementa
 
 Matches exact phrases in order.
 
-```
+```python
 fts_search_context(query="connection refused", mode="phrase")
 ```
 
@@ -227,7 +227,7 @@ Finds entries containing the exact phrase "connection refused" (words must appea
 
 Supports complex queries with AND, OR, NOT operators.
 
-```
+```python
 fts_search_context(query="python OR javascript NOT typescript", mode="boolean")
 ```
 
@@ -237,27 +237,27 @@ fts_search_context(query="python OR javascript NOT typescript", mode="boolean")
 ### Example Use Cases
 
 1. **Simple search**: Find entries mentioning specific terms
-   ```
+   ```python
    fts_search_context(query="authentication", mode="match")
    ```
 
 2. **Prefix autocomplete**: Find entries with partial word matches
-   ```
+   ```python
    fts_search_context(query="auth", mode="prefix")
    ```
 
 3. **Exact phrase**: Find specific error messages
-   ```
+   ```python
    fts_search_context(query="connection timed out", mode="phrase")
    ```
 
 4. **Boolean query**: Complex search with operators
-   ```
+   ```python
    fts_search_context(query="database AND (postgres OR sqlite) NOT memory", mode="boolean")
    ```
 
 5. **Filtered search**: Combine FTS with metadata filtering
-   ```
+   ```python
    fts_search_context(
        query="performance",
        thread_id="current-task",
@@ -267,12 +267,12 @@ fts_search_context(query="python OR javascript NOT typescript", mode="boolean")
    ```
 
 6. **Time-bounded search**: Find recent content matching terms
-   ```
+   ```python
    fts_search_context(query="deployment", start_date="2025-11-01", end_date="2025-11-30")
    ```
 
 7. **Highlighted snippets**: Get marked-up results for display
-   ```
+   ```python
    fts_search_context(query="error handling", highlight=True)
    ```
    Returns `highlighted` field with `<mark>` tags around matched terms.
@@ -348,7 +348,7 @@ For more details, see [Semantic Search - Cross-Encoder Reranking](semantic-searc
    ```
 
 3. **Check server logs** for:
-   ```
+   ```text
    [OK] FTS enabled and available
    [OK] fts_search_context registered
    ```
@@ -356,7 +356,7 @@ For more details, see [Semantic Search - Cross-Encoder Reranking](semantic-searc
 4. **Verify MCP client** - List available tools and confirm `fts_search_context` is present
 
 5. **Test functionality**:
-   ```
+   ```python
    fts_search_context(query="test", mode="match")
    ```
 
@@ -413,7 +413,7 @@ Call `get_statistics` to check FTS availability:
 **Solutions**:
 
 1. **Use prefix mode**: Query with `mode='prefix'` to match word beginnings
-   ```
+   ```python
    fts_search_context(query="runn", mode="prefix")
    ```
 
@@ -431,12 +431,12 @@ Call `get_statistics` to check FTS availability:
 **Diagnostic Steps**:
 
 1. Try broader search without filters:
-   ```
+   ```python
    fts_search_context(query="the", mode="match", limit=10)
    ```
 
 2. Check if data exists:
-   ```
+   ```python
    search_context(limit=10)
    ```
 
@@ -462,11 +462,11 @@ Call `get_statistics` to check FTS availability:
 
 ### Common Error Messages
 
-| Error Message | Cause | Solution |
-|---------------|-------|----------|
-| `fts_search_context not available` | FTS not enabled | Set `ENABLE_FTS=true` |
-| `Invalid FTS_LANGUAGE` | Unknown language | Use valid language name |
-| `FTS5 table not found` | Migration not applied | Restart server to apply migration |
+| Error Message                       | Cause                           | Solution                          |
+|-------------------------------------|---------------------------------|-----------------------------------|
+| `fts_search_context not available`  | FTS not enabled                 | Set `ENABLE_FTS=true`             |
+| `Invalid FTS_LANGUAGE`              | Unknown language                | Use valid language name           |
+| `FTS5 table not found`              | Migration not applied           | Restart server to apply migration |
 | `text_search_vector column missing` | PostgreSQL migration incomplete | Restart server to apply migration |
 
 ## Changing FTS Language
@@ -494,7 +494,7 @@ Both operations automatically rebuild the index from existing data.
 3. **Restart the server** - migration runs automatically
 
 4. **Verify via logs**:
-   ```
+   ```text
    [INFO] FTS language changed from 'english' to 'german'
    [INFO] Rebuilding FTS index...
    [OK] FTS index rebuilt successfully
@@ -508,16 +508,16 @@ Both operations automatically rebuild the index from existing data.
 
 ## Comparison: FTS vs Semantic Search
 
-| Feature | Full-Text Search | Semantic Search |
-|---------|------------------|-----------------|
-| **Query Type** | Keywords/phrases | Natural language meaning |
-| **Stemming** | Yes (language-specific) | N/A |
-| **Synonym Support** | No | Yes (via embeddings) |
-| **Phrase Matching** | Yes | Approximate |
-| **Boolean Operators** | Yes | No |
-| **External Dependencies** | None | Ollama + embedding model |
-| **Storage Overhead** | ~10-20% | ~3KB per entry |
-| **Best For** | Exact matches, known terms | Concept discovery, similar content |
+| Feature                   | Full-Text Search           | Semantic Search                    |
+|---------------------------|----------------------------|------------------------------------|
+| **Query Type**            | Keywords/phrases           | Natural language meaning           |
+| **Stemming**              | Yes (language-specific)    | N/A                                |
+| **Synonym Support**       | No                         | Yes (via embeddings)               |
+| **Phrase Matching**       | Yes                        | Approximate                        |
+| **Boolean Operators**     | Yes                        | No                                 |
+| **External Dependencies** | None                       | Ollama + embedding model           |
+| **Storage Overhead**      | ~10-20%                    | ~3KB per entry                     |
+| **Best For**              | Exact matches, known terms | Concept discovery, similar content |
 
 **Recommendation**: Enable both for maximum flexibility. Use FTS when you know the exact terms, semantic search when exploring related concepts.
 

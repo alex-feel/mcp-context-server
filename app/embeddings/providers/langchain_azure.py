@@ -52,8 +52,7 @@ class AzureEmbeddingProvider:
             from langchain_openai import AzureOpenAIEmbeddings
         except ImportError as e:
             raise ImportError(
-                'langchain-openai package required. '
-                'Install with: uv sync --extra embeddings-azure',
+                'langchain-openai package required',
             ) from e
 
         # Validate required settings

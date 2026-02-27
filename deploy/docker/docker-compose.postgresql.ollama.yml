@@ -6,6 +6,8 @@
 #   2. Configure desired settings in .env
 #   3. Run normally - the .env file will be loaded automatically
 
+name: context-server
+
 services:
   mcp-context-server:
     image: ghcr.io/alex-feel/mcp-context-server:latest
@@ -19,6 +21,8 @@ services:
       - MCP_TRANSPORT=http
       - FASTMCP_HOST=0.0.0.0
       - FASTMCP_PORT=8000
+      # Disable Rich log formatting and ASCII banner for clean single-line container logs
+      - FASTMCP_ENABLE_RICH_LOGGING=false
       - LOG_LEVEL=INFO
       # PostgreSQL backend configuration
       - STORAGE_BACKEND=postgresql

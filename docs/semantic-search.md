@@ -562,7 +562,7 @@ When truncation is disabled (`OLLAMA_TRUNCATE=false` or `VOYAGE_TRUNCATION=false
 3. This provides fail-fast behavior with clear error messages
 
 Example error:
-```
+```text
 ValueError: Text length (5000 chars, ~1666 estimated tokens) may exceed context window
 (1000 tokens from OLLAMA_NUM_CTX) for model qwen3-embedding:0.6b.
 Options: 1) Enable chunking (ENABLE_CHUNKING=true, default),
@@ -594,7 +594,7 @@ On server startup, the universal validator checks:
 3. **Unknown models**: Uses provider default and logs a warning
 
 Example startup warning:
-```
+```text
 [EMBEDDING CONFIG] CHUNK_SIZE (100000 chars, ~33333 tokens estimate) exceeds
 model context limit (32000 tokens from model spec for qwen3-embedding:0.6b).
 Chunks will cause embedding errors.
@@ -698,7 +698,7 @@ SELECT * FROM pg_available_extensions WHERE name = 'vector';
 
 When you change `EMBEDDING_DIM` and restart, you'll see:
 
-```
+```text
 RuntimeError: Embedding dimension mismatch detected!
   Existing database dimension: 1024
   Configured EMBEDDING_DIM: 1536
@@ -813,17 +813,17 @@ This ensures data consistency: you never have context entries without their corr
 ### Example Use Cases
 
 1. **Cross-thread discovery**:
-   ```
+   ```python
    semantic_search_context(query="authentication implementation", limit=10)
    ```
 
 2. **Agent collaboration**:
-   ```
+   ```python
    semantic_search_context(query="API rate limiting solutions", source="agent")
    ```
 
 3. **Metadata-filtered search**:
-   ```
+   ```python
    semantic_search_context(
        query="performance optimization",
        metadata={"status": "completed"},
@@ -832,7 +832,7 @@ This ensures data consistency: you never have context entries without their corr
    ```
 
 4. **Time-bounded search**:
-   ```
+   ```python
    semantic_search_context(query="database optimization", start_date="2025-11-01")
    ```
 
@@ -872,13 +872,13 @@ This ensures data consistency: you never have context entries without their corr
    ```
 
 4. **Check logs** for:
-   ```
+   ```text
    [OK] Embedding provider initialized: openai
    [OK] Semantic search enabled
    ```
 
 5. **Test functionality**:
-   ```
+   ```python
    semantic_search_context(query="test", limit=5)
    ```
 
@@ -914,7 +914,7 @@ These errors may resolve with time. Supervisor may retry with backoff:
 
 The server logs startup errors with clear indicators:
 
-```
+```text
 # Configuration Error (will NOT retry)
 [FATAL] Configuration error (will not retry): ENABLE_EMBEDDING_GENERATION=true but langchain-openai package not installed...
 

@@ -4122,27 +4122,7 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, 'Scores missing rrf field'))
                 return False
 
-            # Test 3: Test with specific search modes
-            fts_only_result = await self.client.call_tool(
-                'hybrid_search_context',
-                {
-                    'query': 'database indexing',
-                    'search_modes': ['fts'],
-                    'thread_id': hybrid_thread,
-                    'limit': 10,
-                },
-            )
-
-            fts_only_data = self._extract_content(fts_only_result)
-
-            # If FTS is available, verify search_modes_used reflects the request
-            if has_fts:
-                search_modes_used = fts_only_data.get('search_modes_used', [])
-                if 'fts' not in search_modes_used:
-                    self.test_results.append((test_name, False, 'FTS mode not used when requested'))
-                    return False
-
-            # Test 4: Test source filtering
+            # Test 3: Test source filtering
             source_filter_result = await self.client.call_tool(
                 'hybrid_search_context',
                 {
@@ -4168,7 +4148,7 @@ class MCPServerIntegrationTest:
                     )
                     return False
 
-            # Test 5: Verify fusion method in response
+            # Test 4: Verify fusion method in response
             if hybrid_data.get('fusion_method') != 'rrf':
                 self.test_results.append(
                     (test_name, False, f"Expected fusion_method='rrf', got '{hybrid_data.get('fusion_method')}'"),

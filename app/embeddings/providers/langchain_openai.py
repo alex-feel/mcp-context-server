@@ -52,8 +52,7 @@ class OpenAIEmbeddingProvider:
             from langchain_openai import OpenAIEmbeddings
         except ImportError as e:
             raise ImportError(
-                'langchain-openai package required. '
-                'Install with: uv sync --extra embeddings-openai',
+                'langchain-openai package required',
             ) from e
 
         if self._api_key is None:

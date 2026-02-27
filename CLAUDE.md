@@ -51,7 +51,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 2. **Authentication Layer** (`app/auth/`):
    - **SimpleTokenVerifier** (`simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison
-   - Configured via `FASTMCP_SERVER_AUTH` and `MCP_AUTH_TOKEN`; settings in `AuthSettings`
+   - Configured via `MCP_AUTH_PROVIDER` and `MCP_AUTH_TOKEN`; settings in `AuthSettings`
 
 3. **Storage Backend Layer** (`app/backends/`):
    - **StorageBackend Protocol** (`base.py`): Database-agnostic interface (8 methods including `begin_transaction()`)
@@ -115,13 +115,14 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 The server codebase is organized into focused packages:
 
-```
+```text
 app/
 ├── server.py              # Entry point, lifespan, FastMCP (~550 lines)
 ├── settings.py            # ALL env vars via get_settings() - centralized configuration
 ├── types.py               # 40+ TypedDicts for API responses (ScoresDict, ContextEntryDict, etc.)
 ├── models.py              # Pydantic models (ContextEntry, ImageAttachment, StoreContextRequest)
 ├── fusion.py              # RRF fusion algorithm for hybrid search
+├── instructions.py        # DEFAULT_INSTRUCTIONS constant, resolve_instructions()
 ├── tools/                 # MCP tool implementations
 │   ├── __init__.py       # Tool registration, TOOL_ANNOTATIONS
 │   ├── context.py        # CRUD: store_context, get_context_by_ids, update_context, delete_context
@@ -215,6 +216,8 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata), 
 
 5. **Error Handling**: Pydantic validation, DB constraints (CHECK clauses), size limits (10MB/image, 100MB total), transaction rollback on failures.
 
+6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`, sent to clients during initialization. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Set to empty string to disable. Settings in `InstructionsSettings`.
+
 ### Semantic Search Implementation
 
 Optional vector similarity search via `semantic_search_context`. SQLite uses `sqlite-vec` (BLOB, `vec_distance_l2()`), PostgreSQL uses `pgvector` (native vector, `<->` L2 distance).
@@ -249,7 +252,7 @@ uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+.
 
 ## MCP Registry and server.json Maintenance
 
-`server.json` enables MCP client discovery ([spec](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md)). All env vars must match `app/settings.py` Fields with `alias` parameter. Release Please auto-updates version.
+`server.json` enables MCP client discovery ([spec](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md)). Every `Field(alias=...)` in `app/settings.py` MUST have a corresponding entry in `server.json` `environmentVariables`. This invariant is enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
 
 ## Environment Variables
 
@@ -257,9 +260,13 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Core**: `STORAGE_BACKEND` (sqlite*/postgresql), `LOG_LEVEL` (ERROR*), `DB_PATH` (~/.mcp/context_storage.db*), `MAX_IMAGE_SIZE_MB` (10*), `MAX_TOTAL_SIZE_MB` (100*), `DISABLED_TOOLS`
 
-**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*)
+**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (false*)
 
-**Auth**: `FASTMCP_SERVER_AUTH` (verifier class), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
+**FastMCP Logging** (deployment-only, not in `app/settings.py`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud to prevent multi-line log wrapping). It is read directly by FastMCP at import time and have no `mcp.run()` parameter; see [FASTMCP_* Env Var Governance](#fastmcp_-env-var-governance) below.
+
+**Auth**: `MCP_AUTH_PROVIDER` (none*/simple_token), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
+
+**Instructions**: `MCP_SERVER_INSTRUCTIONS` (overrides default instructions text; empty string disables)
 
 **FTS**: `ENABLE_FTS` (false*), `FTS_LANGUAGE` (english*; PostgreSQL: 29 languages, SQLite: Porter/unicode61), `FTS_RERANK_WINDOW_SIZE` (750*), `FTS_RERANK_GAP_MERGE` (100*)
 
@@ -288,7 +295,6 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 *\* = default value*. Additional tuning: connection pool, retry, circuit breaker settings in `app/settings.py`.
 
-
 ## Storage Backend Configuration
 
 ### SQLite (Default)
@@ -310,10 +316,10 @@ MVCC (10x+ throughput), asyncpg pooling, JSONB/GIN indexes, pgvector. Multi-user
 
 SQLite: B-tree via `json_extract` for scalar fields only. PostgreSQL: B-tree for scalars, GIN for arrays/objects.
 
-| Field | SQLite | PostgreSQL |
-|-------|--------|------------|
-| `status`, `agent_name`, `task_name`, `project`, `report_type` | B-tree | B-tree |
-| `references` (object), `technologies` (array) | **NOT INDEXED** | GIN |
+| Field                                                         | SQLite          | PostgreSQL |
+|---------------------------------------------------------------|-----------------|------------|
+| `status`, `agent_name`, `task_name`, `project`, `report_type` | B-tree          | B-tree     |
+| `references` (object), `technologies` (array)                 | **NOT INDEXED** | GIN        |
 
 **Note**: Array/object queries require full table scan in SQLite. Use PostgreSQL for high-performance containment queries: `WHERE metadata @> '{"technologies": ["python"]}'`
 
@@ -348,7 +354,7 @@ Ruff (127 chars, single quotes), mypy/pyright strict for `app/`. **Never** `from
 
 **Never use `os.environ`/`os.getenv()` directly** - always `get_settings()` from `app/settings.py`.
 
-Settings classes: AppSettings, StorageSettings, TransportSettings, AuthSettings, EmbeddingSettings, LangSmithSettings, ChunkingSettings, RerankingSettings, FtsPassageSettings. Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` for new vars.
+Settings classes: AppSettings, StorageSettings, TransportSettings, AuthSettings, InstructionsSettings, EmbeddingSettings, LangSmithSettings, ChunkingSettings, RerankingSettings, FtsPassageSettings. Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` for new vars.
 
 ```python
 # WRONG: os.getenv('DB_PATH')
@@ -381,6 +387,7 @@ Existing settings classes by domain:
 - `ToolManagementSettings`: Tool availability (disabled tools)
 - `TransportSettings`: HTTP transport (host, port)
 - `AuthSettings`: Authentication (tokens, client IDs)
+- `InstructionsSettings`: Server instructions sent to MCP clients
 - `StorageSettings`: Database backend configuration (includes metadata indexing settings)
 - `EmbeddingSettings`: Embedding provider configuration
 - `SemanticSearchSettings`: Semantic search toggle
@@ -391,6 +398,26 @@ Existing settings classes by domain:
 - `RerankingSettings`: Cross-encoder reranking
 - `FtsPassageSettings`: FTS passage extraction
 - `LangSmithSettings`: LangSmith tracing
+
+### FASTMCP_* Env Var Governance
+
+**Governing Principle**: A `FASTMCP_*` env var belongs in `app/settings.py` (and therefore `server.json`) when the project can take **programmatic action** with its value:
+1. It can be passed as an explicit argument to `mcp.run()` (e.g., `host`, `port`, `stateless_http`)
+2. The project uses it in application logic (logging, conditional behavior)
+3. The project sets a DIFFERENT default from FastMCP's default
+
+Env vars consumed by FastMCP independently at import time, with no `mcp.run()` parameter and no application code access path, should **NOT** be in `settings.py`. Document them in deployment configs and this file instead.
+
+**Current FASTMCP_* classification:**
+
+| Env Var                       | In settings.py            | Reason                                                                                       |
+|-------------------------------|---------------------------|----------------------------------------------------------------------------------------------|
+| `FASTMCP_HOST`                | YES (`TransportSettings`) | Passed to `mcp.run(host=...)`                                                                |
+| `FASTMCP_PORT`                | YES (`TransportSettings`) | Passed to `mcp.run(port=...)`                                                                |
+| `FASTMCP_STATELESS_HTTP`      | YES (`TransportSettings`) | Passed to `mcp.run(stateless_http=...)`                                                      |
+| `FASTMCP_ENABLE_RICH_LOGGING` | NO                        | Consumed at FastMCP import time; no `mcp.run()` parameter; dead code if added to settings.py |
+
+**When a NEW `FASTMCP_*` env var appears** (FastMCP update): Check whether it has a corresponding `mcp.run()` parameter or application code path. If yes, add to `settings.py`. If no, document in deployment configs and CLAUDE.md only.
 
 ### FastMCP-Specific Requirements
 

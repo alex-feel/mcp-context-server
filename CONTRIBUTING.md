@@ -138,7 +138,7 @@ The commit type determines how the version number is incremented:
 
 ### Commit Message Format
 
-```
+```text
 <type>[optional scope]: <description>
 
 [optional body]
@@ -148,7 +148,7 @@ The commit type determines how the version number is incremented:
 
 **Examples:**
 
-```
+```text
 feat: add support for compressed image storage
 
 Implements automatic image compression for attachments larger than 1MB, reducing database size by up to 70% while maintaining visual quality.
@@ -156,7 +156,7 @@ Implements automatic image compression for attachments larger than 1MB, reducing
 Closes #42
 ```
 
-```
+```text
 fix: resolve race condition in repository initialization
 
 The database connection manager now uses a lock to prevent concurrent initialization attempts during high load.
@@ -178,11 +178,11 @@ Releases are automated using [Release Please](https://github.com/googleapis/rele
 
 On release, three jobs run from `.github/workflows/publish.yml`:
 
-| Job | Depends On | Output |
-|-----|------------|--------|
-| `publish-to-pypi` | `build` | Package on [PyPI](https://pypi.org/project/mcp-context-server/) |
-| `publish-docker-image` | `build` | Image on [GHCR](https://github.com/alex-feel/mcp-context-server/pkgs/container/mcp-context-server) |
-| `publish-to-mcp-registry` | `publish-to-pypi` | Entry in [MCP Registry](https://registry.modelcontextprotocol.io/) |
+| Job                       | Depends On        | Output                                                                                             |
+|---------------------------|-------------------|----------------------------------------------------------------------------------------------------|
+| `publish-to-pypi`         | `build`           | Package on [PyPI](https://pypi.org/project/mcp-context-server/)                                    |
+| `publish-docker-image`    | `build`           | Image on [GHCR](https://github.com/alex-feel/mcp-context-server/pkgs/container/mcp-context-server) |
+| `publish-to-mcp-registry` | `publish-to-pypi` | Entry in [MCP Registry](https://registry.modelcontextprotocol.io/)                                 |
 
 PyPI and Docker publishing run in parallel. MCP Registry waits for PyPI.
 
@@ -279,7 +279,7 @@ All SQL operations are encapsulated in repository classes, keeping the server la
 
 The server uses thread IDs to scope context, enabling multiple agents to collaborate:
 
-```
+```text
 Thread: "analyze-q4-sales"
 ├── User Context: "Analyze our Q4 sales data"
 ├── Agent 1 Context: "Fetched sales data from database"
@@ -289,7 +289,7 @@ Thread: "analyze-q4-sales"
 
 ### Database Architecture
 
-```
+```text
 context_entries (main table)
 ├── thread_id (indexed)
 ├── source (user/agent, indexed)

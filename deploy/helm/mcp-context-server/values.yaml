@@ -71,6 +71,8 @@ env:
   MCP_TRANSPORT: "http"
   FASTMCP_HOST: "0.0.0.0"
   FASTMCP_PORT: "8000"
+  FASTMCP_STATELESS_HTTP: "false"
+  FASTMCP_ENABLE_RICH_LOGGING: "false"
   LOG_LEVEL: "INFO"
 
 # Storage backend configuration

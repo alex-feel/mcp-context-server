@@ -6,6 +6,8 @@
 #   2. Fill in your PostgreSQL connection details in .env
 #   3. Run: docker compose -f deploy/docker/docker-compose.postgresql-external.ollama.yml up -d
 
+name: context-server
+
 services:
   mcp-context-server:
     image: mcp-context-server
@@ -22,6 +24,8 @@ services:
       - MCP_TRANSPORT=http
       - FASTMCP_HOST=0.0.0.0
       - FASTMCP_PORT=8000
+      # Disable Rich log formatting and ASCII banner for clean single-line container logs
+      - FASTMCP_ENABLE_RICH_LOGGING=false
       - LOG_LEVEL=INFO
       # PostgreSQL backend (connection details from .env file)
       - STORAGE_BACKEND=postgresql

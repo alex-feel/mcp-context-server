@@ -113,8 +113,7 @@ class ChunkingService:
                 from langchain_text_splitters import RecursiveCharacterTextSplitter
             except ImportError as e:
                 raise ImportError(
-                    'langchain-text-splitters package required for chunking. '
-                    'Install with: uv sync --extra embeddings-ollama',
+                    'langchain-text-splitters package required for chunking',
                 ) from e
 
             self._splitter = RecursiveCharacterTextSplitter(

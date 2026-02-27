@@ -206,3 +206,56 @@ class TestFtsLanguageValidation:
             with env_var('FTS_LANGUAGE', lang):
                 settings = AppSettings()
                 assert settings.fts.language == lang
+
+
+class TestAuthProviderSetting:
+    """Tests for MCP_AUTH_PROVIDER setting in AuthSettings."""
+
+    def test_auth_provider_default_is_none(self) -> None:
+        """AuthSettings provider should default to 'none'."""
+        from app.settings import AuthSettings
+
+        settings = AuthSettings()
+        assert settings.provider == 'none'
+
+    def test_auth_provider_from_env(self) -> None:
+        """AuthSettings should load MCP_AUTH_PROVIDER from environment."""
+        from app.settings import AuthSettings
+
+        with env_var('MCP_AUTH_PROVIDER', 'simple_token'):
+            settings = AuthSettings()
+            assert settings.provider == 'simple_token'
+
+    def test_auth_provider_invalid_value(self) -> None:
+        """AuthSettings should reject invalid provider values."""
+        from app.settings import AuthSettings
+
+        with env_var('MCP_AUTH_PROVIDER', 'invalid'), pytest.raises(ValidationError):
+            AuthSettings()
+
+
+class TestTransportStatelessHttp:
+    """Tests for FASTMCP_STATELESS_HTTP setting in TransportSettings."""
+
+    def test_stateless_http_default_is_false(self) -> None:
+        """FASTMCP_STATELESS_HTTP should default to False."""
+        from app.settings import TransportSettings
+
+        settings = TransportSettings()
+        assert settings.stateless_http is False
+
+    def test_stateless_http_enabled_via_env(self) -> None:
+        """FASTMCP_STATELESS_HTTP=true should enable stateless mode."""
+        from app.settings import TransportSettings
+
+        with env_var('FASTMCP_STATELESS_HTTP', 'true'):
+            settings = TransportSettings()
+            assert settings.stateless_http is True
+
+    def test_stateless_http_disabled_via_env(self) -> None:
+        """FASTMCP_STATELESS_HTTP=false should keep stateless mode disabled."""
+        from app.settings import TransportSettings
+
+        with env_var('FASTMCP_STATELESS_HTTP', 'false'):
+            settings = TransportSettings()
+            assert settings.stateless_http is False

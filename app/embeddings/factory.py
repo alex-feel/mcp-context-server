@@ -93,7 +93,6 @@ def create_embedding_provider(
     # Dynamic import to avoid loading unused dependencies
     module_path = PROVIDER_MODULES[provider_name]
     class_name = PROVIDER_CLASSES[provider_name]
-    install_cmd = PROVIDER_INSTALL_INSTRUCTIONS[provider_name]
 
     try:
         module = importlib.import_module(module_path)
@@ -103,6 +102,5 @@ def create_embedding_provider(
         return cast(EmbeddingProvider, provider_class())
     except ImportError as e:
         raise ImportError(
-            f"Optional dependencies for '{provider_name}' not installed. "
-            f'Install with: {install_cmd}',
+            f"Optional dependencies for '{provider_name}' not installed",
         ) from e
