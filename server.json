@@ -599,6 +599,13 @@
           "name": "RERANKING_CHARS_PER_TOKEN"
         },
         {
+          "description": "ONNX Runtime intra-operation parallelism threads for reranking (default: 0 = auto-detect)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_INTRA_OP_THREADS"
+        },
+        {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
           "isRequired": false,
           "format": "string",
@@ -1378,6 +1385,13 @@
           "format": "number",
           "isSecret": false,
           "name": "RERANKING_CHARS_PER_TOKEN"
+        },
+        {
+          "description": "ONNX Runtime intra-operation parallelism threads for reranking (default: 0 = auto-detect)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_INTRA_OP_THREADS"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",

@@ -21,11 +21,14 @@ class FlashRankProvider:
 
     Implements the RerankingProvider protocol using FlashRank library.
     Uses lazy initialization - model loaded on first rerank() call.
+    Applies constrained ONNX SessionOptions to prevent thread explosion
+    in containerized environments.
 
     Environment Variables:
         RERANKING_MODEL: Model name (default: ms-marco-MiniLM-L-12-v2)
         RERANKING_MAX_LENGTH: Max input length in tokens (default: 512)
         RERANKING_CACHE_DIR: Model cache directory (default: None = system cache)
+        RERANKING_INTRA_OP_THREADS: ONNX intra-op threads (default: 0 = auto-detect)
 
     Available Models (from FlashRank documentation):
         - ms-marco-TinyBERT-L-2-v2: ~4MB, fastest, lower quality
@@ -41,6 +44,7 @@ class FlashRankProvider:
         self._max_length = settings.reranking.max_length
         self._cache_dir = settings.reranking.cache_dir
         self._chars_per_token = settings.reranking.chars_per_token
+        self._intra_op_threads = settings.reranking.intra_op_threads
         self._ranker: Any = None  # Lazy initialization
 
     async def initialize(self) -> None:
@@ -70,12 +74,24 @@ class FlashRankProvider:
         logger.info('FlashRank provider shut down')
 
     def _ensure_ranker(self) -> None:
-        """Lazy load the FlashRank Ranker model.
+        """Lazy-load the FlashRank Ranker model with constrained ONNX threading.
 
-        Sets self._ranker to an initialized Ranker instance if not already loaded.
+        Creates the FlashRank Ranker normally, then replaces its ONNX
+        InferenceSession with one configured for controlled threading.
+        Without this post-patch, ONNX Runtime defaults to the host's
+        physical core count for intra-operation parallelism, which causes
+        thread explosion in containerized environments with CPU limits.
+
+        Raises:
+            FileNotFoundError: If no .onnx model file exists in the model directory.
         """
         if self._ranker is None:
+            from typing import cast
+
+            import onnxruntime  # type: ignore[import-not-found]
             from flashrank import Ranker
+
+            ort: Any = onnxruntime
 
             logger.info(f'Loading FlashRank model: {self._model_name}')
 
@@ -87,8 +103,43 @@ class FlashRankProvider:
             if self._cache_dir is not None:
                 ranker_kwargs['cache_dir'] = self._cache_dir
 
-            self._ranker = Ranker(**ranker_kwargs)
-            logger.info(f'FlashRank model loaded: {self._model_name}')
+            ranker: Any = cast(Any, Ranker(**ranker_kwargs))
+
+            # Replace the unconstrained ONNX session with a thread-limited one.
+            # FlashRank's Ranker.__init__() creates ort.InferenceSession without
+            # SessionOptions, defaulting intra_op_num_threads to 0 (= all host cores).
+            # Resolve the ONNX model file from the Ranker's model directory.
+            # Each FlashRank model directory contains exactly one .onnx file.
+            model_onnx_files = list(ranker.model_dir.glob('*.onnx'))
+            if not model_onnx_files:
+                msg = f'No .onnx file found in {ranker.model_dir}'
+                raise FileNotFoundError(msg)
+            model_path = str(model_onnx_files[0])
+
+            sess_options: Any = ort.SessionOptions()
+            sess_options.intra_op_num_threads = self._intra_op_threads
+            sess_options.inter_op_num_threads = 1
+            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            sess_options.add_session_config_entry(
+                'session.intra_op.allow_spinning', '0',
+            )
+            sess_options.add_session_config_entry(
+                'session.inter_op.allow_spinning', '0',
+            )
+
+            ranker.session = ort.InferenceSession(
+                model_path, sess_options=sess_options,
+            )
+
+            self._ranker = ranker
+
+            intra_threads: int = sess_options.intra_op_num_threads
+            inter_threads: int = sess_options.inter_op_num_threads
+            logger.info(
+                f'FlashRank model loaded: {self._model_name} '
+                f'(intra_op_threads={intra_threads}, '
+                f'inter_op_threads={inter_threads})',
+            )
 
     async def rerank(
         self,

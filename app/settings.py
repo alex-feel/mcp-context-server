@@ -430,6 +430,15 @@ class RerankingSettings(CommonSettings):
         description='Estimated characters per token for passage size validation. '
                     'Default 4.0 for English. Use 3.0-3.5 for multilingual/code.',
     )
+    intra_op_threads: int = Field(
+        default=0,
+        alias='RERANKING_INTRA_OP_THREADS',
+        ge=0,
+        description='ONNX Runtime intra-operation parallelism threads for reranking. '
+                    '0 = auto-detect (uses all available cores). '
+                    'In containerized environments with CPU limits, set to match the CPU quota '
+                    'to prevent thread explosion (e.g., 2 for a 2-core container).',
+    )
 
 
 class FtsPassageSettings(CommonSettings):

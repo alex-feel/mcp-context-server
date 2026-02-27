@@ -175,6 +175,7 @@ class TestRerankingSettings:
         assert settings.max_length == 512
         assert settings.overfetch == 4
         assert settings.cache_dir is None
+        assert settings.intra_op_threads == 0
 
     def test_max_length_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Minimum valid max_length should pass."""
@@ -253,6 +254,7 @@ class TestRerankingSettings:
         monkeypatch.setenv('RERANKING_MAX_LENGTH', '1024')
         monkeypatch.setenv('RERANKING_OVERFETCH', '8')
         monkeypatch.setenv('RERANKING_CACHE_DIR', '/cache')
+        monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '2')
 
         settings = RerankingSettings()
         assert settings.enabled is False
@@ -261,6 +263,30 @@ class TestRerankingSettings:
         assert settings.max_length == 1024
         assert settings.overfetch == 8
         assert settings.cache_dir == '/cache'
+        assert settings.intra_op_threads == 2
+
+    def test_intra_op_threads_default_is_zero(self) -> None:
+        """Default intra_op_threads should be 0 (auto-detect)."""
+        settings = RerankingSettings()
+        assert settings.intra_op_threads == 0
+
+    def test_intra_op_threads_custom_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Custom intra_op_threads should be set via env var."""
+        monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '4')
+        settings = RerankingSettings()
+        assert settings.intra_op_threads == 4
+
+    def test_intra_op_threads_negative_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Negative intra_op_threads should fail validation."""
+        monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '-1')
+        with pytest.raises(ValidationError):
+            RerankingSettings()
+
+    def test_intra_op_threads_zero_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Zero (auto-detect) should be valid."""
+        monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '0')
+        settings = RerankingSettings()
+        assert settings.intra_op_threads == 0
 
 
 class TestAppSettingsIntegration:
