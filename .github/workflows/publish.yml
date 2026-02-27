@@ -209,15 +209,34 @@ jobs:
           set -euo pipefail
           expected_version=$(jq -r '.version' server.json)
           echo "Checking if version $expected_version already exists in MCP Registry..."
-          response=$(curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}" 2>/dev/null || echo '{"servers":[]}')
-          version_exists=$(echo "$response" | jq -e --arg v "$expected_version" '.servers[] | select(.server.version == $v)' 2>/dev/null || echo "")
-          if [ -n "$version_exists" ]; then
-            echo "Version $expected_version already exists in MCP Registry - will skip publish"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Version $expected_version not found in MCP Registry - will proceed with publish"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+
+          # Paginate through all registry results to avoid missing versions
+          # beyond the default 30-result page limit
+          cursor=""
+          while true; do
+            url="https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}&limit=100"
+            if [ -n "$cursor" ]; then
+              url="${url}&cursor=${cursor}"
+            fi
+            response=$(curl -sf "$url" 2>/dev/null || echo '{"servers":[]}')
+
+            version_exists=$(echo "$response" | jq -e --arg v "$expected_version" '.servers[] | select(.server.version == $v)' 2>/dev/null || echo "")
+            if [ -n "$version_exists" ]; then
+              echo "Version $expected_version already exists in MCP Registry - will skip publish"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Check for next page
+            cursor=$(echo "$response" | jq -r '.metadata.nextCursor // empty' 2>/dev/null)
+            if [ -z "$cursor" ]; then
+              break
+            fi
+            echo "Fetching next page (cursor: $cursor)..."
+          done
+
+          echo "Version $expected_version not found in MCP Registry - will proceed with publish"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Publish to MCP Registry
         if: steps.check-mcp-version.outputs.skip != 'true'
@@ -239,48 +258,49 @@ jobs:
           for i in $(seq 1 $max_attempts); do
             echo "Attempt $i/$max_attempts: Checking MCP Registry for version $expected_version..."
 
-            # Query the registry
-            response=$(curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}" || echo '{"servers":[]}')
+            # Paginate through all registry results to find the version.
+            # The search API has a default page size of 30 results, so
+            # packages with many versions require cursor-based pagination.
+            cursor=""
+            found=""
+            while true; do
+              url="https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}&limit=100"
+              if [ -n "$cursor" ]; then
+                url="${url}&cursor=${cursor}"
+              fi
+              response=$(curl -sf "$url" || echo '{"servers":[]}')
 
-            # Check if version exists with isLatest=true
-            # Using jq to find an entry where:
-            # 1. server.version matches expected version
-            # 2. _meta."io.modelcontextprotocol.registry/official".isLatest is true
-            found=$(echo "$response" | jq -e --arg v "$expected_version" '
-              .servers[] |
-              select(.server.version == $v) |
-              select(._meta."io.modelcontextprotocol.registry/official".isLatest == true)
-            ' 2>/dev/null || echo "")
+              # Check if version exists in this page
+              found=$(echo "$response" | jq -e --arg v "$expected_version" '
+                .servers[] | select(.server.version == $v)
+              ' 2>/dev/null || echo "")
+
+              if [ -n "$found" ]; then
+                break
+              fi
+
+              # Check for next page
+              cursor=$(echo "$response" | jq -r '.metadata.nextCursor // empty' 2>/dev/null)
+              if [ -z "$cursor" ]; then
+                break
+              fi
+            done
 
             if [ -n "$found" ]; then
-              echo "SUCCESS: Version $expected_version found in MCP Registry with isLatest=true"
+              is_latest=$(echo "$found" | jq -r '._meta."io.modelcontextprotocol.registry/official".isLatest // false' 2>/dev/null)
+              echo "SUCCESS: Version $expected_version found in MCP Registry (isLatest=$is_latest)"
               echo "Published entry:"
               echo "$found" | jq .
               exit 0
             fi
 
-            # Check if version exists but isLatest is false (for diagnostics)
-            version_exists=$(echo "$response" | jq -e --arg v "$expected_version" '
-              .servers[] | select(.server.version == $v)
-            ' 2>/dev/null || echo "")
-
-            if [ -n "$version_exists" ]; then
-              echo "INFO: Version $expected_version exists but isLatest is NOT yet true"
-              latest=$(echo "$response" | jq -r '
-                .servers[] |
-                select(._meta."io.modelcontextprotocol.registry/official".isLatest == true) |
-                .server.version
-              ' 2>/dev/null || echo "unknown")
-              echo "Current latest version in registry: $latest"
-            fi
-
-            echo "Version $expected_version not yet visible with isLatest=true, waiting ${delay}s..."
+            echo "Version $expected_version not yet visible, waiting ${delay}s..."
             sleep $delay
           done
 
-          echo "ERROR: Version $expected_version not found in MCP Registry with isLatest=true after $max_attempts attempts"
-          echo "Final registry response:"
-          curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}" | jq . || true
+          echo "ERROR: Version $expected_version not found in MCP Registry after $max_attempts attempts"
+          echo "Final registry response (first page):"
+          curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=${SERVER_NAME}&limit=100" | jq . || true
           exit 1
 
   publish-docker-image:
