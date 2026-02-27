@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.0](https://github.com/alex-feel/mcp-context-server/compare/v1.3.3...v1.4.0) (2026-02-27)
+
+
+### Features
+
+* add FASTMCP_STATELESS_HTTP setting for horizontal scaling ([c94a423](https://github.com/alex-feel/mcp-context-server/commit/c94a42357b735eb417f92c57c3a2851e535cac8e))
+* add MCP server instructions support ([e1805a6](https://github.com/alex-feel/mcp-context-server/commit/e1805a6dfb3c1344d596547c9c0af3af8e124fc1))
+* remove search_modes parameter from hybrid_search_context ([2335d0c](https://github.com/alex-feel/mcp-context-server/commit/2335d0cc6ab5bd72e5cd76983cef87d385f7cc79))
+
+
+### Bug Fixes
+
+* remove install hints from inner exceptions in providers and services ([e9708b2](https://github.com/alex-feel/mcp-context-server/commit/e9708b2245097f5d0623bae11cee3210efee145a))
+* replace session-scoped advisory locks with transaction-scoped locks in migrations ([4508eb8](https://github.com/alex-feel/mcp-context-server/commit/4508eb81918eca61ce40f5141d79119a3adf6c97))
+* update dependencies to resolve Trivy CVE findings ([c21d736](https://github.com/alex-feel/mcp-context-server/commit/c21d7362bb8f0e1e719c58bb984a58a316e099bd))
+
 ## [1.3.3](https://github.com/alex-feel/mcp-context-server/compare/v1.3.2...v1.3.3) (2026-02-11)
 
 
