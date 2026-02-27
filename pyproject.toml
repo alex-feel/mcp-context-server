@@ -30,7 +30,14 @@ packages = ["app"]
 
 [tool.uv]
 package = true
-constraint-dependencies = ["python-multipart>=0.0.22"]  # CVE-2026-24486 fix
+constraint-dependencies = [
+    "python-multipart>=0.0.22",  # CVE-2026-24486 fix
+    "cryptography>=46.0.5",  # CVE-2026-26007 fix
+    "pillow>=12.1.1",  # CVE-2026-25990 fix
+    "langsmith>=0.6.3",  # CVE-2026-25528 fix
+    "langchain-core>=1.2.11",  # CVE-2026-26013 fix
+    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
+]
 
 [project.optional-dependencies]
 # Embedding providers - install ONE based on EMBEDDING_PROVIDER setting
@@ -46,14 +53,14 @@ embeddings-openai = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
-    "langchain-openai>=0.3.0",
+    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
     "langchain-text-splitters>=0.3.0",
 ]
 embeddings-azure = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
-    "langchain-openai>=0.3.0",  # Azure uses same package as OpenAI
+    "langchain-openai>=1.1.9",  # Azure uses same package as OpenAI; CVE-2026-26013 fix
     "langchain-text-splitters>=0.3.0",
 ]
 embeddings-huggingface = [
@@ -77,7 +84,7 @@ embeddings-all = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-ollama>=0.3.0",
-    "langchain-openai>=0.3.0",
+    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
     "langchain-huggingface>=0.2.0",
     "langchain-voyageai>=0.3.0",
     "langchain-text-splitters>=0.3.0",
@@ -96,7 +103,7 @@ search-quality = [
 
 # LangSmith tracing (optional observability)
 langsmith = [
-    "langsmith>=0.4.0",
+    "langsmith>=0.6.3",  # CVE-2026-25528 fix
 ]
 
 [dependency-groups]
