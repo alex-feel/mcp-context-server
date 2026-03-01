@@ -272,7 +272,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Embedding Generation**: `ENABLE_EMBEDDING_GENERATION` (true*). **BREAKING v1.0.0**: When true and dependencies unavailable, server won't start. Set false to disable.
 
-**Semantic Search**: `ENABLE_SEMANTIC_SEARCH` (false*), `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (30*), `EMBEDDING_RETRY_MAX_ATTEMPTS` (3*), `EMBEDDING_RETRY_BASE_DELAY_S` (1.0*)
+**Semantic Search**: `ENABLE_SEMANTIC_SEARCH` (false*), `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (30*), `EMBEDDING_RETRY_MAX_ATTEMPTS` (3*), `EMBEDDING_RETRY_BASE_DELAY_S` (1.0*), `EMBEDDING_MAX_CONCURRENT` (3*; max parallel embedding requests, 1-20)
 
 **Provider-Specific**:
 - Ollama: `OLLAMA_HOST` (localhost:11434*), `OLLAMA_TRUNCATE` (false*), `OLLAMA_NUM_CTX` (4096*)
