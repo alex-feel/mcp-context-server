@@ -200,6 +200,17 @@ class EmbeddingSettings(CommonSettings):
         description='Base delay in seconds between retry attempts (with exponential backoff)',
     )
 
+    # Concurrency control
+    max_concurrent: int = Field(
+        default=3,
+        alias='EMBEDDING_MAX_CONCURRENT',
+        ge=1,
+        le=20,
+        description='Maximum concurrent embedding generation operations. '
+                    'Limits parallel Ollama/provider requests to prevent overload. '
+                    'Default 3 balances throughput vs resource contention.',
+    )
+
     # Ollama-specific (matches OLLAMA_HOST convention)
     ollama_host: str = Field(
         default='http://localhost:11434',

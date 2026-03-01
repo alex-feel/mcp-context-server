@@ -37,6 +37,7 @@ data:
   EMBEDDING_TIMEOUT_S: {{ .Values.search.semantic.timeout | quote }}
   EMBEDDING_RETRY_MAX_ATTEMPTS: {{ .Values.search.semantic.retryMaxAttempts | quote }}
   EMBEDDING_RETRY_BASE_DELAY_S: {{ .Values.search.semantic.retryBaseDelay | quote }}
+  EMBEDDING_MAX_CONCURRENT: {{ .Values.search.semantic.maxConcurrent | quote }}
   {{- if eq .Values.search.semantic.provider "ollama" }}
   {{- if .Values.ollama.enabled }}
   OLLAMA_HOST: "http://localhost:11434"

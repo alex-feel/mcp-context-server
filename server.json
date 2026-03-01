@@ -459,6 +459,13 @@
           "name": "EMBEDDING_RETRY_BASE_DELAY_S"
         },
         {
+          "description": "Maximum concurrent embedding generation operations (default: 3, range: 1-20)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_MAX_CONCURRENT"
+        },
+        {
           "description": "Enable full-text search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -1245,6 +1252,13 @@
           "format": "number",
           "isSecret": false,
           "name": "EMBEDDING_RETRY_BASE_DELAY_S"
+        },
+        {
+          "description": "Maximum concurrent embedding generation operations (default: 3, range: 1-20)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_MAX_CONCURRENT"
         },
         {
           "description": "Enable full-text search functionality",

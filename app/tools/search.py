@@ -38,6 +38,9 @@ from app.types import ContextEntryDict
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# Maximum allowed search results limit (Postel's Law: accept, clamp, warn)
+MAX_SEARCH_LIMIT = 100
+
 
 async def _apply_reranking(
     query: str,
@@ -232,7 +235,7 @@ async def _semantic_search_raw(
                 )
             else:
                 # Fallback: use beginning of document (legacy data without boundaries)
-                max_rerank_len = settings.reranking.max_length * 4  # ~2000 chars
+                max_rerank_len = int(settings.reranking.max_length * settings.reranking.chars_per_token * 0.95)
                 result['rerank_text'] = text_content[:max_rerank_len]
                 logger.debug(
                     f'[SEMANTIC] No chunk boundaries, using document beginning '
@@ -358,7 +361,7 @@ async def _fts_search_raw(
                 text_content=text_content,
                 highlighted=highlighted,
                 window_size=settings.fts_passage.rerank_window_size,
-                max_passage_size=settings.reranking.max_length * 4,  # ~2000 chars for 512 tokens
+                max_passage_size=int(settings.reranking.max_length * settings.reranking.chars_per_token * 0.95),
                 gap_merge_threshold=settings.fts_passage.rerank_gap_merge,
             )
 
@@ -370,7 +373,7 @@ async def _fts_search_raw(
 
 
 async def search_context(
-    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 30)')] = 30,
+    limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 30)')] = 30,
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (indexed)')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (indexed)')] = None,
     tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
@@ -428,6 +431,15 @@ async def search_context(
         ToolError: If search operation fails.
     """
     try:
+        # Clamp limit to prevent excessive memory use (Postel's Law for LLM clients)
+        original_limit = limit
+        if limit > MAX_SEARCH_LIMIT:
+            limit = MAX_SEARCH_LIMIT
+            logger.warning(
+                'search_context: requested limit=%d exceeds maximum %d, clamped to %d',
+                original_limit, MAX_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
+            )
+
         # Validate date parameters
         start_date = validate_date_param(start_date, 'start_date')
         end_date = validate_date_param(end_date, 'end_date')
@@ -512,6 +524,11 @@ async def search_context(
         response: dict[str, Any] = {'results': entries, 'count': len(entries)}
         if explain_query:
             response['stats'] = stats
+        if original_limit != limit:
+            response['clamped_limit'] = {
+                'requested': original_limit,
+                'applied': limit,
+            }
         return response
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
@@ -522,7 +539,7 @@ async def search_context(
 
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
-    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
+    limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
@@ -594,6 +611,15 @@ async def semantic_search_context(
     validate_date_range(start_date, end_date)
 
     try:
+        # Clamp limit to prevent excessive memory use (Postel's Law for LLM clients)
+        original_limit = limit
+        if limit > MAX_SEARCH_LIMIT:
+            limit = MAX_SEARCH_LIMIT
+            logger.warning(
+                'semantic_search_context: requested limit=%d exceeds maximum %d, clamped to %d',
+                original_limit, MAX_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
+            )
+
         if ctx:
             await ctx.info(f'Performing semantic search: "{query[:50]}..."')
 
@@ -684,6 +710,11 @@ async def semantic_search_context(
         }
         if explain_query:
             response['stats'] = search_stats
+        if original_limit != limit:
+            response['clamped_limit'] = {
+                'requested': original_limit,
+                'applied': limit,
+            }
         return response
 
     except ToolError:
@@ -695,7 +726,7 @@ async def semantic_search_context(
 
 async def fts_search_context(
     query: Annotated[str, Field(min_length=1, description='Full-text search query')],
-    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
+    limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
     mode: Annotated[
         Literal['match', 'prefix', 'phrase', 'boolean'],
         Field(
@@ -807,6 +838,15 @@ async def fts_search_context(
         }
 
     try:
+        # Clamp limit to prevent excessive memory use (Postel's Law for LLM clients)
+        original_limit = limit
+        if limit > MAX_SEARCH_LIMIT:
+            limit = MAX_SEARCH_LIMIT
+            logger.warning(
+                'fts_search_context: requested limit=%d exceeds maximum %d, clamped to %d',
+                original_limit, MAX_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
+            )
+
         if ctx:
             await ctx.info(f'Performing FTS search: "{query[:50]}..." (mode={mode})')
 
@@ -920,6 +960,11 @@ async def fts_search_context(
         }
         if explain_query:
             response['stats'] = stats
+        if original_limit != limit:
+            response['clamped_limit'] = {
+                'requested': original_limit,
+                'applied': limit,
+            }
         return response
 
     except ToolError:
@@ -931,7 +976,7 @@ async def fts_search_context(
 
 async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
-    limit: Annotated[int, Field(ge=1, le=100, description='Maximum results to return (1-100, default: 5)')] = 5,
+    limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
     offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
     fusion_method: Annotated[
         Literal['rrf'],
@@ -1059,6 +1104,15 @@ async def hybrid_search_context(
         )
 
     try:
+        # Clamp limit to prevent excessive memory use (Postel's Law for LLM clients)
+        original_limit = limit
+        if limit > MAX_SEARCH_LIMIT:
+            limit = MAX_SEARCH_LIMIT
+            logger.warning(
+                'hybrid_search_context: requested limit=%d exceeds maximum %d, clamped to %d',
+                original_limit, MAX_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
+            )
+
         import time as time_module
 
         total_start_time = time_module.time()
@@ -1156,6 +1210,27 @@ async def hybrid_search_context(
             tasks.append(run_semantic_search())
 
         await asyncio.gather(*tasks)
+
+        # Log individual sub-search failures for observability.
+        # When only one sub-search fails, the other's results are used (graceful degradation),
+        # but the failure should not be silently swallowed.
+        if fts_error and not semantic_error:
+            logger.warning(
+                'Hybrid search: FTS sub-search failed (semantic succeeded): %s',
+                fts_error,
+            )
+        if semantic_error and not fts_error:
+            logger.warning(
+                'Hybrid search: semantic sub-search failed (FTS succeeded): %s',
+                semantic_error,
+            )
+
+        # Build warnings list for client visibility when sub-searches degrade
+        search_warnings: list[str] = []
+        if fts_error:
+            search_warnings.append(f'FTS search failed: {fts_error}')
+        if semantic_error:
+            search_warnings.append(f'Semantic search failed: {semantic_error}')
 
         # Check if both searches failed
         if fts_error and semantic_error:
@@ -1257,6 +1332,13 @@ async def hybrid_search_context(
                 'fusion_stats': fusion_stats,
             }
 
+        if original_limit != limit:
+            response['clamped_limit'] = {
+                'requested': original_limit,
+                'applied': limit,
+            }
+        if search_warnings:
+            response['warnings'] = search_warnings
         return response
 
     except ToolError:

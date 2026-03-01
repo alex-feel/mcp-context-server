@@ -34,12 +34,15 @@ services:
       - EMBEDDING_DIM=1024
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
+      # FlashRank reranking model cache (persistent across restarts)
+      - RERANKING_CACHE_DIR=/cache/flashrank
       # LangSmith tracing (optional, disabled by default)
       # - LANGSMITH_TRACING=false
       # - LANGSMITH_API_KEY=
       # - LANGSMITH_PROJECT=mcp-context-server
     volumes:
       - mcp-data:/data
+      - flashrank-cache:/cache/flashrank
     depends_on:
       ollama:
         condition: service_healthy
@@ -68,3 +71,5 @@ volumes:
     name: mcp-context-sqlite-ollama-data
   ollama-data:
     name: ollama-models
+  flashrank-cache:
+    name: flashrank-model-cache

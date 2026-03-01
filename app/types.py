@@ -45,6 +45,13 @@ class ContextEntryDict(TypedDict, total=False):
     is_truncated: bool | None
 
 
+class ClampedLimitDict(TypedDict):
+    """Type definition for clamped limit hint in search responses."""
+
+    requested: int
+    applied: int
+
+
 class SearchContextResponseDict(TypedDict, total=False):
     """Type definition for search_context response.
 
@@ -56,6 +63,7 @@ class SearchContextResponseDict(TypedDict, total=False):
     stats: dict[str, object] | None  # Only present when explain_query=True
     error: str | None
     validation_errors: list[str] | None
+    clamped_limit: ClampedLimitDict | None
 
 
 class StoreContextSuccessDict(TypedDict):
@@ -258,6 +266,7 @@ class FtsSearchResponseDict(TypedDict, total=False):
     stats: dict[str, object] | None  # Only present when explain_query=True
     error: str | None
     validation_errors: list[str] | None
+    clamped_limit: ClampedLimitDict | None
 
 
 class SemanticSearchResultDict(TypedDict, total=False):
@@ -295,6 +304,7 @@ class SemanticSearchResponseDict(TypedDict, total=False):
     stats: dict[str, object] | None  # Only present when explain_query=True
     error: str | None
     validation_errors: list[str] | None
+    clamped_limit: ClampedLimitDict | None
 
 
 class FtsMigrationInProgressDict(TypedDict):
@@ -425,4 +435,6 @@ class HybridSearchResponseDict(TypedDict, total=False):
     search_modes_used: list[str]  # Actual modes executed, e.g., ['fts', 'semantic']
     fts_count: int  # Number of results from FTS
     semantic_count: int  # Number of results from semantic search
-    stats: HybridSearchStatsDict | None  # Only present when explain_query=True
+    stats: HybridSearchStatsDict | None
+    clamped_limit: ClampedLimitDict | None
+    warnings: list[str] | None  # Degradation warnings when sub-searches fail (e.g., FTS or semantic)
