@@ -88,7 +88,7 @@ class FlashRankProvider:
         if self._ranker is None:
             from typing import cast
 
-            import onnxruntime  # type: ignore[import-not-found]
+            import onnxruntime
             from flashrank import Ranker
 
             ort: Any = onnxruntime

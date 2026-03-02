@@ -292,6 +292,8 @@ module = [
   'flashrank.*',
   'langsmith',
   'langsmith.*',
+  'onnxruntime',
+  'onnxruntime.*',
 ]
 ignore_missing_imports = true
 follow_imports = 'skip'
@@ -326,6 +328,7 @@ root = "app/reranking/providers"
 reportMissingImports = false
 reportUnknownVariableType = false
 reportAttributeAccessIssue = false
+reportMissingTypeStubs = false
 
 # Suppress optional dependency errors in app/repositories (sqlite_vec, numpy)
 [[tool.pyright.executionEnvironments]]
