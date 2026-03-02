@@ -1228,9 +1228,13 @@ async def hybrid_search_context(
         # Build warnings list for client visibility when sub-searches degrade
         search_warnings: list[str] = []
         if fts_error:
-            search_warnings.append(f'FTS search failed: {fts_error}')
+            search_warnings.append(
+                'FTS sub-search failed; results may be based on semantic search only',
+            )
         if semantic_error:
-            search_warnings.append(f'Semantic search failed: {semantic_error}')
+            search_warnings.append(
+                'Semantic sub-search failed; results may be based on FTS only',
+            )
 
         # Check if both searches failed
         if fts_error and semantic_error:
