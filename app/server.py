@@ -189,6 +189,11 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
     """
     # Startup
     try:
+        # 0) Apply temporary patches for upstream SDK bugs
+        # Remove when MCP Python SDK fixes ClosedResourceError handling
+        from app.patches import apply_session_crash_patches
+        apply_session_crash_patches()
+
         # Create backend ONCE at the start - used throughout initialization and runtime
         backend = create_backend(backend_type=None, db_path=DB_PATH)
         await backend.initialize()

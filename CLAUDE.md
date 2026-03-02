@@ -48,6 +48,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - Global state and initialization in `app/startup/` package
    - Database initialization via `init_database()` from `app.startup`
    - Repository access via `ensure_repositories()` from `app.startup`
+   - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup. See "Known Upstream Bugs and Temporary Patches" section.
 
 2. **Authentication Layer** (`app/auth/`):
    - **SimpleTokenVerifier** (`simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison
@@ -121,6 +122,9 @@ app/
 ├── settings.py            # ALL env vars via get_settings() - centralized configuration
 ├── types.py               # 40+ TypedDicts for API responses (ScoresDict, ContextEntryDict, etc.)
 ├── models.py              # Pydantic models (ContextEntry, ImageAttachment, StoreContextRequest)
+├── patches/               # Temporary upstream bug patches (remove when fixed)
+│   ├── __init__.py       # apply_session_crash_patches()
+│   └── session_crash.py  # BaseSession._send_response/send_notification crash fix
 ├── fusion.py              # RRF fusion algorithm for hybrid search
 ├── instructions.py        # DEFAULT_INSTRUCTIONS constant, resolve_instructions()
 ├── tools/                 # MCP tool implementations
@@ -487,3 +491,24 @@ Repository pattern, automatic connection pooling, parameterized queries, retry w
 ### Testing Conventions
 
 Unit: `mock_server_dependencies`. Integration: `initialized_server` (SQLite temp DB). Always add `test_real_server.py` tests. SQLite-only test suite (PostgreSQL is production-only). Race condition tests: `test_embedding_deduplication_race.py`. Error classification tests: `test_errors.py`. Pgpool-II detection tests: `test_pgpool_detection.py`.
+
+### Known Upstream Bugs and Temporary Patches
+
+**MCP SDK Session Crash on Client Disconnect** (`app/patches/session_crash.py`):
+
+Temporary monkey-patch for a race condition in MCP Python SDK v1.25.0 where `BaseSession._send_response()` and `BaseSession.send_notification()` do not handle `ClosedResourceError`/`BrokenResourceError` when the write stream is closed after a client disconnect during long-running tool execution. The unhandled exception propagates through the anyio TaskGroup, crashing the session.
+
+- **Severity**: MEDIUM (session-level crash only, server process survives, data integrity preserved)
+- **Applied in**: `app/server.py` lifespan (step 0, before all other initialization)
+- **Module**: `app/patches/session_crash.py` (apply/remove functions)
+- **Tests**: `tests/test_session_crash_patch.py` (unit), `tests/test_real_server.py` (integration)
+- **Upstream tracking**: [FastMCP #508](https://github.com/PrefectHQ/fastmcp/issues/508), [FastMCP #823](https://github.com/PrefectHQ/fastmcp/issues/823), [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), [MCP SDK PR #2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [MCP SDK PR #2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
+
+**REMOVAL PLAN**: Delete this patch after the upstream MCP Python SDK releases a fix. Steps:
+1. Monitor the upstream PRs (#2072, #2184) for merge
+2. Update `mcp` dependency version in `pyproject.toml`
+3. Delete `app/patches/session_crash.py` and `app/patches/__init__.py`
+4. Remove `from app.patches import apply_session_crash_patches` and its call from `app/server.py` lifespan
+5. Delete `tests/test_session_crash_patch.py`
+6. Remove the `test_session_crash_patch_applied` test from `tests/test_real_server.py`
+7. Remove this section from CLAUDE.md

@@ -6994,6 +6994,66 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_session_crash_patch_applied(self) -> bool:
+        """Test that session crash patches are applied and server handles calls safely.
+
+        Verifies that the monkey-patches for BaseSession._send_response and
+        BaseSession.send_notification are in place after server startup, and that
+        the server can handle tool calls without session crashes.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'session_crash_patch_applied'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            from mcp.shared.session import BaseSession
+
+            from app.patches.session_crash import _SEND_NOTIFICATION_ATTR
+            from app.patches.session_crash import _SEND_RESPONSE_ATTR
+            from app.patches.session_crash import _original_send_notification
+            from app.patches.session_crash import _original_send_response
+
+            # Verify patches are applied (lifespan should have called apply_session_crash_patches)
+            if getattr(BaseSession, _SEND_RESPONSE_ATTR) is _original_send_response:
+                self.test_results.append(
+                    (test_name, False, '_send_response patch not applied'),
+                )
+                return False
+
+            if getattr(BaseSession, _SEND_NOTIFICATION_ATTR) is _original_send_notification:
+                self.test_results.append(
+                    (test_name, False, 'send_notification patch not applied'),
+                )
+                return False
+
+            # Verify server handles a normal tool call successfully with patches in place
+            result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': self.test_thread_id,
+                    'source': 'agent',
+                    'text': 'Session crash patch verification test entry',
+                    'tags': ['test', 'patch-verification'],
+                },
+            )
+
+            data = self._extract_content(result)
+            if not data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Tool call failed with patches applied: {data}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Session crash patches applied and tool calls work correctly'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -7108,6 +7168,8 @@ class MCPServerIntegrationTest:
             ('Overfetch Chain Verification', self.test_overfetch_chain_verification),
             # Quality Improvement Tests
             ('Search Context Limit Clamping', self.test_search_context_limit_clamping),
+            # Session Crash Patch Tests
+            ('Session Crash Patch Applied', self.test_session_crash_patch_applied),
             # Edge Case Tests (P3)
             ('Store Context Empty Text', self.test_store_context_empty_text),
             ('Store Context Max Size Image', self.test_store_context_max_size_image),
