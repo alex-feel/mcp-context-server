@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/alex-feel/mcp-context-server/compare/v1.4.0...v1.5.0) (2026-03-02)
+
+
+### Features
+
+* add configurable ONNX intra-op thread control for FlashRank reranking ([1352988](https://github.com/alex-feel/mcp-context-server/commit/1352988939b92e5c1cb2ad251a09f5e17f8b98e9))
+* add embedding concurrency control, dynamic timeout, and search quality improvements ([757d19f](https://github.com/alex-feel/mcp-context-server/commit/757d19fdbf658b1990a039e45e27a2d7ba1e546d))
+
+
+### Bug Fixes
+
+* sanitize hybrid search warning messages to avoid leaking error details ([d71b0c9](https://github.com/alex-feel/mcp-context-server/commit/d71b0c977af29735008e5d9e8b20149eaa12c615))
+* suppress onnxruntime type errors via mypy and pyright config ([e59e9de](https://github.com/alex-feel/mcp-context-server/commit/e59e9de46b101af2516ee0f22905ccb018b93c9c))
+
 ## [1.4.0](https://github.com/alex-feel/mcp-context-server/compare/v1.3.3...v1.4.0) (2026-02-27)
 
 
