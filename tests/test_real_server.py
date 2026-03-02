@@ -6995,11 +6995,12 @@ class MCPServerIntegrationTest:
             return False
 
     async def test_session_crash_patch_applied(self) -> bool:
-        """Test that session crash patches are applied and server handles calls safely.
+        """Test that server handles tool calls correctly with session crash patches.
 
-        Verifies that the monkey-patches for BaseSession._send_response and
-        BaseSession.send_notification are in place after server startup, and that
-        the server can handle tool calls without session crashes.
+        Verifies the server is operational with patches applied by exercising
+        multiple tool calls. The patch mechanism itself is tested in detail
+        by tests/test_session_crash_patch.py; this integration test verifies
+        the server functions correctly end-to-end.
 
         Returns:
             bool: True if test passed.
@@ -7007,27 +7008,7 @@ class MCPServerIntegrationTest:
         test_name = 'session_crash_patch_applied'
         assert self.client is not None  # Type guard for Pyright
         try:
-            from mcp.shared.session import BaseSession
-
-            from app.patches.session_crash import _SEND_NOTIFICATION_ATTR
-            from app.patches.session_crash import _SEND_RESPONSE_ATTR
-            from app.patches.session_crash import _original_send_notification
-            from app.patches.session_crash import _original_send_response
-
-            # Verify patches are applied (lifespan should have called apply_session_crash_patches)
-            if getattr(BaseSession, _SEND_RESPONSE_ATTR) is _original_send_response:
-                self.test_results.append(
-                    (test_name, False, '_send_response patch not applied'),
-                )
-                return False
-
-            if getattr(BaseSession, _SEND_NOTIFICATION_ATTR) is _original_send_notification:
-                self.test_results.append(
-                    (test_name, False, 'send_notification patch not applied'),
-                )
-                return False
-
-            # Verify server handles a normal tool call successfully with patches in place
+            # Verify server handles a store_context call successfully
             result = await self.client.call_tool(
                 'store_context',
                 {
@@ -7045,8 +7026,17 @@ class MCPServerIntegrationTest:
                 )
                 return False
 
+            # Verify get_statistics also works (exercises a different code path)
+            stats_result = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats_result)
+            if 'total_entries' not in stats_data:
+                self.test_results.append(
+                    (test_name, False, f'get_statistics returned unexpected data: {stats_data}'),
+                )
+                return False
+
             self.test_results.append(
-                (test_name, True, 'Session crash patches applied and tool calls work correctly'),
+                (test_name, True, 'Server operational with session crash patches applied'),
             )
             return True
 

@@ -5,7 +5,7 @@ This module fetches the MCP Registry JSON Schema and validates the local server.
 file to ensure compliance with the official specification. This helps catch configuration
 errors before deployment and ensures the server can be properly discovered by MCP clients.
 
-Schema URL: https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/server.schema.json
+Schema URL: Dynamically read from server.json's $schema field (currently hosted at static.modelcontextprotocol.io).
 """
 
 from __future__ import annotations
@@ -20,12 +20,6 @@ from typing import Any
 import pytest
 from jsonschema import Draft7Validator
 from jsonschema.exceptions import ValidationError
-
-# Schema URL for the official MCP Registry JSON Schema
-MCP_SCHEMA_URL = (
-    'https://raw.githubusercontent.com/modelcontextprotocol/registry/'
-    'refs/heads/main/docs/reference/server-json/server.schema.json'
-)
 
 # Path to local server.json file (relative to repository root)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -105,9 +99,14 @@ class TestServerJsonSchemaValidation:
 
     @pytest.fixture
     def mcp_schema(self) -> dict[str, Any]:
-        """Fetch the MCP Registry JSON Schema (skips test if network unavailable)."""
+        """Fetch the MCP Registry JSON Schema from the URL declared in server.json."""
+        server_json = load_server_json()
+        schema_url = server_json.get('$schema')
+        if not schema_url:
+            pytest.fail('server.json missing $schema field')
+
         try:
-            return fetch_schema_from_url(MCP_SCHEMA_URL)
+            return fetch_schema_from_url(schema_url)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
             pytest.skip(f'Could not fetch MCP schema (network unavailable): {e}')
 
