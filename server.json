@@ -613,6 +613,13 @@
           "name": "RERANKING_INTRA_OP_THREADS"
         },
         {
+          "description": "Enable ONNX Runtime CPU memory arena for reranking (default: false)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "RERANKING_CPU_MEM_ARENA"
+        },
+        {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
           "isRequired": false,
           "format": "string",
@@ -1406,6 +1413,13 @@
           "format": "number",
           "isSecret": false,
           "name": "RERANKING_INTRA_OP_THREADS"
+        },
+        {
+          "description": "Enable ONNX Runtime CPU memory arena for reranking (default: false)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "RERANKING_CPU_MEM_ARENA"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",

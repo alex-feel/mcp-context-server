@@ -229,6 +229,9 @@ class TestFlashRankProvider:
             # Verify inter_op_num_threads=1 (hardcoded for sequential workload)
             opts = session.get_session_options()
             assert opts.inter_op_num_threads == 1
+
+            # Verify CPU memory arena is disabled by default
+            assert opts.enable_cpu_mem_arena is False
         finally:
             await provider.shutdown()
 
@@ -256,3 +259,72 @@ class TestFlashRankProvider:
         finally:
             await provider.shutdown()
             get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_cpu_mem_arena_disabled_by_default(
+        self, provider: RerankingProvider,
+    ) -> None:
+        """CPU memory arena should be disabled by default to prevent OOM."""
+        await provider.initialize()
+        try:
+            results = [{'id': 1, 'text': 'Test document content'}]
+            await provider.rerank('test query', results)
+
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            session = concrete._ranker.session
+            opts = session.get_session_options()
+            assert opts.enable_cpu_mem_arena is False
+        finally:
+            await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_cpu_mem_arena_configurable(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """CPU memory arena should be configurable via RERANKING_CPU_MEM_ARENA."""
+        from app.settings import get_settings
+        monkeypatch.setenv('RERANKING_CPU_MEM_ARENA', 'true')
+        get_settings.cache_clear()
+        provider = create_reranking_provider()
+
+        await provider.initialize()
+        try:
+            results = [{'id': 1, 'text': 'Test document content'}]
+            await provider.rerank('test query', results)
+
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            session = concrete._ranker.session
+            opts = session.get_session_options()
+            assert opts.enable_cpu_mem_arena is True
+        finally:
+            await provider.shutdown()
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_ensure_ranker_cleans_up_default_session(
+        self, provider: RerankingProvider,
+    ) -> None:
+        """_ensure_ranker should release the Ranker constructor's default ONNX session."""
+        await provider.initialize()
+        try:
+            results = [{'id': 1, 'text': 'Test document content'}]
+            await provider.rerank('test query', results)
+
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+
+            # The session should be the replacement session (not None, proving cleanup + replacement worked)
+            assert concrete._ranker is not None
+            assert concrete._ranker.session is not None
+
+            # Verify the session has constrained options (proving it's the replacement, not the default)
+            opts = concrete._ranker.session.get_session_options()
+            assert opts.inter_op_num_threads == 1
+            assert opts.enable_cpu_mem_arena is False
+        finally:
+            await provider.shutdown()

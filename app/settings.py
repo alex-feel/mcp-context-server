@@ -450,6 +450,15 @@ class RerankingSettings(CommonSettings):
                     'In containerized environments with CPU limits, set to match the CPU quota '
                     'to prevent thread explosion (e.g., 2 for a 2-core container).',
     )
+    cpu_mem_arena: bool = Field(
+        default=False,
+        alias='RERANKING_CPU_MEM_ARENA',
+        description='Enable ONNX Runtime CPU memory arena for reranking. '
+                    'When False (default), prevents permanent retention of intermediate '
+                    'tensor buffers, reducing RAM usage in containerized deployments. '
+                    'Set True to enable arena for slightly faster inference at the cost '
+                    'of higher memory consumption.',
+    )
 
 
 class FtsPassageSettings(CommonSettings):

@@ -29,6 +29,7 @@ class FlashRankProvider:
         RERANKING_MAX_LENGTH: Max input length in tokens (default: 512)
         RERANKING_CACHE_DIR: Model cache directory (default: None = system cache)
         RERANKING_INTRA_OP_THREADS: ONNX intra-op threads (default: 0 = auto-detect)
+        RERANKING_CPU_MEM_ARENA: ONNX CPU memory arena (default: false)
 
     Available Models (from FlashRank documentation):
         - ms-marco-TinyBERT-L-2-v2: ~4MB, fastest, lower quality
@@ -45,6 +46,7 @@ class FlashRankProvider:
         self._cache_dir = settings.reranking.cache_dir
         self._chars_per_token = settings.reranking.chars_per_token
         self._intra_op_threads = settings.reranking.intra_op_threads
+        self._cpu_mem_arena = settings.reranking.cpu_mem_arena
         self._ranker: Any = None  # Lazy initialization
 
     async def initialize(self) -> None:
@@ -74,13 +76,22 @@ class FlashRankProvider:
         logger.info('FlashRank provider shut down')
 
     def _ensure_ranker(self) -> None:
-        """Lazy-load the FlashRank Ranker model with constrained ONNX threading.
+        """Lazy-load the FlashRank Ranker model with constrained ONNX Runtime settings.
 
-        Creates the FlashRank Ranker normally, then replaces its ONNX
-        InferenceSession with one configured for controlled threading.
-        Without this post-patch, ONNX Runtime defaults to the host's
-        physical core count for intra-operation parallelism, which causes
-        thread explosion in containerized environments with CPU limits.
+        Creates the FlashRank Ranker normally, then replaces its default ONNX
+        InferenceSession with one configured for constrained resource usage:
+
+        - **Thread limiting:** intra-op threads set to a fixed count (default 2)
+          instead of ONNX Runtime's default of host physical core count, which
+          causes thread explosion in containers with lower CPU quotas.
+        - **Arena disabled:** CPU memory arena (``enable_cpu_mem_arena``) set to
+          ``False`` by default to prevent ONNX Runtime from permanently retaining
+          multi-GiB intermediate tensor buffers after inference.
+        - **Spin-wait disabled:** Both intra-op and inter-op spin-wait disabled
+          to avoid busy-waiting threads consuming CPU in async workloads.
+
+        The Ranker constructor's default session is explicitly released before
+        the replacement session is created, freeing its unconstrained resources.
 
         Raises:
             FileNotFoundError: If no .onnx model file exists in the model directory.
@@ -105,7 +116,13 @@ class FlashRankProvider:
 
             ranker: Any = cast(Any, Ranker(**ranker_kwargs))
 
-            # Replace the unconstrained ONNX session with a thread-limited one.
+            # Release the unconstrained default session created by Ranker()
+            # before replacing it with our arena-disabled, thread-limited session.
+            if hasattr(ranker, 'session') and ranker.session is not None:
+                del ranker.session
+                ranker.session = None
+
+            # Replace with a thread-limited, arena-disabled ONNX session.
             # FlashRank's Ranker.__init__() creates ort.InferenceSession without
             # SessionOptions, defaulting intra_op_num_threads to 0 (= all host cores).
             # Resolve the ONNX model file from the Ranker's model directory.
@@ -120,6 +137,7 @@ class FlashRankProvider:
             sess_options.intra_op_num_threads = self._intra_op_threads
             sess_options.inter_op_num_threads = 1
             sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            sess_options.enable_cpu_mem_arena = self._cpu_mem_arena
             sess_options.add_session_config_entry(
                 'session.intra_op.allow_spinning', '0',
             )
@@ -138,7 +156,8 @@ class FlashRankProvider:
             logger.info(
                 f'FlashRank model loaded: {self._model_name} '
                 f'(intra_op_threads={intra_threads}, '
-                f'inter_op_threads={inter_threads})',
+                f'inter_op_threads={inter_threads}, '
+                f'cpu_mem_arena={self._cpu_mem_arena})',
             )
 
     async def rerank(
