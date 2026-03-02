@@ -56,6 +56,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # Create data directory for SQLite
 RUN mkdir -p /data && chown appuser:appuser /data
 
+# Create cache directory for FlashRank reranking model
+RUN mkdir -p /cache/flashrank && chown appuser:appuser /cache/flashrank
+
 # Switch to non-root user
 USER appuser
 

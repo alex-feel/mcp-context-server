@@ -163,6 +163,13 @@ async def with_retry_and_timeout[T](
     max_attempts = settings.embedding.retry_max_attempts
     base_delay_s = settings.embedding.retry_base_delay_s
 
+    # Set __qualname__ on the callable for meaningful tenacity retry logging.
+    # Without this, before_sleep_log shows generic closure names like
+    # "embed_query.<locals>._embed" instead of the descriptive operation_name.
+    qualname = getattr(func, '__qualname__', '')
+    if qualname and '.<locals>.' in qualname:
+        func.__qualname__ = operation_name
+
     retrying = AsyncRetrying(
         retry=retry_if_exception(_is_retryable_exception),
         wait=wait_exponential_jitter(
@@ -194,3 +201,30 @@ async def with_retry_and_timeout[T](
 
     # This should never be reached, but satisfies type checker
     raise EmbeddingRetryExhaustedError(f'{operation_name} failed unexpectedly')
+
+
+def compute_embedding_total_timeout() -> float:
+    """Compute worst-case wall-clock time for all retry attempts with safety margin.
+
+    Formula: (max_attempts * timeout_s + total_backoff) * 1.1
+
+    The total backoff accounts for exponential backoff with jitter,
+    capped at 60 seconds per wait interval (matching tenacity's max=60.0).
+    The 10% safety margin ensures tenacity's internal per-attempt timeout
+    fires before the outer asyncio.wait_for, producing more informative
+    error messages (EmbeddingTimeoutError vs generic TimeoutError).
+
+    Returns:
+        Total timeout in seconds for wrapping embedding generation calls.
+    """
+    settings = get_settings()
+    timeout_s = settings.embedding.timeout_s
+    max_attempts = settings.embedding.retry_max_attempts
+    base_delay_s = settings.embedding.retry_base_delay_s
+
+    attempt_time: float = max_attempts * timeout_s
+    total_backoff: float = sum(
+        min(base_delay_s * (2 ** i) + base_delay_s, 60.0)
+        for i in range(max_attempts - 1)
+    )
+    return (attempt_time + total_backoff) * 1.1

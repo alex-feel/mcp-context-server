@@ -6928,6 +6928,72 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_search_context_limit_clamping(self) -> bool:
+        """Search with limit > 100 should clamp and include clamped_limit hint.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_context_limit_clamping'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Search with limit > 100 (should be clamped)
+            results = await self.client.call_tool(
+                'search_context',
+                {'limit': 200},
+            )
+
+            data = self._extract_content(results)
+
+            if not data.get('success'):
+                self.test_results.append((test_name, False, f'Search failed: {data}'))
+                return False
+
+            # Verify clamped_limit hint is present
+            if 'clamped_limit' not in data:
+                self.test_results.append((
+                    test_name, False,
+                    'Missing clamped_limit hint for limit=200',
+                ))
+                return False
+
+            clamped = data['clamped_limit']
+            if clamped != {'requested': 200, 'applied': 100}:
+                self.test_results.append((
+                    test_name, False,
+                    f'Wrong clamped_limit values: {clamped}',
+                ))
+                return False
+
+            # Verify normal limit does NOT include clamped_limit
+            normal_results = await self.client.call_tool(
+                'search_context',
+                {'limit': 50},
+            )
+
+            normal_data = self._extract_content(normal_results)
+
+            if not normal_data.get('success'):
+                self.test_results.append((
+                    test_name, False,
+                    f'Normal search failed: {normal_data}',
+                ))
+                return False
+
+            if 'clamped_limit' in normal_data:
+                self.test_results.append((
+                    test_name, False,
+                    'clamped_limit should not appear for limit=50',
+                ))
+                return False
+
+            self.test_results.append((test_name, True, 'Limit clamping works correctly'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -7040,6 +7106,8 @@ class MCPServerIntegrationTest:
             ('Reranking Disabled No Score', self.test_reranking_disabled_no_score),
             ('Chunking Reranking Integration', self.test_chunking_reranking_integration),
             ('Overfetch Chain Verification', self.test_overfetch_chain_verification),
+            # Quality Improvement Tests
+            ('Search Context Limit Clamping', self.test_search_context_limit_clamping),
             # Edge Case Tests (P3)
             ('Store Context Empty Text', self.test_store_context_empty_text),
             ('Store Context Max Size Image', self.test_store_context_max_size_image),

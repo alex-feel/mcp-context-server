@@ -27,6 +27,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from app.embeddings.retry import compute_embedding_total_timeout
 from app.migrations import format_exception_message
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
@@ -44,6 +45,22 @@ from app.types import UpdateContextSuccessDict
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Concurrency limiter for embedding generation to prevent provider overload.
+# Initialized lazily on first use to ensure correct event loop binding.
+_embedding_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_embedding_semaphore() -> asyncio.Semaphore:
+    """Get or create the embedding concurrency semaphore.
+
+    Returns:
+        asyncio.Semaphore configured with EMBEDDING_MAX_CONCURRENT limit.
+    """
+    global _embedding_semaphore
+    if _embedding_semaphore is None:
+        _embedding_semaphore = asyncio.Semaphore(settings.embedding.max_concurrent)
+    return _embedding_semaphore
 
 
 async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | None:
@@ -269,7 +286,21 @@ async def store_context(
         # === PHASE 2: Generate Embedding FIRST (Outside Transaction) ===
         # CRITICAL: Embedding generation happens BEFORE any database operations.
         # If it fails, NO data is saved - this is the core of transactional integrity.
-        chunk_embeddings = await _generate_embeddings_for_text(text)
+        if get_embedding_provider() is not None:
+            total_timeout = compute_embedding_total_timeout()
+            try:
+                async with _get_embedding_semaphore():
+                    chunk_embeddings = await asyncio.wait_for(
+                        _generate_embeddings_for_text(text),
+                        timeout=total_timeout,
+                    )
+            except TimeoutError:
+                raise ToolError(
+                    f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
+                    f'This may indicate the embedding provider is overloaded or unreachable.',
+                ) from None
+        else:
+            chunk_embeddings = None
         # If we get here, embedding either succeeded or is disabled (None)
         embedding_generated = chunk_embeddings is not None
 
@@ -647,7 +678,21 @@ async def update_context(
 
         if text is not None:
             # Only generate embedding if text is being changed
-            chunk_embeddings = await _generate_embeddings_for_text(text)
+            if get_embedding_provider() is not None:
+                total_timeout = compute_embedding_total_timeout()
+                try:
+                    async with _get_embedding_semaphore():
+                        chunk_embeddings = await asyncio.wait_for(
+                            _generate_embeddings_for_text(text),
+                            timeout=total_timeout,
+                        )
+                except TimeoutError:
+                    raise ToolError(
+                        f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
+                        f'This may indicate the embedding provider is overloaded or unreachable.',
+                    ) from None
+            else:
+                chunk_embeddings = None
             embedding_generated = chunk_embeddings is not None
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===

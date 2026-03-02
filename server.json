@@ -459,6 +459,13 @@
           "name": "EMBEDDING_RETRY_BASE_DELAY_S"
         },
         {
+          "description": "Maximum concurrent embedding generation operations (default: 3, range: 1-20)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_MAX_CONCURRENT"
+        },
+        {
           "description": "Enable full-text search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -597,6 +604,13 @@
           "format": "number",
           "isSecret": false,
           "name": "RERANKING_CHARS_PER_TOKEN"
+        },
+        {
+          "description": "ONNX Runtime intra-operation parallelism threads for reranking (default: 0 = auto-detect)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_INTRA_OP_THREADS"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",
@@ -1240,6 +1254,13 @@
           "name": "EMBEDDING_RETRY_BASE_DELAY_S"
         },
         {
+          "description": "Maximum concurrent embedding generation operations (default: 3, range: 1-20)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "EMBEDDING_MAX_CONCURRENT"
+        },
+        {
           "description": "Enable full-text search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -1378,6 +1399,13 @@
           "format": "number",
           "isSecret": false,
           "name": "RERANKING_CHARS_PER_TOKEN"
+        },
+        {
+          "description": "ONNX Runtime intra-operation parallelism threads for reranking (default: 0 = auto-detect)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "RERANKING_INTRA_OP_THREADS"
         },
         {
           "description": "Embedding provider: ollama (default), openai, azure, huggingface, or voyage",

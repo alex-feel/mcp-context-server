@@ -272,7 +272,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Embedding Generation**: `ENABLE_EMBEDDING_GENERATION` (true*). **BREAKING v1.0.0**: When true and dependencies unavailable, server won't start. Set false to disable.
 
-**Semantic Search**: `ENABLE_SEMANTIC_SEARCH` (false*), `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (30*), `EMBEDDING_RETRY_MAX_ATTEMPTS` (3*), `EMBEDDING_RETRY_BASE_DELAY_S` (1.0*)
+**Semantic Search**: `ENABLE_SEMANTIC_SEARCH` (false*), `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (30*), `EMBEDDING_RETRY_MAX_ATTEMPTS` (3*), `EMBEDDING_RETRY_BASE_DELAY_S` (1.0*), `EMBEDDING_MAX_CONCURRENT` (3*; max parallel embedding requests, 1-20)
 
 **Provider-Specific**:
 - Ollama: `OLLAMA_HOST` (localhost:11434*), `OLLAMA_TRUNCATE` (false*), `OLLAMA_NUM_CTX` (4096*)
@@ -285,7 +285,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Chunking**: `ENABLE_CHUNKING` (true*), `CHUNK_SIZE` (1000*), `CHUNK_OVERLAP` (100*), `CHUNK_AGGREGATION` (max*), `CHUNK_DEDUP_OVERFETCH` (5*). Chunk-aware reranking uses chunk boundaries for cross-encoder scoring.
 
-**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code)
+**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect)
 
 **Search**: `SEARCH_DEFAULT_SORT_BY` (relevance*)
 

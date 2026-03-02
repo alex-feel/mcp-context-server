@@ -114,6 +114,8 @@ search:
     timeout: 30
     retryMaxAttempts: 3
     retryBaseDelay: 1.0
+    # Concurrency control
+    maxConcurrent: 3     # Maximum parallel embedding requests (1-20)
   hybrid:
     enabled: false
     rrfK: 60

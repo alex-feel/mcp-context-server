@@ -204,3 +204,55 @@ class TestFlashRankProvider:
         get_settings.cache_clear()
         provider = create_reranking_provider()
         assert provider.model_name == 'ms-marco-TinyBERT-L-2-v2'
+
+    @pytest.mark.asyncio
+    async def test_ensure_ranker_applies_session_options(
+        self, provider: RerankingProvider,
+    ) -> None:
+        """_ensure_ranker should replace ONNX session with thread-constrained one."""
+        await provider.initialize()
+        try:
+            # Trigger lazy loading
+            results = [{'id': 1, 'text': 'Test document content'}]
+            await provider.rerank('test query', results)
+
+            # Verify the ranker has been initialized (access internal attr via cast)
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            assert concrete._ranker is not None
+
+            # Verify session has been replaced with constrained options
+            session = concrete._ranker.session
+            assert session is not None
+
+            # Verify inter_op_num_threads=1 (hardcoded for sequential workload)
+            opts = session.get_session_options()
+            assert opts.inter_op_num_threads == 1
+        finally:
+            await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_intra_op_threads_from_settings(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """intra_op_threads should be configurable via RERANKING_INTRA_OP_THREADS."""
+        from app.settings import get_settings
+        monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '4')
+        get_settings.cache_clear()
+        provider = create_reranking_provider()
+
+        await provider.initialize()
+        try:
+            results = [{'id': 1, 'text': 'Test document content'}]
+            await provider.rerank('test query', results)
+
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            session = concrete._ranker.session
+            opts = session.get_session_options()
+            assert opts.intra_op_num_threads == 4
+        finally:
+            await provider.shutdown()
+            get_settings.cache_clear()

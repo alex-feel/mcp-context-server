@@ -45,6 +45,10 @@ services:
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
+      # FlashRank reranking model cache (persistent across restarts)
+      - RERANKING_CACHE_DIR=/cache/flashrank
+    volumes:
+      - flashrank-cache:/cache/flashrank
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,3 +73,5 @@ services:
 volumes:
   postgres-data:
     name: mcp-context-postgresql-openai-data
+  flashrank-cache:
+    name: flashrank-model-cache
