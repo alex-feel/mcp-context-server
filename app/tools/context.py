@@ -119,6 +119,45 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
         raise ToolError(f'Embedding generation failed: {format_exception_message(e)}') from e
 
 
+async def _generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | None:
+    """Generate embeddings with concurrency limiting and total timeout.
+
+    Wraps _generate_embeddings_for_text with:
+    - Concurrency-limited access via embedding semaphore
+    - Total timeout computed from retry settings
+    - ToolError on timeout for clear client feedback
+
+    This is the single source of truth for the embedding-first pattern
+    used by store_context and update_context. Batch operations have
+    their own embedding generation loop.
+
+    Args:
+        text: Text content to generate embeddings for.
+
+    Returns:
+        List of ChunkEmbedding objects, or None if embedding provider
+        is not configured.
+
+    Raises:
+        ToolError: If embedding generation times out or fails.
+    """
+    if get_embedding_provider() is None:
+        return None
+
+    total_timeout = compute_embedding_total_timeout()
+    try:
+        async with _get_embedding_semaphore():
+            return await asyncio.wait_for(
+                _generate_embeddings_for_text(text),
+                timeout=total_timeout,
+            )
+    except TimeoutError:
+        raise ToolError(
+            f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
+            f'This may indicate the embedding provider is overloaded or unreachable.',
+        ) from None
+
+
 async def transaction_heartbeat(txn: object) -> None:
     """Send lightweight heartbeat to prevent network intermediary idle timeout.
 
@@ -286,22 +325,7 @@ async def store_context(
         # === PHASE 2: Generate Embedding FIRST (Outside Transaction) ===
         # CRITICAL: Embedding generation happens BEFORE any database operations.
         # If it fails, NO data is saved - this is the core of transactional integrity.
-        if get_embedding_provider() is not None:
-            total_timeout = compute_embedding_total_timeout()
-            try:
-                async with _get_embedding_semaphore():
-                    chunk_embeddings = await asyncio.wait_for(
-                        _generate_embeddings_for_text(text),
-                        timeout=total_timeout,
-                    )
-            except TimeoutError:
-                raise ToolError(
-                    f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
-                    f'This may indicate the embedding provider is overloaded or unreachable.',
-                ) from None
-        else:
-            chunk_embeddings = None
-        # If we get here, embedding either succeeded or is disabled (None)
+        chunk_embeddings = await _generate_embeddings_with_timeout(text)
         embedding_generated = chunk_embeddings is not None
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
@@ -678,21 +702,7 @@ async def update_context(
 
         if text is not None:
             # Only generate embedding if text is being changed
-            if get_embedding_provider() is not None:
-                total_timeout = compute_embedding_total_timeout()
-                try:
-                    async with _get_embedding_semaphore():
-                        chunk_embeddings = await asyncio.wait_for(
-                            _generate_embeddings_for_text(text),
-                            timeout=total_timeout,
-                        )
-                except TimeoutError:
-                    raise ToolError(
-                        f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
-                        f'This may indicate the embedding provider is overloaded or unreachable.',
-                    ) from None
-            else:
-                chunk_embeddings = None
+            chunk_embeddings = await _generate_embeddings_with_timeout(text)
             embedding_generated = chunk_embeddings is not None
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===

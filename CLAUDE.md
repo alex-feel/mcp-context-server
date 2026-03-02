@@ -470,7 +470,7 @@ class NewEmbeddingProvider:
 
 ### Embedding-First Transactional Integrity
 
-**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` and embedding fails, NO data is saved - transaction rolls back completely. Embeddings generated OUTSIDE transaction, then all DB ops (context + tags + images + embeddings) in single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter.
+**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` and embedding fails, NO data is saved - transaction rolls back completely. Embeddings generated OUTSIDE transaction, then all DB ops (context + tags + images + embeddings) in single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `_generate_embeddings_with_timeout` is the single source of truth for the timeout/semaphore pattern used by single-entry operations (`store_context`, `update_context`); batch operations have their own embedding generation loop.
 
 ### Repository Pattern Implementation
 

@@ -389,3 +389,74 @@ def test_embedding_max_concurrent_setting_bounds() -> None:
 
     settings_max = EmbeddingSettings.model_validate({'EMBEDDING_MAX_CONCURRENT': 20})
     assert settings_max.max_concurrent == 20
+
+
+# --- Tests for _generate_embeddings_with_timeout helper ---
+
+
+@pytest.mark.asyncio
+async def test_generate_embeddings_with_timeout_returns_none_when_no_provider() -> None:
+    """Verify helper returns None when embedding provider is not configured."""
+    with patch('app.tools.context.get_embedding_provider', return_value=None):
+        from app.tools.context import _generate_embeddings_with_timeout
+
+        result = await _generate_embeddings_with_timeout('test text')
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_embeddings_with_timeout_success() -> None:
+    """Verify helper returns embeddings on success."""
+    mock_embeddings = [MagicMock()]
+
+    with (
+        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.context.compute_embedding_total_timeout', return_value=999.0),
+        patch('app.tools.context._generate_embeddings_for_text', new_callable=AsyncMock, return_value=mock_embeddings),
+        patch('app.tools.context.settings') as mock_settings,
+    ):
+        mock_settings.embedding.max_concurrent = 3
+
+        import app.tools.context as ctx_module
+
+        original_semaphore = ctx_module._embedding_semaphore
+        ctx_module._embedding_semaphore = None
+
+        try:
+            from app.tools.context import _generate_embeddings_with_timeout
+
+            result = await _generate_embeddings_with_timeout('test text')
+            assert result == mock_embeddings
+        finally:
+            ctx_module._embedding_semaphore = original_semaphore
+
+
+@pytest.mark.asyncio
+async def test_generate_embeddings_with_timeout_raises_on_timeout() -> None:
+    """Verify helper raises ToolError when embedding generation times out."""
+    from fastmcp.exceptions import ToolError
+
+    async def slow_embedding(_text: str) -> list[MagicMock]:
+        await asyncio.sleep(10.0)
+        return [MagicMock()]
+
+    with (
+        patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
+        patch('app.tools.context.compute_embedding_total_timeout', return_value=0.05),
+        patch('app.tools.context._generate_embeddings_for_text', side_effect=slow_embedding),
+        patch('app.tools.context.settings') as mock_settings,
+    ):
+        mock_settings.embedding.max_concurrent = 3
+
+        import app.tools.context as ctx_module
+
+        original_semaphore = ctx_module._embedding_semaphore
+        ctx_module._embedding_semaphore = None
+
+        try:
+            from app.tools.context import _generate_embeddings_with_timeout
+
+            with pytest.raises(ToolError, match='total timeout'):
+                await _generate_embeddings_with_timeout('test text')
+        finally:
+            ctx_module._embedding_semaphore = original_semaphore
