@@ -6973,6 +6973,13 @@ class MCPServerIntegrationTest:
 
             normal_data = self._extract_content(normal_results)
 
+            if not normal_data.get('success'):
+                self.test_results.append((
+                    test_name, False,
+                    f'Normal search failed: {normal_data}',
+                ))
+                return False
+
             if 'clamped_limit' in normal_data:
                 self.test_results.append((
                     test_name, False,

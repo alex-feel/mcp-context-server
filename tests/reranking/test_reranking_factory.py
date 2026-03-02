@@ -216,11 +216,14 @@ class TestFlashRankProvider:
             results = [{'id': 1, 'text': 'Test document content'}]
             await provider.rerank('test query', results)
 
-            # Verify the ranker has been initialized
-            assert provider._ranker is not None  # type: ignore[union-attr]
+            # Verify the ranker has been initialized (access internal attr via cast)
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            assert concrete._ranker is not None
 
             # Verify session has been replaced with constrained options
-            session = provider._ranker.session  # type: ignore[union-attr]
+            session = concrete._ranker.session
             assert session is not None
 
             # Verify inter_op_num_threads=1 (hardcoded for sequential workload)
@@ -244,8 +247,12 @@ class TestFlashRankProvider:
             results = [{'id': 1, 'text': 'Test document content'}]
             await provider.rerank('test query', results)
 
-            session = provider._ranker.session  # type: ignore[union-attr]
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            session = concrete._ranker.session
             opts = session.get_session_options()
             assert opts.intra_op_num_threads == 4
         finally:
             await provider.shutdown()
+            get_settings.cache_clear()
