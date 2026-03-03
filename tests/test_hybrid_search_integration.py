@@ -551,3 +551,145 @@ class TestSearchModesUsedSemantics:
         assert modes_used == ['semantic'], (
             f'Expected only semantic when FTS not available, got {modes_used}'
         )
+
+
+class TestAdaptiveFtsMode:
+    """Test adaptive FTS mode switching for hybrid search.
+
+    Verifies that _prepare_hybrid_fts_query() correctly switches
+    between AND (match) and OR (boolean) modes based on query length.
+    """
+
+    def test_short_query_uses_match_mode(self) -> None:
+        """Queries below threshold use match mode (AND logic)."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='python async',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'match'
+        assert query == 'python async'
+
+    def test_exact_threshold_uses_boolean_mode(self) -> None:
+        """Queries at exactly the threshold switch to boolean mode."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='python async await patterns',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert 'or' in query.lower()
+
+    def test_long_query_uses_boolean_mode(self) -> None:
+        """Long queries above threshold use boolean mode (OR logic)."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='DRY extraction embedding helper timeout semaphore pattern',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert ' or ' in query
+
+    def test_postgresql_uses_lowercase_or(self) -> None:
+        """PostgreSQL backend uses lowercase 'or' keyword."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='alpha beta gamma delta',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert ' or ' in query
+        assert ' OR ' not in query
+
+    def test_sqlite_uses_uppercase_or(self) -> None:
+        """SQLite backend uses uppercase 'OR' keyword."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='alpha beta gamma delta',
+            or_threshold=4,
+            backend_type='sqlite',
+        )
+        assert mode == 'boolean'
+        assert ' OR ' in query
+
+    def test_single_char_words_excluded_from_count(self) -> None:
+        """Single-character words are not counted as significant."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        # "a b c python async" has only 2 significant words (python, async)
+        query, mode = _prepare_hybrid_fts_query(
+            query='a b c python async',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'match'
+
+    def test_hyphen_sanitization(self) -> None:
+        """Hyphens are replaced with spaces to prevent NOT interpretation."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='context-server async-await error-handling patterns',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert '-' not in query
+
+    def test_threshold_boundary_below(self) -> None:
+        """Query with exactly threshold-1 significant words stays in match mode."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='alpha beta gamma',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'match'
+        assert query == 'alpha beta gamma'
+
+    def test_empty_after_sanitization_fallback(self) -> None:
+        """If all words sanitize to empty, falls back to match mode."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        # Single-char words with hyphens that would sanitize to empty
+        query, mode = _prepare_hybrid_fts_query(
+            query='- - - -',
+            or_threshold=2,
+            backend_type='postgresql',
+        )
+        assert mode == 'match'
+
+    def test_custom_threshold(self) -> None:
+        """Custom threshold value is respected."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        # With threshold=2, even 2-word queries switch to OR
+        query, mode = _prepare_hybrid_fts_query(
+            query='python async',
+            or_threshold=2,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert ' or ' in query
+
+    def test_whitespace_handling(self) -> None:
+        """Extra whitespace in query is handled gracefully."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='  alpha   beta   gamma   delta  ',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert ' or ' in query

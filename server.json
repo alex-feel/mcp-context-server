@@ -515,6 +515,13 @@
           "name": "HYBRID_RRF_OVERFETCH"
         },
         {
+          "description": "Minimum significant query terms to switch hybrid FTS from AND to OR logic (default: 4)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_FTS_OR_THRESHOLD"
+        },
+        {
           "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",
           "isRequired": false,
           "format": "string",
@@ -1315,6 +1322,13 @@
           "format": "number",
           "isSecret": false,
           "name": "HYBRID_RRF_OVERFETCH"
+        },
+        {
+          "description": "Minimum significant query terms to switch hybrid FTS from AND to OR logic (default: 4)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "HYBRID_FTS_OR_THRESHOLD"
         },
         {
           "description": "Default sort order for search results: relevance (only 'relevance' supported in current version)",

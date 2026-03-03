@@ -244,7 +244,7 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 
 ### Hybrid Search Implementation
 
-`hybrid_search_context` combines FTS + semantic via RRF: `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Requires `ENABLE_HYBRID_SEARCH=true` + at least one of `ENABLE_FTS`/`ENABLE_SEMANTIC_SEARCH`. `HYBRID_RRF_K` controls fusion smoothing.
+`hybrid_search_context` combines FTS + semantic via RRF: `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Requires `ENABLE_HYBRID_SEARCH=true` + at least one of `ENABLE_FTS`/`ENABLE_SEMANTIC_SEARCH`. `HYBRID_RRF_K` controls fusion smoothing. Adaptive FTS mode: queries with `HYBRID_FTS_OR_THRESHOLD` (default 4) or more significant terms switch from AND (`match` mode) to OR (`boolean` mode) for improved recall on long agent queries.
 
 ## Package and Release
 
@@ -285,7 +285,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 - HuggingFace: `HUGGINGFACEHUB_API_TOKEN`
 - Voyage: `VOYAGE_API_KEY`, `VOYAGE_TRUNCATION` (false*)
 
-**Hybrid**: `ENABLE_HYBRID_SEARCH` (false*), `HYBRID_RRF_K` (60*), `HYBRID_RRF_OVERFETCH` (2*)
+**Hybrid**: `ENABLE_HYBRID_SEARCH` (false*), `HYBRID_RRF_K` (60*), `HYBRID_RRF_OVERFETCH` (2*), `HYBRID_FTS_OR_THRESHOLD` (4*)
 
 **Chunking**: `ENABLE_CHUNKING` (true*), `CHUNK_SIZE` (1000*), `CHUNK_OVERLAP` (100*), `CHUNK_AGGREGATION` (max*), `CHUNK_DEDUP_OVERFETCH` (5*). Chunk-aware reranking uses chunk boundaries for cross-encoder scoring.
 

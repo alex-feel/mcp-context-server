@@ -4178,6 +4178,97 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_hybrid_search_adaptive_fts_mode(self) -> bool:
+        """Test that hybrid search uses adaptive FTS mode for long queries.
+
+        Verifies that:
+        1. Long queries (4+ terms) switch to boolean mode with OR logic
+        2. The explain_query stats include adaptive_fts_mode field
+        3. Short queries continue to use match mode
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'hybrid_search_adaptive_fts_mode'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+                self.test_results.append(
+                    (test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'),
+                )
+                return True
+
+            if os.environ.get('ENABLE_FTS', '').lower() != 'true':
+                self.test_results.append(
+                    (test_name, True, 'Skipped (ENABLE_FTS not enabled)'),
+                )
+                return True
+
+            # Test 1: Long query with explain_query to verify adaptive_fts_mode
+            long_query = 'DRY extraction embedding helper timeout semaphore pattern implementation'
+            long_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': long_query,
+                    'explain_query': True,
+                    'limit': 5,
+                },
+            )
+
+            long_data = self._extract_content(long_result)
+
+            # Verify stats include adaptive_fts_mode
+            stats = long_data.get('stats')
+            if stats is None:
+                self.test_results.append(
+                    (test_name, False, 'Missing stats with explain_query=True'),
+                )
+                return False
+
+            adaptive_mode = stats.get('adaptive_fts_mode')
+            if adaptive_mode is None:
+                self.test_results.append(
+                    (test_name, False, 'Missing adaptive_fts_mode in stats'),
+                )
+                return False
+
+            if adaptive_mode != 'boolean':
+                self.test_results.append(
+                    (test_name, False, f'Expected boolean mode for long query, got {adaptive_mode}'),
+                )
+                return False
+
+            # Test 2: Short query should use match mode
+            short_query = 'python async'
+            short_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': short_query,
+                    'explain_query': True,
+                    'limit': 5,
+                },
+            )
+
+            short_data = self._extract_content(short_result)
+
+            short_stats = short_data.get('stats')
+            if short_stats:
+                short_mode = short_stats.get('adaptive_fts_mode')
+                if short_mode != 'match':
+                    self.test_results.append(
+                        (test_name, False, f'Expected match mode for short query, got {short_mode}'),
+                    )
+                    return False
+
+            self.test_results.append(
+                (test_name, True, 'Adaptive FTS mode working: long=boolean, short=match'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Error: {e}'))
+            return False
+
     async def test_search_tools_content_type_filter(self) -> bool:
         """Test content_type parameter across all 4 search tools.
 
@@ -7152,6 +7243,7 @@ class MCPServerIntegrationTest:
             ('FTS Pagination Offset', self.test_fts_pagination_offset),
             ('FTS Highlight Snippets', self.test_fts_highlight_snippets),
             ('Hybrid Search', self.test_hybrid_search_context),
+            ('Hybrid Search Adaptive FTS Mode', self.test_hybrid_search_adaptive_fts_mode),
             ('Search Tools Content Type Filter', self.test_search_tools_content_type_filter),
             ('Search Tools Include Images', self.test_search_tools_include_images),
             ('Search Tools Tags Filter', self.test_search_tools_tags_filter),

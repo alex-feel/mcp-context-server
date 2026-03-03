@@ -248,6 +248,8 @@ async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) 
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
         mock_settings.hybrid_search.rrf_overfetch = 2
+        mock_settings.hybrid_search.fts_or_threshold = 4
+        mock_settings.storage.backend_type = 'sqlite'
         mock_settings.fts.enabled = True
         mock_settings.semantic_search.enabled = True
         mock_settings.reranking.enabled = False
@@ -289,6 +291,8 @@ async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixt
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
         mock_settings.hybrid_search.rrf_overfetch = 2
+        mock_settings.hybrid_search.fts_or_threshold = 4
+        mock_settings.storage.backend_type = 'sqlite'
         mock_settings.fts.enabled = True
         mock_settings.semantic_search.enabled = True
         mock_settings.reranking.enabled = False
@@ -331,6 +335,8 @@ async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixt
         mock_settings.hybrid_search.enabled = True
         mock_settings.hybrid_search.rrf_k = 60
         mock_settings.hybrid_search.rrf_overfetch = 2
+        mock_settings.hybrid_search.fts_or_threshold = 4
+        mock_settings.storage.backend_type = 'sqlite'
         mock_settings.fts.enabled = True
         mock_settings.semantic_search.enabled = True
         mock_settings.reranking.enabled = False

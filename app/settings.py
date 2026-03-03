@@ -579,6 +579,14 @@ class HybridSearchSettings(CommonSettings):
         description='Multiplier for over-fetching results before RRF fusion (default: 2x)',
     )
 
+    fts_or_threshold: int = Field(
+        default=4,
+        alias='HYBRID_FTS_OR_THRESHOLD',
+        ge=2,
+        le=20,
+        description='Minimum number of significant query terms to switch FTS from AND to OR logic (default: 4)',
+    )
+
 
 class SearchSettings(CommonSettings):
     """General search behavior configuration.
