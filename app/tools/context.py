@@ -325,17 +325,53 @@ async def store_context(
         # === PHASE 2: Generate Embedding FIRST (Outside Transaction) ===
         # CRITICAL: Embedding generation happens BEFORE any database operations.
         # If it fails, NO data is saved - this is the core of transactional integrity.
-        chunk_embeddings = await _generate_embeddings_with_timeout(text)
-        embedding_generated = chunk_embeddings is not None
+
+        # Performance optimization: skip embedding generation for likely duplicates.
+        # The in-transaction deduplication in store_with_deduplication remains as
+        # the authoritative check. This pre-check is read-only and may have
+        # false negatives (race condition: another request inserts between check
+        # and transaction), but never false positives that cause data loss.
+        repos = await ensure_repositories()
+        chunk_embeddings: list[ChunkEmbedding] | None = None
+        embedding_generated = False
+
+        if get_embedding_provider() is not None:
+            likely_duplicate_id = await repos.context.check_latest_is_duplicate(
+                thread_id=thread_id,
+                source=source,
+                text_content=text,
+            )
+
+            if likely_duplicate_id is not None:
+                # Likely duplicate detected. Check if embeddings already exist.
+                has_embeddings = await repos.embeddings.exists(likely_duplicate_id)
+                if has_embeddings:
+                    logger.debug(
+                        'Pre-check: skipping embedding generation for likely duplicate '
+                        'of context %d in thread %s',
+                        likely_duplicate_id, thread_id,
+                    )
+                else:
+                    logger.debug(
+                        'Pre-check: duplicate detected but no embeddings exist for context %d, '
+                        'generating embeddings',
+                        likely_duplicate_id, thread_id,
+                    )
+                    chunk_embeddings = await _generate_embeddings_with_timeout(text)
+                    embedding_generated = chunk_embeddings is not None
+            else:
+                # New entry (or race condition -- safety net in transaction handles this)
+                chunk_embeddings = await _generate_embeddings_with_timeout(text)
+                embedding_generated = chunk_embeddings is not None
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
-        repos = await ensure_repositories()
         backend = repos.context.backend
         metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
 
         max_retries = 2
         context_id = 0
         was_updated = False
+        embedding_stored = False
 
         for attempt in range(max_retries + 1):
             try:
@@ -357,13 +393,19 @@ async def store_context(
                     # Heartbeat: keep connection alive between sequential operations
                     await transaction_heartbeat(txn)
 
-                    # Store normalized tags
+                    # Store or replace tags depending on deduplication outcome
                     if tags:
-                        await repos.tags.store_tags(context_id, tags, txn=txn)
+                        if was_updated:
+                            await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
+                        else:
+                            await repos.tags.store_tags(context_id, tags, txn=txn)
 
-                    # Store images
+                    # Store or replace images depending on deduplication outcome
                     if validated_images:
-                        await repos.images.store_images(context_id, validated_images, txn=txn)
+                        if was_updated:
+                            await repos.images.replace_images_for_context(context_id, validated_images, txn=txn)
+                        else:
+                            await repos.images.store_images(context_id, validated_images, txn=txn)
 
                     # Heartbeat before potentially long embedding storage
                     if chunk_embeddings is not None:
@@ -392,6 +434,7 @@ async def store_context(
                                 txn=txn,
                                 upsert=was_updated,
                             )
+                            embedding_stored = True
 
                     # COMMIT happens here - all or nothing
 
@@ -415,12 +458,18 @@ async def store_context(
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
 
+        if embedding_generated and not embedding_stored:
+            embedding_note = ' (embedding generated but not stored - duplicate)'
+        elif embedding_stored:
+            embedding_note = ' (embedding generated)'
+        else:
+            embedding_note = ''
+
         return StoreContextSuccessDict(
             success=True,
             context_id=context_id,
             thread_id=thread_id,
-            message=f'Context {action} with {len(validated_images)} images'
-            + (' (embedding generated)' if embedding_generated else ''),
+            message=f'Context {action} with {len(validated_images)} images{embedding_note}',
         )
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle

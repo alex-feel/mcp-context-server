@@ -472,6 +472,20 @@ class NewEmbeddingProvider:
 
 **CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` and embedding fails, NO data is saved - transaction rolls back completely. Embeddings generated OUTSIDE transaction, then all DB ops (context + tags + images + embeddings) in single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `_generate_embeddings_with_timeout` is the single source of truth for the timeout/semaphore pattern used by single-entry operations (`store_context`, `update_context`); batch operations have their own embedding generation loop.
 
+### Deduplication Behavior (store_context)
+
+When `store_context` detects a duplicate (same `thread_id + source + text_content` as the latest entry):
+
+- **Metadata**: Updated via `COALESCE(new, existing)`. `None` preserves existing; explicit value replaces.
+- **Tags**: REPLACED (not accumulated) when provided via `replace_tags_for_context()`. Preserved when `tags=None`.
+- **Images**: REPLACED (not accumulated) when provided via `replace_images_for_context()`. Preserved when `images=None`.
+- **content_type**: Updated to reflect current content.
+- **updated_at**: Set to `CURRENT_TIMESTAMP` (SQLite explicit, PostgreSQL trigger).
+- **Embeddings**: Storage skipped if already exist; generated if missing.
+- **Pre-check optimization**: Read-only check before embedding generation to skip Ollama API call for duplicates.
+
+The `store_context_batch` tool uses the same dedup logic (calls `store_with_deduplication` per entry).
+
 ### Repository Pattern Implementation
 
 All SQL in repositories (never server.py). Use `ensure_repositories()` from `app.startup`. Repositories detect backend type via `self.backend.backend_type`. SQLite: sync functions with `conn`. PostgreSQL: async functions with `conn`. Helper methods: `_placeholder()`, `_json_extract()`. Write methods accept optional `txn` for atomic multi-operation transactions.

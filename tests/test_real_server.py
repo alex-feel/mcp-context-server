@@ -7151,6 +7151,117 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_store_context_deduplication_data_integrity(self) -> bool:
+        """Test that deduplication correctly handles metadata, tags, and timestamps.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_context_deduplication_data_integrity'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            dedup_thread = f'{self.test_thread_id}_dedup_integrity'
+
+            # 1. Store first entry with metadata and tags
+            result1 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': dedup_thread,
+                    'source': 'agent',
+                    'text': 'Dedup integrity test content',
+                    'metadata': {'key': 'original'},
+                    'tags': ['a', 'b'],
+                },
+            )
+            data1 = self._extract_content(result1)
+            if not data1.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'First store failed: {data1}'),
+                )
+                return False
+
+            context_id = data1['context_id']
+
+            # 2. Wait for timestamp separation (SQLite second precision)
+            await asyncio.sleep(1.1)
+
+            # 3. Store duplicate with updated metadata and tags
+            result2 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': dedup_thread,
+                    'source': 'agent',
+                    'text': 'Dedup integrity test content',
+                    'metadata': {'key': 'updated', 'extra': 'value'},
+                    'tags': ['c', 'd'],
+                },
+            )
+            data2 = self._extract_content(result2)
+            if not data2.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Dedup store failed: {data2}'),
+                )
+                return False
+
+            # Verify same context_id (dedup occurred)
+            if data2['context_id'] != context_id:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected same context_id {context_id}, got {data2["context_id"]}'),
+                )
+                return False
+
+            # 4. Retrieve and verify via get_context_by_ids
+            get_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            get_data = self._extract_content(get_result)
+            results = get_data.get('results', [])
+            if len(results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result, got {len(results)}'),
+                )
+                return False
+
+            entry = results[0]
+
+            # Verify metadata was updated (not the original)
+            entry_metadata = entry.get('metadata', {})
+            if entry_metadata.get('key') != 'updated' or entry_metadata.get('extra') != 'value':
+                self.test_results.append(
+                    (test_name, False,
+                     f'Metadata not updated correctly: {entry_metadata}'),
+                )
+                return False
+
+            # Verify tags were replaced (not accumulated)
+            entry_tags = sorted(entry.get('tags', []))
+            if entry_tags != ['c', 'd']:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Tags not replaced correctly, expected [c, d], got {entry_tags}'),
+                )
+                return False
+
+            # Verify updated_at differs from created_at
+            if entry.get('created_at') == entry.get('updated_at'):
+                self.test_results.append(
+                    (test_name, False,
+                     'updated_at should differ from created_at after dedup'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 'Dedup correctly updates metadata, replaces tags, and updates timestamp'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -7268,6 +7379,8 @@ class MCPServerIntegrationTest:
             ('Search Context Limit Clamping', self.test_search_context_limit_clamping),
             # Session Crash Patch Tests
             ('Session Crash Patch Applied', self.test_session_crash_patch_applied),
+            # Deduplication Data Integrity Tests
+            ('Dedup Data Integrity', self.test_store_context_deduplication_data_integrity),
             # Edge Case Tests (P3)
             ('Store Context Empty Text', self.test_store_context_empty_text),
             ('Store Context Max Size Image', self.test_store_context_max_size_image),

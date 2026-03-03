@@ -469,3 +469,161 @@ class TestDeduplication:
         # Verify we have 2 entries
         entries, _ = await repos.context.search_contexts(thread_id='test-thread', limit=1000)
         assert len(entries) == 2
+
+    async def test_metadata_updated_during_dedup(self, repos: RepositoryContainer) -> None:
+        """Metadata is updated via COALESCE during deduplication."""
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Test content',
+            metadata=json.dumps({'key': 'original'}),
+        )
+        context_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Test content',
+            metadata=json.dumps({'key': 'updated', 'new_key': 'value'}),
+        )
+        assert was_updated is True
+        assert context_id2 == context_id
+        entries = await repos.context.get_by_ids([context_id])
+        stored_metadata = json.loads(entries[0]['metadata'])
+        assert stored_metadata == {'key': 'updated', 'new_key': 'value'}
+
+    async def test_metadata_preserved_when_none_during_dedup(self, repos: RepositoryContainer) -> None:
+        """Metadata is preserved via COALESCE when None is passed during deduplication."""
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Test content',
+            metadata=json.dumps({'key': 'original'}),
+        )
+        context_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Test content',
+            metadata=None,
+        )
+        assert was_updated is True
+        entries = await repos.context.get_by_ids([context_id])
+        stored_metadata = json.loads(entries[0]['metadata'])
+        assert stored_metadata == {'key': 'original'}
+
+    async def test_content_type_updated_during_dedup(self, repos: RepositoryContainer) -> None:
+        """Content type is updated during deduplication."""
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Test content', metadata=None,
+        )
+        context_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='multimodal',
+            text_content='Test content', metadata=None,
+        )
+        assert was_updated is True
+        entries = await repos.context.get_by_ids([context_id])
+        assert entries[0]['content_type'] == 'multimodal'
+
+    async def test_updated_at_changes_during_dedup(self, repos: RepositoryContainer) -> None:
+        """updated_at timestamp changes after deduplication."""
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Test content', metadata=None,
+        )
+        await asyncio.to_thread(time.sleep, 1.1)  # SQLite has second precision
+        context_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Test content', metadata=None,
+        )
+        assert was_updated is True
+        entries = await repos.context.get_by_ids([context_id])
+        assert entries[0]['created_at'] != entries[0]['updated_at']
+
+    async def test_tags_replaced_not_accumulated_during_dedup(self, repos: RepositoryContainer) -> None:
+        """Tags are replaced (not accumulated) when replace_tags_for_context is used during dedup."""
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Tag test content', metadata=None,
+        )
+        await repos.tags.store_tags(context_id, ['a', 'b'])
+        # Dedup with was_updated=True
+        context_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Tag test content', metadata=None,
+        )
+        assert was_updated is True
+        await repos.tags.replace_tags_for_context(context_id, ['c', 'd'])
+        tags = await repos.tags.get_tags_for_context(context_id)
+        assert sorted(tags) == ['c', 'd']
+
+    async def test_tags_preserved_when_none_during_dedup(self, repos: RepositoryContainer) -> None:
+        """Tags are preserved when not provided during deduplication."""
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Tag preserve test', metadata=None,
+        )
+        await repos.tags.store_tags(context_id, ['existing'])
+        # Dedup fires but no tag operation called (simulates tags=None)
+        context_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Tag preserve test', metadata=None,
+        )
+        assert was_updated is True
+        # Don't call any tag function (simulating tags=None from tool layer)
+        tags = await repos.tags.get_tags_for_context(context_id)
+        assert tags == ['existing']
+
+
+@pytest.mark.asyncio
+class TestDuplicatePreCheck:
+    """Tests for check_latest_is_duplicate pre-check method."""
+
+    async def test_check_latest_is_duplicate_found(self, repos: RepositoryContainer) -> None:
+        """Pre-check detects duplicate content."""
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Duplicate text', metadata=None,
+        )
+        result = await repos.context.check_latest_is_duplicate(
+            thread_id='test-thread', source='user', text_content='Duplicate text',
+        )
+        assert result == context_id
+
+    async def test_check_latest_is_duplicate_not_found(self, repos: RepositoryContainer) -> None:
+        """Pre-check returns None for different content."""
+        await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Original text', metadata=None,
+        )
+        result = await repos.context.check_latest_is_duplicate(
+            thread_id='test-thread', source='user', text_content='Different text',
+        )
+        assert result is None
+
+    async def test_check_latest_is_duplicate_empty_thread(self, repos: RepositoryContainer) -> None:
+        """Pre-check returns None for empty thread."""
+        result = await repos.context.check_latest_is_duplicate(
+            thread_id='nonexistent', source='user', text_content='Any text',
+        )
+        assert result is None
+
+    async def test_check_latest_different_source(self, repos: RepositoryContainer) -> None:
+        """Pre-check returns None when source differs."""
+        await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Same text', metadata=None,
+        )
+        result = await repos.context.check_latest_is_duplicate(
+            thread_id='test-thread', source='agent', text_content='Same text',
+        )
+        assert result is None
+
+    async def test_check_latest_only_checks_latest(self, repos: RepositoryContainer) -> None:
+        """Pre-check only checks the latest entry, not older ones."""
+        await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='Old matching text', metadata=None,
+        )
+        await repos.context.store_with_deduplication(
+            thread_id='test-thread', source='user', content_type='text',
+            text_content='New different text', metadata=None,
+        )
+        result = await repos.context.check_latest_is_duplicate(
+            thread_id='test-thread', source='user', text_content='Old matching text',
+        )
+        assert result is None  # Latest is "New different text", not matching

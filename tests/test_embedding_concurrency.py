@@ -172,12 +172,15 @@ async def test_total_timeout_raises_tool_error() -> None:
         await asyncio.sleep(10.0)
         return [MagicMock()]
 
+    mock_repos = MagicMock()
+    mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
+
     with (
         patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
         patch('app.tools.context.compute_embedding_total_timeout', return_value=0.05),
         patch('app.tools.context._generate_embeddings_for_text', side_effect=slow_embedding),
         patch('app.tools.context.settings') as mock_settings,
-        patch('app.tools.context.ensure_repositories', new_callable=AsyncMock),
+        patch('app.tools.context.ensure_repositories', new_callable=AsyncMock, return_value=mock_repos),
     ):
         mock_settings.embedding.max_concurrent = 3
 
