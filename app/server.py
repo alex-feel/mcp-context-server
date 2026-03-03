@@ -541,7 +541,7 @@ def main() -> None:
 
         if transport == 'stdio':
             logger.info('Transport: STDIO')
-            mcp.run()
+            mcp.run(transport=transport)
         else:
             host = settings.transport.host
             port = settings.transport.port

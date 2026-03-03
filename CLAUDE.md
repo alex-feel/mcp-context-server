@@ -419,6 +419,7 @@ Env vars consumed by FastMCP independently at import time, with no `mcp.run()` p
 | `FASTMCP_HOST`                | YES (`TransportSettings`) | Passed to `mcp.run(host=...)`                                                                |
 | `FASTMCP_PORT`                | YES (`TransportSettings`) | Passed to `mcp.run(port=...)`                                                                |
 | `FASTMCP_STATELESS_HTTP`      | YES (`TransportSettings`) | Passed to `mcp.run(stateless_http=...)`                                                      |
+| `FASTMCP_TRANSPORT`           | NO                        | Project uses MCP_TRANSPORT + explicit transport= arg; FASTMCP_TRANSPORT has no effect        |
 | `FASTMCP_ENABLE_RICH_LOGGING` | NO                        | Consumed at FastMCP import time; no `mcp.run()` parameter; dead code if added to settings.py |
 
 **When a NEW `FASTMCP_*` env var appears** (FastMCP update): Check whether it has a corresponding `mcp.run()` parameter or application code path. If yes, add to `settings.py`. If no, document in deployment configs and CLAUDE.md only.
