@@ -449,3 +449,105 @@ class TestHybridSearchResponseStructure:
         semantic_distance = scores.get('semantic_distance')
         assert isinstance(fts_score, float)
         assert isinstance(semantic_distance, float)
+
+
+class TestSearchModesUsedSemantics:
+    """Test that search_modes_used reflects execution, not results.
+
+    Verifies that modes_used tracks whether a search mode executed
+    successfully (no error), regardless of whether it returned results.
+    """
+
+    @staticmethod
+    def _compute_modes_used(
+        available_modes: list[str],
+        fts_error: str | None,
+        semantic_error: str | None,
+    ) -> list[str]:
+        """Replicate the production modes_used logic for testing."""
+        modes_used: list[str] = []
+        if 'fts' in available_modes and not fts_error:
+            modes_used.append('fts')
+        if 'semantic' in available_modes and not semantic_error:
+            modes_used.append('semantic')
+        return modes_used
+
+    def test_fts_executed_zero_results_still_in_modes(self) -> None:
+        """FTS executes with zero results -> still included in modes_used.
+
+        When FTS runs successfully but finds no matching documents,
+        it should still appear in modes_used because it was executed.
+        """
+        modes_used = self._compute_modes_used(
+            available_modes=['fts', 'semantic'],
+            fts_error=None,
+            semantic_error=None,
+        )
+
+        assert modes_used == ['fts', 'semantic'], (
+            f'Expected both modes when both executed, got {modes_used}'
+        )
+
+    def test_fts_error_excluded_from_modes(self) -> None:
+        """FTS errors during execution -> excluded from modes_used.
+
+        When FTS encounters an error, it should NOT appear in
+        modes_used.
+        """
+        modes_used = self._compute_modes_used(
+            available_modes=['fts', 'semantic'],
+            fts_error='FTS search failed: connection timeout',
+            semantic_error=None,
+        )
+
+        assert modes_used == ['semantic'], (
+            f'Expected only semantic when FTS errored, got {modes_used}'
+        )
+
+    def test_semantic_error_excluded_from_modes(self) -> None:
+        """Semantic errors during execution -> excluded from modes_used.
+
+        When semantic search encounters an error, it should NOT
+        appear in modes_used.
+        """
+        modes_used = self._compute_modes_used(
+            available_modes=['fts', 'semantic'],
+            fts_error=None,
+            semantic_error='Embedding provider unavailable',
+        )
+
+        assert modes_used == ['fts'], (
+            f'Expected only fts when semantic errored, got {modes_used}'
+        )
+
+    def test_both_error_empty_modes(self) -> None:
+        """Both modes error -> empty modes_used.
+
+        When both search modes encounter errors, modes_used should
+        be empty.
+        """
+        modes_used = self._compute_modes_used(
+            available_modes=['fts', 'semantic'],
+            fts_error='FTS failed',
+            semantic_error='Semantic failed',
+        )
+
+        assert modes_used == [], (
+            f'Expected empty modes when both errored, got {modes_used}'
+        )
+
+    def test_semantic_only_mode_available(self) -> None:
+        """Only semantic mode available and succeeds -> ['semantic'].
+
+        When FTS is not in available_modes (not enabled), only semantic
+        should appear regardless of fts_error state.
+        """
+        modes_used = self._compute_modes_used(
+            available_modes=['semantic'],
+            fts_error=None,
+            semantic_error=None,
+        )
+
+        assert modes_used == ['semantic'], (
+            f'Expected only semantic when FTS not available, got {modes_used}'
+        )

@@ -4102,6 +4102,22 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, 'Response missing search_modes_used field'))
                 return False
 
+            # Verify search_modes_used reflects execution, not results.
+            # If FTS ran (no warning about failure) but returned 0 results,
+            # it should still appear in search_modes_used.
+            fts_count = hybrid_data.get('fts_count', 0)
+            has_fts_warning = any(
+                'FTS sub-search failed' in w for w in hybrid_data.get('warnings', [])
+            )
+            modes_used = hybrid_data.get('search_modes_used', [])
+            if not has_fts_warning and fts_count == 0 and 'fts' not in modes_used:
+                msg = (
+                    f'search_modes_used={modes_used} excludes fts despite '
+                    f'successful execution (fts_count=0, no error)'
+                )
+                self.test_results.append((test_name, False, msg))
+                return False
+
             if 'fts_count' not in hybrid_data or 'semantic_count' not in hybrid_data:
                 self.test_results.append((test_name, False, 'Response missing source counts'))
                 return False

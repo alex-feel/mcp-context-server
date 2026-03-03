@@ -1242,11 +1242,11 @@ async def hybrid_search_context(
                 f'All search modes failed. FTS: {fts_error}. Semantic: {semantic_error}',
             )
 
-        # Determine which modes actually returned results
+        # Determine which modes executed successfully (not errored)
         modes_used: list[str] = []
-        if fts_results:
+        if 'fts' in available_modes and not fts_error:
             modes_used.append('fts')
-        if semantic_results:
+        if 'semantic' in available_modes and not semantic_error:
             modes_used.append('semantic')
 
         # Parse FTS metadata (returned as JSON strings from DB)
@@ -1300,7 +1300,8 @@ async def hybrid_search_context(
 
         logger.info(
             f'Hybrid search found {len(final_results)} results for query: "{query[:50]}..." '
-            f'(fts={len(fts_results)}, semantic={len(semantic_results)}, modes={modes_used})',
+            f'(fts={len(fts_results)}, semantic={len(semantic_results)}, '
+            f'available={available_modes}, executed={modes_used})',
         )
 
         # Build response
