@@ -321,13 +321,19 @@ async def store_context_batch(
                             if not context_id:
                                 raise ToolError(f'Failed to store context at index {original_idx}')
 
-                            # Store tags if provided
+                            # Store or replace tags depending on deduplication outcome
                             if entry.get('tags'):
-                                await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
+                                if was_updated:
+                                    await repos.tags.replace_tags_for_context(context_id, entry['tags'], txn=txn)
+                                else:
+                                    await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
 
-                            # Store images if provided
+                            # Store or replace images depending on deduplication outcome
                             if entry.get('images'):
-                                await repos.images.store_images(context_id, entry['images'], txn=txn)
+                                if was_updated:
+                                    await repos.images.replace_images_for_context(context_id, entry['images'], txn=txn)
+                                else:
+                                    await repos.images.store_images(context_id, entry['images'], txn=txn)
 
                             # Store embeddings only if needed (skip for deduplicated entries with existing embeddings)
                             entry_chunk_embeddings = entry_embeddings.get(ve_idx)
@@ -400,13 +406,19 @@ async def store_context_batch(
                         # Heartbeat between sub-operations
                         await transaction_heartbeat(txn)
 
-                        # Store tags if provided
+                        # Store or replace tags depending on deduplication outcome
                         if entry.get('tags'):
-                            await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
+                            if was_updated:
+                                await repos.tags.replace_tags_for_context(context_id, entry['tags'], txn=txn)
+                            else:
+                                await repos.tags.store_tags(context_id, entry['tags'], txn=txn)
 
-                        # Store images if provided
+                        # Store or replace images depending on deduplication outcome
                         if entry.get('images'):
-                            await repos.images.store_images(context_id, entry['images'], txn=txn)
+                            if was_updated:
+                                await repos.images.replace_images_for_context(context_id, entry['images'], txn=txn)
+                            else:
+                                await repos.images.store_images(context_id, entry['images'], txn=txn)
 
                         # Store embeddings only if needed (skip for deduplicated entries with existing embeddings)
                         entry_chunk_embeddings = entry_embeddings.get(ve_idx)

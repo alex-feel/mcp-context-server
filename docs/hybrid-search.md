@@ -119,6 +119,31 @@ Add to your `.mcp.json` file:
 
 **Note:** The `--extra reranking` is necessary to enable reranking.
 
+### Adaptive FTS Mode
+
+By default, hybrid search uses `match` mode (AND logic) for FTS queries, requiring all terms to appear in a document. For long queries typical of LLM agents (4+ terms), this often returns zero FTS results, degrading hybrid search to semantic-only.
+
+The adaptive FTS mode automatically switches long queries to OR logic:
+
+| Query Length          | FTS Mode  | Logic                    | Example                            |
+|-----------------------|-----------|--------------------------|------------------------------------|
+| 1-3 significant terms | `match`   | AND (all terms required) | "python async"                     |
+| 4+ significant terms  | `boolean` | OR (any term matches)    | "DRY extraction embedding helper"  |
+
+**Configuration:**
+
+```bash
+HYBRID_FTS_OR_THRESHOLD=4  # Default: switch to OR at 4+ terms
+```
+
+**How it works:**
+1. The query is split into words; single-character words are excluded from the count
+2. If significant word count >= threshold, terms are joined with OR keywords
+3. Hyphens are replaced with spaces to prevent NOT operator interpretation
+4. The transformed query uses `boolean` mode (`websearch_to_tsquery` on PostgreSQL, FTS5 boolean on SQLite)
+
+**Tuning:** Use `explain_query=True` to see the `adaptive_fts_mode` field in stats. If too many irrelevant results appear, increase the threshold. If FTS still returns zero results frequently, decrease it.
+
 ## How RRF Fusion Works
 
 ### The RRF Algorithm

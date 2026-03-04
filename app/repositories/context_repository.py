@@ -60,7 +60,8 @@ class ContextRepository(BaseRepository):
         """Store context entry with deduplication logic.
 
         Checks if the latest entry has identical thread_id, source, and text_content.
-        If found, updates the updated_at timestamp. Otherwise, inserts new entry.
+        If found, updates metadata (via COALESCE), content_type, and updated_at.
+        Otherwise, inserts new entry.
 
         Args:
             thread_id: Thread identifier
@@ -97,16 +98,24 @@ class ContextRepository(BaseRepository):
                 latest_row = cursor.fetchone()
 
                 if latest_row and latest_row['text_content'] == text_content:
-                    # The latest entry has identical text - update its timestamp
+                    # The latest entry has identical text - update metadata, content_type, and timestamp
                     existing_id = latest_row['id']
                     cursor.execute(
                         f'''
                         UPDATE context_entries
-                        SET updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(1)}
+                        SET metadata = COALESCE({self._placeholder(1)}, metadata),
+                            content_type = {self._placeholder(2)},
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {self._placeholder(3)}
                         ''',
-                        (existing_id,),
+                        (metadata, content_type, existing_id),
                     )
+                    rows_affected = cursor.rowcount
+                    if rows_affected == 0:
+                        logger.warning(
+                            'Deduplication UPDATE affected 0 rows for context %d in thread %s',
+                            existing_id, thread_id,
+                        )
                     logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
                     return existing_id, True
 
@@ -143,16 +152,26 @@ class ContextRepository(BaseRepository):
             )
 
             if latest_row and latest_row['text_content'] == text_content:
-                # Update timestamp
+                # Update metadata, content_type, and timestamp
                 existing_id = latest_row['id']
-                await conn.execute(
+                result = await conn.execute(
                     f'''
                         UPDATE context_entries
-                        SET updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(1)}
+                        SET metadata = COALESCE({self._placeholder(1)}, metadata),
+                            content_type = {self._placeholder(2)},
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = {self._placeholder(3)}
                         ''',
+                    metadata,
+                    content_type,
                     existing_id,
                 )
+                rows_affected = int(result.split()[-1]) if result else 0
+                if rows_affected == 0:
+                    logger.warning(
+                        'Deduplication UPDATE affected 0 rows for context %d in thread %s',
+                        existing_id, thread_id,
+                    )
                 logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
                 return existing_id, True
 
@@ -177,6 +196,65 @@ class ContextRepository(BaseRepository):
         if txn:
             return await _store_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_store_postgresql)
+
+    async def check_latest_is_duplicate(
+        self,
+        thread_id: str,
+        source: str,
+        text_content: str,
+    ) -> int | None:
+        """Check if the latest entry matches the given content (read-only pre-check).
+
+        This is a performance optimization for the embedding-first pattern.
+        It allows skipping expensive embedding generation when the content
+        is identical to the latest entry. The in-transaction deduplication
+        in store_with_deduplication remains as the authoritative safety net.
+
+        Args:
+            thread_id: Thread identifier
+            source: 'user' or 'agent'
+            text_content: Text content to check for duplicates
+
+        Returns:
+            The context_id of the matching entry if duplicate found, None otherwise.
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _check_sqlite(conn: sqlite3.Connection) -> int | None:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'''
+                    SELECT id, text_content FROM context_entries
+                    WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                    (thread_id, source),
+                )
+                row = cursor.fetchone()
+                if row and row['text_content'] == text_content:
+                    return cast(int, row['id'])
+                return None
+
+            return await self.backend.execute_read(_check_sqlite)
+
+        # PostgreSQL
+        async def _check_postgresql(conn: asyncpg.Connection) -> int | None:
+            row = await conn.fetchrow(
+                f'''
+                    SELECT id, text_content FROM context_entries
+                    WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                thread_id,
+                source,
+            )
+            if row and row['text_content'] == text_content:
+                return cast(int, row['id'])
+            return None
+
+        return await self.backend.execute_read(_check_postgresql)
 
     async def search_contexts(
         self,

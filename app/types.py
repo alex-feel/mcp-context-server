@@ -420,6 +420,7 @@ class HybridSearchStatsDict(TypedDict, total=False):
     fts_stats: HybridFtsStatsDict | None
     semantic_stats: HybridSemanticStatsDict | None
     fusion_stats: HybridFusionStatsDict
+    adaptive_fts_mode: str  # 'match' or 'boolean' - indicates FTS mode used
 
 
 class HybridSearchResponseDict(TypedDict, total=False):

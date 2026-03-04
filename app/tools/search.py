@@ -974,6 +974,48 @@ async def fts_search_context(
         raise ToolError(f'FTS search failed: {format_exception_message(e)}') from e
 
 
+def _prepare_hybrid_fts_query(
+    query: str,
+    or_threshold: int,
+    backend_type: str,
+) -> tuple[str, Literal['match', 'boolean']]:
+    """Prepare FTS query with adaptive AND/OR logic for hybrid search.
+
+    Short queries (below threshold) use 'match' mode (AND logic).
+    Long queries (at or above threshold) use 'boolean' mode with
+    OR keywords inserted between terms, enabling partial-match recall.
+
+    Args:
+        query: Original search query.
+        or_threshold: Minimum significant terms to switch to OR mode.
+        backend_type: Storage backend type ('sqlite' or 'postgresql').
+
+    Returns:
+        Tuple of (transformed_query, fts_mode) where fts_mode is
+        either 'match' or 'boolean'.
+    """
+    words = query.strip().split()
+    significant = [w for w in words if len(w) > 1]
+
+    if len(significant) < or_threshold:
+        return query, 'match'
+
+    # Sanitize: replace hyphens to prevent websearch_to_tsquery NOT interpretation
+    sanitized: list[str] = []
+    for word in significant:
+        clean = word.replace('-', ' ').strip()
+        if clean:
+            sanitized.append(clean)
+
+    if not sanitized:
+        return query, 'match'
+
+    # SQLite FTS5: OR must be uppercase (case-sensitive operators)
+    # PostgreSQL websearch_to_tsquery: or must be lowercase
+    or_keyword = 'OR' if backend_type == 'sqlite' else 'or'
+    return f' {or_keyword} '.join(sanitized), 'boolean'
+
+
 async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
@@ -1148,13 +1190,20 @@ async def hybrid_search_context(
         fts_stats: dict[str, Any] | None = None
         semantic_stats: dict[str, Any] | None = None
 
+        # Determine adaptive FTS mode for hybrid search
+        adaptive_query, adaptive_mode = _prepare_hybrid_fts_query(
+            query=query,
+            or_threshold=settings.hybrid_search.fts_or_threshold,
+            backend_type=settings.storage.backend_type,
+        )
+
         async def run_fts_search() -> None:
             nonlocal fts_results, fts_error, fts_stats
             try:
                 results, stats = await _fts_search_raw(
-                    query=query,
+                    query=adaptive_query,
                     limit=over_fetch_limit,
-                    mode='match',
+                    mode=adaptive_mode,
                     offset=0,
                     thread_id=thread_id,
                     source=source,
@@ -1242,11 +1291,11 @@ async def hybrid_search_context(
                 f'All search modes failed. FTS: {fts_error}. Semantic: {semantic_error}',
             )
 
-        # Determine which modes actually returned results
+        # Determine which modes executed successfully (not errored)
         modes_used: list[str] = []
-        if fts_results:
+        if 'fts' in available_modes and not fts_error:
             modes_used.append('fts')
-        if semantic_results:
+        if 'semantic' in available_modes and not semantic_error:
             modes_used.append('semantic')
 
         # Parse FTS metadata (returned as JSON strings from DB)
@@ -1300,7 +1349,8 @@ async def hybrid_search_context(
 
         logger.info(
             f'Hybrid search found {len(final_results)} results for query: "{query[:50]}..." '
-            f'(fts={len(fts_results)}, semantic={len(semantic_results)}, modes={modes_used})',
+            f'(fts={len(fts_results)}, semantic={len(semantic_results)}, '
+            f'available={available_modes}, executed={modes_used})',
         )
 
         # Build response
@@ -1334,6 +1384,7 @@ async def hybrid_search_context(
                 'fts_stats': fts_stats,
                 'semantic_stats': semantic_stats,
                 'fusion_stats': fusion_stats,
+                'adaptive_fts_mode': adaptive_mode,
             }
 
         if original_limit != limit:

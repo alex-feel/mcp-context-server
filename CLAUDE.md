@@ -48,6 +48,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - Global state and initialization in `app/startup/` package
    - Database initialization via `init_database()` from `app.startup`
    - Repository access via `ensure_repositories()` from `app.startup`
+   - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup. See "Known Upstream Bugs and Temporary Patches" section.
 
 2. **Authentication Layer** (`app/auth/`):
    - **SimpleTokenVerifier** (`simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison
@@ -121,6 +122,9 @@ app/
 ├── settings.py            # ALL env vars via get_settings() - centralized configuration
 ├── types.py               # 40+ TypedDicts for API responses (ScoresDict, ContextEntryDict, etc.)
 ├── models.py              # Pydantic models (ContextEntry, ImageAttachment, StoreContextRequest)
+├── patches/               # Temporary upstream bug patches (remove when fixed)
+│   ├── __init__.py       # apply_session_crash_patches()
+│   └── session_crash.py  # BaseSession._send_response/send_notification crash fix
 ├── fusion.py              # RRF fusion algorithm for hybrid search
 ├── instructions.py        # DEFAULT_INSTRUCTIONS constant, resolve_instructions()
 ├── tools/                 # MCP tool implementations
@@ -240,7 +244,7 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 
 ### Hybrid Search Implementation
 
-`hybrid_search_context` combines FTS + semantic via RRF: `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Requires `ENABLE_HYBRID_SEARCH=true` + at least one of `ENABLE_FTS`/`ENABLE_SEMANTIC_SEARCH`. `HYBRID_RRF_K` controls fusion smoothing.
+`hybrid_search_context` combines FTS + semantic via RRF: `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Requires `ENABLE_HYBRID_SEARCH=true` + at least one of `ENABLE_FTS`/`ENABLE_SEMANTIC_SEARCH`. `HYBRID_RRF_K` controls fusion smoothing. Adaptive FTS mode: queries with `HYBRID_FTS_OR_THRESHOLD` (default 4) or more significant terms switch from AND (`match` mode) to OR (`boolean` mode) for improved recall on long agent queries.
 
 ## Package and Release
 
@@ -281,11 +285,11 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 - HuggingFace: `HUGGINGFACEHUB_API_TOKEN`
 - Voyage: `VOYAGE_API_KEY`, `VOYAGE_TRUNCATION` (false*)
 
-**Hybrid**: `ENABLE_HYBRID_SEARCH` (false*), `HYBRID_RRF_K` (60*), `HYBRID_RRF_OVERFETCH` (2*)
+**Hybrid**: `ENABLE_HYBRID_SEARCH` (false*), `HYBRID_RRF_K` (60*), `HYBRID_RRF_OVERFETCH` (2*), `HYBRID_FTS_OR_THRESHOLD` (4*)
 
 **Chunking**: `ENABLE_CHUNKING` (true*), `CHUNK_SIZE` (1000*), `CHUNK_OVERLAP` (100*), `CHUNK_AGGREGATION` (max*), `CHUNK_DEDUP_OVERFETCH` (5*). Chunk-aware reranking uses chunk boundaries for cross-encoder scoring.
 
-**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect)
+**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect), `RERANKING_CPU_MEM_ARENA` (false*; ONNX Runtime CPU memory arena, prevents multi-GiB tensor buffer retention)
 
 **Search**: `SEARCH_DEFAULT_SORT_BY` (relevance*)
 
@@ -415,6 +419,7 @@ Env vars consumed by FastMCP independently at import time, with no `mcp.run()` p
 | `FASTMCP_HOST`                | YES (`TransportSettings`) | Passed to `mcp.run(host=...)`                                                                |
 | `FASTMCP_PORT`                | YES (`TransportSettings`) | Passed to `mcp.run(port=...)`                                                                |
 | `FASTMCP_STATELESS_HTTP`      | YES (`TransportSettings`) | Passed to `mcp.run(stateless_http=...)`                                                      |
+| `FASTMCP_TRANSPORT`           | NO                        | Project uses MCP_TRANSPORT + explicit transport= arg; FASTMCP_TRANSPORT has no effect        |
 | `FASTMCP_ENABLE_RICH_LOGGING` | NO                        | Consumed at FastMCP import time; no `mcp.run()` parameter; dead code if added to settings.py |
 
 **When a NEW `FASTMCP_*` env var appears** (FastMCP update): Check whether it has a corresponding `mcp.run()` parameter or application code path. If yes, add to `settings.py`. If no, document in deployment configs and CLAUDE.md only.
@@ -466,7 +471,21 @@ class NewEmbeddingProvider:
 
 ### Embedding-First Transactional Integrity
 
-**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` and embedding fails, NO data is saved - transaction rolls back completely. Embeddings generated OUTSIDE transaction, then all DB ops (context + tags + images + embeddings) in single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter.
+**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` and embedding fails, NO data is saved - transaction rolls back completely. Embeddings generated OUTSIDE transaction, then all DB ops (context + tags + images + embeddings) in single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `_generate_embeddings_with_timeout` is the single source of truth for the timeout/semaphore pattern used by single-entry operations (`store_context`, `update_context`); batch operations have their own embedding generation loop.
+
+### Deduplication Behavior (store_context)
+
+When `store_context` detects a duplicate (same `thread_id + source + text_content` as the latest entry):
+
+- **Metadata**: Updated via `COALESCE(new, existing)`. `None` preserves existing; explicit value replaces.
+- **Tags**: REPLACED (not accumulated) when provided via `replace_tags_for_context()`. Preserved when `tags=None`.
+- **Images**: REPLACED (not accumulated) when provided via `replace_images_for_context()`. Preserved when `images=None`.
+- **content_type**: Updated to reflect current content.
+- **updated_at**: Set to `CURRENT_TIMESTAMP` (SQLite explicit, PostgreSQL trigger).
+- **Embeddings**: Storage skipped if already exist; generated if missing.
+- **Pre-check optimization**: Read-only check before embedding generation to skip Ollama API call for duplicates.
+
+The `store_context_batch` tool uses the same dedup logic (calls `store_with_deduplication` per entry).
 
 ### Repository Pattern Implementation
 
@@ -487,3 +506,24 @@ Repository pattern, automatic connection pooling, parameterized queries, retry w
 ### Testing Conventions
 
 Unit: `mock_server_dependencies`. Integration: `initialized_server` (SQLite temp DB). Always add `test_real_server.py` tests. SQLite-only test suite (PostgreSQL is production-only). Race condition tests: `test_embedding_deduplication_race.py`. Error classification tests: `test_errors.py`. Pgpool-II detection tests: `test_pgpool_detection.py`.
+
+### Known Upstream Bugs and Temporary Patches
+
+**MCP SDK Session Crash on Client Disconnect** (`app/patches/session_crash.py`):
+
+Temporary monkey-patch for a race condition in MCP Python SDK v1.25.0 where `BaseSession._send_response()` and `BaseSession.send_notification()` do not handle `ClosedResourceError`/`BrokenResourceError` when the write stream is closed after a client disconnect during long-running tool execution. The unhandled exception propagates through the anyio TaskGroup, crashing the session.
+
+- **Severity**: MEDIUM (session-level crash only, server process survives, data integrity preserved)
+- **Applied in**: `app/server.py` lifespan (step 0, before all other initialization)
+- **Module**: `app/patches/session_crash.py` (apply/remove functions)
+- **Tests**: `tests/test_session_crash_patch.py` (unit), `tests/test_real_server.py` (integration)
+- **Upstream tracking**: [FastMCP #508](https://github.com/PrefectHQ/fastmcp/issues/508), [FastMCP #823](https://github.com/PrefectHQ/fastmcp/issues/823), [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), [MCP SDK PR #2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [MCP SDK PR #2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
+
+**REMOVAL PLAN**: Delete this patch after the upstream MCP Python SDK releases a fix. Steps:
+1. Monitor `mcp` PyPI releases for a version containing `ClosedResourceError`/`BrokenResourceError` handling in `BaseSession._send_response` and `send_notification` (PRs [#2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [#2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184) track the upstream work)
+2. Update `mcp` dependency version in `pyproject.toml`
+3. Delete `app/patches/session_crash.py` and `app/patches/__init__.py`
+4. Remove `from app.patches import apply_session_crash_patches` and its call from `app/server.py` lifespan
+5. Delete `tests/test_session_crash_patch.py`
+6. Remove the `test_session_crash_patch_applied` test from `tests/test_real_server.py`
+7. Remove this section from CLAUDE.md

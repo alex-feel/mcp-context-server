@@ -4102,6 +4102,22 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, 'Response missing search_modes_used field'))
                 return False
 
+            # Verify search_modes_used reflects execution, not results.
+            # If FTS ran (no warning about failure) but returned 0 results,
+            # it should still appear in search_modes_used.
+            fts_count = hybrid_data.get('fts_count', 0)
+            has_fts_warning = any(
+                'FTS sub-search failed' in w for w in hybrid_data.get('warnings', [])
+            )
+            modes_used = hybrid_data.get('search_modes_used', [])
+            if has_fts and not has_fts_warning and fts_count == 0 and 'fts' not in modes_used:
+                msg = (
+                    f'search_modes_used={modes_used} excludes fts despite '
+                    f'successful execution (fts_count=0, no error)'
+                )
+                self.test_results.append((test_name, False, msg))
+                return False
+
             if 'fts_count' not in hybrid_data or 'semantic_count' not in hybrid_data:
                 self.test_results.append((test_name, False, 'Response missing source counts'))
                 return False
@@ -4160,6 +4176,102 @@ class MCPServerIntegrationTest:
 
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_hybrid_search_adaptive_fts_mode(self) -> bool:
+        """Test that hybrid search uses adaptive FTS mode for long queries.
+
+        Verifies that:
+        1. Long queries (4+ terms) switch to boolean mode with OR logic
+        2. The explain_query stats include adaptive_fts_mode field
+        3. Short queries continue to use match mode
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'hybrid_search_adaptive_fts_mode'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            if os.environ.get('ENABLE_HYBRID_SEARCH', '').lower() != 'true':
+                self.test_results.append(
+                    (test_name, True, 'Skipped (ENABLE_HYBRID_SEARCH not enabled)'),
+                )
+                return True
+
+            if os.environ.get('ENABLE_FTS', '').lower() != 'true':
+                self.test_results.append(
+                    (test_name, True, 'Skipped (ENABLE_FTS not enabled)'),
+                )
+                return True
+
+            # Test 1: Long query with explain_query to verify adaptive_fts_mode
+            long_query = 'DRY extraction embedding helper timeout semaphore pattern implementation'
+            long_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': long_query,
+                    'explain_query': True,
+                    'limit': 5,
+                },
+            )
+
+            long_data = self._extract_content(long_result)
+
+            # Verify stats include adaptive_fts_mode
+            stats = long_data.get('stats')
+            if stats is None:
+                self.test_results.append(
+                    (test_name, False, 'Missing stats with explain_query=True'),
+                )
+                return False
+
+            adaptive_mode = stats.get('adaptive_fts_mode')
+            if adaptive_mode is None:
+                self.test_results.append(
+                    (test_name, False, 'Missing adaptive_fts_mode in stats'),
+                )
+                return False
+
+            if adaptive_mode != 'boolean':
+                self.test_results.append(
+                    (test_name, False, f'Expected boolean mode for long query, got {adaptive_mode}'),
+                )
+                return False
+
+            # Test 2: Short query should use match mode
+            short_query = 'python async'
+            short_result = await self.client.call_tool(
+                'hybrid_search_context',
+                {
+                    'query': short_query,
+                    'explain_query': True,
+                    'limit': 5,
+                },
+            )
+
+            short_data = self._extract_content(short_result)
+
+            short_stats = short_data.get('stats')
+            if short_stats is None:
+                self.test_results.append(
+                    (test_name, False, 'Missing stats for short query with explain_query=True'),
+                )
+                return False
+
+            short_mode = short_stats.get('adaptive_fts_mode')
+            if short_mode != 'match':
+                self.test_results.append(
+                    (test_name, False, f'Expected match mode for short query, got {short_mode}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Adaptive FTS mode working: long=boolean, short=match'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Error: {e}'))
             return False
 
     async def test_search_tools_content_type_filter(self) -> bool:
@@ -6994,6 +7106,167 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_session_crash_patch_applied(self) -> bool:
+        """Test that server handles tool calls correctly with session crash patches.
+
+        Verifies the server is operational with patches applied by exercising
+        multiple tool calls. The patch mechanism itself is tested in detail
+        by tests/test_session_crash_patch.py; this integration test verifies
+        the server functions correctly end-to-end.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'session_crash_patch_applied'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            # Verify server handles a store_context call successfully
+            result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': self.test_thread_id,
+                    'source': 'agent',
+                    'text': 'Session crash patch verification test entry',
+                    'tags': ['test', 'patch-verification'],
+                },
+            )
+
+            data = self._extract_content(result)
+            if not data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Tool call failed with patches applied: {data}'),
+                )
+                return False
+
+            # Verify get_statistics also works (exercises a different code path)
+            stats_result = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats_result)
+            if 'total_entries' not in stats_data:
+                self.test_results.append(
+                    (test_name, False, f'get_statistics returned unexpected data: {stats_data}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Server operational with session crash patches applied'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_store_context_deduplication_data_integrity(self) -> bool:
+        """Test that deduplication correctly handles metadata, tags, and timestamps.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_context_deduplication_data_integrity'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            dedup_thread = f'{self.test_thread_id}_dedup_integrity'
+
+            # 1. Store first entry with metadata and tags
+            result1 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': dedup_thread,
+                    'source': 'agent',
+                    'text': 'Dedup integrity test content',
+                    'metadata': {'key': 'original'},
+                    'tags': ['a', 'b'],
+                },
+            )
+            data1 = self._extract_content(result1)
+            if not data1.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'First store failed: {data1}'),
+                )
+                return False
+
+            context_id = data1['context_id']
+
+            # 2. Wait for timestamp separation (SQLite second precision)
+            await asyncio.sleep(1.1)
+
+            # 3. Store duplicate with updated metadata and tags
+            result2 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': dedup_thread,
+                    'source': 'agent',
+                    'text': 'Dedup integrity test content',
+                    'metadata': {'key': 'updated', 'extra': 'value'},
+                    'tags': ['c', 'd'],
+                },
+            )
+            data2 = self._extract_content(result2)
+            if not data2.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Dedup store failed: {data2}'),
+                )
+                return False
+
+            # Verify same context_id (dedup occurred)
+            if data2['context_id'] != context_id:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected same context_id {context_id}, got {data2["context_id"]}'),
+                )
+                return False
+
+            # 4. Retrieve and verify via get_context_by_ids
+            get_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            get_data = self._extract_content(get_result)
+            results = get_data.get('results', [])
+            if len(results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result, got {len(results)}'),
+                )
+                return False
+
+            entry = results[0]
+
+            # Verify metadata was updated (not the original)
+            entry_metadata = entry.get('metadata', {})
+            if entry_metadata.get('key') != 'updated' or entry_metadata.get('extra') != 'value':
+                self.test_results.append(
+                    (test_name, False,
+                     f'Metadata not updated correctly: {entry_metadata}'),
+                )
+                return False
+
+            # Verify tags were replaced (not accumulated)
+            entry_tags = sorted(entry.get('tags', []))
+            if entry_tags != ['c', 'd']:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Tags not replaced correctly, expected [c, d], got {entry_tags}'),
+                )
+                return False
+
+            # Verify updated_at differs from created_at
+            if entry.get('created_at') == entry.get('updated_at'):
+                self.test_results.append(
+                    (test_name, False,
+                     'updated_at should differ from created_at after dedup'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 'Dedup correctly updates metadata, replaces tags, and updates timestamp'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -7086,6 +7359,7 @@ class MCPServerIntegrationTest:
             ('FTS Pagination Offset', self.test_fts_pagination_offset),
             ('FTS Highlight Snippets', self.test_fts_highlight_snippets),
             ('Hybrid Search', self.test_hybrid_search_context),
+            ('Hybrid Search Adaptive FTS Mode', self.test_hybrid_search_adaptive_fts_mode),
             ('Search Tools Content Type Filter', self.test_search_tools_content_type_filter),
             ('Search Tools Include Images', self.test_search_tools_include_images),
             ('Search Tools Tags Filter', self.test_search_tools_tags_filter),
@@ -7108,6 +7382,10 @@ class MCPServerIntegrationTest:
             ('Overfetch Chain Verification', self.test_overfetch_chain_verification),
             # Quality Improvement Tests
             ('Search Context Limit Clamping', self.test_search_context_limit_clamping),
+            # Session Crash Patch Tests
+            ('Session Crash Patch Applied', self.test_session_crash_patch_applied),
+            # Deduplication Data Integrity Tests
+            ('Dedup Data Integrity', self.test_store_context_deduplication_data_integrity),
             # Edge Case Tests (P3)
             ('Store Context Empty Text', self.test_store_context_empty_text),
             ('Store Context Max Size Image', self.test_store_context_max_size_image),

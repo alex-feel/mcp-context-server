@@ -450,6 +450,15 @@ class RerankingSettings(CommonSettings):
                     'In containerized environments with CPU limits, set to match the CPU quota '
                     'to prevent thread explosion (e.g., 2 for a 2-core container).',
     )
+    cpu_mem_arena: bool = Field(
+        default=False,
+        alias='RERANKING_CPU_MEM_ARENA',
+        description='Enable ONNX Runtime CPU memory arena for reranking. '
+                    'When False (default), prevents permanent retention of intermediate '
+                    'tensor buffers, reducing RAM usage in containerized deployments. '
+                    'Set True to enable arena for slightly faster inference at the cost '
+                    'of higher memory consumption.',
+    )
 
 
 class FtsPassageSettings(CommonSettings):
@@ -568,6 +577,14 @@ class HybridSearchSettings(CommonSettings):
         ge=1,
         le=10,
         description='Multiplier for over-fetching results before RRF fusion (default: 2x)',
+    )
+
+    fts_or_threshold: int = Field(
+        default=4,
+        alias='HYBRID_FTS_OR_THRESHOLD',
+        ge=2,
+        le=20,
+        description='Minimum number of significant query terms to switch FTS from AND to OR logic (default: 4)',
     )
 
 
