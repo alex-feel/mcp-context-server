@@ -538,6 +538,7 @@ def main() -> None:
         # mask_error_details=False exposes validation errors for LLM autocorrection
         mcp = FastMCP(
             name='mcp-context-server',
+            version=SERVER_VERSION,
             instructions=instructions_text or None,
             lifespan=lifespan,
             mask_error_details=False,
