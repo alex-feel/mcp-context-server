@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.6.0](https://github.com/alex-feel/mcp-context-server/compare/v1.5.0...v1.6.0) (2026-03-04)
+
+
+### Features
+
+* add adaptive FTS mode to hybrid search for improved long-query recall ([54c5f31](https://github.com/alex-feel/mcp-context-server/commit/54c5f31b1d1c875ef72c6b647096a802190d887b))
+* add RERANKING_CPU_MEM_ARENA env var to control ONNX memory arena ([5f98cf7](https://github.com/alex-feel/mcp-context-server/commit/5f98cf7e79af9ae321ac3cdce298bb73b4f4f711))
+
+
+### Bug Fixes
+
+* add temporary monkey-patches for MCP SDK session crash on client disconnect ([d9a9f3d](https://github.com/alex-feel/mcp-context-server/commit/d9a9f3d21ae66b98ae61100a394a6485d0c4f5a3))
+* correct deduplication data integrity in store_context and store_context_batch ([a395ede](https://github.com/alex-feel/mcp-context-server/commit/a395ede0378b1342d774846d4adaae11f57f9944))
+* correct modes_used to reflect execution rather than results in hybrid search ([c747edf](https://github.com/alex-feel/mcp-context-server/commit/c747edfd46ccbd933285c68aac4d7879249527e0))
+
 ## [1.5.0](https://github.com/alex-feel/mcp-context-server/compare/v1.4.0...v1.5.0) (2026-03-02)
 
 
