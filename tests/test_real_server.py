@@ -4110,7 +4110,7 @@ class MCPServerIntegrationTest:
                 'FTS sub-search failed' in w for w in hybrid_data.get('warnings', [])
             )
             modes_used = hybrid_data.get('search_modes_used', [])
-            if not has_fts_warning and fts_count == 0 and 'fts' not in modes_used:
+            if has_fts and not has_fts_warning and fts_count == 0 and 'fts' not in modes_used:
                 msg = (
                     f'search_modes_used={modes_used} excludes fts despite '
                     f'successful execution (fts_count=0, no error)'
@@ -4252,13 +4252,18 @@ class MCPServerIntegrationTest:
             short_data = self._extract_content(short_result)
 
             short_stats = short_data.get('stats')
-            if short_stats:
-                short_mode = short_stats.get('adaptive_fts_mode')
-                if short_mode != 'match':
-                    self.test_results.append(
-                        (test_name, False, f'Expected match mode for short query, got {short_mode}'),
-                    )
-                    return False
+            if short_stats is None:
+                self.test_results.append(
+                    (test_name, False, 'Missing stats for short query with explain_query=True'),
+                )
+                return False
+
+            short_mode = short_stats.get('adaptive_fts_mode')
+            if short_mode != 'match':
+                self.test_results.append(
+                    (test_name, False, f'Expected match mode for short query, got {short_mode}'),
+                )
+                return False
 
             self.test_results.append(
                 (test_name, True, 'Adaptive FTS mode working: long=boolean, short=match'),

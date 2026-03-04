@@ -520,7 +520,7 @@ Temporary monkey-patch for a race condition in MCP Python SDK v1.25.0 where `Bas
 - **Upstream tracking**: [FastMCP #508](https://github.com/PrefectHQ/fastmcp/issues/508), [FastMCP #823](https://github.com/PrefectHQ/fastmcp/issues/823), [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), [MCP SDK PR #2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [MCP SDK PR #2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
 
 **REMOVAL PLAN**: Delete this patch after the upstream MCP Python SDK releases a fix. Steps:
-1. Monitor the upstream PRs (#2072, #2184) for merge
+1. Monitor `mcp` PyPI releases for a version containing `ClosedResourceError`/`BrokenResourceError` handling in `BaseSession._send_response` and `send_notification` (PRs [#2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [#2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184) track the upstream work)
 2. Update `mcp` dependency version in `pyproject.toml`
 3. Delete `app/patches/session_crash.py` and `app/patches/__init__.py`
 4. Remove `from app.patches import apply_session_crash_patches` and its call from `app/server.py` lifespan
