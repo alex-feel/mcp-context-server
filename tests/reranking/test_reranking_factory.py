@@ -439,3 +439,77 @@ class TestFlashRankProvider:
         finally:
             await provider.shutdown()
             get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_rerank_uses_asyncio_to_thread(
+        self, provider: RerankingProvider, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """rerank() should offload ONNX inference via asyncio.to_thread."""
+        import asyncio
+
+        await provider.initialize()
+        try:
+            original_to_thread = asyncio.to_thread
+            to_thread_calls: list[tuple[object, ...]] = []
+
+            async def tracking_to_thread(func, *args, **kwargs):
+                to_thread_calls.append((func, args, kwargs))
+                return await original_to_thread(func, *args, **kwargs)
+
+            monkeypatch.setattr(asyncio, 'to_thread', tracking_to_thread)
+
+            results = [
+                {'id': 0, 'text': 'Test document about Python'},
+                {'id': 1, 'text': 'Another document about testing'},
+            ]
+            reranked = await provider.rerank('Python testing', results)
+
+            # asyncio.to_thread was called at least once per batch
+            assert len(to_thread_calls) >= 1
+            # Each call invoked a callable (the ranker's rerank method)
+            for call_func, _call_args, _ in to_thread_calls:
+                assert callable(call_func)
+            # Results are still correct
+            assert len(reranked) == 2
+            for item in reranked:
+                assert 'rerank_score' in item
+        finally:
+            await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_rerank_micro_batching_calls_to_thread_per_batch(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each micro-batch should use a separate asyncio.to_thread call."""
+        import asyncio
+
+        from app.settings import get_settings
+
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '2')
+        get_settings.cache_clear()
+        provider = create_reranking_provider()
+
+        await provider.initialize()
+        try:
+            original_to_thread = asyncio.to_thread
+            to_thread_call_count = 0
+
+            async def counting_to_thread(func, *args, **kwargs):
+                nonlocal to_thread_call_count
+                to_thread_call_count += 1
+                return await original_to_thread(func, *args, **kwargs)
+
+            monkeypatch.setattr(asyncio, 'to_thread', counting_to_thread)
+
+            results = [
+                {'id': i, 'text': f'Document about topic {i}'}
+                for i in range(5)
+            ]
+            reranked = await provider.rerank('topic', results)
+
+            # 5 passages / batch_size=2 = 3 batches = 3 asyncio.to_thread calls
+            assert to_thread_call_count == 3
+            assert len(reranked) == 5
+        finally:
+            await provider.shutdown()
+            get_settings.cache_clear()

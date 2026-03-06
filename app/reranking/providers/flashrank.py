@@ -7,6 +7,7 @@ FlashRank supports multiple models with different size/quality tradeoffs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import operator
 from typing import Any
@@ -206,11 +207,13 @@ class FlashRankProvider:
         # Micro-batch to prevent OOM from unbounded ONNX Runtime inference.
         # Cross-encoder scores are absolute per-row sigmoid values, so
         # sub-batch results can be concatenated without normalization.
+        # Each batch runs in a worker thread via asyncio.to_thread to
+        # prevent blocking the event loop during ONNX Runtime inference.
         reranked: list[Any] = []
         for batch_start in range(0, len(passages), self._batch_size):
             batch_passages = passages[batch_start:batch_start + self._batch_size]
             request = RerankRequest(query=query, passages=batch_passages)
-            batch_result = self._ranker.rerank(request)
+            batch_result = await asyncio.to_thread(self._ranker.rerank, request)
             reranked.extend(batch_result)
 
         # Operational logging with token estimates
