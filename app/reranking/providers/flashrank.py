@@ -47,6 +47,7 @@ class FlashRankProvider:
         self._chars_per_token = settings.reranking.chars_per_token
         self._intra_op_threads = settings.reranking.intra_op_threads
         self._cpu_mem_arena = settings.reranking.cpu_mem_arena
+        self._batch_size = settings.reranking.batch_size
         self._ranker: Any = None  # Lazy initialization
 
     async def initialize(self) -> None:
@@ -202,11 +203,18 @@ class FlashRankProvider:
         # Ensure ranker is loaded (lazy initialization)
         self._ensure_ranker()
 
-        # Execute reranking (FlashRank is synchronous)
-        request = RerankRequest(query=query, passages=passages)
-        reranked = self._ranker.rerank(request)
+        # Micro-batch to prevent OOM from unbounded ONNX Runtime inference.
+        # Cross-encoder scores are absolute per-row sigmoid values, so
+        # sub-batch results can be concatenated without normalization.
+        reranked: list[Any] = []
+        for batch_start in range(0, len(passages), self._batch_size):
+            batch_passages = passages[batch_start:batch_start + self._batch_size]
+            request = RerankRequest(query=query, passages=batch_passages)
+            batch_result = self._ranker.rerank(request)
+            reranked.extend(batch_result)
 
         # Operational logging with token estimates
+        num_batches = (len(passages) + self._batch_size - 1) // self._batch_size
         passage_sizes = [len(r['text']) for r in results]
         token_estimates = [size / self._chars_per_token for size in passage_sizes]
         max_tokens = max(token_estimates) if token_estimates else 0
@@ -218,14 +226,16 @@ class FlashRankProvider:
             logger.warning(
                 f'[RERANKING] Passage may exceed token limit: '
                 f'~{int(max_tokens)} tokens estimated (limit: {self._max_length}). '
-                f'Largest passage: {max(passage_sizes)} chars',
+                f'Largest passage: {max(passage_sizes)} chars, '
+                f'batches={num_batches}',
             )
         else:
             logger.info(
                 f'[RERANKING] Reranked {len(results)} results: '
                 f'{min(passage_sizes)}-{max(passage_sizes)} chars '
                 f'(~{int(min(token_estimates))}-{int(max(token_estimates))} tokens, '
-                f'limit: {self._max_length}), query="{query_preview}"',
+                f'limit: {self._max_length}), query="{query_preview}", '
+                f'batches={num_batches}',
             )
 
         # Map scores back to original results

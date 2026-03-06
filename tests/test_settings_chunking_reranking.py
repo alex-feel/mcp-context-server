@@ -176,6 +176,7 @@ class TestRerankingSettings:
         assert settings.overfetch == 4
         assert settings.cache_dir is None
         assert settings.intra_op_threads == 0
+        assert settings.batch_size == 32
 
     def test_max_length_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Minimum valid max_length should pass."""
@@ -255,6 +256,7 @@ class TestRerankingSettings:
         monkeypatch.setenv('RERANKING_OVERFETCH', '8')
         monkeypatch.setenv('RERANKING_CACHE_DIR', '/cache')
         monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '2')
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '16')
 
         settings = RerankingSettings()
         assert settings.enabled is False
@@ -264,6 +266,7 @@ class TestRerankingSettings:
         assert settings.overfetch == 8
         assert settings.cache_dir == '/cache'
         assert settings.intra_op_threads == 2
+        assert settings.batch_size == 16
 
     def test_intra_op_threads_default_is_zero(self) -> None:
         """Default intra_op_threads should be 0 (auto-detect)."""
@@ -287,6 +290,29 @@ class TestRerankingSettings:
         monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '0')
         settings = RerankingSettings()
         assert settings.intra_op_threads == 0
+
+    def test_batch_size_default_is_32(self) -> None:
+        """Default batch_size should be 32."""
+        settings = RerankingSettings()
+        assert settings.batch_size == 32
+
+    def test_batch_size_custom_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Custom batch_size should be set via env var."""
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '64')
+        settings = RerankingSettings()
+        assert settings.batch_size == 64
+
+    def test_batch_size_zero_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """batch_size of zero should fail validation (gt=0)."""
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '0')
+        with pytest.raises(ValidationError):
+            RerankingSettings()
+
+    def test_batch_size_negative_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Negative batch_size should fail validation."""
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '-1')
+        with pytest.raises(ValidationError):
+            RerankingSettings()
 
 
 class TestAppSettingsIntegration:

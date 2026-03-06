@@ -328,3 +328,114 @@ class TestFlashRankProvider:
             assert opts.enable_cpu_mem_arena is False
         finally:
             await provider.shutdown()
+
+    def test_batch_size_default(self) -> None:
+        """Default batch_size should be 32."""
+        from typing import Any
+        from typing import cast
+        provider = create_reranking_provider()
+        concrete = cast(Any, provider)
+        assert concrete._batch_size == 32
+
+    def test_batch_size_from_settings(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """batch_size should be configurable via RERANKING_BATCH_SIZE."""
+        from app.settings import get_settings
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '64')
+        get_settings.cache_clear()
+        from typing import Any
+        from typing import cast
+        provider = create_reranking_provider()
+        concrete = cast(Any, provider)
+        assert concrete._batch_size == 64
+
+    @pytest.mark.asyncio
+    async def test_rerank_micro_batching_splits_passages(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Micro-batching with batch_size=2 should correctly process 5 passages."""
+        from app.settings import get_settings
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '2')
+        get_settings.cache_clear()
+        provider = create_reranking_provider()
+
+        await provider.initialize()
+        try:
+            results = [
+                {'id': i, 'text': f'Document about topic {i}'}
+                for i in range(5)
+            ]
+            reranked = await provider.rerank('topic', results)
+
+            # All 5 passages should be scored and returned
+            assert len(reranked) == 5
+            for item in reranked:
+                assert 'rerank_score' in item
+                assert isinstance(item['rerank_score'], float)
+                assert 0.0 <= item['rerank_score'] <= 1.0
+        finally:
+            await provider.shutdown()
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_rerank_single_batch_no_change(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """batch_size=100 with 10 passages should process in a single batch."""
+        from app.settings import get_settings
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '100')
+        get_settings.cache_clear()
+        provider = create_reranking_provider()
+
+        await provider.initialize()
+        try:
+            results = [
+                {'id': i, 'text': f'Document {i} about Python programming'}
+                for i in range(10)
+            ]
+            reranked = await provider.rerank('Python', results)
+
+            assert len(reranked) == 10
+            for item in reranked:
+                assert 'rerank_score' in item
+                assert isinstance(item['rerank_score'], float)
+
+            # Scores should be sorted descending
+            scores = [r['rerank_score'] for r in reranked]
+            assert scores == sorted(scores, reverse=True)
+        finally:
+            await provider.shutdown()
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_rerank_exact_batch_boundary(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """batch_size=3 with 6 passages should split into exactly 2 batches."""
+        from app.settings import get_settings
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '3')
+        get_settings.cache_clear()
+        provider = create_reranking_provider()
+
+        await provider.initialize()
+        try:
+            results = [
+                {'id': i, 'text': f'Document {i} about search engines'}
+                for i in range(6)
+            ]
+            reranked = await provider.rerank('search', results)
+
+            # All 6 passages should be scored correctly
+            assert len(reranked) == 6
+            for item in reranked:
+                assert 'rerank_score' in item
+                assert isinstance(item['rerank_score'], float)
+                assert 0.0 <= item['rerank_score'] <= 1.0
+
+            # Scores should be sorted descending
+            scores = [r['rerank_score'] for r in reranked]
+            assert scores == sorted(scores, reverse=True)
+        finally:
+            await provider.shutdown()
+            get_settings.cache_clear()

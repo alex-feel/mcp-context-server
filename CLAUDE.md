@@ -289,7 +289,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Chunking**: `ENABLE_CHUNKING` (true*), `CHUNK_SIZE` (1000*), `CHUNK_OVERLAP` (100*), `CHUNK_AGGREGATION` (max*), `CHUNK_DEDUP_OVERFETCH` (5*). Chunk-aware reranking uses chunk boundaries for cross-encoder scoring.
 
-**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect), `RERANKING_CPU_MEM_ARENA` (false*; ONNX Runtime CPU memory arena, prevents multi-GiB tensor buffer retention)
+**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect), `RERANKING_CPU_MEM_ARENA` (false*; ONNX Runtime CPU memory arena, prevents multi-GiB tensor buffer retention), `RERANKING_BATCH_SIZE` (32*; passages per ONNX inference batch, prevents OOM with large result sets)
 
 **Search**: `SEARCH_DEFAULT_SORT_BY` (relevance*)
 
