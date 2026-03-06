@@ -649,3 +649,163 @@ class TestFtsHyphenHandlingPostgreSQL:
         """Test boolean mode passes through (websearch_to_tsquery)."""
         result = repo._transform_query_postgresql('full-text -exclude', 'boolean')
         assert result == 'full-text -exclude'
+
+
+class TestPostgresqlSubqueryStructure:
+    """Tests for the PostgreSQL ts_headline subquery optimization.
+
+    These tests verify that _search_postgresql generates a subquery-structured
+    SQL query where ts_headline is applied only to LIMIT'd results, not to
+    all matching rows.
+    """
+
+    @pytest.fixture
+    def mock_backend(self) -> MagicMock:
+        """Create a mock PostgreSQL backend."""
+        backend = MagicMock()
+        backend.backend_type = 'postgresql'
+        return backend
+
+    @pytest.fixture
+    def repo(self, mock_backend: MagicMock) -> FtsRepository:
+        """Create FtsRepository with mock PostgreSQL backend."""
+        return FtsRepository(mock_backend)
+
+    async def _capture_sql(
+        self,
+        repo: FtsRepository,
+        mock_backend: MagicMock,
+        *,
+        highlight: bool = True,
+        mode: str = 'match',
+        query: str = 'test query',
+        limit: int = 10,
+    ) -> str:
+        """Execute _search_postgresql and capture the generated SQL.
+
+        Returns:
+            The SQL query string passed to conn.fetch.
+        """
+        from unittest.mock import AsyncMock
+
+        captured_sql: list[str] = []
+
+        async def mock_execute_read(func):  # noqa: ANN001, ANN202
+            mock_conn = AsyncMock()
+
+            async def capture_fetch(sql: str, *_args: object) -> list[object]:
+                captured_sql.append(sql)
+                return []
+
+            mock_conn.fetch = capture_fetch
+            return await func(mock_conn)
+
+        mock_backend.execute_read = mock_execute_read
+
+        await repo._search_postgresql(
+            query=query,
+            mode=mode,
+            limit=limit,
+            offset=0,
+            thread_id=None,
+            source=None,
+            content_type=None,
+            tags=None,
+            start_date=None,
+            end_date=None,
+            metadata=None,
+            metadata_filters=None,
+            highlight=highlight,
+            language='english',
+            explain_query=False,
+        )
+
+        assert len(captured_sql) == 1
+        return captured_sql[0]
+
+    @pytest.mark.asyncio
+    async def test_highlight_true_uses_subquery(
+        self, repo: FtsRepository, mock_backend: MagicMock,
+    ) -> None:
+        """Verify ts_headline is in outer query, not inner subquery."""
+        sql = await self._capture_sql(repo, mock_backend, highlight=True)
+
+        # Verify subquery structure
+        assert 'FROM (' in sql, 'SQL must contain inline subquery'
+        assert ') sub' in sql, 'Subquery must be aliased as sub'
+
+        # Verify ts_headline references sub.text_content (outer query)
+        assert 'sub.text_content' in sql, 'ts_headline must reference sub.text_content'
+
+        # Verify inner subquery contains ranking and filtering
+        assert 'ts_rank_cd(ce.text_search_vector' in sql
+        assert 'ce.text_search_vector @@' in sql
+
+        # Extract the inner subquery (between 'FROM (' and ') sub')
+        from_paren_idx = sql.index('FROM (') + len('FROM (')
+        sub_end_idx = sql.index(') sub')
+        inner_sql = sql[from_paren_idx:sub_end_idx]
+
+        # Verify LIMIT/OFFSET are in the inner subquery
+        assert 'LIMIT' in inner_sql, 'LIMIT must be in inner subquery'
+        assert 'OFFSET' in inner_sql, 'OFFSET must be in inner subquery'
+
+        # Verify ts_headline is NOT in the inner subquery
+        assert 'ts_headline' not in inner_sql, 'ts_headline must NOT be in inner subquery'
+
+        # Verify ts_headline is in the outer SELECT (above FROM ()
+        outer_select = sql[:sql.index('FROM (')]
+        assert 'ts_headline' in outer_select, 'ts_headline must be in outer SELECT'
+
+    @pytest.mark.asyncio
+    async def test_highlight_false_uses_subquery_with_null(
+        self, repo: FtsRepository, mock_backend: MagicMock,
+    ) -> None:
+        """Verify NULL as highlighted in outer query when highlight=False."""
+        sql = await self._capture_sql(repo, mock_backend, highlight=False)
+
+        # Verify subquery structure still used
+        assert 'FROM (' in sql, 'SQL must contain inline subquery'
+        assert ') sub' in sql, 'Subquery must be aliased as sub'
+
+        # Verify NULL as highlighted (no ts_headline)
+        assert 'NULL as highlighted' in sql
+        assert 'ts_headline' not in sql, 'ts_headline must NOT appear when highlight=False'
+
+        # Verify LIMIT/OFFSET are in the inner subquery
+        from_paren_idx = sql.index('FROM (') + len('FROM (')
+        sub_end_idx = sql.index(') sub')
+        inner_sql = sql[from_paren_idx:sub_end_idx]
+        assert 'LIMIT' in inner_sql
+        assert 'OFFSET' in inner_sql
+
+    @pytest.mark.asyncio
+    async def test_subquery_preserves_column_order(
+        self, repo: FtsRepository, mock_backend: MagicMock,
+    ) -> None:
+        """Verify outer SELECT maintains the expected column order."""
+        sql = await self._capture_sql(repo, mock_backend, highlight=True, limit=5)
+
+        # Extract outer SELECT columns (before FROM ()
+        outer_select = sql[sql.index('SELECT'):sql.index('FROM (')]
+        expected_columns = [
+            'sub.id', 'sub.thread_id', 'sub.source', 'sub.content_type',
+            'sub.text_content', 'sub.metadata', 'sub.created_at', 'sub.updated_at',
+            'sub.score',
+        ]
+        for col in expected_columns:
+            assert col in outer_select, f'Outer SELECT must contain {col}'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('mode', ['match', 'prefix', 'phrase', 'boolean'])
+    async def test_all_modes_use_subquery(
+        self,
+        repo: FtsRepository,
+        mock_backend: MagicMock,
+        mode: str,
+    ) -> None:
+        """Verify all FTS modes produce subquery-structured SQL."""
+        sql = await self._capture_sql(repo, mock_backend, mode=mode)
+
+        assert 'FROM (' in sql, f'Mode {mode} must use subquery structure'
+        assert ') sub' in sql, f'Mode {mode} must alias subquery as sub'
