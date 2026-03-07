@@ -318,7 +318,7 @@ Text chunking and cross-encoder reranking are enabled by default to improve sear
 | Variable           | Default                   | Description                                     |
 |--------------------|---------------------------|-------------------------------------------------|
 | `ENABLE_CHUNKING`  | `true`                    | Text chunking for long document embedding       |
-| `CHUNK_SIZE`       | `1000`                    | Target chunk size in characters                 |
+| `CHUNK_SIZE`       | `1500`                    | Target chunk size in characters                 |
 | `ENABLE_RERANKING` | `true`                    | Cross-encoder result reranking                  |
 | `RERANKING_MODEL`  | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB, downloads on first use) |
 

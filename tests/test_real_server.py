@@ -6019,7 +6019,7 @@ class MCPServerIntegrationTest:
             # Create a unique thread for this test
             multi_chunk_thread = f'{self.test_thread_id}_multi_chunk_test'
 
-            # Generate a document > chunk_size (1000 chars default)
+            # Generate a document > chunk_size (1500 chars default)
             # Using 5400+ chars to ensure 5-6 chunks
             long_text = ' '.join(['This is a test sentence for chunking verification.'] * 150)  # ~7500 chars
 

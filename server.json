@@ -536,14 +536,14 @@
           "name": "ENABLE_CHUNKING"
         },
         {
-          "description": "Target chunk size in characters (default: 1000)",
+          "description": "Target chunk size in characters (default: 1500)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
           "name": "CHUNK_SIZE"
         },
         {
-          "description": "Overlap between chunks in characters (default: 100)",
+          "description": "Overlap between chunks in characters (default: 150)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1352,14 +1352,14 @@
           "name": "ENABLE_CHUNKING"
         },
         {
-          "description": "Target chunk size in characters (default: 1000)",
+          "description": "Target chunk size in characters (default: 1500)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
           "name": "CHUNK_SIZE"
         },
         {
-          "description": "Overlap between chunks in characters (default: 100)",
+          "description": "Overlap between chunks in characters (default: 150)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,

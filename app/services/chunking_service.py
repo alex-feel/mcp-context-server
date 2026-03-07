@@ -68,7 +68,7 @@ class ChunkingService:
         boundaries for natural chunk boundaries.
 
     Example:
-        >>> service = ChunkingService(enabled=True, chunk_size=1000, chunk_overlap=100)
+        >>> service = ChunkingService(enabled=True, chunk_size=1500, chunk_overlap=150)
         >>> chunks = service.split_text('Long document...')
         >>> for chunk in chunks:
         ...     print(f'Chunk {chunk.chunk_index}: chars {chunk.start_index}-{chunk.end_index}')
@@ -82,16 +82,16 @@ class ChunkingService:
         self,
         *,
         enabled: bool = True,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 100,
+        chunk_size: int = 1500,
+        chunk_overlap: int = 150,
     ) -> None:
         """Initialize the chunking service.
 
         Args:
             enabled: Whether chunking is enabled. When False, split_text
                 always returns a single chunk with the original text.
-            chunk_size: Target chunk size in characters (default: 1000).
-            chunk_overlap: Overlap between chunks in characters (default: 100).
+            chunk_size: Target chunk size in characters (default: 1500).
+            chunk_overlap: Overlap between chunks in characters (default: 150).
                 Must be less than chunk_size.
 
         Raises:

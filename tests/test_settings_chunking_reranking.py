@@ -17,8 +17,8 @@ class TestChunkingSettings:
         """Default values should be valid."""
         settings = ChunkingSettings()
         assert settings.enabled is True
-        assert settings.size == 1000
-        assert settings.overlap == 100
+        assert settings.size == 1500
+        assert settings.overlap == 150
         assert settings.aggregation == 'max'
         assert settings.dedup_overfetch == 5
 
@@ -373,8 +373,8 @@ class TestAppSettingsIntegration:
     def test_chunking_settings_nested(self) -> None:
         """Chunking settings should work as nested config."""
         settings = AppSettings()
-        assert settings.chunking.size == 1000
-        assert settings.chunking.overlap == 100
+        assert settings.chunking.size == 1500
+        assert settings.chunking.overlap == 150
         assert settings.chunking.aggregation == 'max'
 
     def test_reranking_settings_nested(self) -> None:

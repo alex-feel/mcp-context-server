@@ -123,8 +123,8 @@ search:
   # Text chunking for improved semantic search on long documents
   chunking:
     enabled: true
-    size: 1000       # Target chunk size in characters
-    overlap: 100     # Overlap between chunks in characters
+    size: 1500       # Target chunk size in characters
+    overlap: 150     # Overlap between chunks in characters
     aggregation: max # How to aggregate chunk scores (only 'max' supported)
     dedupOverfetch: 5 # Multiplier for over-fetching before deduplication
   # Cross-encoder reranking for improved search precision

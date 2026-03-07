@@ -128,8 +128,8 @@ For more details on environment variable expansion, see: <https://docs.claude.co
 
 **Chunking Settings** (for improved semantic search on long documents):
 - **ENABLE_CHUNKING**: Enable text chunking for embeddings (true/false) - defaults to true
-- **CHUNK_SIZE**: Target chunk size in characters - defaults to 1000
-- **CHUNK_OVERLAP**: Overlap between chunks in characters - defaults to 100
+- **CHUNK_SIZE**: Target chunk size in characters - defaults to 1500
+- **CHUNK_OVERLAP**: Overlap between chunks in characters - defaults to 150
 - **CHUNK_AGGREGATION**: Chunk score aggregation: max (only 'max' supported in current version)
 
 **Reranking Settings** (for improved search precision):

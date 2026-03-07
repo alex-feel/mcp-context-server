@@ -83,8 +83,8 @@ class TestChunkingServiceInit:
         """Service should initialize with default values."""
         service = ChunkingService()
         assert service.is_enabled is True
-        assert service.chunk_size == 1000
-        assert service.chunk_overlap == 100
+        assert service.chunk_size == 1500
+        assert service.chunk_overlap == 150
 
     def test_disabled_initialization(self) -> None:
         """Service should initialize when disabled."""
@@ -156,7 +156,7 @@ class TestChunkingServiceShortText:
 
     def test_short_text_returns_single_chunk(self) -> None:
         """Text shorter than chunk_size should not be split."""
-        service = ChunkingService(enabled=True, chunk_size=1000, chunk_overlap=100)
+        service = ChunkingService(enabled=True, chunk_size=1500, chunk_overlap=150)
         text = 'Short text'
         chunks = service.split_text(text)
 
@@ -297,17 +297,17 @@ class TestChunkingServiceFromSettings:
         # Simulating values from ChunkingSettings
         service = ChunkingService(
             enabled=True,
-            chunk_size=1000,
-            chunk_overlap=100,
+            chunk_size=1500,
+            chunk_overlap=150,
         )
 
         assert service.is_enabled is True
-        assert service.chunk_size == 1000
-        assert service.chunk_overlap == 100
+        assert service.chunk_size == 1500
+        assert service.chunk_overlap == 150
 
     def test_create_disabled_from_settings(self) -> None:
         """Service should work when disabled via settings."""
-        service = ChunkingService(enabled=False, chunk_size=1000, chunk_overlap=100)
+        service = ChunkingService(enabled=False, chunk_size=1500, chunk_overlap=150)
 
         assert service.is_enabled is False
         # Should still return single chunk when disabled

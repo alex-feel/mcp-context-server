@@ -451,8 +451,8 @@ Text chunking splits long context entries into smaller chunks for embedding gene
 | Variable                | Default | Description                                                                       |
 |-------------------------|---------|-----------------------------------------------------------------------------------|
 | `ENABLE_CHUNKING`       | `true`  | Enable text chunking for embedding generation                                     |
-| `CHUNK_SIZE`            | `1000`  | Target chunk size in characters                                                   |
-| `CHUNK_OVERLAP`         | `100`   | Overlap between consecutive chunks                                                |
+| `CHUNK_SIZE`            | `1500`  | Target chunk size in characters                                                   |
+| `CHUNK_OVERLAP`         | `150`   | Overlap between consecutive chunks                                                |
 | `CHUNK_AGGREGATION`     | `max`   | How to aggregate chunk scores (only 'max' supported; avg, sum planned for future) |
 | `CHUNK_DEDUP_OVERFETCH` | `5`     | Multiplier for over-fetching chunks before deduplication                          |
 

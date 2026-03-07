@@ -355,18 +355,18 @@ class ChunkingSettings(CommonSettings):
         description='Enable text chunking for embedding generation',
     )
     size: int = Field(
-        default=1000,
+        default=1500,
         alias='CHUNK_SIZE',
         ge=100,
         le=10000,
-        description='Target chunk size in characters (default: 1000)',
+        description='Target chunk size in characters (default: 1500)',
     )
     overlap: int = Field(
-        default=100,
+        default=150,
         alias='CHUNK_OVERLAP',
         ge=0,
         le=500,
-        description='Overlap between chunks in characters (default: 100)',
+        description='Overlap between chunks in characters (default: 150)',
     )
     aggregation: Literal['max'] = Field(
         default='max',
