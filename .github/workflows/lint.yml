@@ -29,8 +29,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
+      - name: Check lockfile is up-to-date
+        run: uv lock --check
+
       - name: Install dependencies
-        run: uv sync --dev --extra embeddings-ollama --extra reranking --extra langsmith
+        run: uv sync --locked --all-extras --all-groups
 
       - name: Install pre-commit
         run: pip install pre-commit
