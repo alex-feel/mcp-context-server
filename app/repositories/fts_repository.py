@@ -500,39 +500,52 @@ class FtsRepository(BaseRepository):
             query_param_pos = param_position
             param_position += 1
 
-            # Build highlight expression if requested
-            # HighlightAll=true returns the ENTIRE document with ALL matches highlighted
-            # This matches SQLite FTS5 highlight() behavior for consistent cross-backend results
+            # Build highlight expression for the outer query.
+            # ts_headline is applied ONLY to the LIMIT'd result set (inner subquery)
+            # to avoid O(N_matched) invocations on large result sets.
             if highlight:
-                highlight_expr = f'''
+                outer_highlight_expr = f'''
                     ts_headline(
                         '{language}',
-                        ce.text_content,
+                        sub.text_content,
                         {tsquery_func}{self._placeholder(query_param_pos)}),
                         'HighlightAll=true, StartSel=<mark>, StopSel=</mark>'
                     ) as highlighted
                 '''
             else:
-                highlight_expr = 'NULL as highlighted'
+                outer_highlight_expr = 'NULL as highlighted'
 
-            # Build main query with tsvector matching
+            # Inner subquery: filter, rank, and LIMIT without ts_headline.
+            # Outer query: apply ts_headline only to the final rows.
             sql_query = f'''
                 SELECT
-                    ce.id,
-                    ce.thread_id,
-                    ce.source,
-                    ce.content_type,
-                    ce.text_content,
-                    ce.metadata,
-                    ce.created_at,
-                    ce.updated_at,
-                    ts_rank_cd(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score,
-                    {highlight_expr}
-                FROM context_entries ce
-                WHERE {where_clause}
-                AND ce.text_search_vector @@ {tsquery_func}{self._placeholder(query_param_pos)})
-                ORDER BY score DESC
-                LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
+                    sub.id,
+                    sub.thread_id,
+                    sub.source,
+                    sub.content_type,
+                    sub.text_content,
+                    sub.metadata,
+                    sub.created_at,
+                    sub.updated_at,
+                    sub.score,
+                    {outer_highlight_expr}
+                FROM (
+                    SELECT
+                        ce.id,
+                        ce.thread_id,
+                        ce.source,
+                        ce.content_type,
+                        ce.text_content,
+                        ce.metadata,
+                        ce.created_at,
+                        ce.updated_at,
+                        ts_rank_cd(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score
+                    FROM context_entries ce
+                    WHERE {where_clause}
+                    AND ce.text_search_vector @@ {tsquery_func}{self._placeholder(query_param_pos)})
+                    ORDER BY score DESC
+                    LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
+                ) sub
             '''
 
             # Transform query based on mode (for prefix mode, adds :* suffix)

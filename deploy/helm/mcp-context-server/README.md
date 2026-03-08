@@ -58,7 +58,7 @@ helm install mcp ./deploy/helm/mcp-context-server \
 | `search.semantic.enabled`          | Enable semantic search                         | `false`                                |
 | `search.hybrid.enabled`            | Enable hybrid search                           | `false`                                |
 | `search.chunking.enabled`          | Enable text chunking for embeddings            | `true`                                 |
-| `search.chunking.size`             | Chunk size in characters                       | `1000`                                 |
+| `search.chunking.size`             | Chunk size in characters                       | `1500`                                 |
 | `search.reranking.enabled`         | Enable cross-encoder reranking                 | `true`                                 |
 | `search.reranking.model`           | Reranking model name                           | `ms-marco-MiniLM-L-12-v2`              |
 | `ollama.enabled`                   | Enable Ollama sidecar                          | `false`                                |
@@ -121,8 +121,8 @@ search:
     rrfK: 60
   chunking:
     enabled: true
-    size: 1000
-    overlap: 100
+    size: 1500
+    overlap: 150
   reranking:
     enabled: true
     model: "ms-marco-MiniLM-L-12-v2"
@@ -139,8 +139,8 @@ Text chunking splits long documents into smaller chunks for embedding generation
 search:
   chunking:
     enabled: true
-    size: 1000       # Chunk size in characters
-    overlap: 100     # Overlap between chunks
+    size: 1500       # Chunk size in characters
+    overlap: 150     # Overlap between chunks
     aggregation: max # Score aggregation (only 'max' supported)
 ```
 

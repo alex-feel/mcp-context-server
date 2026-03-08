@@ -61,7 +61,7 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
 
 
 async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
-    """Get database statistics for monitoring and debugging.
+    """Get server statistics for monitoring and debugging.
 
     Use for: capacity planning, debugging performance issues, verifying search status.
 

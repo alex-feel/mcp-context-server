@@ -840,3 +840,28 @@ class TestGetServerVersion:
             version = _get_server_version()
 
             assert version == 'unknown'
+
+    def test_server_version_passed_to_fastmcp(self) -> None:
+        """Test SERVER_VERSION is passed to FastMCP constructor for MCP protocol handshake."""
+        from app.server import SERVER_VERSION
+
+        mock_fastmcp_cls = MagicMock()
+        mock_instance = mock_fastmcp_cls.return_value
+        mock_instance.run = MagicMock(side_effect=SystemExit(0))
+        mock_instance.custom_route = MagicMock(return_value=lambda f: f)
+
+        with (
+            patch('app.server.FastMCP', mock_fastmcp_cls),
+            patch('app.server.create_auth_provider', return_value=None),
+        ):
+            from app.server import main
+
+            with pytest.raises(SystemExit):
+                main()
+
+        mock_fastmcp_cls.assert_called_once()
+        call_kwargs = mock_fastmcp_cls.call_args.kwargs
+        assert 'version' in call_kwargs, 'version parameter not passed to FastMCP constructor'
+        assert call_kwargs['version'] == SERVER_VERSION, (
+            f'Expected version={SERVER_VERSION!r}, got {call_kwargs["version"]!r}'
+        )

@@ -65,15 +65,17 @@ async def store_context_batch(
     ] = True,
     ctx: Context | None = None,
 ) -> BulkStoreResponseDict:
-    """Store multiple context entries with atomic embedding + data storage.
+    """Store multiple context entries in a batch.
 
-    EMBEDDING-FIRST PATTERN:
-    - atomic=True: ALL embeddings generated FIRST. If ANY fails, NO data is saved.
-                   ALL database operations occur in a SINGLE atomic transaction.
-    - atomic=False: Each entry processed independently with its own embedding-first pattern.
+    Batch processing is significantly faster than individual calls when storing many entries.
+    Use for migrations, imports, or bulk operations.
 
-    Batch processing is significantly faster than individual store_context calls
-    when storing many entries. Use for migrations, imports, or bulk operations.
+    Atomicity modes:
+    - atomic=True (default): ALL entries must succeed or NONE are stored (transaction rollback).
+    - atomic=False: Each entry processed independently with per-item error reporting.
+
+    Deduplication: if an entry with identical thread_id, source, and text already exists,
+    the existing entry is updated.
 
     Size limits:
     - Maximum 100 entries per batch
@@ -507,18 +509,26 @@ async def update_context_batch(
     ] = True,
     ctx: Context | None = None,
 ) -> BulkUpdateResponseDict:
-    """Update multiple context entries with atomic embedding + data storage.
+    """Update multiple context entries in a batch.
 
-    EMBEDDING-FIRST PATTERN:
-    - atomic=True: ALL embeddings generated FIRST for text changes. If ANY fails, NO data is modified.
-                   ALL database operations occur in a SINGLE atomic transaction.
-    - atomic=False: Each update processed independently with its own embedding-first pattern.
+    Atomicity modes:
+    - atomic=True (default): ALL updates succeed or NONE are applied (transaction rollback).
+    - atomic=False: Each update processed independently with per-item error reporting.
 
-    Similar semantics to update_context but for multiple entries:
+    Update semantics per entry:
     - Each update is identified by context_id
     - Only provided fields are modified
-    - metadata vs metadata_patch are mutually exclusive per entry
-    - Tags and images use replacement semantics
+    - Immutable fields (cannot be changed): id, thread_id, source, created_at
+    - Auto-managed fields: content_type (recalculated based on images), updated_at
+    - Metadata options (MUTUALLY EXCLUSIVE per entry):
+      - metadata: FULL REPLACEMENT of entire metadata object
+      - metadata_patch: RFC 7396 JSON Merge Patch (new keys added, existing updated,
+        null values DELETE keys; cannot store null values; arrays replaced entirely)
+    - Tags and images use REPLACEMENT semantics (not merge)
+
+    Size limits:
+    - Maximum 100 entries per batch
+    - Image limits per entry: 10MB each, 100MB total
 
     Returns:
         BulkUpdateResponseDict with success (bool), total (int), succeeded (int),
@@ -1050,7 +1060,8 @@ async def delete_context_batch(
     - older_than_days: Delete entries created more than N days ago
 
     At least one criterion must be provided.
-    Cascading delete removes associated tags, images, and embeddings.
+    Note: source filter alone is insufficient; it must be combined with another criterion.
+    All associated data (tags, images) is also removed.
 
     WARNING: This operation cannot be undone. Verify criteria before deletion.
 

@@ -35,9 +35,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ============================================
 FROM python:3.12-slim-bookworm AS runtime
 
-# Security: Create non-root user (UID 10001 is conventional for containerized apps)
-RUN groupadd --system --gid 10001 appuser \
-    && useradd --system --gid 10001 --uid 10001 --create-home appuser
+# Security: Create non-root user (UID 10001 avoids collisions with host and system UIDs)
+RUN groupadd --gid 10001 appuser \
+    && useradd --no-log-init --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin appuser
 
 WORKDIR /app
 

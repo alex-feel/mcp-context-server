@@ -512,8 +512,22 @@ def main() -> None:
         # Log server version first (before any subsystem messages)
         logger.info(f'MCP Context Server v{SERVER_VERSION}')
 
-        # Initialize authentication provider (logs auth configuration)
-        auth_provider = create_auth_provider()
+        # Determine transport mode early (controls auth and health endpoint)
+        transport = settings.transport.transport
+        logger.info(f'Transport: {transport.upper()}')
+
+        # Initialize authentication provider only for HTTP transports
+        # Auth has no effect on stdio (MCP specification: local process communication)
+        if transport == 'stdio':
+            if settings.auth.provider != 'none':
+                logger.warning(
+                    'MCP_AUTH_PROVIDER=%s is configured but has no effect on stdio transport. '
+                    'Authentication is only applicable to HTTP transports.',
+                    settings.auth.provider,
+                )
+            auth_provider = None
+        else:
+            auth_provider = create_auth_provider()
 
         # Resolve server instructions (env var override or default)
         from app.instructions import resolve_instructions
@@ -524,29 +538,26 @@ def main() -> None:
         # mask_error_details=False exposes validation errors for LLM autocorrection
         mcp = FastMCP(
             name='mcp-context-server',
+            version=SERVER_VERSION,
             instructions=instructions_text or None,
             lifespan=lifespan,
             mask_error_details=False,
             auth=auth_provider,
         )
 
-        # Register health check endpoint for container orchestration
-        async def _health_handler(_: Request) -> JSONResponse:
-            """Health check endpoint for Docker/Kubernetes liveness probes."""
-            return JSONResponse({'status': 'ok'})
-
-        mcp.custom_route('/health', methods=['GET'])(_health_handler)
-
-        transport = settings.transport.transport
-
         if transport == 'stdio':
-            logger.info('Transport: STDIO')
             mcp.run(transport=transport)
         else:
+            # Register health check endpoint for container orchestration (HTTP only)
+            async def _health_handler(_: Request) -> JSONResponse:
+                """Health check endpoint for Docker/Kubernetes liveness probes."""
+                return JSONResponse({'status': 'ok'})
+
+            mcp.custom_route('/health', methods=['GET'])(_health_handler)
+
             host = settings.transport.host
             port = settings.transport.port
             stateless_http = settings.transport.stateless_http
-            logger.info('Transport: HTTP')
             logger.info(f'Server URL: http://{host}:{port}/mcp')
             if stateless_http:
                 logger.info('Stateless HTTP mode: enabled (horizontal scaling)')

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build and run
-uv sync                                    # Install dependencies
+uv sync --all-extras --all-groups          # Install ALL dependencies (dev + all optional)
 uv run mcp-context-server                  # Start server (aliases: mcp-context, python -m app.server)
 uvx mcp-context-server                     # Run from PyPI
 
@@ -254,6 +254,67 @@ uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+.
 
 [Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker image (amd64/arm64).
 
+## CI and Docker Lock File Discipline
+
+The `uv.lock` file is a UNIVERSAL resolution containing ALL dependencies across ALL optional dependency groups and extras defined in `pyproject.toml`. At install time, `uv sync` with selective flags installs only the relevant subset. This is by design per [Astral documentation](https://docs.astral.sh/uv/concepts/projects/sync/).
+
+### Key uv sync Flags
+
+| Flag              | Behavior                                                                     | Use In                          |
+|-------------------|------------------------------------------------------------------------------|---------------------------------|
+| `--all-extras`    | Installs ALL optional dependencies from `[project.optional-dependencies]`    | CI workflows, local development |
+| `--all-groups`    | Installs ALL dependency groups from `[dependency-groups]` (subsumes `--dev`) | CI workflows, local development |
+| `--extra <name>`  | Installs a SPECIFIC optional dependency group                                | Dockerfile (selective install)  |
+| `--locked`        | Asserts lock file is up-to-date; errors if stale                             | CI workflows, Dockerfile        |
+| `--frozen`        | Uses lock file as-is without checking                                        | Pre-commit hooks                |
+| `uv lock --check` | Validates lock file matches `pyproject.toml`; exits non-zero if stale        | CI workflows (early step)       |
+
+### Three Defense Layers
+
+| Layer      | Command            | Where          | Purpose                                                      |
+|------------|--------------------|----------------|--------------------------------------------------------------|
+| Pre-commit | `uv-lock` hook     | Local          | Prevents committing stale `uv.lock`                          |
+| CI check   | `uv lock --check`  | GitHub Actions | Fast-fails if lock file is out of sync with `pyproject.toml` |
+| CI install | `uv sync --locked` | GitHub Actions | Asserts lock file is up-to-date at install time              |
+
+### CI Workflow Rules
+
+**Every CI workflow that installs dependencies** (`test.yml`, `lint.yml`) MUST:
+
+1. Run `uv lock --check` as an early step (after `astral-sh/setup-uv`, before `uv sync`)
+2. Use `--locked --all-extras --all-groups` on `uv sync` commands
+
+```yaml
+# CORRECT: CI workflow pattern — installs ALL extras and ALL dependency groups
+- name: Check lockfile is up-to-date
+  run: uv lock --check
+
+- name: Install dependencies
+  run: uv sync --locked --all-extras --all-groups
+```
+
+```yaml
+# WRONG: Explicit listing misses extras when new ones are added
+- name: Install dependencies
+  run: uv sync --locked --dev --extra embeddings-ollama --extra reranking --extra langsmith
+```
+
+**Exception**: `publish.yml` and `release-please.yml` intentionally run `uv lock` (without `--check`) because Release Please bumps the version in `pyproject.toml`, requiring lock file regeneration.
+
+### Docker Build Rules
+
+The `Dockerfile` MUST use `--locked --no-dev --extra <variant>` for SELECTIVE installation (production needs only a specific embedding provider, not all of them):
+
+```dockerfile
+# Dependencies layer (without project itself)
+uv sync --locked --no-install-project --extra ${EMBEDDING_EXTRA} --extra reranking --no-dev
+
+# Full install with project
+uv sync --locked --extra ${EMBEDDING_EXTRA} --extra reranking --no-dev
+```
+
+The `EMBEDDING_EXTRA` build argument controls which embedding provider is included (default: `embeddings-ollama`). Docker intentionally does NOT use `--all-extras` to keep images minimal.
+
 ## MCP Registry and server.json Maintenance
 
 `server.json` enables MCP client discovery ([spec](https://raw.githubusercontent.com/modelcontextprotocol/registry/refs/heads/main/docs/reference/server-json/generic-server-json.md)). Every `Field(alias=...)` in `app/settings.py` MUST have a corresponding entry in `server.json` `environmentVariables`. This invariant is enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
@@ -287,9 +348,9 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Hybrid**: `ENABLE_HYBRID_SEARCH` (false*), `HYBRID_RRF_K` (60*), `HYBRID_RRF_OVERFETCH` (2*), `HYBRID_FTS_OR_THRESHOLD` (4*)
 
-**Chunking**: `ENABLE_CHUNKING` (true*), `CHUNK_SIZE` (1000*), `CHUNK_OVERLAP` (100*), `CHUNK_AGGREGATION` (max*), `CHUNK_DEDUP_OVERFETCH` (5*). Chunk-aware reranking uses chunk boundaries for cross-encoder scoring.
+**Chunking**: `ENABLE_CHUNKING` (true*), `CHUNK_SIZE` (1500*), `CHUNK_OVERLAP` (150*), `CHUNK_AGGREGATION` (max*), `CHUNK_DEDUP_OVERFETCH` (5*). Chunk-aware reranking uses chunk boundaries for cross-encoder scoring.
 
-**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect), `RERANKING_CPU_MEM_ARENA` (false*; ONNX Runtime CPU memory arena, prevents multi-GiB tensor buffer retention)
+**Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect), `RERANKING_CPU_MEM_ARENA` (false*; ONNX Runtime CPU memory arena, prevents multi-GiB tensor buffer retention), `RERANKING_BATCH_SIZE` (32*; passages per ONNX inference batch, prevents OOM with large result sets)
 
 **Search**: `SEARCH_DEFAULT_SORT_BY` (relevance*)
 

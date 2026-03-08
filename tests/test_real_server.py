@@ -6019,7 +6019,7 @@ class MCPServerIntegrationTest:
             # Create a unique thread for this test
             multi_chunk_thread = f'{self.test_thread_id}_multi_chunk_test'
 
-            # Generate a document > chunk_size (1000 chars default)
+            # Generate a document > chunk_size (1500 chars default)
             # Using 5400+ chars to ensure 5-6 chunks
             long_text = ' '.join(['This is a test sentence for chunking verification.'] * 150)  # ~7500 chars
 
@@ -7156,6 +7156,43 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_server_version_is_project_version(self) -> bool:
+        """Test that MCP protocol handshake reports the project version.
+
+        Verifies that the server reports its own version (from pyproject.toml)
+        rather than the FastMCP framework version or MCP SDK version.
+
+        Returns:
+            bool: True if server version matches project version.
+        """
+        test_name = 'server_version_is_project_version'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            from app.server import SERVER_VERSION
+
+            init_result = self.client.initialize_result
+            if init_result is None:
+                self.test_results.append((test_name, False, 'InitializeResult not available'))
+                return False
+
+            server_version = init_result.serverInfo.version
+            if server_version != SERVER_VERSION:
+                self.test_results.append((
+                    test_name,
+                    False,
+                    f'Server reports version {server_version!r}, expected {SERVER_VERSION!r}',
+                ))
+                return False
+
+            self.test_results.append(
+                (test_name, True, f'Server version correctly reports {SERVER_VERSION}'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_store_context_deduplication_data_integrity(self) -> bool:
         """Test that deduplication correctly handles metadata, tags, and timestamps.
 
@@ -7384,6 +7421,8 @@ class MCPServerIntegrationTest:
             ('Search Context Limit Clamping', self.test_search_context_limit_clamping),
             # Session Crash Patch Tests
             ('Session Crash Patch Applied', self.test_session_crash_patch_applied),
+            # Server Version Tests
+            ('Server Version Is Project Version', self.test_server_version_is_project_version),
             # Deduplication Data Integrity Tests
             ('Dedup Data Integrity', self.test_store_context_deduplication_data_integrity),
             # Edge Case Tests (P3)

@@ -17,8 +17,8 @@ class TestChunkingSettings:
         """Default values should be valid."""
         settings = ChunkingSettings()
         assert settings.enabled is True
-        assert settings.size == 1000
-        assert settings.overlap == 100
+        assert settings.size == 1500
+        assert settings.overlap == 150
         assert settings.aggregation == 'max'
         assert settings.dedup_overfetch == 5
 
@@ -176,6 +176,7 @@ class TestRerankingSettings:
         assert settings.overfetch == 4
         assert settings.cache_dir is None
         assert settings.intra_op_threads == 0
+        assert settings.batch_size == 32
 
     def test_max_length_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Minimum valid max_length should pass."""
@@ -255,6 +256,7 @@ class TestRerankingSettings:
         monkeypatch.setenv('RERANKING_OVERFETCH', '8')
         monkeypatch.setenv('RERANKING_CACHE_DIR', '/cache')
         monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '2')
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '16')
 
         settings = RerankingSettings()
         assert settings.enabled is False
@@ -264,6 +266,7 @@ class TestRerankingSettings:
         assert settings.overfetch == 8
         assert settings.cache_dir == '/cache'
         assert settings.intra_op_threads == 2
+        assert settings.batch_size == 16
 
     def test_intra_op_threads_default_is_zero(self) -> None:
         """Default intra_op_threads should be 0 (auto-detect)."""
@@ -287,6 +290,29 @@ class TestRerankingSettings:
         monkeypatch.setenv('RERANKING_INTRA_OP_THREADS', '0')
         settings = RerankingSettings()
         assert settings.intra_op_threads == 0
+
+    def test_batch_size_default_is_32(self) -> None:
+        """Default batch_size should be 32."""
+        settings = RerankingSettings()
+        assert settings.batch_size == 32
+
+    def test_batch_size_custom_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Custom batch_size should be set via env var."""
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '64')
+        settings = RerankingSettings()
+        assert settings.batch_size == 64
+
+    def test_batch_size_zero_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """batch_size of zero should fail validation (gt=0)."""
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '0')
+        with pytest.raises(ValidationError):
+            RerankingSettings()
+
+    def test_batch_size_negative_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Negative batch_size should fail validation."""
+        monkeypatch.setenv('RERANKING_BATCH_SIZE', '-1')
+        with pytest.raises(ValidationError):
+            RerankingSettings()
 
 
 class TestAppSettingsIntegration:
@@ -347,8 +373,8 @@ class TestAppSettingsIntegration:
     def test_chunking_settings_nested(self) -> None:
         """Chunking settings should work as nested config."""
         settings = AppSettings()
-        assert settings.chunking.size == 1000
-        assert settings.chunking.overlap == 100
+        assert settings.chunking.size == 1500
+        assert settings.chunking.overlap == 150
         assert settings.chunking.aggregation == 'max'
 
     def test_reranking_settings_nested(self) -> None:
