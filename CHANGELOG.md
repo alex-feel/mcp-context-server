@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.7.0](https://github.com/alex-feel/mcp-context-server/compare/v1.6.0...v1.7.0) (2026-03-08)
+
+
+### Features
+
+* add configurable micro-batching for FlashRank reranking ([43fcd9c](https://github.com/alex-feel/mcp-context-server/commit/43fcd9c12a4654127b756dd89fdb565500c08304))
+
+
+### Bug Fixes
+
+* apply ts_headline only to LIMIT'd rows in PostgreSQL FTS ([2cdb52e](https://github.com/alex-feel/mcp-context-server/commit/2cdb52e808cef57a35226e6bcdf5bae957a0799a))
+* improve tool description clarity and self-sufficiency ([ed522c3](https://github.com/alex-feel/mcp-context-server/commit/ed522c3754a46a7665cfab4eb23ffd3ec470c4af))
+* offload FlashRank ONNX inference to thread pool via asyncio.to_thread ([272eb9e](https://github.com/alex-feel/mcp-context-server/commit/272eb9e8b605e837a743c0697b0f818091ecf547))
+* report project version in MCP protocol handshake ([0372f58](https://github.com/alex-feel/mcp-context-server/commit/0372f58f4d1e5a2a6cdeb5c1d05762225e9f6a9c))
+* skip auth initialization on stdio transport ([7fbc9ef](https://github.com/alex-feel/mcp-context-server/commit/7fbc9ef8ba1a7572cba1d79ae820520ee9000c46))
+
 ## [1.6.0](https://github.com/alex-feel/mcp-context-server/compare/v1.5.0...v1.6.0) (2026-03-04)
 
 
