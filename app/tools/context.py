@@ -229,21 +229,19 @@ async def store_context(
     tags: Annotated[list[str] | None, Field(description='List of tags (normalized to lowercase)')] = None,
     ctx: Context | None = None,
 ) -> StoreContextSuccessDict:
-    """Store a context entry with atomic embedding + data storage.
-
-    EMBEDDING-FIRST PATTERN:
-    1. Embeddings are generated FIRST (outside any database transaction)
-    2. If embedding generation fails, NO data is saved (returns error immediately)
-    3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+    """Store a context entry.
 
     All agents working on the same task should use the same thread_id to share context.
-    If an entry with identical thread_id, source, and text already exists, it will be
-    updated instead of creating a duplicate (deduplication).
+
+    Deduplication: if an entry with identical thread_id, source, and text already exists,
+    the existing entry is updated instead of creating a duplicate:
+    - metadata: New values override existing; omitting metadata preserves current values
+    - tags: REPLACED with new list if provided; preserved if tags=None
+    - images: REPLACED with new list if provided; preserved if images=None
 
     Notes:
-        - Tags are normalized to lowercase and stored separately for efficient filtering
-        - If semantic search is enabled, an embedding is automatically generated
-        - Use indexed metadata fields for faster filtering in search_context:
+        - Tags are normalized to lowercase
+        - Use indexed metadata fields for faster filtering:
           status, agent_name, task_name, project, report_type
 
     Returns:
@@ -485,10 +483,10 @@ async def get_context_by_ids(
 ) -> list[ContextEntryDict]:
     """Fetch specific context entries by their IDs with FULL (non-truncated) text content.
 
-    Use this after search_context to retrieve complete content for entries of interest,
-    or when you have specific context IDs from previous operations.
+    Use this when you have specific context IDs from previous operations
+    and need the complete, untruncated content.
 
-    Workflow: search_context (browse, truncated) -> get_context_by_ids (retrieve full content)
+    Non-existent IDs are silently skipped; only found entries are returned.
 
     Returns:
         List of ContextEntryDict with id, thread_id, source, text_content, metadata,
@@ -563,8 +561,8 @@ async def delete_context(
 ) -> dict[str, bool | int | str]:
     """Delete context entries by specific IDs or by entire thread. IRREVERSIBLE.
 
-    Provide EITHER context_ids OR thread_id (not both). Cascading delete removes
-    associated tags, images, and embeddings.
+    Provide EITHER context_ids OR thread_id (not both). All associated data
+    (tags, images) is also removed.
 
     WARNING: This operation cannot be undone. Verify IDs/thread before deletion.
 
@@ -658,12 +656,7 @@ async def update_context(
     ] = None,
     ctx: Context | None = None,
 ) -> UpdateContextSuccessDict:
-    """Update an existing context entry with atomic embedding + data storage.
-
-    EMBEDDING-FIRST PATTERN:
-    1. Embeddings are generated FIRST (outside any database transaction) if text changed
-    2. If embedding generation fails, NO data is saved (original data preserved)
-    3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+    """Update an existing context entry.
 
     Immutable fields: id, thread_id, source, created_at (cannot be changed)
     Auto-managed: content_type (recalculated based on images), updated_at

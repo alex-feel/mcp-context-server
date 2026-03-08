@@ -161,8 +161,6 @@ Returns:
     text_content, metadata, scores, highlighted, tags), count (int), language (str),
     and stats (only when explain_query=True).
 
-    The `scores` field contains: fts_score, fts_rank, rerank_score.
-
 Raises:
     ToolError: If FTS is not available or search operation fails.'''
 

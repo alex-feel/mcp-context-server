@@ -409,19 +409,12 @@ async def search_context(
 ) -> dict[str, Any]:
     """Search context entries with filtering. Returns TRUNCATED text_content (150 chars max).
 
-    Use get_context_by_ids to retrieve full content for specific entries of interest.
-
     Filtering options:
     - thread_id, source: Indexed for fast filtering (always prefer specifying thread_id)
     - tags: OR logic (matches ANY of provided tags)
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
     - start_date/end_date: Filter by creation timestamp (ISO 8601)
-
-    Performance tips:
-    - Always specify thread_id to reduce search space
-    - Use indexed metadata fields: status, agent_name, task_name, project, report_type
-      (PostgreSQL also indexes: references, technologies)
 
     Returns:
         Dict with results (list of ContextEntryDict), count (int), and
@@ -575,11 +568,10 @@ async def semantic_search_context(
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Find semantically similar context using vector embeddings with optional metadata filtering.
+    """Find semantically similar context with optional metadata filtering.
 
-    Unlike keyword search (search_context), this finds entries with similar MEANING
-    even without matching keywords. Use for: finding related concepts, similar discussions,
-    thematic grouping.
+    Finds entries with similar MEANING even without matching keywords.
+    Use for: finding related concepts, similar discussions, thematic grouping.
 
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
@@ -599,8 +591,6 @@ async def semantic_search_context(
     Returns:
         Dict with query (str), results (list with id, thread_id, source, text_content,
         metadata, scores, tags), count (int), model (str), and stats (only when explain_query=True).
-
-        The `scores` field contains: semantic_distance, semantic_rank, rerank_score.
 
     Raises:
         ToolError: If semantic search is not available or search operation fails.
@@ -773,13 +763,6 @@ async def fts_search_context(
 ) -> dict[str, Any]:
     """Full-text search with linguistic analysis (stemming, ranking, boolean queries).
 
-    Unlike keyword filtering (search_context) or semantic similarity (semantic_search_context),
-    FTS provides:
-    - Stemming: "running" matches "run", "runs", "runner"
-    - Stop word handling: common words like "the", "is" are ignored
-    - Boolean operators: AND, OR, NOT for precise queries
-    - BM25/ts_rank relevance scoring
-
     Search modes:
     - match: Natural language query (default) - words are stemmed and matched
     - prefix: Wildcard search - "search*" matches "searching", "searched"
@@ -803,8 +786,6 @@ async def fts_search_context(
         Dict with query (str), mode (str), results (list with id, thread_id, source,
         text_content, metadata, scores, highlighted, tags), count (int), language (str),
         and stats (only when explain_query=True).
-
-        The `scores` field contains: fts_score, fts_rank, rerank_score.
 
     Raises:
         ToolError: If FTS is not available or search operation fails.
@@ -1069,10 +1050,8 @@ async def hybrid_search_context(
 ) -> dict[str, Any]:
     """Hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
 
-    Executes both full-text search and semantic search in parallel, then fuses results
-    using RRF algorithm. Documents appearing in both result sets score higher.
-
-    RRF Formula: score(d) = sum(1 / (k + rank_i(d))) for each search method i
+    Executes both full-text search and semantic search in parallel, then fuses results.
+    Documents appearing in both result sets score higher.
 
     Graceful degradation:
     - If only FTS is available, returns FTS results only
@@ -1087,8 +1066,13 @@ async def hybrid_search_context(
     - metadata: Simple key=value equality matching
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
-    The `scores` field contains: rrf (combined), fts_rank, semantic_rank,
-    fts_score, semantic_distance, rerank_score.
+    The `scores` object contains:
+    - rrf: Combined fusion score (HIGHER = better)
+    - fts_rank: Rank in full-text results (LOWER = better, 1 = best)
+    - semantic_rank: Rank in semantic results (LOWER = better, 1 = best)
+    - fts_score: BM25/ts_rank relevance (HIGHER = better match)
+    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
     When explain_query=True, the `stats` field contains:
     - execution_time_ms: Total hybrid search time
