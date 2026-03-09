@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.1](https://github.com/alex-feel/mcp-context-server/compare/v1.7.0...v1.7.1) (2026-03-09)
+
+
+### Bug Fixes
+
+* change FASTMCP_STATELESS_HTTP default from false to true ([277baa3](https://github.com/alex-feel/mcp-context-server/commit/277baa3b8cacf82f93d0f5a47abe0857a73c6bcd))
+* prevent event loop blocking in FlashRank model loading ([b0076fd](https://github.com/alex-feel/mcp-context-server/commit/b0076fdabc23622d50d6a1b8d243daf2cfc23054))
+
 ## [1.7.0](https://github.com/alex-feel/mcp-context-server/compare/v1.6.0...v1.7.0) (2026-03-08)
 
 
