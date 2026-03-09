@@ -284,7 +284,7 @@ class TestAuthTransportInteraction:
         mock.transport.transport = transport
         mock.transport.host = '0.0.0.0'
         mock.transport.port = 8000
-        mock.transport.stateless_http = False
+        mock.transport.stateless_http = True
         mock.auth.provider = auth_provider
         mock.instructions = MagicMock()
         mock.logging.level = 'ERROR'

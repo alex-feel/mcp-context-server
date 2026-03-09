@@ -81,11 +81,11 @@ class TransportSettings(CommonSettings):
         description='HTTP port number',
     )
     stateless_http: bool = Field(
-        default=False,
+        default=True,
         alias='FASTMCP_STATELESS_HTTP',
         description='Enable stateless HTTP mode for horizontal scaling. '
-                    'Each request creates a fresh context, eliminating session affinity requirements. '
-                    'Required when running multiple server replicas behind a load balancer.',
+                    'Enabled by default as the server has no stateful MCP features. '
+                    'Set to false only if you need server-side MCP session tracking.',
     )
 
 

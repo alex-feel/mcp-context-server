@@ -325,7 +325,7 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Core**: `STORAGE_BACKEND` (sqlite*/postgresql), `LOG_LEVEL` (ERROR*), `DB_PATH` (~/.mcp/context_storage.db*), `MAX_IMAGE_SIZE_MB` (10*), `MAX_TOTAL_SIZE_MB` (100*), `DISABLED_TOOLS`
 
-**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (false*)
+**Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (true*)
 
 **FastMCP Logging** (deployment-only, not in `app/settings.py`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud to prevent multi-line log wrapping). It is read directly by FastMCP at import time and have no `mcp.run()` parameter; see [FASTMCP_* Env Var Governance](#fastmcp_-env-var-governance) below.
 
