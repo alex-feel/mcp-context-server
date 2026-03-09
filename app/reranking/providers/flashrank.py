@@ -77,11 +77,12 @@ class FlashRankProvider:
         self._ranker = None
         logger.info('FlashRank provider shut down')
 
-    def _ensure_ranker(self) -> None:
-        """Lazy-load the FlashRank Ranker model with constrained ONNX Runtime settings.
+    def _load_ranker_sync(self) -> None:
+        """Load the FlashRank Ranker model with constrained ONNX Runtime settings.
 
-        Creates the FlashRank Ranker normally, then replaces its default ONNX
-        InferenceSession with one configured for constrained resource usage:
+        Synchronous model loading that runs in a worker thread via asyncio.to_thread.
+        Creates the FlashRank Ranker, then replaces its default ONNX InferenceSession
+        with one configured for constrained resource usage:
 
         - **Thread limiting:** intra-op threads set to a fixed count (default 2)
           instead of ONNX Runtime's default of host physical core count, which
@@ -98,69 +99,79 @@ class FlashRankProvider:
         Raises:
             FileNotFoundError: If no .onnx model file exists in the model directory.
         """
-        if self._ranker is None:
-            from typing import cast
+        from typing import cast
 
-            import onnxruntime
-            from flashrank import Ranker
+        import onnxruntime
+        from flashrank import Ranker
 
-            ort: Any = onnxruntime
+        ort: Any = onnxruntime
 
-            logger.info(f'Loading FlashRank model: {self._model_name}')
+        logger.info(f'Loading FlashRank model: {self._model_name}')
 
-            # Build kwargs conditionally - FlashRank doesn't accept None for cache_dir
-            ranker_kwargs: dict[str, str | int] = {
-                'model_name': self._model_name,
-                'max_length': self._max_length,
-            }
-            if self._cache_dir is not None:
-                ranker_kwargs['cache_dir'] = self._cache_dir
+        # Build kwargs conditionally - FlashRank doesn't accept None for cache_dir
+        ranker_kwargs: dict[str, str | int] = {
+            'model_name': self._model_name,
+            'max_length': self._max_length,
+        }
+        if self._cache_dir is not None:
+            ranker_kwargs['cache_dir'] = self._cache_dir
 
-            ranker: Any = cast(Any, Ranker(**ranker_kwargs))
+        ranker: Any = cast(Any, Ranker(**ranker_kwargs))
 
-            # Release the unconstrained default session created by Ranker()
-            # before replacing it with our arena-disabled, thread-limited session.
-            if hasattr(ranker, 'session') and ranker.session is not None:
-                del ranker.session
-                ranker.session = None
+        # Release the unconstrained default session created by Ranker()
+        # before replacing it with our arena-disabled, thread-limited session.
+        if hasattr(ranker, 'session') and ranker.session is not None:
+            del ranker.session
+            ranker.session = None
 
-            # Replace with a thread-limited, arena-disabled ONNX session.
-            # FlashRank's Ranker.__init__() creates ort.InferenceSession without
-            # SessionOptions, defaulting intra_op_num_threads to 0 (= all host cores).
-            # Resolve the ONNX model file from the Ranker's model directory.
-            # Each FlashRank model directory contains exactly one .onnx file.
-            model_onnx_files = list(ranker.model_dir.glob('*.onnx'))
-            if not model_onnx_files:
-                msg = f'No .onnx file found in {ranker.model_dir}'
-                raise FileNotFoundError(msg)
-            model_path = str(model_onnx_files[0])
+        # Replace with a thread-limited, arena-disabled ONNX session.
+        # FlashRank's Ranker.__init__() creates ort.InferenceSession without
+        # SessionOptions, defaulting intra_op_num_threads to 0 (= all host cores).
+        # Resolve the ONNX model file from the Ranker's model directory.
+        # Each FlashRank model directory contains exactly one .onnx file.
+        model_onnx_files = list(ranker.model_dir.glob('*.onnx'))
+        if not model_onnx_files:
+            msg = f'No .onnx file found in {ranker.model_dir}'
+            raise FileNotFoundError(msg)
+        model_path = str(model_onnx_files[0])
 
-            sess_options: Any = ort.SessionOptions()
-            sess_options.intra_op_num_threads = self._intra_op_threads
-            sess_options.inter_op_num_threads = 1
-            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            sess_options.enable_cpu_mem_arena = self._cpu_mem_arena
-            sess_options.add_session_config_entry(
-                'session.intra_op.allow_spinning', '0',
-            )
-            sess_options.add_session_config_entry(
-                'session.inter_op.allow_spinning', '0',
-            )
+        sess_options: Any = ort.SessionOptions()
+        sess_options.intra_op_num_threads = self._intra_op_threads
+        sess_options.inter_op_num_threads = 1
+        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        sess_options.enable_cpu_mem_arena = self._cpu_mem_arena
+        sess_options.add_session_config_entry(
+            'session.intra_op.allow_spinning', '0',
+        )
+        sess_options.add_session_config_entry(
+            'session.inter_op.allow_spinning', '0',
+        )
 
-            ranker.session = ort.InferenceSession(
-                model_path, sess_options=sess_options,
-            )
+        ranker.session = ort.InferenceSession(
+            model_path, sess_options=sess_options,
+        )
 
-            self._ranker = ranker
+        self._ranker = ranker
 
-            intra_threads: int = sess_options.intra_op_num_threads
-            inter_threads: int = sess_options.inter_op_num_threads
-            logger.info(
-                f'FlashRank model loaded: {self._model_name} '
-                f'(intra_op_threads={intra_threads}, '
-                f'inter_op_threads={inter_threads}, '
-                f'cpu_mem_arena={self._cpu_mem_arena})',
-            )
+        intra_threads: int = sess_options.intra_op_num_threads
+        inter_threads: int = sess_options.inter_op_num_threads
+        logger.info(
+            f'FlashRank model loaded: {self._model_name} '
+            f'(intra_op_threads={intra_threads}, '
+            f'inter_op_threads={inter_threads}, '
+            f'cpu_mem_arena={self._cpu_mem_arena})',
+        )
+
+    async def _ensure_ranker(self) -> None:
+        """Ensure the FlashRank Ranker model is loaded, offloading to a worker thread.
+
+        Uses asyncio.to_thread to prevent blocking the event loop during
+        ONNX model loading (2-5 seconds on first call). Subsequent calls
+        return immediately via fast-path check.
+        """
+        if self._ranker is not None:
+            return
+        await asyncio.to_thread(self._load_ranker_sync)
 
     async def rerank(
         self,
@@ -201,8 +212,8 @@ class FlashRankProvider:
                 'meta': {'original_index': i},
             })
 
-        # Ensure ranker is loaded (lazy initialization)
-        self._ensure_ranker()
+        # Ensure ranker is loaded (lazy initialization, offloaded to worker thread)
+        await self._ensure_ranker()
 
         # Micro-batch to prevent OOM from unbounded ONNX Runtime inference.
         # Cross-encoder scores are absolute per-row sigmoid values, so
