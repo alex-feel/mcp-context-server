@@ -781,7 +781,7 @@
           "name": "FASTMCP_PORT"
         },
         {
-          "description": "Enable stateless HTTP mode for horizontal scaling (required for multiple replicas behind a load balancer)",
+          "description": "Enable stateless HTTP mode for horizontal scaling. Enabled by default as the server has no stateful MCP features. Set to false only if you need server-side MCP session tracking.",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
@@ -1597,7 +1597,7 @@
           "name": "FASTMCP_PORT"
         },
         {
-          "description": "Enable stateless HTTP mode for horizontal scaling (required for multiple replicas behind a load balancer)",
+          "description": "Enable stateless HTTP mode for horizontal scaling. Enabled by default as the server has no stateful MCP features. Set to false only if you need server-side MCP session tracking.",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,

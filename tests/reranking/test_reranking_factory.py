@@ -507,9 +507,81 @@ class TestFlashRankProvider:
             ]
             reranked = await provider.rerank('topic', results)
 
-            # 5 passages / batch_size=2 = 3 batches = 3 asyncio.to_thread calls
-            assert to_thread_call_count == 3
+            # 1 for _load_ranker_sync + 3 inference batches (5 passages / batch_size=2)
+            assert to_thread_call_count == 4
             assert len(reranked) == 5
         finally:
             await provider.shutdown()
             get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_ensure_ranker_uses_asyncio_to_thread(
+        self, provider: RerankingProvider, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Model loading in _ensure_ranker should use asyncio.to_thread."""
+        import asyncio
+
+        await provider.initialize()
+        try:
+            original_to_thread = asyncio.to_thread
+            ensure_ranker_to_thread_calls: list[tuple[object, ...]] = []
+
+            async def tracking_to_thread(func, *args, **kwargs):
+                ensure_ranker_to_thread_calls.append((func, args, kwargs))
+                return await original_to_thread(func, *args, **kwargs)
+
+            monkeypatch.setattr(asyncio, 'to_thread', tracking_to_thread)
+
+            # First rerank triggers _ensure_ranker -> asyncio.to_thread for model load
+            results = [{'id': 0, 'text': 'Test document about Python'}]
+            await provider.rerank('test', results)
+
+            # asyncio.to_thread should have been called for BOTH:
+            # 1. _load_ranker_sync (model initialization)
+            # 2. self._ranker.rerank (batch inference)
+            assert len(ensure_ranker_to_thread_calls) >= 2
+
+            # Verify the first call is the model loading function
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            first_call_func = ensure_ranker_to_thread_calls[0][0]
+            assert first_call_func == concrete._load_ranker_sync
+        finally:
+            await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_ensure_ranker_fast_path_skips_thread(
+        self, provider: RerankingProvider, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Second rerank call should skip asyncio.to_thread for model loading."""
+        import asyncio
+
+        await provider.initialize()
+        try:
+            # First call - triggers model loading
+            results = [{'id': 0, 'text': 'Test document'}]
+            await provider.rerank('test', results)
+
+            # Now track to_thread calls for the SECOND rerank
+            original_to_thread = asyncio.to_thread
+            second_call_funcs: list[object] = []
+
+            async def tracking_to_thread(func, *args, **kwargs):
+                second_call_funcs.append(func)
+                return await original_to_thread(func, *args, **kwargs)
+
+            monkeypatch.setattr(asyncio, 'to_thread', tracking_to_thread)
+
+            await provider.rerank('test2', results)
+
+            # Only batch inference calls should use asyncio.to_thread
+            # _load_ranker_sync should NOT appear (model already loaded)
+            from typing import Any
+            from typing import cast
+            concrete = cast(Any, provider)
+            assert concrete._load_ranker_sync not in second_call_funcs
+            # But batch inference should still use asyncio.to_thread
+            assert len(second_call_funcs) >= 1
+        finally:
+            await provider.shutdown()

@@ -237,12 +237,12 @@ class TestAuthProviderSetting:
 class TestTransportStatelessHttp:
     """Tests for FASTMCP_STATELESS_HTTP setting in TransportSettings."""
 
-    def test_stateless_http_default_is_false(self) -> None:
-        """FASTMCP_STATELESS_HTTP should default to False."""
+    def test_stateless_http_default_is_true(self) -> None:
+        """FASTMCP_STATELESS_HTTP should default to True."""
         from app.settings import TransportSettings
 
         settings = TransportSettings()
-        assert settings.stateless_http is False
+        assert settings.stateless_http is True
 
     def test_stateless_http_enabled_via_env(self) -> None:
         """FASTMCP_STATELESS_HTTP=true should enable stateless mode."""
@@ -253,7 +253,7 @@ class TestTransportStatelessHttp:
             assert settings.stateless_http is True
 
     def test_stateless_http_disabled_via_env(self) -> None:
-        """FASTMCP_STATELESS_HTTP=false should keep stateless mode disabled."""
+        """FASTMCP_STATELESS_HTTP=false should disable stateless mode."""
         from app.settings import TransportSettings
 
         with env_var('FASTMCP_STATELESS_HTTP', 'false'):

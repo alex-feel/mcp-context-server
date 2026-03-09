@@ -111,14 +111,12 @@ Horizontal scaling requires ALL of the following:
 | Requirement         | Setting                       | Why                                   |
 |---------------------|-------------------------------|---------------------------------------|
 | HTTP transport      | `MCP_TRANSPORT=http`          | stdio does not support network access |
-| Stateless HTTP mode | `FASTMCP_STATELESS_HTTP=true` | Eliminates server-side session state  |
+| Stateless HTTP mode | Enabled by default            | Eliminates server-side session state  |
 | PostgreSQL backend  | `STORAGE_BACKEND=postgresql`  | SQLite is file-based, single-writer   |
 
-**Why stateless HTTP mode is required:**
+**Why stateless HTTP mode matters:**
 
-By default, FastMCP maintains server-side sessions in memory. When running multiple replicas behind a load balancer, requests from the same client may be routed to different instances, causing session context to be lost. Setting `FASTMCP_STATELESS_HTTP=true` creates a fresh transport context for each request, eliminating the need for session affinity (sticky sessions).
-
-This is safe for MCP Context Server because all tools are stateless -- none use server-side session state.
+Stateless HTTP mode is enabled by default in MCP Context Server because it uses no stateful MCP features. Each request creates a fresh transport context, eliminating the need for session affinity (sticky sessions). If needed, you can disable it by setting `FASTMCP_STATELESS_HTTP=false`.
 
 ### Helm Configuration
 
@@ -128,7 +126,7 @@ replicaCount: 3
 
 env:
   MCP_TRANSPORT: "http"
-  FASTMCP_STATELESS_HTTP: "true"
+  # FASTMCP_STATELESS_HTTP defaults to "true" -- no override needed
 
 storage:
   backend: postgresql
@@ -167,7 +165,7 @@ The deployment uses a ConfigMap for non-sensitive configuration:
 | `MCP_TRANSPORT`          | Transport mode (http for Kubernetes)       |
 | `FASTMCP_HOST`           | HTTP bind address                          |
 | `FASTMCP_PORT`           | HTTP port                                  |
-| `FASTMCP_STATELESS_HTTP` | Stateless HTTP mode for horizontal scaling |
+| `FASTMCP_STATELESS_HTTP` | Stateless HTTP mode (enabled by default)   |
 | `LOG_LEVEL`              | Logging level                              |
 | `STORAGE_BACKEND`        | sqlite or postgresql                       |
 | `ENABLE_FTS`             | Full-text search                           |

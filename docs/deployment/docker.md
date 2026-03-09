@@ -254,7 +254,7 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `MCP_TRANSPORT`           | `http`    | Transport mode (set to `http` for Docker)                |
 | `FASTMCP_HOST`            | `0.0.0.0` | HTTP bind address                                        |
 | `FASTMCP_PORT`            | `8000`    | HTTP port                                                |
-| `FASTMCP_STATELESS_HTTP`  | `false`   | Stateless HTTP mode (required for horizontal scaling)    |
+| `FASTMCP_STATELESS_HTTP`  | `true`    | Stateless HTTP mode (enabled by default)                 |
 
 **Search Features:**
 
@@ -657,20 +657,18 @@ docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-al
 
 ### Horizontal Scaling with Docker Compose
 
-For horizontal scaling with Docker Compose, use a PostgreSQL configuration with `FASTMCP_STATELESS_HTTP=true`:
+For horizontal scaling with Docker Compose, use a PostgreSQL configuration. Stateless HTTP mode is enabled by default:
 
 ```yaml
 services:
   mcp-context-server:
-    environment:
-      - FASTMCP_STATELESS_HTTP=true
     deploy:
       replicas: 3
 ```
 
 **Requirements:**
 - PostgreSQL backend (`STORAGE_BACKEND=postgresql`) -- SQLite does not support multiple writers
-- `FASTMCP_STATELESS_HTTP=true` -- eliminates server-side session state so any replica can handle any request
+- Stateless HTTP mode is enabled by default; no additional configuration needed
 
 For production horizontal scaling, Kubernetes with Helm is recommended. See the [Kubernetes Deployment Guide](kubernetes.md#horizontal-scaling).
 
