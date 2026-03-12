@@ -37,6 +37,7 @@ constraint-dependencies = [
     "langsmith>=0.6.3",  # CVE-2026-25528 fix
     "langchain-core>=1.2.11",  # CVE-2026-26013 fix
     "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
+    "authlib>=1.6.7",  # CVE-2026-28802 fix
 ]
 
 [project.optional-dependencies]
