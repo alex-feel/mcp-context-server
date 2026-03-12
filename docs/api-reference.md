@@ -66,7 +66,7 @@ Search context entries with powerful filtering including metadata queries and da
 
 **Date Filtering:** Supports ISO 8601 date filtering. See [Date Filtering](#date-filtering) section below.
 
-**Returns:** List of matching context entries with optional query statistics
+**Returns:** List of matching context entries with truncated `text_content`, `summary`, and `is_text_content_truncated` flag, plus optional query statistics
 
 ### get_context_by_ids
 
@@ -100,7 +100,7 @@ List all active threads with statistics.
 
 ### get_statistics
 
-Get database statistics and usage metrics.
+Get database statistics, usage metrics, and feature status.
 
 **Returns:** Dictionary with:
 - Total entries count
@@ -108,6 +108,12 @@ Get database statistics and usage metrics.
 - Total images count
 - Unique tags count
 - Database size in MB
+- Connection metrics
+- Semantic search status (enabled, available, model, dimensions, embedding count, coverage)
+- Full-text search status (enabled, available, language, backend, engine, indexed entries, coverage)
+- Chunking configuration (enabled, available, chunk size, overlap, aggregation)
+- Reranking status (enabled, available, provider, model)
+- Summary generation status (enabled, available, provider, model, summary count, coverage, min content length)
 
 ### update_context
 
@@ -186,7 +192,7 @@ Note: This tool is only available when semantic search is enabled via `ENABLE_SE
 
 **Returns:** Dictionary with:
 - Query string
-- List of semantically similar context entries with similarity scores
+- List of semantically similar context entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, and similarity scores
 - Result count
 - Model name used for embeddings
 - Query execution statistics (only when `explain_query=True`)
@@ -244,7 +250,7 @@ Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The
 
 **Returns:** Dictionary with:
 - Query string and search mode
-- List of matching entries with relevance scores and highlighted snippets
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, relevance scores, and highlighted snippets
 - Result count
 - FTS availability status
 
@@ -294,7 +300,7 @@ Note: This tool is only available when hybrid search is enabled via `ENABLE_HYBR
 
 **Returns:** Dictionary with:
 - Query string and fusion method
-- List of matching entries with combined RRF scores and individual search rankings
+- List of matching entries with truncated `text_content`, `summary`, `is_text_content_truncated` flag, combined RRF scores, and individual search rankings
 - Result count and counts from each search method
 - List of search modes actually used
 - Query execution statistics (only when `explain_query=True`)
@@ -353,15 +359,18 @@ All search tools return consistent response structures with common fields and to
 
 **Entry Fields by Tool:**
 
-| Entry Field                                    | search_context        | semantic_search_context | fts_search_context  | hybrid_search_context |
-|------------------------------------------------|-----------------------|-------------------------|---------------------|-----------------------|
-| `id`, `thread_id`, `source`, `content_type`    | Yes                   | Yes                     | Yes                 | Yes                   |
-| `text_content`                                 | Truncated (150 chars) | Full                    | Full                | Full                  |
-| `is_truncated`                                 | Yes                   | No                      | No                  | No                    |
-| `metadata`, `tags`, `created_at`, `updated_at` | Yes                   | Yes                     | Yes                 | Yes                   |
-| `images`                                       | include_images=True   | include_images=True     | include_images=True | include_images=True   |
-| `scores`                                       | No                    | Yes                     | Yes                 | Yes                   |
-| `highlighted`                                  | No                    | No                      | highlight=True      | No                    |
+| Entry Field                                    | search_context        | semantic_search_context    | fts_search_context         | hybrid_search_context      |
+|------------------------------------------------|-----------------------|----------------------------|----------------------------|----------------------------|
+| `id`, `thread_id`, `source`, `content_type`    | Yes                   | Yes                        | Yes                        | Yes                        |
+| `text_content`                                 | Truncated             | Truncated                  | Truncated                  | Truncated                  |
+| `summary`                                      | Yes (string)          | Yes (string)               | Yes (string)               | Yes (string)               |
+| `is_text_content_truncated`                    | Yes                   | Yes                        | Yes                        | Yes                        |
+| `metadata`, `tags`, `created_at`, `updated_at` | Yes                   | Yes                        | Yes                        | Yes                        |
+| `images`                                       | include_images=True   | include_images=True        | include_images=True        | include_images=True        |
+| `scores`                                       | No                    | Yes                        | Yes                        | Yes                        |
+| `highlighted`                                  | No                    | No                         | highlight=True             | No                         |
+
+**`summary` field**: Present in all search tool results. Populated by automatic LLM-based summary generation (enabled by default with Ollama). Contains a dense summary (token limit controlled by `SUMMARY_MAX_TOKENS`, default 2000) that is more informative than the truncated `text_content`. Empty string when summary generation is disabled or the summary has not yet been generated. See [Summary Generation Guide](summary-generation.md) for configuration.
 
 **Scores Object Structure:**
 
@@ -380,7 +389,7 @@ All search tools (except `search_context`) return a unified `scores` object with
 
 **Notes:**
 - `stats` is only included when `explain_query=True` for all search tools
-- `search_context` returns truncated text for browsing; use `get_context_by_ids` for full content
+- All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 150 chars) with `summary` and `is_text_content_truncated` flag; use `get_context_by_ids` for full content
 - For standalone FTS and semantic searches, rank fields are always `null` (no cross-method ranking)
 
 ## Batch Operations
@@ -489,6 +498,7 @@ Supported ISO 8601 formats:
 
 ### Related Documentation
 
+- **Summary Generation**: [Summary Generation Guide](summary-generation.md) - LLM-based summary generation setup
 - **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - vector similarity search setup
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage

@@ -59,7 +59,7 @@ class TestStoreContext:
         assert result['success'] is True
         assert 'context_id' in result
         assert result['thread_id'] == sample_context_data['thread_id']
-        assert 'Context stored with 0 images' in result['message']
+        assert 'Context stored' in result['message']
 
         # Verify context.info was called
         assert mock_context.info.called is True
@@ -368,7 +368,7 @@ class TestSearchContext:
         assert isinstance(results, dict)
         assert len(results['results']) == 1
         assert results['results'][0]['text_content'] == short_text
-        assert results['results'][0]['is_truncated'] is False
+        assert results['results'][0]['is_text_content_truncated'] is False
 
     @pytest.mark.asyncio
     async def test_search_text_truncation_long(self) -> None:
@@ -393,7 +393,7 @@ class TestSearchContext:
         assert len(results['results']) == 1
 
         # Check truncation occurred
-        assert results['results'][0]['is_truncated'] is True
+        assert results['results'][0]['is_text_content_truncated'] is True
         assert results['results'][0]['text_content'].endswith('...')
         assert len(results['results'][0]['text_content']) <= 153  # 150 + '...'
         assert results['results'][0]['text_content'] != long_text
@@ -420,7 +420,7 @@ class TestSearchContext:
         results = await search_context(limit=50, thread_id='boundary_test_good')
         assert isinstance(results, dict)
         assert len(results['results']) == 1
-        assert results['results'][0]['is_truncated'] is True
+        assert results['results'][0]['is_text_content_truncated'] is True
         assert results['results'][0]['text_content'].endswith('...')
 
         # Test case 2: Text where truncation will happen mid-word due to no good boundary
@@ -437,7 +437,7 @@ class TestSearchContext:
         results_bad = await search_context(limit=50, thread_id='boundary_test_bad')
         assert isinstance(results_bad, dict)
         assert len(results_bad['results']) == 1
-        assert results_bad['results'][0]['is_truncated'] is True
+        assert results_bad['results'][0]['is_text_content_truncated'] is True
         assert results_bad['results'][0]['text_content'].endswith('...')
         # In this case, truncation happens at exactly 150 chars since no good word boundary exists
 
@@ -464,7 +464,7 @@ class TestSearchContext:
         search_results = await search_context(limit=50, thread_id='comparison_test')
         assert isinstance(search_results, dict)
         assert len(search_results['results']) == 1
-        assert search_results['results'][0]['is_truncated'] is True
+        assert search_results['results'][0]['is_text_content_truncated'] is True
         assert search_results['results'][0]['text_content'] != long_text
         assert search_results['results'][0]['text_content'].endswith('...')
 
@@ -473,7 +473,7 @@ class TestSearchContext:
         assert len(get_results) == 1
         entry = dict(get_results[0])
         assert entry['text_content'] == long_text
-        assert 'is_truncated' not in entry  # This field should not exist
+        assert 'is_text_content_truncated' not in entry  # This field should not exist
 
     @pytest.mark.asyncio
     async def test_search_null_text_truncation(self, temp_db_path: Path) -> None:
@@ -516,7 +516,7 @@ class TestSearchContext:
         assert isinstance(results, dict)
         assert len(results['results']) == 1
         assert results['results'][0]['text_content'] == ''
-        assert results['results'][0]['is_truncated'] is False
+        assert results['results'][0]['is_text_content_truncated'] is False
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -898,6 +898,31 @@ class TestGetStatistics:
             mock_stats.side_effect = sqlite3.OperationalError('Database error')
             with pytest.raises(ToolError, match='Failed to get statistics'):
                 await get_statistics()
+
+    @pytest.mark.asyncio
+    async def test_statistics_summary_disabled(self) -> None:
+        """Test summary section when generation is disabled."""
+        from app.settings import get_settings as _get_settings
+
+        real_settings = _get_settings()
+        mock_settings = MagicMock(wraps=real_settings)
+        mock_summary = MagicMock()
+        mock_summary.generation_enabled = False
+        mock_settings.summary = mock_summary
+        with patch('app.tools.discovery.settings', mock_settings):
+            stats = await get_statistics()
+            assert 'summary' in stats
+            assert stats['summary'] == {'enabled': False, 'available': False}
+
+    @pytest.mark.asyncio
+    async def test_statistics_summary_enabled_unavailable(self) -> None:
+        """Test summary section when enabled but provider not initialized."""
+        stats = await get_statistics()
+        assert 'summary' in stats
+        summary_info = stats['summary']
+        assert summary_info['enabled'] is True
+        assert summary_info['available'] is False
+        assert 'message' in summary_info
 
 
 @pytest.mark.usefixtures('initialized_server')

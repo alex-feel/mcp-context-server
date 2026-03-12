@@ -38,16 +38,15 @@ data:
   EMBEDDING_RETRY_MAX_ATTEMPTS: {{ .Values.search.semantic.retryMaxAttempts | quote }}
   EMBEDDING_RETRY_BASE_DELAY_S: {{ .Values.search.semantic.retryBaseDelay | quote }}
   EMBEDDING_MAX_CONCURRENT: {{ .Values.search.semantic.maxConcurrent | quote }}
-  {{- if eq .Values.search.semantic.provider "ollama" }}
-  {{- if .Values.ollama.enabled }}
-  OLLAMA_HOST: "http://localhost:11434"
-  {{- end }}
-  {{- end }}
   {{- if eq .Values.search.semantic.provider "azure" }}
   AZURE_OPENAI_ENDPOINT: {{ .Values.embeddingSecrets.azureOpenaiEndpoint | quote }}
   AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: {{ .Values.embeddingSecrets.azureOpenaiDeployment | quote }}
   AZURE_OPENAI_API_VERSION: {{ .Values.embeddingSecrets.azureOpenaiApiVersion | quote }}
   {{- end }}
+  {{- end }}
+  # Ollama host (shared by semantic search and summary generation)
+  {{- if and .Values.ollama.enabled (or (eq .Values.search.semantic.provider "ollama") (eq .Values.search.summary.provider "ollama")) }}
+  OLLAMA_HOST: "http://localhost:11434"
   {{- end }}
   # LangSmith tracing (optional)
   {{- if .Values.langsmith.enabled }}
@@ -78,6 +77,21 @@ data:
   {{- if .Values.search.reranking.cacheDir }}
   RERANKING_CACHE_DIR: {{ .Values.search.reranking.cacheDir | quote }}
   {{- end }}
+  {{- end }}
+  # Summary generation settings
+  ENABLE_SUMMARY_GENERATION: {{ .Values.search.summary.enabled | quote }}
+  {{- if .Values.search.summary.enabled }}
+  SUMMARY_PROVIDER: {{ .Values.search.summary.provider | quote }}
+  SUMMARY_MODEL: {{ .Values.search.summary.model | quote }}
+  SUMMARY_MAX_TOKENS: {{ .Values.search.summary.maxTokens | quote }}
+  SUMMARY_MIN_CONTENT_LENGTH: {{ .Values.search.summary.minContentLength | quote }}
+  {{- if .Values.search.summary.prompt }}
+  SUMMARY_PROMPT: {{ .Values.search.summary.prompt | quote }}
+  {{- end }}
+  SUMMARY_TIMEOUT_S: {{ .Values.search.summary.timeout | quote }}
+  SUMMARY_RETRY_MAX_ATTEMPTS: {{ .Values.search.summary.retryMaxAttempts | quote }}
+  SUMMARY_RETRY_BASE_DELAY_S: {{ .Values.search.summary.retryBaseDelay | quote }}
+  SUMMARY_MAX_CONCURRENT: {{ .Values.search.summary.maxConcurrent | quote }}
   {{- end }}
   # Search default sort
   SEARCH_DEFAULT_SORT_BY: {{ .Values.search.defaultSortBy | quote }}

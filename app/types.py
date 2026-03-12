@@ -38,11 +38,12 @@ class ContextEntryDict(TypedDict, total=False):
     content_type: str
     text_content: str | None
     metadata: MetadataDict | None
+    summary: str | None
     created_at: str
     updated_at: str
     tags: list[str]
     images: list[ImageAttachmentDict] | list[dict[str, str]] | None
-    is_truncated: bool | None
+    is_text_content_truncated: bool | None
 
 
 class ClampedLimitDict(TypedDict):
@@ -244,6 +245,8 @@ class FtsSearchResultDict(TypedDict, total=False):
     source: str
     content_type: str
     text_content: str
+    summary: str
+    is_text_content_truncated: bool
     metadata: MetadataDict | None
     created_at: str
     updated_at: str
@@ -283,6 +286,8 @@ class SemanticSearchResultDict(TypedDict, total=False):
     source: str
     content_type: str
     text_content: str
+    summary: str
+    is_text_content_truncated: bool
     metadata: MetadataDict | None
     created_at: str
     updated_at: str
@@ -354,6 +359,8 @@ class HybridSearchResultDict(TypedDict, total=False):
     source: str
     content_type: str
     text_content: str
+    summary: str
+    is_text_content_truncated: bool
     metadata: MetadataDict | None
     created_at: str
     updated_at: str

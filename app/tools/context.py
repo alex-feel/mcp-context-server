@@ -18,6 +18,7 @@ import asyncio
 import base64
 import json
 import logging
+from collections.abc import Awaitable
 from typing import Annotated
 from typing import Literal
 from typing import cast
@@ -36,7 +37,9 @@ from app.startup import MAX_TOTAL_SIZE_MB
 from app.startup import ensure_repositories
 from app.startup import get_chunking_service
 from app.startup import get_embedding_provider
+from app.startup import get_summary_provider
 from app.startup.validation import deserialize_json_param
+from app.summary.retry import compute_summary_total_timeout
 from app.types import ContextEntryDict
 from app.types import JsonValue
 from app.types import MetadataDict
@@ -50,6 +53,10 @@ settings = get_settings()
 # Initialized lazily on first use to ensure correct event loop binding.
 _embedding_semaphore: asyncio.Semaphore | None = None
 
+# Concurrency limiter for summary generation to prevent provider overload.
+# Initialized lazily on first use to ensure correct event loop binding.
+_summary_semaphore: asyncio.Semaphore | None = None
+
 
 def _get_embedding_semaphore() -> asyncio.Semaphore:
     """Get or create the embedding concurrency semaphore.
@@ -61,6 +68,14 @@ def _get_embedding_semaphore() -> asyncio.Semaphore:
     if _embedding_semaphore is None:
         _embedding_semaphore = asyncio.Semaphore(settings.embedding.max_concurrent)
     return _embedding_semaphore
+
+
+def _get_summary_semaphore() -> asyncio.Semaphore:
+    """Get or create the summary concurrency semaphore."""
+    global _summary_semaphore
+    if _summary_semaphore is None:
+        _summary_semaphore = asyncio.Semaphore(settings.summary.max_concurrent)
+    return _summary_semaphore
 
 
 async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | None:
@@ -87,7 +102,7 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
     try:
         chunking_service = get_chunking_service()
         logger.debug(
-            f'[EMBEDDING-FIRST] Chunking service state: service={chunking_service}, '
+            f'Chunking service state: service={chunking_service}, '
             f'enabled={chunking_service.is_enabled if chunking_service else "N/A"}',
         )
 
@@ -95,9 +110,9 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
             # Chunked embedding for long documents
             chunks = chunking_service.split_text(text)
             chunk_texts = [chunk.text for chunk in chunks]
-            logger.info(f'[EMBEDDING-FIRST] Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
+            logger.info(f'Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
             embeddings = await embedding_provider.embed_documents(chunk_texts)
-            logger.info(f'[EMBEDDING-FIRST] Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
+            logger.info(f'Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
 
             return [
                 ChunkEmbedding(
@@ -108,9 +123,9 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
                 for emb, chunk in zip(embeddings, chunks, strict=True)
             ]
         # Single embedding (chunking disabled)
-        logger.info(f'[EMBEDDING-FIRST] Generating single embedding: text_len={len(text)}')
+        logger.info(f'Generating single embedding: text_len={len(text)}')
         embedding = await embedding_provider.embed_query(text)
-        logger.info('[EMBEDDING-FIRST] Single embedding generated')
+        logger.info('Single embedding generated')
         return [ChunkEmbedding(embedding=embedding, start_index=0, end_index=len(text))]
 
     except Exception as e:
@@ -155,6 +170,48 @@ async def _generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] |
         raise ToolError(
             f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
             f'This may indicate the embedding provider is overloaded or unreachable.',
+        ) from None
+
+
+async def _generate_summary_with_timeout(text: str) -> str | None:
+    """Generate summary with concurrency limiting and total timeout.
+
+    Wraps summary_provider.summarize() with:
+    - Concurrency-limited access via summary semaphore
+    - Total timeout computed from retry settings
+    - ToolError on timeout for clear client feedback
+
+    Args:
+        text: Text content to generate summary for.
+
+    Returns:
+        Summary string, or None if summary provider is not configured.
+
+    Raises:
+        ToolError: If summary generation times out or fails.
+    """
+    summary_provider = get_summary_provider()
+    if summary_provider is None:
+        return None
+
+    total_timeout = compute_summary_total_timeout()
+    try:
+        logger.info('Generating summary: text_len=%d', len(text))
+        async with _get_summary_semaphore():
+            result = await asyncio.wait_for(
+                summary_provider.summarize(text),
+                timeout=total_timeout,
+            )
+        # Normalize empty/whitespace-only summaries to None
+        if not result.strip():
+            logger.warning('Summary provider returned empty/whitespace-only response, treating as None')
+            return None
+        logger.info('Summary generated: text_len=%d, summary_len=%d', len(text), len(result))
+        return result
+    except TimeoutError:
+        raise ToolError(
+            f'Summary generation exceeded total timeout ({total_timeout:.0f}s). '
+            f'This may indicate the summary provider is overloaded or unreachable.',
         ) from None
 
 
@@ -320,28 +377,33 @@ async def store_context(
             validated_images = images
             logger.debug(f'Pre-validation passed for {len(validated_images)} images, total size: {total_size:.2f}MB')
 
-        # === PHASE 2: Generate Embedding FIRST (Outside Transaction) ===
-        # CRITICAL: Embedding generation happens BEFORE any database operations.
-        # If it fails, NO data is saved - this is the core of transactional integrity.
+        # === PHASE 2: Generate Summary + Embedding in PARALLEL (Outside Transaction) ===
+        # CRITICAL: Both generation steps happen BEFORE any database operations.
+        # If either fails, NO data is saved - this is the core of transactional integrity.
 
-        # Performance optimization: skip embedding generation for likely duplicates.
-        # The in-transaction deduplication in store_with_deduplication remains as
-        # the authoritative check. This pre-check is read-only and may have
-        # false negatives (race condition: another request inserts between check
-        # and transaction), but never false positives that cause data loss.
         repos = await ensure_repositories()
         chunk_embeddings: list[ChunkEmbedding] | None = None
         embedding_generated = False
+        summary_text: str | None = None
+        summary_generated = False
 
-        if get_embedding_provider() is not None:
+        # Performance optimization: pre-check for likely duplicates (read-only)
+        likely_duplicate_id: int | None = None
+
+        if get_embedding_provider() is not None or get_summary_provider() is not None:
             likely_duplicate_id = await repos.context.check_latest_is_duplicate(
                 thread_id=thread_id,
                 source=source,
                 text_content=text,
             )
 
+        # Build parallel tasks
+        tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
+        task_names: list[str] = []
+
+        # Embedding task (existing logic with pre-check optimization)
+        if get_embedding_provider() is not None:
             if likely_duplicate_id is not None:
-                # Likely duplicate detected. Check if embeddings already exist.
                 has_embeddings = await repos.embeddings.exists(likely_duplicate_id)
                 if has_embeddings:
                     logger.debug(
@@ -355,12 +417,46 @@ async def store_context(
                         'generating embeddings',
                         likely_duplicate_id, thread_id,
                     )
-                    chunk_embeddings = await _generate_embeddings_with_timeout(text)
-                    embedding_generated = chunk_embeddings is not None
+                    tasks_to_run.append(_generate_embeddings_with_timeout(text))
+                    task_names.append('embedding')
             else:
-                # New entry (or race condition -- safety net in transaction handles this)
-                chunk_embeddings = await _generate_embeddings_with_timeout(text)
-                embedding_generated = chunk_embeddings is not None
+                tasks_to_run.append(_generate_embeddings_with_timeout(text))
+                task_names.append('embedding')
+
+        # Summary task (mirrors embedding pre-check pattern)
+        if get_summary_provider() is not None:
+            min_content_length = settings.summary.min_content_length
+            if min_content_length > 0 and len(text) < min_content_length:
+                logger.info(
+                    'Skipping summary generation: text length %d < min_content_length %d',
+                    len(text), min_content_length,
+                )
+            elif likely_duplicate_id is not None:
+                existing_summary = await repos.context.get_summary(likely_duplicate_id)
+                if existing_summary is not None:
+                    summary_text = existing_summary
+                    logger.debug(
+                        'Pre-check: reusing existing summary for likely duplicate '
+                        'of context %d in thread %s',
+                        likely_duplicate_id, thread_id,
+                    )
+                else:
+                    tasks_to_run.append(_generate_summary_with_timeout(text))
+                    task_names.append('summary')
+            else:
+                tasks_to_run.append(_generate_summary_with_timeout(text))
+                task_names.append('summary')
+
+        # Execute all tasks in parallel
+        if tasks_to_run:
+            results = await asyncio.gather(*tasks_to_run)
+            for name, result in zip(task_names, results, strict=True):
+                if name == 'embedding':
+                    chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
+                    embedding_generated = chunk_embeddings is not None
+                elif name == 'summary':
+                    summary_text = cast(str | None, result)
+                    summary_generated = bool(summary_text)
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
@@ -381,6 +477,7 @@ async def store_context(
                         content_type=content_type,
                         text_content=text,
                         metadata=metadata_str,
+                        summary=summary_text,
                         txn=txn,
                     )
 
@@ -456,18 +553,30 @@ async def store_context(
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
 
+        # Build message parts
+        parts: list[str] = []
+
         if embedding_generated and not embedding_stored:
-            embedding_note = ' (embedding generated but not stored - duplicate)'
+            parts.append('embedding generated but not stored - duplicate')
         elif embedding_stored:
-            embedding_note = ' (embedding generated)'
-        else:
-            embedding_note = ''
+            parts.append('embedding generated')
+
+        if summary_generated:
+            parts.append('summary generated')
+        elif summary_text is not None:
+            parts.append('summary preserved')
+
+        # Build base message: suppress "with 0 images" when no images
+        base = f'Context {action} with {len(validated_images)} images' if validated_images else f'Context {action}'
+
+        # Single consolidated parenthetical
+        message = f'{base} ({", ".join(parts)})' if parts else base
 
         return StoreContextSuccessDict(
             success=True,
             context_id=context_id,
             thread_id=thread_id,
-            message=f'Context {action} with {len(validated_images)} images{embedding_note}',
+            message=message,
         )
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
@@ -736,16 +845,44 @@ async def update_context(
         if not exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
 
-        # === PHASE 2: Generate Embedding FIRST (Outside Transaction) ===
-        # CRITICAL: Embedding generation happens BEFORE any database modifications.
-        # If it fails, NO data is modified - original data is preserved.
+        # === PHASE 2: Generate Summary + Embedding FIRST (Outside Transaction) ===
+        # CRITICAL: Both generation steps happen BEFORE any database modifications.
+        # If either fails, NO data is modified - original data is preserved.
         chunk_embeddings: list[ChunkEmbedding] | None = None
         embedding_generated = False
+        summary_text: str | None = None
+        summary_generated = False
+        clear_summary = False
 
         if text is not None:
-            # Only generate embedding if text is being changed
-            chunk_embeddings = await _generate_embeddings_with_timeout(text)
-            embedding_generated = chunk_embeddings is not None
+            # Text changed - regenerate both embedding and summary in parallel
+            tasks: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
+            task_names: list[str] = []
+
+            tasks.append(_generate_embeddings_with_timeout(text))
+            task_names.append('embedding')
+
+            if get_summary_provider() is not None:
+                min_content_length = settings.summary.min_content_length
+                if min_content_length > 0 and len(text) < min_content_length:
+                    clear_summary = True
+                    logger.info(
+                        'Skipping summary generation for update: text length %d < '
+                        'min_content_length %d. Existing summary will be cleared.',
+                        len(text), min_content_length,
+                    )
+                else:
+                    tasks.append(_generate_summary_with_timeout(text))
+                    task_names.append('summary')
+
+            results = await asyncio.gather(*tasks)
+            for name, result in zip(task_names, results, strict=True):
+                if name == 'embedding':
+                    chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
+                    embedding_generated = chunk_embeddings is not None
+                elif name == 'summary':
+                    summary_text = cast(str | None, result)
+                    summary_generated = bool(summary_text)
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
@@ -770,6 +907,8 @@ async def update_context(
                             context_id=context_id,
                             text_content=text,
                             metadata=metadata_str,
+                            summary=summary_text,
+                            clear_summary=clear_summary,
                             txn=txn,
                         )
 
@@ -875,12 +1014,22 @@ async def update_context(
 
         logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
 
+        parts: list[str] = []
+        if embedding_generated:
+            parts.append('embedding regenerated')
+        if summary_generated:
+            parts.append('summary regenerated')
+        elif clear_summary:
+            parts.append('summary cleared')
+
+        base = f'Successfully updated {len(updated_fields)} field(s)'
+        message = f'{base} ({", ".join(parts)})' if parts else base
+
         return UpdateContextSuccessDict(
             success=True,
             context_id=context_id,
             updated_fields=updated_fields,
-            message=f'Successfully updated {len(updated_fields)} field(s)'
-            + (' (embedding regenerated)' if embedding_generated else ''),
+            message=message,
         )
 
     except ToolError:

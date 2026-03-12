@@ -10,6 +10,8 @@ WORKDIR /app
 
 # Build argument for embedding provider (default: ollama for GHCR)
 ARG EMBEDDING_EXTRA=embeddings-ollama
+# Build argument for summary provider (default: ollama, shares langchain-ollama with embeddings)
+ARG SUMMARY_EXTRA=summary-ollama
 
 # uv build optimization settings
 ENV UV_COMPILE_BYTECODE=1 \
@@ -20,7 +22,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project --extra ${EMBEDDING_EXTRA} --extra reranking --no-dev
+    uv sync --locked --no-install-project --extra ${EMBEDDING_EXTRA} --extra ${SUMMARY_EXTRA} --extra reranking --no-dev
 
 # Copy application code
 COPY app/ ./app/
@@ -28,7 +30,7 @@ COPY pyproject.toml uv.lock README.md ./
 
 # Install project
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra ${EMBEDDING_EXTRA} --extra reranking --no-dev
+    uv sync --locked --extra ${EMBEDDING_EXTRA} --extra ${SUMMARY_EXTRA} --extra reranking --no-dev
 
 # ============================================
 # RUNTIME STAGE

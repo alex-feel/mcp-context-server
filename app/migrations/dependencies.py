@@ -1,18 +1,23 @@
 """
-Provider and vector storage dependency checking for semantic search.
+Provider and storage dependency checking for semantic search and summary generation.
 
 This module provides functions to check if all required dependencies
-are available before enabling semantic search functionality.
+are available before enabling semantic search and summary generation.
 """
 
 import importlib.util
 import logging
+import os
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import TypedDict
 from typing import cast
 
 from app.settings import EmbeddingSettings
+
+if TYPE_CHECKING:
+    from app.settings import SummarySettings
 
 logger = logging.getLogger(__name__)
 
@@ -395,4 +400,205 @@ async def _check_voyage_dependencies(embedding_settings: EmbeddingSettings) -> P
     logger.debug('[OK] VOYAGE_API_KEY is set')
 
     logger.info('[OK] All Voyage AI provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
+async def check_summary_provider_dependencies(
+    provider: str,
+    summary_settings: 'SummarySettings',
+    embedding_settings: EmbeddingSettings,
+) -> ProviderCheckResult:
+    """Check provider-specific dependencies for summary generation.
+
+    Dispatches to provider-specific check functions based on the selected provider.
+    Each provider has different requirements:
+    - ollama: Requires langchain-ollama, Ollama service, summary model available
+    - openai: Requires langchain-openai, OPENAI_API_KEY
+    - anthropic: Requires langchain-anthropic, ANTHROPIC_API_KEY
+
+    Args:
+        provider: Provider name from SUMMARY_PROVIDER setting
+        summary_settings: SummarySettings instance with provider configuration
+        embedding_settings: EmbeddingSettings instance (Ollama reuses OLLAMA_HOST)
+
+    Returns:
+        ProviderCheckResult with available, reason, and install_instructions
+    """
+    check_functions: dict[str, Callable[..., Any]] = {
+        'ollama': _check_ollama_summary_dependencies,
+        'openai': _check_openai_summary_dependencies,
+        'anthropic': _check_anthropic_summary_dependencies,
+    }
+
+    if provider not in check_functions:
+        return ProviderCheckResult(
+            available=False,
+            reason=f"Unknown summary provider: '{provider}'",
+            install_instructions=None,
+        )
+
+    logger.info(f'Checking {provider} summary provider dependencies...')
+    result = await check_functions[provider](summary_settings, embedding_settings)
+    return cast(ProviderCheckResult, result)
+
+
+async def _check_ollama_summary_dependencies(
+    summary_settings: 'SummarySettings',
+    embedding_settings: EmbeddingSettings,
+) -> ProviderCheckResult:
+    """Check Ollama-specific dependencies for summary generation.
+
+    Checks:
+    1. langchain-ollama package is installed
+    2. Ollama service is running at OLLAMA_HOST
+    3. Summary model is available
+
+    Args:
+        summary_settings: SummarySettings with model name
+        embedding_settings: EmbeddingSettings with ollama_host (shared between features)
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra summary-ollama'
+
+    # 1. Check langchain-ollama package
+    try:
+        if importlib.util.find_spec('langchain_ollama') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-ollama package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-ollama package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-ollama package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check Ollama service is running
+    try:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(embedding_settings.ollama_host, timeout=2.0)
+            if response.status_code != 200:
+                return ProviderCheckResult(
+                    available=False,
+                    reason=f'Ollama service returned status {response.status_code}',
+                    install_instructions='Start Ollama service: ollama serve',
+                )
+        logger.debug(f'[OK] Ollama service running at {embedding_settings.ollama_host}')
+    except Exception as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'Ollama service not accessible at {embedding_settings.ollama_host}: {e}',
+            install_instructions='Start Ollama service: ollama serve',
+        )
+
+    # 3. Check summary model is available
+    try:
+        import ollama
+
+        ollama_client = ollama.Client(host=embedding_settings.ollama_host, timeout=5.0)
+        ollama_client.show(summary_settings.model)
+        logger.debug(f'[OK] Summary model "{summary_settings.model}" available')
+    except Exception as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'Summary model "{summary_settings.model}" not available: {e}',
+            install_instructions=f'Download model: ollama pull {summary_settings.model}',
+        )
+
+    logger.info('[OK] All Ollama summary provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
+async def _check_openai_summary_dependencies(
+    _summary_settings: 'SummarySettings',
+    _embedding_settings: EmbeddingSettings,
+) -> ProviderCheckResult:
+    """Check OpenAI-specific dependencies for summary generation.
+
+    Checks:
+    1. langchain-openai package is installed
+    2. OPENAI_API_KEY is set
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra summary-openai'
+
+    # 1. Check langchain-openai package
+    try:
+        if importlib.util.find_spec('langchain_openai') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-openai package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-openai package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-openai package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check API key is set
+    if not os.environ.get('OPENAI_API_KEY'):
+        return ProviderCheckResult(
+            available=False,
+            reason='OPENAI_API_KEY environment variable is not set',
+            install_instructions='Set environment variable: export OPENAI_API_KEY=your-key',
+        )
+    logger.debug('[OK] OPENAI_API_KEY is set')
+
+    logger.info('[OK] All OpenAI summary provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
+async def _check_anthropic_summary_dependencies(
+    _summary_settings: 'SummarySettings',
+    _embedding_settings: EmbeddingSettings,
+) -> ProviderCheckResult:
+    """Check Anthropic-specific dependencies for summary generation.
+
+    Checks:
+    1. langchain-anthropic package is installed
+    2. ANTHROPIC_API_KEY is set
+
+    Returns:
+        ProviderCheckResult
+    """
+    install_cmd = 'uv sync --extra summary-anthropic'
+
+    # 1. Check langchain-anthropic package
+    try:
+        if importlib.util.find_spec('langchain_anthropic') is None:
+            return ProviderCheckResult(
+                available=False,
+                reason='langchain-anthropic package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug('[OK] langchain-anthropic package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'langchain-anthropic package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check API key is set
+    if not os.environ.get('ANTHROPIC_API_KEY'):
+        return ProviderCheckResult(
+            available=False,
+            reason='ANTHROPIC_API_KEY environment variable is not set',
+            install_instructions='Set environment variable: export ANTHROPIC_API_KEY=your-key',
+        )
+    logger.debug('[OK] ANTHROPIC_API_KEY is set')
+
+    logger.info('[OK] All Anthropic summary provider dependencies available')
     return ProviderCheckResult(available=True, reason=None, install_instructions=None)

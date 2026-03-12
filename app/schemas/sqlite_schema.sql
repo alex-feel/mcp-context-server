@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS context_entries (
     content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
     text_content TEXT,
     metadata JSON,
+    summary TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

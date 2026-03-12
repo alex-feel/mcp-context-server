@@ -347,6 +347,9 @@ class TestLifespanErrorHandling:
         # Mock settings - ENABLE_EMBEDDING_GENERATION=true (default)
         mock_settings = MagicMock()
         mock_settings.embedding.generation_enabled = True
+        mock_settings.reranking.enabled = False
+        mock_settings.chunking.enabled = False
+        mock_settings.summary.generation_enabled = False
         mock_settings.semantic_search.enabled = True
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
@@ -368,6 +371,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
@@ -412,6 +416,9 @@ class TestLifespanErrorHandling:
         # Mock settings - ENABLE_EMBEDDING_GENERATION=false (user explicitly disabled)
         mock_settings = MagicMock()
         mock_settings.embedding.generation_enabled = False
+        mock_settings.reranking.enabled = False
+        mock_settings.chunking.enabled = False
+        mock_settings.summary.generation_enabled = False
         mock_settings.semantic_search.enabled = False  # Doesn't matter when embeddings disabled
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
@@ -433,6 +440,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
@@ -472,6 +480,9 @@ class TestLifespanErrorHandling:
         # Mock settings - disable embedding generation to avoid initialization
         mock_settings = MagicMock()
         mock_settings.embedding.generation_enabled = False
+        mock_settings.reranking.enabled = False
+        mock_settings.chunking.enabled = False
+        mock_settings.summary.generation_enabled = False
         mock_settings.semantic_search.enabled = False
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
@@ -491,6 +502,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
@@ -535,6 +547,9 @@ class TestLifespanErrorHandling:
         # Mock settings - enable embedding generation
         mock_settings = MagicMock()
         mock_settings.embedding.generation_enabled = True
+        mock_settings.reranking.enabled = False
+        mock_settings.chunking.enabled = False
+        mock_settings.summary.generation_enabled = False
         mock_settings.semantic_search.enabled = True
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
@@ -555,6 +570,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),

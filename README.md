@@ -11,6 +11,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 16 powerful operators
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
+- **Summary Generation**: Optional automatic LLM-based summarization returned alongside truncated `text_content` in all search tool results for better agent context efficiency (enabled by default with Ollama)
 - **Full-Text Search**: Optional linguistic search with stemming, ranking, boolean queries (FTS5/tsvector), and cross-encoder reranking
 - **Semantic Search**: Optional vector similarity search for meaning-based retrieval with cross-encoder reranking
 - **Hybrid Search**: Optional combined FTS + semantic search using Reciprocal Rank Fusion (RRF) with cross-encoder reranking
@@ -24,9 +25,10 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 
 - `uv` package manager ([install instructions](https://docs.astral.sh/uv/getting-started/installation/))
 - An MCP-compatible client (Claude Code, LangGraph, or any MCP client)
-- Ollama (for embedding generation - default behavior):
+- Ollama (for embedding and summary generation - default behavior):
   - Install from [ollama.com/download](https://ollama.com/download)
   - Pull embedding model: `ollama pull qwen3-embedding:0.6b`
+  - Pull summary model: `ollama pull qwen3:1.7b`
 
 ## Adding the Server to Claude Code
 
@@ -35,12 +37,12 @@ There are two ways to add the MCP Context Server to Claude Code:
 ### Method 1: Using CLI Command
 
 ```bash
-# Default setup (recommended) - embeddings + reranking
-# Requires: Ollama installed + model pulled (see Prerequisites)
-claude mcp add context-server -- uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
+# Default setup (recommended) - embeddings + summary + reranking
+# Requires: Ollama installed + models pulled (see Prerequisites)
+claude mcp add context-server -- uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,summary-ollama,reranking]" mcp-context-server
 
 # From GitHub (latest development version)
-claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with "mcp-context-server[embeddings-ollama,reranking]" mcp-context-server
+claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with "mcp-context-server[embeddings-ollama,summary-ollama,reranking]" mcp-context-server
 ```
 
 For more details, see: <https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server>
@@ -55,18 +57,18 @@ Add the following to your `.mcp.json` file in your project directory:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,summary-ollama,reranking]", "mcp-context-server"],
       "env": {}
     }
   }
 }
 ```
 
-**Prerequisites:** Ollama must be installed with the embedding model pulled (`ollama pull qwen3-embedding:0.6b`).
+**Prerequisites:** Ollama must be installed with the required models pulled: `ollama pull qwen3-embedding:0.6b` and `ollama pull qwen3:1.7b`.
 
 For the latest development version from GitHub, use:
 ```json
-"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"]
+"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "--with", "mcp-context-server[embeddings-ollama,summary-ollama,reranking]", "mcp-context-server"]
 ```
 
 For configuration file locations and details, see: <https://docs.claude.com/en/docs/claude-code/settings#settings-files>
@@ -95,7 +97,7 @@ Example configuration with environment variables:
     "context-server": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"],
+      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,summary-ollama,reranking]", "mcp-context-server"],
       "env": {
         "LOG_LEVEL": "${LOG_LEVEL:-INFO}",
         "DB_PATH": "${DB_PATH:-~/.mcp/context_storage.db}",
@@ -117,6 +119,17 @@ For more details on environment variable expansion, see: <https://docs.claude.co
 - **DB_PATH**: Database file location (SQLite only) - defaults to ~/.mcp/context_storage.db
 - **MAX_IMAGE_SIZE_MB**: Maximum size per image in MB - defaults to 10
 - **MAX_TOTAL_SIZE_MB**: Maximum total request size in MB - defaults to 100
+
+**Summary Generation Settings:**
+- **ENABLE_SUMMARY_GENERATION**: Enable automatic LLM-based summary generation (true/false) - defaults to true. When true and provider dependencies are unavailable, the server will NOT start. Set to false to disable.
+- **SUMMARY_PROVIDER**: Summary provider - `ollama` (default, local/free), `openai`, or `anthropic`
+- **SUMMARY_MODEL**: Summary model name - defaults to `qwen3:1.7b`. Qwen3 alternatives: `qwen3:4b` (higher quality), `qwen3:8b` (highest quality), `qwen3:0.6b` (minimal resources)
+- **SUMMARY_MAX_TOKENS**: Maximum output tokens for summary generation (50-5000) - defaults to 2000
+- **SUMMARY_TIMEOUT_S**: Timeout in seconds for summary generation API calls - defaults to 30.0
+- **SUMMARY_RETRY_MAX_ATTEMPTS**: Maximum retry attempts on transient errors - defaults to 3
+- **SUMMARY_RETRY_BASE_DELAY_S**: Base delay in seconds between retries (exponential backoff) - defaults to 1.0
+- **SUMMARY_MAX_CONCURRENT**: Maximum concurrent summary generation operations (1-20) - defaults to 3
+- **SUMMARY_PROMPT**: Custom system prompt for summarization. Overrides the built-in optimized default prompt. Empty string or unset uses the default prompt.
 
 **Full-Text Search Settings:**
 - **ENABLE_FTS**: Enable full-text search functionality (true/false) - defaults to false
@@ -177,6 +190,14 @@ Additional environment variables are available for advanced server tuning, inclu
 - Operation timeouts
 
 For a complete list of all configuration options, see [app/settings.py](app/settings.py).
+
+## Summary Generation
+
+Summary generation automatically creates concise LLM-based summaries for each stored context entry. Summaries are returned in the `summary` field of all search tool results alongside truncated `text_content`, providing dense, informative summaries that help agents determine relevance without fetching full entries.
+
+This feature is **enabled by default** when the `summary-ollama` extra is installed. The default model is `qwen3:1.7b` (local Ollama). Alternative models in the same family: `qwen3:4b` (higher quality), `qwen3:8b` (highest quality), `qwen3:0.6b` (minimal resources).
+
+For detailed instructions including all providers (Ollama, OpenAI, Anthropic), model selection, and custom prompt configuration, see the [Summary Generation Guide](docs/summary-generation.md).
 
 ## Semantic Search
 

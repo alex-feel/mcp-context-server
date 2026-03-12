@@ -158,7 +158,8 @@ The `scores` object contains:
 
 Returns:
     Dict with query (str), mode (str), results (list with id, thread_id, source,
-    text_content, metadata, scores, highlighted, tags), count (int), language (str),
+    text_content (truncated), summary, is_text_content_truncated,
+    metadata, scores, highlighted, tags), count (int), language (str),
     and stats (only when explain_query=True).
 
 Raises:

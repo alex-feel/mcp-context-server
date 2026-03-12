@@ -124,6 +124,32 @@ async def _apply_reranking(
         return results[:limit] if limit else results
 
 
+def _apply_search_display_format(entry: dict[str, Any]) -> None:
+    """Apply unified search display formatting to a single result entry.
+
+    Truncates text_content based on SEARCH_TRUNCATION_LENGTH setting and
+    normalizes the summary field. Both fields are always present in the output:
+    text_content as a truncated preview, summary as a string (empty when absent).
+
+    Modifies the entry dict in-place.
+
+    Args:
+        entry: A single search result dict to format.
+    """
+    # Normalize summary: always present as string, empty when absent
+    summary = entry.get('summary')
+    if isinstance(summary, str) and summary.strip():
+        entry['summary'] = summary
+    else:
+        entry['summary'] = ''
+
+    # Always truncate text_content (regardless of summary presence)
+    text_content = entry.get('text_content', '')
+    truncated_text, is_truncated = truncate_text(text_content, max_length=settings.search.truncation_length)
+    entry['text_content'] = truncated_text
+    entry['is_text_content_truncated'] = is_truncated
+
+
 async def _semantic_search_raw(
     query: str,
     limit: int,
@@ -407,7 +433,7 @@ async def search_context(
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Search context entries with filtering. Returns TRUNCATED text_content (150 chars max).
+    """Search context entries with filtering. Returns TRUNCATED text_content.
 
     Filtering options:
     - thread_id, source: Indexed for fast filtering (always prefer specifying thread_id)
@@ -417,7 +443,8 @@ async def search_context(
     - start_date/end_date: Filter by creation timestamp (ISO 8601)
 
     Returns:
-        Dict with results (list of ContextEntryDict), count (int), and
+        Dict with results (list of ContextEntryDict with truncated text_content,
+        summary always present as string, is_text_content_truncated flag), count (int), and
         stats (dict, only when explain_query=True).
 
     Raises:
@@ -499,11 +526,8 @@ async def search_context(
             else:
                 entry['tags'] = []
 
-            # Apply text truncation for search_context
-            text_content = entry.get('text_content', '')
-            truncated_text, is_truncated = truncate_text(text_content)
-            entry['text_content'] = truncated_text
-            entry['is_truncated'] = is_truncated
+            # Apply unified search display formatting
+            _apply_search_display_format(cast(dict[str, Any], entry))
 
             # Fetch images if requested and applicable
             if include_images and entry.get('content_type') == 'multimodal':
@@ -589,7 +613,8 @@ async def semantic_search_context(
     Typical distance interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
 
     Returns:
-        Dict with query (str), results (list with id, thread_id, source, text_content,
+        Dict with query (str), results (list with id, thread_id, source,
+        text_content (truncated), summary, is_text_content_truncated,
         metadata, scores, tags), count (int), model (str), and stats (only when explain_query=True).
 
     Raises:
@@ -690,6 +715,10 @@ async def semantic_search_context(
             else:
                 result['tags'] = []
 
+        # Apply unified search display formatting
+        for result in final_results:
+            _apply_search_display_format(result)
+
         logger.info(f'Semantic search found {len(final_results)} results for query: "{query[:50]}..."')
 
         response: dict[str, Any] = {
@@ -784,7 +813,8 @@ async def fts_search_context(
 
     Returns:
         Dict with query (str), mode (str), results (list with id, thread_id, source,
-        text_content, metadata, scores, highlighted, tags), count (int), language (str),
+        text_content (truncated), summary, is_text_content_truncated,
+        metadata, scores, highlighted, tags), count (int), language (str),
         and stats (only when explain_query=True).
 
     Raises:
@@ -929,6 +959,10 @@ async def fts_search_context(
                     result['images'] = images_result
             else:
                 result['tags'] = []
+
+        # Apply unified search display formatting
+        for result in final_results:
+            _apply_search_display_format(result)
 
         logger.info(f'FTS search found {len(final_results)} results for query: "{query[:50]}..."')
 
@@ -1081,7 +1115,8 @@ async def hybrid_search_context(
     - fusion_stats: {rrf_k, total_unique_documents, documents_in_both, documents_fts_only, documents_semantic_only}
 
     Returns:
-        Dict with query (str), results (list with id, thread_id, source, text_content,
+        Dict with query (str), results (list with id, thread_id, source,
+        text_content (truncated), summary, is_text_content_truncated,
         metadata, scores, tags), count (int), fusion_method (str), search_modes_used (list),
         fts_count (int), semantic_count (int), and stats (only when explain_query=True).
 
@@ -1330,6 +1365,10 @@ async def hybrid_search_context(
                     result['images'] = images_result
             else:
                 result['tags'] = []
+
+        # Apply unified search display formatting
+        for result in final_results:
+            _apply_search_display_format(result)
 
         logger.info(
             f'Hybrid search found {len(final_results)} results for query: "{query[:50]}..." '

@@ -49,6 +49,7 @@ from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
 from app.migrations import apply_jsonb_merge_patch_migration
 from app.migrations import apply_semantic_search_migration
+from app.migrations import apply_summary_migration
 from app.migrations import check_provider_dependencies
 from app.migrations import check_vector_storage_dependencies
 from app.migrations import estimate_migration_time
@@ -61,6 +62,7 @@ from app.startup import DB_PATH
 from app.startup import get_backend
 from app.startup import get_embedding_provider
 from app.startup import get_reranking_provider
+from app.startup import get_summary_provider
 from app.startup import init_database
 from app.startup import propagate_langsmith_settings
 from app.startup import set_backend
@@ -68,6 +70,7 @@ from app.startup import set_chunking_service
 from app.startup import set_embedding_provider
 from app.startup import set_repositories
 from app.startup import set_reranking_provider
+from app.startup import set_summary_provider
 
 # Backward compatibility re-exports for validation utilities
 # Tests and external code may import these from app.server
@@ -212,14 +215,16 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_fts_migration(backend=backend)
         # 7) Apply chunking migration (1:N embedding relationship)
         await apply_chunking_migration(backend=backend)
-        # 8) Validate pool timeout for embedding operations (PostgreSQL only)
+        # 8) Apply summary column migration (always runs, column required for search display)
+        await apply_summary_migration(backend=backend)
+        # 9) Validate pool timeout for embedding operations (PostgreSQL only)
         if backend.backend_type == 'postgresql':
             validate_pool_timeout_for_embedding()
-        # 9) Initialize repositories with the backend
+        # 10) Initialize repositories with the backend
         repos = RepositoryContainer(backend)
         set_repositories(repos)
 
-        # 10) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
+        # 11) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
         # Additive tools (create new entries)
         register_tool(mcp, store_context)
         register_tool(mcp, store_context_batch)
@@ -238,11 +243,11 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, delete_context)
         register_tool(mcp, delete_context_batch)
 
-        # 11) Propagate LangSmith settings to os.environ BEFORE embedding provider init
+        # 12) Propagate LangSmith settings to os.environ BEFORE embedding provider init
         # This enables LangSmith SDK auto-detection when users configure via .env file
         propagate_langsmith_settings()
 
-        # 12) Initialize embedding generation if enabled (BEFORE semantic search)
+        # 13) Initialize embedding generation if enabled (BEFORE semantic search)
         # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
         # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
         if settings.embedding.generation_enabled:
@@ -288,7 +293,10 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
                     )
 
                 set_embedding_provider(embedding_provider)
-                logger.info(f'[OK] Embedding generation enabled with provider: {embedding_provider.provider_name}')
+                logger.info(
+                    f'[OK] Embedding generation enabled with provider: {embedding_provider.provider_name} '
+                    f'(model: {settings.embedding.model})',
+                )
 
             except ImportError as e:
                 raise ConfigurationError(
@@ -309,7 +317,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_embedding_provider(None)
             logger.info('Embedding generation disabled (ENABLE_EMBEDDING_GENERATION=false)')
 
-        # 13) Initialize reranking provider if enabled
+        # 14) Initialize reranking provider if enabled
         # Reranking improves search precision by re-scoring results with a cross-encoder
         if settings.reranking.enabled:
             try:
@@ -349,7 +357,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_reranking_provider(None)
             logger.info('Reranking disabled (ENABLE_RERANKING=false)')
 
-        # 14) Initialize chunking service if enabled
+        # 15) Initialize chunking service if enabled
         # Chunking splits long documents into smaller pieces for better semantic search quality
         if settings.chunking.enabled:
             try:
@@ -382,7 +390,68 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_chunking_service(None)
             logger.info('Chunking disabled (ENABLE_CHUNKING=false)')
 
-        # 15) Register semantic search tool if enabled AND embedding provider is available
+        # 16) Initialize summary provider if enabled
+        if settings.summary.generation_enabled:
+            # Step 1: Check provider-specific dependencies based on SUMMARY_PROVIDER
+            from app.migrations import check_summary_provider_dependencies
+
+            summary_provider_name = settings.summary.provider
+            summary_check = await check_summary_provider_dependencies(
+                summary_provider_name, settings.summary, settings.embedding,
+            )
+
+            if not summary_check['available']:
+                install_hint = summary_check.get('install_instructions') or 'Check provider configuration'
+                reason = summary_check['reason'] or ''
+                error_class = classify_provider_error(reason)
+                raise error_class(
+                    f'ENABLE_SUMMARY_GENERATION=true but {summary_provider_name} provider dependencies not met. '
+                    f'Reason: {reason}. '
+                    f'Fix: {install_hint} '
+                    f'OR set ENABLE_SUMMARY_GENERATION=false to disable summaries.',
+                )
+
+            # Step 2: Create and initialize provider
+            try:
+                from app.summary import create_summary_provider
+
+                summary_provider = create_summary_provider()
+                await summary_provider.initialize()
+
+                if not await summary_provider.is_available():
+                    await summary_provider.shutdown()
+                    raise DependencyError(
+                        f'ENABLE_SUMMARY_GENERATION=true but {summary_provider.provider_name} '
+                        'is not available (service may be down). '
+                        'Fix: Ensure the summary service is running and accessible '
+                        'OR set ENABLE_SUMMARY_GENERATION=false to disable summaries.',
+                    )
+
+                set_summary_provider(summary_provider)
+                logger.info(
+                    f'[OK] Summary generation enabled with provider: {summary_provider.provider_name} '
+                    f'(model: {settings.summary.model})',
+                )
+
+            except ImportError as e:
+                raise ConfigurationError(
+                    f'ENABLE_SUMMARY_GENERATION=true but provider import failed: {e}. '
+                    f'Fix: Install provider dependencies (e.g., uv sync --extra summary-{settings.summary.provider}) '
+                    f'OR set ENABLE_SUMMARY_GENERATION=false to disable summaries.',
+                ) from e
+            except (ConfigurationError, DependencyError):
+                raise
+            except Exception as e:
+                raise DependencyError(
+                    f'ENABLE_SUMMARY_GENERATION=true but initialization failed: {e}. '
+                    f'Fix: Check provider configuration and service availability '
+                    f'OR set ENABLE_SUMMARY_GENERATION=false to disable summaries.',
+                ) from e
+        else:
+            set_summary_provider(None)
+            logger.info('Summary generation disabled (ENABLE_SUMMARY_GENERATION=false)')
+
+        # 17) Register semantic search tool if enabled AND embedding provider is available
         # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
@@ -399,7 +468,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('[!] semantic_search_context not registered (feature disabled)')
 
-        # 16) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 18) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.fts.enabled:
             # Generate backend-specific FTS description for AI agents
@@ -422,7 +491,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('[!] fts_search_context not registered (feature disabled)')
 
-        # 17) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 19) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.hybrid_search.enabled:
             semantic_available_for_hybrid = (
                 settings.semantic_search.enabled and get_embedding_provider() is not None
@@ -485,11 +554,20 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             except Exception as e:
                 logger.error(f'Error shutting down embedding provider: {e}')
 
+        # Shutdown summary provider if initialized
+        shutdown_summary_provider = get_summary_provider()
+        if shutdown_summary_provider is not None:
+            try:
+                await shutdown_summary_provider.shutdown()
+            except Exception as e:
+                logger.error(f'Error shutting down summary provider: {e}')
+
         set_backend(None)
         set_repositories(None)
         set_embedding_provider(None)
         set_reranking_provider(None)
         set_chunking_service(None)
+        set_summary_provider(None)
     logger.info('MCP Context Server shutdown complete')
 
 

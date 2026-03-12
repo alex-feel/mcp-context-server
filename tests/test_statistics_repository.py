@@ -326,6 +326,92 @@ class TestStatisticsRepository:
         assert 'database_size_mb' in result
         assert result['database_size_mb'] >= 0
 
+    @pytest.mark.asyncio
+    async def test_get_summary_statistics_empty_database(
+        self,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Test summary statistics from empty database."""
+        result = await stats_repo.get_summary_statistics()
+
+        assert result['summary_count'] == 0
+        assert result['total_entries'] == 0
+        assert result['coverage_percentage'] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_get_summary_statistics_with_summaries(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Test summary statistics with entries that have summaries."""
+
+        def _insert_data(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            # Entry with valid summary
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
+                "VALUES ('t1', 'user', 'text', 'Content 1', 'Summary 1')",
+            )
+            # Entry with NULL summary
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('t1', 'agent', 'text', 'Content 2')",
+            )
+            # Entry with valid summary
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
+                "VALUES ('t2', 'user', 'text', 'Content 3', 'Summary 3')",
+            )
+
+        await stats_test_db.execute_write(_insert_data)
+
+        result = await stats_repo.get_summary_statistics()
+
+        assert result['total_entries'] == 3
+        assert result['summary_count'] == 2
+        assert result['coverage_percentage'] == pytest.approx(66.67, rel=0.01)
+
+    @pytest.mark.asyncio
+    async def test_get_summary_statistics_excludes_empty_strings(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Test that empty string summaries are NOT counted as valid summaries.
+
+        The SQL uses WHERE summary IS NOT NULL AND summary != '' to exclude
+        entries where empty strings were written before normalization guards
+        were added.
+        """
+
+        def _insert_data(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            # Entry with valid summary
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
+                "VALUES ('t1', 'user', 'text', 'Content 1', 'Valid summary')",
+            )
+            # Entry with empty string summary (the edge case)
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
+                "VALUES ('t1', 'agent', 'text', 'Content 2', '')",
+            )
+            # Entry with NULL summary
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('t2', 'user', 'text', 'Content 3')",
+            )
+
+        await stats_test_db.execute_write(_insert_data)
+
+        result = await stats_repo.get_summary_statistics()
+
+        assert result['total_entries'] == 3
+        # Only 1 entry has a valid (non-empty) summary
+        assert result['summary_count'] == 1
+        assert result['coverage_percentage'] == pytest.approx(33.33, rel=0.01)
+
 
 class TestRepositoryContainerStatistics:
     """Test statistics through the RepositoryContainer."""

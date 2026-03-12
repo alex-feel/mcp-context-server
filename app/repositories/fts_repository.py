@@ -301,6 +301,7 @@ class FtsRepository(BaseRepository):
                     ce.content_type,
                     ce.text_content,
                     ce.metadata,
+                    ce.summary,
                     ce.created_at,
                     ce.updated_at,
                     -bm25(context_entries_fts) as score,
@@ -525,6 +526,7 @@ class FtsRepository(BaseRepository):
                     sub.content_type,
                     sub.text_content,
                     sub.metadata,
+                    sub.summary,
                     sub.created_at,
                     sub.updated_at,
                     sub.score,
@@ -537,6 +539,7 @@ class FtsRepository(BaseRepository):
                         ce.content_type,
                         ce.text_content,
                         ce.metadata,
+                        ce.summary,
                         ce.created_at,
                         ce.updated_at,
                         ts_rank_cd(ce.text_search_vector, {tsquery_func}{self._placeholder(query_param_pos)})) as score

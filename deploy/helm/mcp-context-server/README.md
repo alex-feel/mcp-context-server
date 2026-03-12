@@ -40,6 +40,14 @@ helm install mcp ./deploy/helm/mcp-context-server \
   --set ollama.enabled=true
 ```
 
+### With Summary Generation (Ollama Sidecar)
+
+```bash
+helm install mcp ./deploy/helm/mcp-context-server \
+  --set search.summary.enabled=true \
+  --set ollama.enabled=true
+```
+
 ## Configuration
 
 ### Key Values
@@ -61,6 +69,9 @@ helm install mcp ./deploy/helm/mcp-context-server \
 | `search.chunking.size`             | Chunk size in characters                       | `1500`                                 |
 | `search.reranking.enabled`         | Enable cross-encoder reranking                 | `true`                                 |
 | `search.reranking.model`           | Reranking model name                           | `ms-marco-MiniLM-L-12-v2`              |
+| `search.summary.enabled`           | Enable LLM-based summary generation            | `true`                                 |
+| `search.summary.provider`          | Summary provider (ollama/openai/anthropic)     | `"ollama"`                             |
+| `search.summary.model`             | Summary generation model                       | `"qwen3:1.7b"`                         |
 | `ollama.enabled`                   | Enable Ollama sidecar                          | `false`                                |
 
 ### Storage Configuration
@@ -156,6 +167,29 @@ search:
     model: ms-marco-MiniLM-L-12-v2  # ~34MB, downloads on first use
     maxLength: 512
     overfetch: 4
+```
+
+### Summary Generation
+
+LLM-based summary generation creates concise summaries of stored context entries. Enabled by default with Ollama.
+
+```yaml
+search:
+  summary:
+    enabled: true
+    provider: ollama         # ollama, openai, or anthropic
+    model: "qwen3:1.7b"     # Summary model
+    maxTokens: 2000          # Max output tokens (50-5000)
+    minContentLength: 300    # Min chars to trigger summary (0=always)
+```
+
+For OpenAI or Anthropic providers:
+
+```yaml
+summarySecrets:
+  openaiApiKey: "sk-..."       # For provider=openai
+  anthropicApiKey: "sk-ant-..."  # For provider=anthropic
+  existingSecret: ""           # Use pre-existing secret
 ```
 
 ### Ingress

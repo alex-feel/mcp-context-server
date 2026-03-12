@@ -5982,6 +5982,54 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_statistics_summary_info(self) -> bool:
+        """Test that get_statistics returns summary generation configuration.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'Statistics Summary Info'
+        assert self.client is not None
+        try:
+            # Get statistics
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+
+            # Verify summary section exists
+            if 'summary' not in stats_data:
+                self.test_results.append((test_name, False, 'Missing summary section in statistics'))
+                return False
+
+            summary_info = stats_data['summary']
+
+            # Verify required fields
+            required_fields = ['enabled', 'available']
+            for field in required_fields:
+                if field not in summary_info:
+                    self.test_results.append((test_name, False, f'Missing summary field: {field}'))
+                    return False
+
+            # If summary is enabled and available, verify additional fields
+            is_summary_active = summary_info.get('enabled') and summary_info.get('available')
+            if is_summary_active:
+                active_fields = ['provider', 'model', 'summary_count', 'coverage_percentage', 'min_content_length']
+                for field in active_fields:
+                    if field not in summary_info:
+                        self.test_results.append(
+                            (test_name, False, f'Missing field in active summary: {field}'),
+                        )
+                        return False
+
+            summary_status = 'available' if summary_info.get('available') else 'unavailable'
+            self.test_results.append(
+                (test_name, True, f'summary={summary_status}'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_chunking_creates_multiple_embeddings(self) -> bool:
         """Test that chunking creates multiple embeddings per long document.
 
@@ -7304,6 +7352,340 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_store_context_with_summary_field(self) -> bool:
+        """Test that stored context entries expose the summary field in API responses.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_context_with_summary_field'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            summary_thread = f'{self.test_thread_id}_summary_field'
+
+            # Store a context entry (no summary provider configured in test server)
+            store_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': summary_thread,
+                    'source': 'agent',
+                    'text': 'Test entry to verify summary field exists in API response',
+                    'metadata': {'test_type': 'summary_field'},
+                },
+            )
+            store_data = self._extract_content(store_result)
+            if not store_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Failed to store context: {store_data}'),
+                )
+                return False
+
+            context_id = store_data['context_id']
+
+            # Retrieve via get_context_by_ids - should include summary field
+            get_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            get_data = self._extract_content(get_result)
+            results = get_data.get('results', [])
+            if len(results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result, got {len(results)}'),
+                )
+                return False
+
+            entry = results[0]
+
+            # Verify summary field is present in the response (None without provider)
+            if 'summary' not in entry:
+                self.test_results.append(
+                    (test_name, False, 'summary field missing from get_context_by_ids response'),
+                )
+                return False
+
+            # Without a summary provider, summary should be None
+            if entry['summary'] is not None:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected summary=None without provider, got {entry["summary"]!r}'),
+                )
+                return False
+
+            # Verify the full text is returned (not truncated) in get_context_by_ids
+            if entry['text_content'] != 'Test entry to verify summary field exists in API response':
+                self.test_results.append(
+                    (test_name, False,
+                     f'text_content mismatch: {entry["text_content"]!r}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 'summary field present in API response (None without provider)'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_search_context_summary_display(self) -> bool:
+        """Test that search_context handles search display formatting correctly.
+
+        Without a summary provider, long text should be truncated normally.
+        Short text should not be truncated.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_context_summary_display'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            summary_display_thread = f'{self.test_thread_id}_summary_display'
+
+            # Store a long text entry (will be truncated without summary)
+            long_text = 'Summary display integration test. ' * 20  # ~680 chars
+            store_long = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': summary_display_thread,
+                    'source': 'agent',
+                    'text': long_text,
+                },
+            )
+            long_data = self._extract_content(store_long)
+            if not long_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Failed to store long context: {long_data}'),
+                )
+                return False
+
+            # Store a short text entry (should not be truncated)
+            short_text = 'Brief note'
+            store_short = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': summary_display_thread,
+                    'source': 'user',
+                    'text': short_text,
+                },
+            )
+            short_data = self._extract_content(store_short)
+            if not short_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Failed to store short context: {short_data}'),
+                )
+                return False
+
+            # Search for both entries
+            search_result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': summary_display_thread,
+                    'limit': 10,
+                },
+            )
+            search_data = self._extract_content(search_result)
+            if not search_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Search failed: {search_data}'),
+                )
+                return False
+
+            results = search_data.get('results', [])
+            if len(results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 results, got {len(results)}'),
+                )
+                return False
+
+            # Find the long and short entries in results
+            long_entry = None
+            short_entry = None
+            for r in results:
+                if r.get('id') == long_data['context_id']:
+                    long_entry = r
+                elif r.get('id') == short_data['context_id']:
+                    short_entry = r
+
+            if long_entry is None or short_entry is None:
+                self.test_results.append(
+                    (test_name, False, 'Could not find both entries in search results'),
+                )
+                return False
+
+            # Without summary, long text should be truncated in search results
+            if not long_entry.get('is_text_content_truncated', False):
+                self.test_results.append(
+                    (test_name, False,
+                     'Long text should be truncated in search results without summary'),
+                )
+                return False
+
+            # Long entry's text_content should be shorter than original
+            if len(long_entry['text_content']) >= len(long_text):
+                self.test_results.append(
+                    (test_name, False,
+                     (f'Truncated text ({len(long_entry["text_content"])}) should be '
+                      f'shorter than original ({len(long_text)})')),
+                )
+                return False
+
+            # Short text should NOT be truncated
+            if short_entry.get('is_text_content_truncated', True):
+                self.test_results.append(
+                    (test_name, False,
+                     'Short text should not be truncated in search results'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 'Search correctly truncates long text, preserves short text, uses is_text_content_truncated'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_batch_store_summary_field(self) -> bool:
+        """Test that batch-stored entries include the summary field.
+
+        Without a summary provider, summary should be None for all batch entries.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'batch_store_summary_field'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            batch_summary_thread = f'{self.test_thread_id}_batch_summary'
+
+            entries = [
+                {
+                    'thread_id': batch_summary_thread,
+                    'source': 'user',
+                    'text': 'Batch summary test entry one',
+                },
+                {
+                    'thread_id': batch_summary_thread,
+                    'source': 'agent',
+                    'text': 'Batch summary test entry two',
+                },
+            ]
+
+            result = await self.client.call_tool(
+                'store_context_batch',
+                {'entries': entries, 'atomic': True},
+            )
+            result_data = self._extract_content(result)
+
+            if not result_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Batch store failed: {result_data}'),
+                )
+                return False
+
+            if result_data.get('succeeded') != 2:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected 2 succeeded, got {result_data.get("succeeded")}'),
+                )
+                return False
+
+            # Retrieve the stored entries and verify summary field
+            context_ids = [r['context_id'] for r in result_data.get('results', [])]
+            if len(context_ids) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 context_ids, got {len(context_ids)}'),
+                )
+                return False
+
+            get_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': context_ids},
+            )
+            get_data = self._extract_content(get_result)
+            results = get_data.get('results', [])
+
+            if len(results) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Expected 2 entries from get, got {len(results)}'),
+                )
+                return False
+
+            # Without summary provider, summary should be None for all entries
+            for entry in results:
+                if 'summary' not in entry:
+                    self.test_results.append(
+                        (test_name, False,
+                         'summary field missing from batch-stored entry'),
+                    )
+                    return False
+                if entry['summary'] is not None:
+                    self.test_results.append(
+                        (test_name, False,
+                         f'Expected summary=None without provider, got {entry["summary"]!r}'),
+                    )
+                    return False
+
+            # Test update_context_batch also preserves summary field
+            updates = [
+                {'context_id': context_ids[0], 'text': 'Updated batch text one'},
+            ]
+            update_result = await self.client.call_tool(
+                'update_context_batch',
+                {'updates': updates, 'atomic': True},
+            )
+            update_data = self._extract_content(update_result)
+
+            if not update_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Batch update failed: {update_data}'),
+                )
+                return False
+
+            # Re-retrieve and verify summary is still None after update
+            get_updated = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_ids[0]]},
+            )
+            updated_data = self._extract_content(get_updated)
+            updated_results = updated_data.get('results', [])
+
+            if len(updated_results) != 1:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected 1 updated entry, got {len(updated_results)}'),
+                )
+                return False
+
+            if 'summary' not in updated_results[0]:
+                self.test_results.append(
+                    (test_name, False,
+                     'summary field missing after batch update'),
+                )
+                return False
+
+            if updated_results[0]['summary'] is not None:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected summary=None after update, got {updated_results[0]["summary"]!r}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 'Batch store and update correctly include summary field (None without provider)'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -7407,6 +7789,7 @@ class MCPServerIntegrationTest:
             ('Explain Query Statistics', self.test_explain_query_statistics),
             # Chunking and Reranking Tests
             ('Statistics Chunking Reranking Info', self.test_statistics_chunking_reranking_info),
+            ('Statistics Summary Info', self.test_statistics_summary_info),
             ('Chunking Creates Multiple Embeddings', self.test_chunking_creates_multiple_embeddings),
             ('Chunking Long Document Storage', self.test_chunking_long_document_storage),
             ('Reranking Adds Score to Results', self.test_reranking_adds_score_to_results),
@@ -7435,6 +7818,10 @@ class MCPServerIntegrationTest:
             ('List Threads With Filter', self.test_list_threads_empty_database),
             ('Batch Operations Atomic Rollback', self.test_batch_operations_atomic_rollback),
             ('Batch Operations Non-Atomic Partial', self.test_batch_operations_non_atomic_partial),
+            # Summary Field Tests
+            ('Store Context With Summary Field', self.test_store_context_with_summary_field),
+            ('Search Context Summary Display', self.test_search_context_summary_display),
+            ('Batch Store Summary Field', self.test_batch_store_summary_field),
         ]
 
         print('\nRunning tests...\n')

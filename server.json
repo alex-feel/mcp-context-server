@@ -466,6 +466,76 @@
           "name": "EMBEDDING_MAX_CONCURRENT"
         },
         {
+          "description": "Enable summary generation for stored context. Default true - server fails if dependencies not met. Set false to disable summaries.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_SUMMARY_GENERATION"
+        },
+        {
+          "description": "Summary provider: ollama (default), openai, or anthropic",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_PROVIDER"
+        },
+        {
+          "description": "Summary generation model name (default: qwen3:1.7b)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_MODEL"
+        },
+        {
+          "description": "Maximum output tokens for summary generation (default: 2000, range: 50-5000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_MAX_TOKENS"
+        },
+        {
+          "description": "Timeout in seconds for summary generation API calls",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum number of retry attempts for summary generation",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_RETRY_MAX_ATTEMPTS"
+        },
+        {
+          "description": "Base delay in seconds between retry attempts (with exponential backoff)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_RETRY_BASE_DELAY_S"
+        },
+        {
+          "description": "Maximum concurrent summary generation operations (default: 3, range: 1-20)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_MAX_CONCURRENT"
+        },
+        {
+          "description": "Custom summarization prompt. Overrides the built-in default. Used as system message for the LLM.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_PROMPT"
+        },
+        {
+          "description": "Minimum text content length in characters to trigger summary generation (default: 300, range: 0-10000). Set to 0 to always generate.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
           "description": "Enable full-text search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -527,6 +597,13 @@
           "format": "string",
           "isSecret": false,
           "name": "SEARCH_DEFAULT_SORT_BY"
+        },
+        {
+          "description": "Maximum character length for truncated text_content in search results (default: 150, range: 50-1000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SEARCH_TRUNCATION_LENGTH"
         },
         {
           "description": "Enable text chunking for embedding generation (default: true)",
@@ -1282,6 +1359,76 @@
           "name": "EMBEDDING_MAX_CONCURRENT"
         },
         {
+          "description": "Enable summary generation for stored context. Default true - server fails if dependencies not met. Set false to disable summaries.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_SUMMARY_GENERATION"
+        },
+        {
+          "description": "Summary provider: ollama (default), openai, or anthropic",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_PROVIDER"
+        },
+        {
+          "description": "Summary generation model name (default: qwen3:1.7b)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_MODEL"
+        },
+        {
+          "description": "Maximum output tokens for summary generation (default: 2000, range: 50-5000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_MAX_TOKENS"
+        },
+        {
+          "description": "Timeout in seconds for summary generation API calls",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum number of retry attempts for summary generation",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_RETRY_MAX_ATTEMPTS"
+        },
+        {
+          "description": "Base delay in seconds between retry attempts (with exponential backoff)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_RETRY_BASE_DELAY_S"
+        },
+        {
+          "description": "Maximum concurrent summary generation operations (default: 3, range: 1-20)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_MAX_CONCURRENT"
+        },
+        {
+          "description": "Custom summarization prompt. Overrides the built-in default. Used as system message for the LLM.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_PROMPT"
+        },
+        {
+          "description": "Minimum text content length in characters to trigger summary generation (default: 300, range: 0-10000). Set to 0 to always generate.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
           "description": "Enable full-text search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -1343,6 +1490,13 @@
           "format": "string",
           "isSecret": false,
           "name": "SEARCH_DEFAULT_SORT_BY"
+        },
+        {
+          "description": "Maximum character length for truncated text_content in search results (default: 150, range: 50-1000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SEARCH_TRUNCATION_LENGTH"
         },
         {
           "description": "Enable text chunking for embedding generation (default: true)",

@@ -111,6 +111,8 @@ class TestUpdateContext:
                 context_id=123,
                 text_content='Updated text content',
                 metadata=None,
+                summary=None,
+                clear_summary=False,
                 txn=ANY,
             )
 
@@ -142,6 +144,8 @@ class TestUpdateContext:
                 context_id=456,
                 text_content=None,
                 metadata=expected_metadata_str,
+                summary=None,
+                clear_summary=False,
                 txn=ANY,
             )
 

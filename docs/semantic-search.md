@@ -761,7 +761,9 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
     {
       "id": 123,
       "thread_id": "thread-abc",
-      "text_content": "matching context",
+      "text_content": "matching context...",
+      "summary": "Summary of the matching context entry with key semantic information.",
+      "is_text_content_truncated": true,
       "scores": {
         "semantic_distance": 0.234,
         "semantic_rank": null,
@@ -1027,6 +1029,7 @@ EMBEDDING_TIMEOUT_S=60
 ### Related Documentation
 
 - **API Reference**: [API Reference](api-reference.md) - complete tool documentation
+- **Summary Generation**: [Summary Generation Guide](summary-generation.md) - LLM-based automatic summarization for search results
 - **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - linguistic search with stemming
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search

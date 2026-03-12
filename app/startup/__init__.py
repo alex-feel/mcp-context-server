@@ -3,12 +3,12 @@ Server initialization and lifecycle management for mcp-context-server.
 
 This package contains:
 - Database initialization (init_database)
-- Global state management (_backend, _repositories, _embedding_provider, _reranking_provider)
+- Global state management (_backend, _repositories, _embedding_provider, _reranking_provider, _summary_provider)
 - Lazy initialization helpers (_ensure_backend, _ensure_repositories)
 - Configuration constants (DB_PATH, MAX_IMAGE_SIZE_MB, MAX_TOTAL_SIZE_MB)
 
 Global State Architecture:
-    The _backend, _repositories, _embedding_provider, and _reranking_provider variables
+    The _backend, _repositories, _embedding_provider, _reranking_provider, and _summary_provider variables
     are module-level singletons that are initialized once during server lifespan and
     accessed by MCP tool functions. Direct mutation is allowed from server.py's lifespan().
 
@@ -46,6 +46,7 @@ from app.repositories import RepositoryContainer
 from app.reranking import RerankingProvider
 from app.services import ChunkingService
 from app.settings import get_settings
+from app.summary import SummaryProvider
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -61,6 +62,7 @@ _repositories: RepositoryContainer | None = None
 _embedding_provider: EmbeddingProvider | None = None
 _reranking_provider: RerankingProvider | None = None
 _chunking_service: ChunkingService | None = None
+_summary_provider: SummaryProvider | None = None
 
 
 def set_backend(backend: StorageBackend | None) -> None:
@@ -131,6 +133,20 @@ def set_chunking_service(service: ChunkingService | None) -> None:
 def get_chunking_service() -> ChunkingService | None:
     """Get the current chunking service instance (read-only access)."""
     return _chunking_service
+
+
+def set_summary_provider(provider: SummaryProvider | None) -> None:
+    """Set the global summary provider instance.
+
+    Called from server.py lifespan() during startup/shutdown.
+    """
+    global _summary_provider
+    _summary_provider = provider
+
+
+def get_summary_provider() -> SummaryProvider | None:
+    """Get the current summary provider instance (read-only access)."""
+    return _summary_provider
 
 
 async def init_database(backend: StorageBackend | None = None) -> None:
@@ -349,18 +365,21 @@ __all__ = [
     '_embedding_provider',
     '_reranking_provider',
     '_chunking_service',
+    '_summary_provider',
     # Setters (for lifespan initialization)
     'set_backend',
     'set_repositories',
     'set_embedding_provider',
     'set_reranking_provider',
     'set_chunking_service',
+    'set_summary_provider',
     # Getters (read-only access)
     'get_backend',
     'get_repositories',
     'get_embedding_provider',
     'get_reranking_provider',
     'get_chunking_service',
+    'get_summary_provider',
     # Initialization functions
     'init_database',
     'ensure_backend',
@@ -369,4 +388,5 @@ __all__ = [
     # Re-exported types
     'RerankingProvider',
     'ChunkingService',
+    'SummaryProvider',
 ]

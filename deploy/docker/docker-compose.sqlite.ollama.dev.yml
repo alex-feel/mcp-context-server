@@ -37,6 +37,8 @@ services:
       - EMBEDDING_DIM=1024
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
+      # Summary generation
+      - SUMMARY_MODEL=qwen3:1.7b
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
       # LangSmith tracing (optional, disabled by default)
@@ -58,11 +60,12 @@ services:
     pull_policy: build
     environment:
       - OLLAMA_HOST=0.0.0.0
-      - MODEL=qwen3-embedding:0.6b
+      - EMBEDDING_MODEL=qwen3-embedding:0.6b
+      - SUMMARY_MODEL=qwen3:1.7b
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "ollama list | grep -q \"$${MODEL%%:*}\" || exit 1"]
+      test: ["CMD-SHELL", "ollama list | grep -q \"$${EMBEDDING_MODEL%%:*}\" || exit 1"]
       interval: 10s
       timeout: 30s
       retries: 30

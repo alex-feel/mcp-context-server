@@ -48,6 +48,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - Global state and initialization in `app/startup/` package
    - Database initialization via `init_database()` from `app.startup`
    - Repository access via `ensure_repositories()` from `app.startup`
+   - Summary provider lifecycle via `set_summary_provider()`/`get_summary_provider()` from `app.startup`
    - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup. See "Known Upstream Bugs and Temporary Patches" section.
 
 2. **Authentication Layer** (`app/auth/`):
@@ -88,28 +89,36 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - **RerankingFactory** (`factory.py`): Same dynamic import pattern as embeddings
    - **Providers** (`providers/`): FlashRank (default, 34MB model)
 
-8. **Services Layer** (`app/services/`):
+8. **Summary Generation Layer** (`app/summary/`):
+   - **SummaryProvider Protocol** (`base.py`): `initialize()`, `shutdown()`, `summarize()`, `is_available()`, `provider_name`
+   - **SummaryFactory** (`factory.py`): Dynamic import via `PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts
+   - **Providers** (`providers/`): LangChain-based (Ollama, OpenAI, Anthropic)
+   - **Retry** (`retry.py`): `with_summary_retry_and_timeout()` using tenacity, `compute_summary_total_timeout()`
+   - **Prompt** (`instructions.py`): `DEFAULT_SUMMARY_PROMPT` constant, `resolve_summary_prompt()` resolver
+   - **Default model**: `qwen3:1.7b` (Qwen3 family: 0.6b, 1.7b, 4b, 8b)
+
+9. **Services Layer** (`app/services/`):
    - **ChunkingService** (`chunking_service.py`): `TextChunk` dataclass, `split_text()` with boundary tracking, LangChain's `RecursiveCharacterTextSplitter`
    - **Passage Extraction** (`passage_extraction_service.py`): `extract_rerank_passage()` for FTS reranking, `HighlightRegion` dataclass, boundary expansion/merging
 
-9. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
+10. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`):
    - **MetadataFilter**: 16 operators (eq, ne, gt, lt, contains, etc.)
    - **QueryBuilder**: Backend-aware SQL with nested JSON paths (e.g., "user.preferences.theme")
    - Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) operators
 
-10. **Fusion Algorithms** (`app/fusion.py`):
+11. **Fusion Algorithms** (`app/fusion.py`):
     - `reciprocal_rank_fusion()`: RRF algorithm combining FTS + semantic results
     - `count_unique_results()`: Overlap statistics for hybrid search
 
-11. **Database Layer** (`app/schemas/`):
+12. **Database Layer** (`app/schemas/`):
    - 3 tables: `context_entries`, `tags`, `image_attachments`
    - SQLite: JSON, BLOB, WAL mode | PostgreSQL: JSONB, BYTEA, MVCC
    - Thread-scoped isolation, strategic indexing, cascade deletes
 
-12. **Error Classification** (`app/errors.py`):
+13. **Error Classification** (`app/errors.py`):
    - **ConfigurationError** (exit 78): Missing config, invalid env vars - supervisor NEVER retries
    - **DependencyError** (exit 69): External service unavailable - supervisor MAY retry with backoff
-   - **classify_provider_error()**: Classifies embedding provider failures for container orchestration
+   - **classify_provider_error()**: Classifies embedding and summary provider failures for container orchestration
    - BSD sysexits.h exit codes for Docker/Kubernetes restart policies
 
 ### Modular Package Structure
@@ -160,11 +169,17 @@ app/
 │   ├── base.py           # RerankingProvider Protocol
 │   ├── factory.py        # create_reranking_provider()
 │   └── providers/        # flashrank.py
+├── summary/               # LLM summary generation (Protocol pattern)
+│   ├── base.py           # SummaryProvider Protocol
+│   ├── factory.py        # create_summary_provider() with PROVIDER_MODULES
+│   ├── retry.py          # with_summary_retry_and_timeout() using tenacity
+│   ├── instructions.py   # DEFAULT_SUMMARY_PROMPT, resolve_summary_prompt()
+│   └── providers/        # langchain_ollama.py, langchain_openai.py, langchain_anthropic.py
 ├── services/              # Domain services
 │   ├── chunking_service.py       # ChunkingService, TextChunk dataclass
 │   └── passage_extraction_service.py  # extract_rerank_passage(), HighlightRegion
 ├── migrations/            # Auto-applied idempotent migrations
-│   ├── semantic.py, fts.py, chunking.py, metadata.py
+│   ├── semantic.py, fts.py, chunking.py, metadata.py, summary.py
 │   └── dependencies.py, utils.py
 ├── auth/                  # Authentication
 │   └── simple_token.py   # SimpleTokenVerifier for HTTP transport
@@ -211,9 +226,9 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata), 
 3. **Async Operations**: SQLite ops are sync callables wrapped via `execute_write`/`execute_read`. PostgreSQL ops are native async. Repositories detect backend type automatically.
 
 4. **Design Patterns**:
-   - **Protocol** (`@runtime_checkable`): `StorageBackend` (backends), `TransactionContext` (transactions), `EmbeddingProvider` (embeddings), `RerankingProvider` (reranking)
+   - **Protocol** (`@runtime_checkable`): `StorageBackend` (backends), `TransactionContext` (transactions), `EmbeddingProvider` (embeddings), `SummaryProvider` (summary), `RerankingProvider` (reranking)
    - **Repository**: All SQL in `app/repositories/`, `BaseRepository` provides `_placeholder()`, `_placeholders()`, `_json_extract()` helpers
-   - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_reranking_provider()` - dynamic imports via `PROVIDER_MODULES` dicts
+   - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_summary_provider()`, `create_reranking_provider()` - dynamic imports via `PROVIDER_MODULES` dicts
    - **DI**: `RepositoryContainer` injects all repositories
    - **DTO**: TypedDicts in `app/types.py` (40+ types: `ContextEntryDict`, `ScoresDict`, `HybridSearchResultDict`, etc.)
    - **Dataclass**: `TextChunk` (chunking), `HighlightRegion` (FTS passage), `EmbeddingModelSpec` (model limits)
@@ -240,7 +255,7 @@ Optional linguistic search via `fts_search_context`. SQLite: FTS5 with BM25, Por
 
 ### Migration System
 
-Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, chunking (1:N embeddings). PostgreSQL migrations use `POSTGRESQL_MIGRATION_TIMEOUT_S` (300s default) for DDL operations (CREATE INDEX, ALTER TABLE). Changing `FTS_LANGUAGE` requires FTS table rebuild.
+Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, chunking (1:N embeddings), summary (`summary` column on `context_entries`). PostgreSQL migrations use `POSTGRESQL_MIGRATION_TIMEOUT_S` (300s default) for DDL operations (CREATE INDEX, ALTER TABLE). Changing `FTS_LANGUAGE` requires FTS table rebuild.
 
 ### Hybrid Search Implementation
 
@@ -248,7 +263,7 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 
 ## Package and Release
 
-uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+. Optional: `uv sync --extra embeddings-ollama` (or `-openai`, `-azure`, `-huggingface`, `-voyage`).
+uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+. Optional: `uv sync --extra embeddings-ollama` (or `-openai`, `-azure`, `-huggingface`, `-voyage`). Summary extras: `uv sync --extra summary-ollama` (or `-openai`, `-anthropic`).
 
 ## Release Process
 
@@ -307,13 +322,13 @@ The `Dockerfile` MUST use `--locked --no-dev --extra <variant>` for SELECTIVE in
 
 ```dockerfile
 # Dependencies layer (without project itself)
-uv sync --locked --no-install-project --extra ${EMBEDDING_EXTRA} --extra reranking --no-dev
+uv sync --locked --no-install-project --extra ${EMBEDDING_EXTRA} --extra ${SUMMARY_EXTRA} --extra reranking --no-dev
 
 # Full install with project
-uv sync --locked --extra ${EMBEDDING_EXTRA} --extra reranking --no-dev
+uv sync --locked --extra ${EMBEDDING_EXTRA} --extra ${SUMMARY_EXTRA} --extra reranking --no-dev
 ```
 
-The `EMBEDDING_EXTRA` build argument controls which embedding provider is included (default: `embeddings-ollama`). Docker intentionally does NOT use `--all-extras` to keep images minimal.
+The `EMBEDDING_EXTRA` build argument controls which embedding provider is included (default: `embeddings-ollama`). The `SUMMARY_EXTRA` build argument controls which summary provider is included (default: `summary-ollama`). Docker intentionally does NOT use `--all-extras` to keep images minimal.
 
 ## MCP Registry and server.json Maintenance
 
@@ -352,7 +367,9 @@ Configuration via `.env` file or environment. Full list in `app/settings.py`.
 
 **Reranking**: `ENABLE_RERANKING` (true*), `RERANKING_PROVIDER` (flashrank*), `RERANKING_MODEL` (ms-marco-MiniLM-L-12-v2*), `RERANKING_MAX_LENGTH` (512*), `RERANKING_OVERFETCH` (4*), `RERANKING_CACHE_DIR`, `RERANKING_CHARS_PER_TOKEN` (4.0*; 3.0-3.5 for code), `RERANKING_INTRA_OP_THREADS` (0*; ONNX intra-op parallelism, 0=auto-detect), `RERANKING_CPU_MEM_ARENA` (false*; ONNX Runtime CPU memory arena, prevents multi-GiB tensor buffer retention), `RERANKING_BATCH_SIZE` (32*; passages per ONNX inference batch, prevents OOM with large result sets)
 
-**Search**: `SEARCH_DEFAULT_SORT_BY` (relevance*)
+**Summary Generation**: `ENABLE_SUMMARY_GENERATION` (true*). When true and dependencies unavailable, server won't start. Set false to disable. `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:1.7b*), `SUMMARY_MAX_TOKENS` (2000*; tokens, 50-5000), `SUMMARY_MIN_CONTENT_LENGTH` (300*; characters, 0-10000; text shorter than this skips summary generation; 0 = always generate), `SUMMARY_TIMEOUT_S` (30.0*), `SUMMARY_RETRY_MAX_ATTEMPTS` (3*), `SUMMARY_RETRY_BASE_DELAY_S` (1.0*), `SUMMARY_MAX_CONCURRENT` (3*; 1-20), `SUMMARY_PROMPT` (overrides default prompt; empty string falls back to default)
+
+**Search**: `SEARCH_DEFAULT_SORT_BY` (relevance*), `SEARCH_TRUNCATION_LENGTH` (150*; characters, 50-1000; max text_content length in search results)
 
 **Metadata Indexing**: `METADATA_INDEXED_FIELDS` (field:type format; default: status,agent_name,task_name,project,report_type,references:object,technologies:array), `METADATA_INDEX_SYNC_MODE` (additive*/strict/auto/warn)
 
@@ -390,7 +407,31 @@ SQLite: B-tree via `json_extract` for scalar fields only. PostgreSQL: B-tree for
 
 ## Docker Deployment
 
-Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in `deploy/docker/`: SQLite, PostgreSQL, Supabase. Ollama sidecar in `deploy/docker/ollama/`.
+Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Build args: `EMBEDDING_EXTRA` (default: `embeddings-ollama`) and `SUMMARY_EXTRA` (default: `summary-ollama`). Configs in `deploy/docker/`: SQLite, PostgreSQL, Supabase. Ollama sidecar in `deploy/docker/ollama/`. Both the embedding model and the summary model are automatically downloaded on first startup when configured in the Docker Compose environment.
+
+### Docker-Compose Environment Variable Policy
+
+**CRITICAL:** Docker-compose files MUST contain ONLY environment variables that are REQUIRED for the server to start or for the deployment to function correctly. All other settings use their defaults from `app/settings.py`.
+
+**Required variables** (without these, the container/sidecar cannot function in the given deployment context):
+- Transport settings: `MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`
+- Log formatting: `FASTMCP_ENABLE_RICH_LOGGING` (must be `false` for clean container logs)
+- Visibility: `LOG_LEVEL` (INFO for container environments vs ERROR default)
+- Storage backend: `STORAGE_BACKEND`, `DB_PATH` (SQLite) or `POSTGRESQL_*` (PostgreSQL)
+- Service connectivity: `OLLAMA_HOST` (when using Ollama sidecar -- non-default host)
+- Feature toggles: `ENABLE_SEMANTIC_SEARCH`, `ENABLE_FTS`, `ENABLE_HYBRID_SEARCH`
+- Non-default providers: `EMBEDDING_PROVIDER` (only when NOT ollama, e.g., openai)
+- Non-default model dimensions: `EMBEDDING_DIM` (only when model dimension differs from default 1024, e.g., OpenAI's 1536)
+- Container paths: `RERANKING_CACHE_DIR` (persistent model cache mount point)
+
+**Model names on Ollama sidecar** (`EMBEDDING_MODEL`, `SUMMARY_MODEL`) are REQUIRED because the entrypoint script uses them to auto-pull models. These are NOT tuning parameters -- without them, the sidecar starts without the needed models.
+
+**Optional variables** (use defaults, do NOT add to compose files):
+- Tuning parameters with sensible defaults: `EMBEDDING_TIMEOUT_S`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, etc.
+- Feature-specific settings that have correct defaults: `SUMMARY_PROVIDER` (defaults to ollama), `SUMMARY_MODEL` (defaults to qwen3:1.7b on the server), `RERANKING_PROVIDER` (defaults to flashrank), `EMBEDDING_PROVIDER` (defaults to ollama)
+- Logging: `LOG_LEVEL` is the only acceptable override (INFO for container visibility vs ERROR default)
+
+**Rationale:** Keeping compose files minimal prevents drift between defaults in code and hardcoded values in compose files. When defaults change in `app/settings.py`, compose files automatically get the new behavior.
 
 ## Kubernetes Deployment
 
@@ -407,7 +448,7 @@ set LOG_LEVEL=DEBUG && uv run mcp-context-server  # Debug logs (Windows)
 uv run python -c "from app.startup import init_database; import asyncio; asyncio.run(init_database())"  # Test DB
 ```
 
-**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → `ENABLE_SEMANTIC_SEARCH=true` + `uv sync --extra embeddings-ollama`. FTS unavailable → `ENABLE_FTS=true`.
+**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → `ENABLE_SEMANTIC_SEARCH=true` + `uv sync --extra embeddings-ollama`. FTS unavailable → `ENABLE_FTS=true`. Summary generation unavailable → `ENABLE_SUMMARY_GENERATION=true` + `uv sync --extra summary-ollama` + `ollama pull qwen3:1.7b`.
 
 ## Code Quality Standards
 
@@ -455,6 +496,7 @@ Existing settings classes by domain:
 - `InstructionsSettings`: Server instructions sent to MCP clients
 - `StorageSettings`: Database backend configuration (includes metadata indexing settings)
 - `EmbeddingSettings`: Embedding provider configuration
+- `SummarySettings`: Summary generation configuration (provider, model, prompt, retry, min_content_length)
 - `SemanticSearchSettings`: Semantic search toggle
 - `FtsSettings`: Full-text search configuration
 - `HybridSearchSettings`: Hybrid search and RRF parameters
@@ -509,9 +551,9 @@ async def my_tool(
 
 **Annotation categories**: READ_ONLY (readOnlyHint=True), ADDITIVE (destructiveHint=False), UPDATE (destructiveHint=True, idempotentHint=False), DELETE (destructiveHint=True, idempotentHint=True)
 
-### Adding New Providers (Embeddings/Reranking)
+### Adding New Providers (Embeddings/Reranking/Summary)
 
-Both use identical patterns:
+All three layers use identical patterns:
 1. Create provider class in `app/<layer>/providers/` implementing the Protocol
 2. Add to `PROVIDER_MODULES` and `PROVIDER_CLASSES` dicts in factory.py
 3. Add install instructions to `PROVIDER_INSTALL_INSTRUCTIONS`
@@ -530,9 +572,9 @@ class NewEmbeddingProvider:
     def provider_name(self) -> str: return 'new'
 ```
 
-### Embedding-First Transactional Integrity
+### Generation-First Transactional Integrity
 
-**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` and embedding fails, NO data is saved - transaction rolls back completely. Embeddings generated OUTSIDE transaction, then all DB ops (context + tags + images + embeddings) in single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `_generate_embeddings_with_timeout` is the single source of truth for the timeout/semaphore pattern used by single-entry operations (`store_context`, `update_context`); batch operations have their own embedding generation loop.
+**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_SUMMARY_GENERATION=true` and generation fails, NO data is saved - transaction rolls back completely. Embeddings and summaries are generated OUTSIDE the transaction via `asyncio.gather()`, then all DB ops (context + tags + images + embeddings + summary) in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `_generate_embeddings_with_timeout` is the single source of truth for the timeout/semaphore pattern used by single-entry operations (`store_context`, `update_context`); batch operations have their own embedding/summary generation loop.
 
 ### Deduplication Behavior (store_context)
 
@@ -544,7 +586,8 @@ When `store_context` detects a duplicate (same `thread_id + source + text_conten
 - **content_type**: Updated to reflect current content.
 - **updated_at**: Set to `CURRENT_TIMESTAMP` (SQLite explicit, PostgreSQL trigger).
 - **Embeddings**: Storage skipped if already exist; generated if missing.
-- **Pre-check optimization**: Read-only check before embedding generation to skip Ollama API call for duplicates.
+- **Summary**: Regeneration skipped if already exists on the entry. When `SUMMARY_MIN_CONTENT_LENGTH` check skips generation (text too short), `COALESCE(NULL, existing_summary)` preserves any pre-existing summary.
+- **Pre-check optimization**: Read-only check before embedding/summary generation to skip LLM API calls for duplicates.
 
 The `store_context_batch` tool uses the same dedup logic (calls `store_with_deduplication` per entry).
 
