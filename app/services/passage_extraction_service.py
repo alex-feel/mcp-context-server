@@ -276,7 +276,7 @@ def extract_rerank_passage(
 
     # If no highlight available, return beginning of document
     if not highlighted:
-        logger.debug('[PASSAGE] No highlighted text, returning document beginning')
+        logger.debug('No highlighted text, returning document beginning')
         return strip_tags(text_content[:max_passage_size])
 
     # Step 1: Parse highlight positions
@@ -284,10 +284,10 @@ def extract_rerank_passage(
 
     if not regions:
         # No matches found in highlight, return beginning
-        logger.debug('[PASSAGE] No <mark> tags found, returning document beginning')
+        logger.debug('No <mark> tags found, returning document beginning')
         return strip_tags(text_content[:max_passage_size])
 
-    logger.debug(f'[PASSAGE] Found {len(regions)} highlighted regions')
+    logger.debug(f'Found {len(regions)} highlighted regions')
 
     # Step 2: Apply windows around each region
     text_length = len(text_content)
@@ -307,7 +307,7 @@ def extract_rerank_passage(
     # Step 4: Merge overlapping/nearby windows
     merged = merge_windows(expanded_windows, gap_merge_threshold)
 
-    logger.debug(f'[PASSAGE] After merging: {len(merged)} passage segments')
+    logger.debug(f'After merging: {len(merged)} passage segments')
 
     # Step 5: Extract and combine passages
     passages: list[str] = []
@@ -320,11 +320,11 @@ def extract_rerank_passage(
     # Step 6: Truncate if still too large
     if len(combined) > max_passage_size:
         combined = truncate_at_boundary(combined, max_passage_size)
-        logger.debug(f'[PASSAGE] Truncated to {len(combined)} chars')
+        logger.debug(f'Truncated to {len(combined)} chars')
 
     # Step 7: Strip any remaining tags (safety)
     result = strip_tags(combined)
 
-    logger.debug(f'[PASSAGE] Final passage: {len(result)} chars from {len(text_content)} char document')
+    logger.debug(f'Final passage: {len(result)} chars from {len(text_content)} char document')
 
     return result

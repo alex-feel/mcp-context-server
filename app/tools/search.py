@@ -256,7 +256,7 @@ async def _semantic_search_raw(
                 # Extract matched chunk for reranking
                 result['rerank_text'] = text_content[start_idx:end_idx]
                 logger.debug(
-                    f'[SEMANTIC] Extracted rerank_text: {len(result["rerank_text"])} chars '
+                    f'Extracted rerank_text: {len(result["rerank_text"])} chars '
                     f'from [{start_idx}:{end_idx}]',
                 )
             else:
@@ -264,7 +264,7 @@ async def _semantic_search_raw(
                 max_rerank_len = int(settings.reranking.max_length * settings.reranking.chars_per_token * 0.95)
                 result['rerank_text'] = text_content[:max_rerank_len]
                 logger.debug(
-                    f'[SEMANTIC] No chunk boundaries, using document beginning '
+                    f'No chunk boundaries, using document beginning '
                     f'({len(result["rerank_text"])} chars)',
                 )
 

@@ -294,7 +294,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
                 set_embedding_provider(embedding_provider)
                 logger.info(
-                    f'[OK] Embedding generation enabled with provider: {embedding_provider.provider_name} '
+                    f'Embedding generation enabled with provider: {embedding_provider.provider_name} '
                     f'(model: {settings.embedding.model})',
                 )
 
@@ -330,26 +330,26 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
                 if not await reranking_provider.is_available():
                     await reranking_provider.shutdown()
                     logger.warning(
-                        f'[!] Reranking provider {reranking_provider.provider_name} not available. '
+                        f'Reranking provider {reranking_provider.provider_name} not available. '
                         'Search results will not be reranked.',
                     )
                     set_reranking_provider(None)
                 else:
                     set_reranking_provider(reranking_provider)
                     logger.info(
-                        f'[OK] Reranking enabled with provider: {reranking_provider.provider_name} '
+                        f'Reranking enabled with provider: {reranking_provider.provider_name} '
                         f'(model: {reranking_provider.model_name})',
                     )
             except ImportError as e:
                 logger.warning(
-                    f'[!] Reranking dependencies not installed: {e}. '
+                    f'Reranking dependencies not installed: {e}. '
                     f'Install with: uv sync --extra reranking. '
                     'Search results will not be reranked.',
                 )
                 set_reranking_provider(None)
             except Exception as e:
                 logger.warning(
-                    f'[!] Failed to initialize reranking provider: {e}. '
+                    f'Failed to initialize reranking provider: {e}. '
                     'Search results will not be reranked.',
                 )
                 set_reranking_provider(None)
@@ -370,19 +370,19 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
                 )
                 set_chunking_service(chunking_service)
                 logger.info(
-                    f'[OK] Chunking enabled (size={settings.chunking.size}, '
+                    f'Chunking enabled (size={settings.chunking.size}, '
                     f'overlap={settings.chunking.overlap})',
                 )
             except ImportError as e:
                 logger.warning(
-                    f'[!] Chunking dependencies not installed: {e}. '
+                    f'Chunking dependencies not installed: {e}. '
                     f'Install with: uv sync --extra embeddings-ollama. '
                     'Text will be embedded as single chunks.',
                 )
                 set_chunking_service(None)
             except Exception as e:
                 logger.warning(
-                    f'[!] Failed to initialize chunking service: {e}. '
+                    f'Failed to initialize chunking service: {e}. '
                     'Text will be embedded as single chunks.',
                 )
                 set_chunking_service(None)
@@ -429,7 +429,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
                 set_summary_provider(summary_provider)
                 logger.info(
-                    f'[OK] Summary generation enabled with provider: {summary_provider.provider_name} '
+                    f'Summary generation enabled with provider: {summary_provider.provider_name} '
                     f'(model: {settings.summary.model})',
                 )
 
@@ -456,17 +456,17 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
                 register_tool(mcp, semantic_search_context)
-                logger.info('[OK] semantic_search_context registered')
+                logger.info('semantic_search_context registered')
             else:
                 # User explicitly set ENABLE_EMBEDDING_GENERATION=false but ENABLE_SEMANTIC_SEARCH=true
                 # This is a valid configuration - user wants no embeddings but enabled the flag
                 logger.warning(
-                    '[!] ENABLE_SEMANTIC_SEARCH=true but ENABLE_EMBEDDING_GENERATION=false - '
+                    'ENABLE_SEMANTIC_SEARCH=true but ENABLE_EMBEDDING_GENERATION=false - '
                     'semantic_search_context NOT registered (no embedding provider available)',
                 )
         else:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
-            logger.info('[!] semantic_search_context not registered (feature disabled)')
+            logger.info('semantic_search_context not registered (feature disabled)')
 
         # 18) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
@@ -484,12 +484,12 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             # Check if FTS is available and log status
             fts_available = await repos.fts.is_available()
             if fts_available:
-                logger.info(f'[OK] Full-text search enabled and available (backend: {backend.backend_type})')
+                logger.info(f'Full-text search enabled and available (backend: {backend.backend_type})')
             else:
-                logger.warning('[!] FTS enabled but index may need initialization or migration')
+                logger.warning('FTS enabled but index may need initialization or migration')
         else:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
-            logger.info('[!] fts_search_context not registered (feature disabled)')
+            logger.info('fts_search_context not registered (feature disabled)')
 
         # 19) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.hybrid_search.enabled:
@@ -506,16 +506,16 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
                     modes_available.append('fts')
                 if semantic_available_for_hybrid:
                     modes_available.append('semantic')
-                logger.info(f'[OK] hybrid_search_context modes available: {modes_available}')
+                logger.info(f'hybrid_search_context modes available: {modes_available}')
             else:
                 logger.warning(
-                    '[!] Hybrid search enabled but no search modes available - feature disabled. '
+                    'Hybrid search enabled but no search modes available - feature disabled. '
                     'Enable ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
                 )
-                logger.info('[!] hybrid_search_context not registered (no search modes available)')
+                logger.info('hybrid_search_context not registered (no search modes available)')
         else:
             logger.info('Hybrid search disabled (ENABLE_HYBRID_SEARCH=false)')
-            logger.info('[!] hybrid_search_context not registered (feature disabled)')
+            logger.info('hybrid_search_context not registered (feature disabled)')
 
         logger.info(f'MCP Context Server initialized (backend: {backend.backend_type})')
     except Exception as e:
@@ -663,12 +663,12 @@ def main() -> None:
     except ConfigurationError as e:
         # Configuration errors: missing packages, invalid settings, missing API keys
         # Exit code 78 (EX_CONFIG) signals supervisor NOT to restart
-        logger.critical(f'[FATAL] Configuration error (will not retry): {e}')
+        logger.critical(f'Configuration error (will not retry): {e}')
         sys.exit(ConfigurationError.EXIT_CODE)
     except DependencyError as e:
         # Dependency errors: service down, model not pulled, network issues
         # Exit code 69 (EX_UNAVAILABLE) allows supervisor to retry with backoff
-        logger.error(f'[ERROR] Dependency unavailable (may retry): {e}')
+        logger.error(f'Dependency unavailable (may retry): {e}')
         sys.exit(DependencyError.EXIT_CODE)
     except Exception as e:
         logger.error(f'Server error: {e}')

@@ -996,7 +996,7 @@ class AppSettings(CommonSettings):
             truncation_behavior = None  # Unknown behavior
             source = f'provider default for {self.embedding.provider}'
             logger.warning(
-                f'[EMBEDDING CONFIG] Model "{self.embedding.model}" not found in context_limits.py. '
+                f'Model "{self.embedding.model}" not found in context_limits.py. '
                 f'Using provider default context limit ({max_tokens} tokens). '
                 f'Consider adding model spec to app/embeddings/context_limits.py for accurate validation.',
             )
@@ -1005,7 +1005,7 @@ class AppSettings(CommonSettings):
             # ENABLE_CHUNKING=false - warn about potential issues
             if truncation_behavior == 'silent':
                 logger.warning(
-                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
                     f'Model "{self.embedding.model}" ALWAYS silently truncates (cannot be disabled). '
                     f'Documents exceeding {max_tokens} tokens ({source}) will be truncated without warning.',
                 )
@@ -1014,19 +1014,19 @@ class AppSettings(CommonSettings):
                 truncation_enabled = self._get_truncation_setting_for_provider()
                 if truncation_enabled:
                     logger.warning(
-                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation enabled. '
+                        f'ENABLE_CHUNKING=false with truncation enabled. '
                         f'Large documents will be silently truncated to {max_tokens} tokens ({source}). '
                         f'Consider enabling chunking for better embedding quality.',
                     )
                 else:
                     logger.warning(
-                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation disabled. '
+                        f'ENABLE_CHUNKING=false with truncation disabled. '
                         f'Documents exceeding {max_tokens} tokens ({source}) will cause embedding errors. '
                         f'Consider enabling chunking to handle large documents.',
                     )
             elif truncation_behavior == 'error':
                 logger.warning(
-                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
                     f'Model "{self.embedding.model}" returns error on context exceed (no truncation). '
                     f'Documents exceeding {max_tokens} tokens ({source}) will fail embedding. '
                     f'Consider enabling chunking to handle large documents.',
@@ -1034,7 +1034,7 @@ class AppSettings(CommonSettings):
             else:
                 # Unknown truncation behavior
                 logger.warning(
-                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false. Document sizes unknown at startup. '
+                    f'ENABLE_CHUNKING=false. Document sizes unknown at startup. '
                     f'Documents exceeding {max_tokens} tokens ({source}) may cause issues. '
                     f'Consider enabling chunking for better reliability.',
                 )
@@ -1057,7 +1057,7 @@ class AppSettings(CommonSettings):
                 consequence = 'may cause issues'
 
             logger.warning(
-                f'[EMBEDDING CONFIG] CHUNK_SIZE ({self.chunking.size} chars, '
+                f'CHUNK_SIZE ({self.chunking.size} chars, '
                 f'~{int(chunk_tokens_estimate)} tokens estimate) exceeds '
                 f'model context limit ({max_tokens} tokens from {source}). '
                 f'Chunks {consequence}. '
@@ -1096,7 +1096,7 @@ class AppSettings(CommonSettings):
                 (self.reranking.max_length * self.reranking.chars_per_token - boundary_expansion) / 2,
             )
             logger.warning(
-                f'[FTS PASSAGE CONFIG] Single FTS match may produce ~{int(estimated_tokens)} tokens '
+                f'Single FTS match may produce ~{int(estimated_tokens)} tokens '
                 f'(using {self.reranking.chars_per_token} chars/token), exceeding RERANKING_MAX_LENGTH '
                 f'({self.reranking.max_length} tokens). Cross-encoder will truncate. '
                 f'Recommendations: '

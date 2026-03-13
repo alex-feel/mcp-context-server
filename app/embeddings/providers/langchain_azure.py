@@ -98,7 +98,7 @@ class AzureEmbeddingProvider:
         embedding = self._convert_to_python_floats(embedding)
 
         # Key operational event: shows embedding generation worked
-        logger.info(f'[EMBEDDING] Generated query embedding: text_len={len(text)}, dim={len(embedding)}')
+        logger.info(f'Generated query embedding: text_len={len(text)}, dim={len(embedding)}')
 
         if len(embedding) != self._dimension:
             raise ValueError(
@@ -121,7 +121,7 @@ class AzureEmbeddingProvider:
         embeddings = await with_retry_and_timeout(_embed, f'{self.provider_name}_embed_documents')
 
         # Key operational event: shows embedding generation worked
-        logger.info(f'[EMBEDDING] Generated {len(embeddings)} embeddings for {len(texts)} texts')
+        logger.info(f'Generated {len(embeddings)} embeddings for {len(texts)} texts')
 
         result: list[list[float]] = []
         for i, emb in enumerate(embeddings):

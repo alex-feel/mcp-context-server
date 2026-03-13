@@ -98,7 +98,7 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
                 embedding_stats = await repos.embeddings.get_statistics()
-                logger.debug(f'[STATISTICS] Embedding repository stats: {embedding_stats}')
+                logger.debug(f'Embedding repository stats: {embedding_stats}')
                 stats['semantic_search'] = {
                     'enabled': True,
                     'available': True,
