@@ -309,6 +309,8 @@ module = [
   'langchain_ollama',
   'langchain_anthropic',
   'langchain_anthropic.*',
+  'langchain_core',
+  'langchain_core.*',
   'langchain_text_splitters',
   'langchain_text_splitters.*',
   'flashrank',
