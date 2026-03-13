@@ -104,6 +104,32 @@ spec:
                   {{- end }}
             {{- end }}
             {{- end }}
+            {{- /* Summary provider API keys */}}
+            {{- if .Values.search.summary.enabled }}
+            {{- if eq .Values.search.summary.provider "openai" }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.summarySecrets.existingSecret }}
+                  name: {{ .Values.summarySecrets.existingSecret }}
+                  key: openai-api-key
+                  {{- else }}
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: summary-openai-api-key
+                  {{- end }}
+            {{- else if eq .Values.search.summary.provider "anthropic" }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.summarySecrets.existingSecret }}
+                  name: {{ .Values.summarySecrets.existingSecret }}
+                  key: anthropic-api-key
+                  {{- else }}
+                  name: {{ include "mcp-context-server.fullname" . }}
+                  key: summary-anthropic-api-key
+                  {{- end }}
+            {{- end }}
+            {{- end }}
             {{- /* LangSmith API key */}}
             {{- if .Values.langsmith.enabled }}
             - name: LANGSMITH_API_KEY

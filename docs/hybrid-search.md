@@ -264,6 +264,8 @@ When hybrid search is enabled and at least one underlying search method is avail
       "source": "agent",
       "content_type": "text",
       "text_content": "Implemented JWT authentication...",
+      "summary": "JWT authentication implementation with token validation, role-based access control, and session management for the project-alpha backend API.",
+      "is_text_content_truncated": true,
       "metadata": {"status": "completed", "priority": 8},
       "created_at": "2025-12-01T10:00:00Z",
       "updated_at": "2025-12-01T10:00:00Z",
@@ -616,6 +618,7 @@ Both FTS and semantic search should show as available for full hybrid functional
 ### Related Documentation
 
 - **API Reference**: [API Reference](api-reference.md) - complete tool documentation
+- **Summary Generation**: [Summary Generation Guide](summary-generation.md) - LLM-based automatic summarization for search results
 - **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
 - **Full-Text Search**: [Full-Text Search Guide](full-text-search.md) - FTS configuration and usage
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - semantic search setup with Ollama

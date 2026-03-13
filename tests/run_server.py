@@ -92,6 +92,8 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # If not set, detect what's available and configure accordingly
     embedding_model = os.environ.get('EMBEDDING_MODEL')
     embedding_dim = os.environ.get('EMBEDDING_DIM')
+    summary_provider = os.environ.get('SUMMARY_PROVIDER')
+    summary_model = os.environ.get('SUMMARY_MODEL')
 
     if embedding_model is None:
         # No model specified by parent - detect what's available
@@ -137,9 +139,22 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
                 file=sys.stderr,
             )
 
+    # Summary generation uses Ollama by default (SummarySettings.provider='ollama').
+    # Disable in test runs when the default/configured summary model is not available
+    # so the integration test suite can start in environments without LLMs.
+    if summary_provider is None or summary_provider == 'ollama':
+        check_model = summary_model or 'qwen3:1.7b'
+        if not is_ollama_model_available(check_model):
+            os.environ['ENABLE_SUMMARY_GENERATION'] = 'false'
+            print(
+                f'[TEST SERVER] Summary model "{check_model}" not available - disabling summary generation',
+                file=sys.stderr,
+            )
+
     print(f'[TEST SERVER] Test mode with DB_PATH={test_db}', file=sys.stderr)
     enable_emb_gen = os.environ.get('ENABLE_EMBEDDING_GENERATION', 'true')
     print(f'[TEST SERVER] ENABLE_EMBEDDING_GENERATION={enable_emb_gen}', file=sys.stderr)
+    print(f'[TEST SERVER] ENABLE_SUMMARY_GENERATION={os.environ.get("ENABLE_SUMMARY_GENERATION", "true")}', file=sys.stderr)
     print(f'[TEST SERVER] ENABLE_SEMANTIC_SEARCH={os.environ.get("ENABLE_SEMANTIC_SEARCH")}', file=sys.stderr)
     print(f'[TEST SERVER] ENABLE_FTS={os.environ.get("ENABLE_FTS")}', file=sys.stderr)
     print(f'[TEST SERVER] ENABLE_HYBRID_SEARCH={os.environ.get("ENABLE_HYBRID_SEARCH")}', file=sys.stderr)

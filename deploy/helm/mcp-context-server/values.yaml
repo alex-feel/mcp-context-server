@@ -135,10 +135,24 @@ search:
     maxLength: 512   # Maximum input length in tokens
     overfetch: 4     # Multiplier for over-fetching before reranking
     cacheDir: ""     # Custom cache directory for model files (empty = system default)
+  # LLM-based summary generation
+  summary:
+    enabled: true
+    provider: "ollama"       # ollama (default), openai, or anthropic
+    model: "qwen3:1.7b"     # Summary model
+    maxTokens: 2000          # Max output tokens (50-5000)
+    minContentLength: 300    # Min chars to trigger summary (0=always)
+    prompt: ""               # Custom prompt (empty = built-in default)
+    # Timeout and retry settings
+    timeout: 30.0
+    retryMaxAttempts: 3
+    retryBaseDelay: 1.0
+    # Concurrency control
+    maxConcurrent: 3         # Maximum parallel summary requests (1-20)
   # Default sort order for search results
   defaultSortBy: relevance  # Only 'relevance' supported in current version
 
-# Ollama sidecar configuration (only used when search.semantic.provider=ollama)
+# Ollama sidecar configuration (used when search.semantic.provider=ollama or search.summary.provider=ollama)
 ollama:
   enabled: false
   # Truncation control: false (default) returns error when context exceeded, true enables silent truncation
@@ -186,6 +200,15 @@ embeddingSecrets:
   # Voyage AI
   voyageApiKey: ""
   # Use existing secret for all provider keys
+  existingSecret: ""
+
+# Summary provider API keys (for openai/anthropic providers)
+summarySecrets:
+  # OpenAI (when summary.provider=openai)
+  openaiApiKey: ""
+  # Anthropic (when summary.provider=anthropic)
+  anthropicApiKey: ""
+  # Use existing secret for summary provider keys
   existingSecret: ""
 
 # Pod security context

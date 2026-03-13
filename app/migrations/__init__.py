@@ -8,6 +8,7 @@ This package contains migration orchestration and all migration implementations:
 - fts.py: Full-text search migrations
 - metadata.py: Metadata field index management
 - chunking.py: 1:N embedding relationship migration
+- summary.py: Summary column migration
 
 SQL Files (resources):
 - add_semantic_search_*.sql: Vector table schemas
@@ -20,6 +21,7 @@ SQL Files (resources):
 from app.migrations.chunking import apply_chunking_migration
 from app.migrations.dependencies import ProviderCheckResult
 from app.migrations.dependencies import check_provider_dependencies
+from app.migrations.dependencies import check_summary_provider_dependencies
 from app.migrations.dependencies import check_vector_storage_dependencies
 from app.migrations.fts import FtsMigrationStatus
 from app.migrations.fts import apply_fts_migration
@@ -30,6 +32,7 @@ from app.migrations.metadata import handle_metadata_indexes
 from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
+from app.migrations.summary import apply_summary_migration
 from app.migrations.utils import format_exception_message
 
 __all__ = [
@@ -39,6 +42,7 @@ __all__ = [
     'ProviderCheckResult',
     'check_vector_storage_dependencies',
     'check_provider_dependencies',
+    'check_summary_provider_dependencies',
     # Semantic
     'apply_semantic_search_migration',
     'apply_jsonb_merge_patch_migration',
@@ -53,4 +57,6 @@ __all__ = [
     'handle_metadata_indexes',
     # Chunking
     'apply_chunking_migration',
+    # Summary
+    'apply_summary_migration', 'check_summary_provider_dependencies',
 ]

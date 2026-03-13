@@ -370,6 +370,39 @@ class TestAppSettingsIntegration:
         with pytest.raises(ValidationError):
             AppSettings()
 
+    def test_truncation_length_default(self) -> None:
+        """Default truncation_length should be 150."""
+        settings = AppSettings()
+        assert settings.search.truncation_length == 150
+
+    def test_truncation_length_custom(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Custom SEARCH_TRUNCATION_LENGTH should be accepted."""
+        monkeypatch.setenv('SEARCH_TRUNCATION_LENGTH', '300')
+        settings = AppSettings()
+        assert settings.search.truncation_length == 300
+
+    def test_truncation_length_minimum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SEARCH_TRUNCATION_LENGTH below 50 should fail."""
+        monkeypatch.setenv('SEARCH_TRUNCATION_LENGTH', '49')
+        with pytest.raises(ValidationError):
+            AppSettings()
+
+    def test_truncation_length_maximum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SEARCH_TRUNCATION_LENGTH above 1000 should fail."""
+        monkeypatch.setenv('SEARCH_TRUNCATION_LENGTH', '1001')
+        with pytest.raises(ValidationError):
+            AppSettings()
+
+    def test_truncation_length_at_boundaries(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SEARCH_TRUNCATION_LENGTH at exact boundaries should be valid."""
+        monkeypatch.setenv('SEARCH_TRUNCATION_LENGTH', '50')
+        settings = AppSettings()
+        assert settings.search.truncation_length == 50
+
+        monkeypatch.setenv('SEARCH_TRUNCATION_LENGTH', '1000')
+        settings = AppSettings()
+        assert settings.search.truncation_length == 1000
+
     def test_chunking_settings_nested(self) -> None:
         """Chunking settings should work as nested config."""
         settings = AppSettings()

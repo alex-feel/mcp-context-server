@@ -48,5 +48,8 @@ Semantic Search: Enabled ({{ .Values.search.semantic.model }})
 {{- if .Values.search.hybrid.enabled }}
 Hybrid Search: Enabled (RRF k={{ .Values.search.hybrid.rrfK }})
 {{- end }}
+{{- if .Values.search.summary.enabled }}
+Summary Generation: Enabled ({{ .Values.search.summary.provider }}/{{ .Values.search.summary.model }})
+{{- end }}
 
 For more information, visit: https://github.com/alex-feel/mcp-context-server

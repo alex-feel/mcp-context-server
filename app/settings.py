@@ -508,6 +508,100 @@ class SemanticSearchSettings(CommonSettings):
     )
 
 
+class SummarySettings(CommonSettings):
+    """Summary generation settings for LLM-based context summarization.
+
+    Controls automatic summary generation for stored context entries.
+    Summaries are stored alongside full text and returned in search results,
+    providing dense context for LLM agents to assess relevance quickly.
+    """
+
+    generation_enabled: bool = Field(
+        default=True,
+        alias='ENABLE_SUMMARY_GENERATION',
+        description='Enable summary generation for stored context entries. '
+                    'If true and dependencies are not met, server will NOT start. '
+                    'Set to false to disable summaries entirely.',
+    )
+
+    provider: Literal['ollama', 'openai', 'anthropic'] = Field(
+        default='ollama',
+        alias='SUMMARY_PROVIDER',
+        description='Summary provider: ollama (default, local/free), openai, anthropic',
+    )
+
+    model: str = Field(
+        default='qwen3:1.7b',
+        alias='SUMMARY_MODEL',
+        description='Summary generation model name. Default: qwen3:1.7b. '
+                    'Alternatives: qwen3:4b (higher quality), qwen3:8b (highest quality), '
+                    'qwen3:0.6b (minimal resources)',
+    )
+
+    max_tokens: int = Field(
+        default=2000,
+        alias='SUMMARY_MAX_TOKENS',
+        ge=50,
+        le=5000,
+        description='Maximum output tokens for summary generation. '
+                    'Acts as a safety ceiling passed to the LLM API '
+                    '(max_tokens for OpenAI/Anthropic, num_predict for Ollama). '
+                    'The LLM typically generates far fewer tokens than this limit.',
+    )
+
+    timeout_s: float = Field(
+        default=30.0,
+        alias='SUMMARY_TIMEOUT_S',
+        gt=0,
+        le=300,
+        description='Timeout in seconds for summary generation API calls',
+    )
+
+    retry_max_attempts: int = Field(
+        default=3,
+        alias='SUMMARY_RETRY_MAX_ATTEMPTS',
+        ge=1,
+        le=10,
+        description='Maximum number of retry attempts for summary generation',
+    )
+
+    retry_base_delay_s: float = Field(
+        default=1.0,
+        alias='SUMMARY_RETRY_BASE_DELAY_S',
+        gt=0,
+        le=30,
+        description='Base delay in seconds between retry attempts (with exponential backoff)',
+    )
+
+    max_concurrent: int = Field(
+        default=3,
+        alias='SUMMARY_MAX_CONCURRENT',
+        ge=1,
+        le=20,
+        description='Maximum concurrent summary generation operations.',
+    )
+
+    prompt: str | None = Field(
+        default=None,
+        alias='SUMMARY_PROMPT',
+        description='Custom summarization prompt. Overrides the built-in default prompt. '
+                    'The prompt is used as the system message when calling the LLM. '
+                    'Should instruct the model to output only the summary text. '
+                    'For Qwen3 models, include /no_think prefix to disable reasoning mode.',
+    )
+
+    min_content_length: int = Field(
+        default=300,
+        ge=0,
+        le=10000,
+        alias='SUMMARY_MIN_CONTENT_LENGTH',
+        description='Minimum text content length (characters) to trigger summary generation. '
+                    'Content shorter than this threshold is not summarized (the text itself is '
+                    'short enough to serve as its own summary). '
+                    'Set to 0 to always generate summaries regardless of content length.',
+    )
+
+
 class FtsSettings(CommonSettings):
     """Full-text search feature configuration.
 
@@ -607,6 +701,13 @@ class SearchSettings(CommonSettings):
         alias='SEARCH_DEFAULT_SORT_BY',
         description='Default sort order for search results (currently only relevance is supported; '
                     'created_at and updated_at will be added in future releases)',
+    )
+    truncation_length: int = Field(
+        default=150,
+        ge=50,
+        le=1000,
+        alias='SEARCH_TRUNCATION_LENGTH',
+        description='Maximum character length for truncated text_content in search results (default: 150)',
     )
 
 
@@ -844,6 +945,7 @@ class AppSettings(CommonSettings):
 
     # Embedding and processing settings
     embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())
+    summary: SummarySettings = Field(default_factory=lambda: SummarySettings())
     chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
     reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
 
@@ -894,7 +996,7 @@ class AppSettings(CommonSettings):
             truncation_behavior = None  # Unknown behavior
             source = f'provider default for {self.embedding.provider}'
             logger.warning(
-                f'[EMBEDDING CONFIG] Model "{self.embedding.model}" not found in context_limits.py. '
+                f'Model "{self.embedding.model}" not found in context_limits.py. '
                 f'Using provider default context limit ({max_tokens} tokens). '
                 f'Consider adding model spec to app/embeddings/context_limits.py for accurate validation.',
             )
@@ -903,7 +1005,7 @@ class AppSettings(CommonSettings):
             # ENABLE_CHUNKING=false - warn about potential issues
             if truncation_behavior == 'silent':
                 logger.warning(
-                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
                     f'Model "{self.embedding.model}" ALWAYS silently truncates (cannot be disabled). '
                     f'Documents exceeding {max_tokens} tokens ({source}) will be truncated without warning.',
                 )
@@ -912,19 +1014,19 @@ class AppSettings(CommonSettings):
                 truncation_enabled = self._get_truncation_setting_for_provider()
                 if truncation_enabled:
                     logger.warning(
-                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation enabled. '
+                        f'ENABLE_CHUNKING=false with truncation enabled. '
                         f'Large documents will be silently truncated to {max_tokens} tokens ({source}). '
                         f'Consider enabling chunking for better embedding quality.',
                     )
                 else:
                     logger.warning(
-                        f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with truncation disabled. '
+                        f'ENABLE_CHUNKING=false with truncation disabled. '
                         f'Documents exceeding {max_tokens} tokens ({source}) will cause embedding errors. '
                         f'Consider enabling chunking to handle large documents.',
                     )
             elif truncation_behavior == 'error':
                 logger.warning(
-                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
+                    f'ENABLE_CHUNKING=false with provider "{self.embedding.provider}". '
                     f'Model "{self.embedding.model}" returns error on context exceed (no truncation). '
                     f'Documents exceeding {max_tokens} tokens ({source}) will fail embedding. '
                     f'Consider enabling chunking to handle large documents.',
@@ -932,7 +1034,7 @@ class AppSettings(CommonSettings):
             else:
                 # Unknown truncation behavior
                 logger.warning(
-                    f'[EMBEDDING CONFIG] ENABLE_CHUNKING=false. Document sizes unknown at startup. '
+                    f'ENABLE_CHUNKING=false. Document sizes unknown at startup. '
                     f'Documents exceeding {max_tokens} tokens ({source}) may cause issues. '
                     f'Consider enabling chunking for better reliability.',
                 )
@@ -955,7 +1057,7 @@ class AppSettings(CommonSettings):
                 consequence = 'may cause issues'
 
             logger.warning(
-                f'[EMBEDDING CONFIG] CHUNK_SIZE ({self.chunking.size} chars, '
+                f'CHUNK_SIZE ({self.chunking.size} chars, '
                 f'~{int(chunk_tokens_estimate)} tokens estimate) exceeds '
                 f'model context limit ({max_tokens} tokens from {source}). '
                 f'Chunks {consequence}. '
@@ -994,7 +1096,7 @@ class AppSettings(CommonSettings):
                 (self.reranking.max_length * self.reranking.chars_per_token - boundary_expansion) / 2,
             )
             logger.warning(
-                f'[FTS PASSAGE CONFIG] Single FTS match may produce ~{int(estimated_tokens)} tokens '
+                f'Single FTS match may produce ~{int(estimated_tokens)} tokens '
                 f'(using {self.reranking.chars_per_token} chars/token), exceeding RERANKING_MAX_LENGTH '
                 f'({self.reranking.max_length} tokens). Cross-encoder will truncate. '
                 f'Recommendations: '

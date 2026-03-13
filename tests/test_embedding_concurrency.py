@@ -257,6 +257,7 @@ async def test_hybrid_search_logs_fts_failure(caplog: pytest.LogCaptureFixture) 
         mock_settings.semantic_search.enabled = True
         mock_settings.reranking.enabled = False
         mock_settings.embedding.provider = 'ollama'
+        mock_settings.search.truncation_length = 150
 
         # FTS fails, semantic succeeds
         mock_fts.side_effect = Exception('FTS index corrupted')
@@ -300,6 +301,7 @@ async def test_hybrid_search_logs_semantic_failure(caplog: pytest.LogCaptureFixt
         mock_settings.semantic_search.enabled = True
         mock_settings.reranking.enabled = False
         mock_settings.embedding.provider = 'ollama'
+        mock_settings.search.truncation_length = 150
 
         # FTS succeeds, semantic fails
         mock_fts.return_value = (
@@ -344,6 +346,7 @@ async def test_hybrid_search_no_warning_on_success(caplog: pytest.LogCaptureFixt
         mock_settings.semantic_search.enabled = True
         mock_settings.reranking.enabled = False
         mock_settings.embedding.provider = 'ollama'
+        mock_settings.search.truncation_length = 150
 
         mock_fts.return_value = (
             [{'id': 1, 'text_content': 'test', 'metadata': None, 'source': 'agent', 'content_type': 'text'}],

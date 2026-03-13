@@ -180,7 +180,7 @@ class TestParameterHandling:
         )
 
         assert result['success'] is True
-        assert 'Context stored with 0 images' in result['message']
+        assert 'Context stored' in result['message']
 
     @pytest.mark.asyncio
     async def test_store_context_all_complex_params_together(self) -> None:

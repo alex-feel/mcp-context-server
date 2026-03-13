@@ -403,3 +403,59 @@ class StatisticsRepository(BaseRepository):
             return stats
 
         return await self.backend.execute_read(_get_tag_stats_postgresql)
+
+    async def get_summary_statistics(self) -> dict[str, Any]:
+        """Get summary generation statistics.
+
+        Returns:
+            Dictionary with summary_count, total_entries, and coverage_percentage
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _get_summary_stats_sqlite(conn: sqlite3.Connection) -> dict[str, Any]:
+                cursor = conn.cursor()
+
+                cursor.execute('SELECT COUNT(*) as count FROM context_entries')
+                total_entries = cursor.fetchone()['count']
+
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM context_entries WHERE summary IS NOT NULL AND summary != ''",
+                )
+                summary_count = cursor.fetchone()['count']
+
+                coverage_percentage = (
+                    round(summary_count / total_entries * 100, 2)
+                    if total_entries > 0
+                    else 0.0
+                )
+
+                return {
+                    'summary_count': summary_count,
+                    'total_entries': total_entries,
+                    'coverage_percentage': coverage_percentage,
+                }
+
+            return await self.backend.execute_read(_get_summary_stats_sqlite)
+
+        # postgresql
+
+        async def _get_summary_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+            total_entries = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+
+            summary_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM context_entries WHERE summary IS NOT NULL AND summary != ''",
+            )
+
+            coverage_percentage = (
+                round(summary_count / total_entries * 100, 2)
+                if total_entries > 0
+                else 0.0
+            )
+
+            return {
+                'summary_count': summary_count,
+                'total_entries': total_entries,
+                'coverage_percentage': coverage_percentage,
+            }
+
+        return await self.backend.execute_read(_get_summary_stats_postgresql)

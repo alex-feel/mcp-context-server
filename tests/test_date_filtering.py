@@ -519,6 +519,7 @@ class TestSemanticSearchDateFiltering:
         ):
             mock_settings.semantic_search.enabled = True
             mock_settings.embedding.model = 'test-model'
+            mock_settings.search.truncation_length = 150
 
             # Import and get the actual function
             import app.server

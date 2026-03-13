@@ -235,11 +235,11 @@ The `ollama-models` volume is shared across all Ollama configurations, so switch
 The custom Ollama image (`deploy/docker/ollama/Dockerfile`) includes an entrypoint script that:
 
 1. Starts Ollama server on a temporary internal port
-2. Checks if the configured embedding model exists
-3. Pulls the model if not present
+2. Checks if the configured embedding model (`EMBEDDING_MODEL`) exists and pulls it if not present
+3. If `SUMMARY_MODEL` is configured and differs from the embedding model, checks and pulls the summary model if not present
 4. Restarts Ollama on the production port
 
-This eliminates manual `ollama pull` steps after deployment.
+This eliminates manual `ollama pull` steps after deployment. Both the embedding model and the summary model are automatically downloaded on first startup when configured in the Docker Compose environment.
 
 ## Configuration
 
@@ -255,6 +255,20 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `FASTMCP_HOST`            | `0.0.0.0` | HTTP bind address                                        |
 | `FASTMCP_PORT`            | `8000`    | HTTP port                                                |
 | `FASTMCP_STATELESS_HTTP`  | `true`    | Stateless HTTP mode (enabled by default)                 |
+
+**Summary Generation Settings:**
+
+| Variable                     | Default      | Description                                                     |
+|------------------------------|--------------|-----------------------------------------------------------------|
+| `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable automatic LLM-based summary generation                   |
+| `SUMMARY_PROVIDER`           | `ollama`     | Summary provider: `ollama`, `openai`, or `anthropic`            |
+| `SUMMARY_MODEL`              | `qwen3:1.7b` | Summary model name (provider-specific)                          |
+| `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)          |
+| `SUMMARY_TIMEOUT_S`          | `30.0`       | Timeout in seconds for summary generation API calls             |
+| `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                      |
+| `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)     |
+| `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)         |
+| `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt; unset uses the optimized built-in default |
 
 **Search Features:**
 
@@ -543,6 +557,28 @@ cp deploy/docker/.env-sqlite.openai.example deploy/docker/.env
 grep OPENAI_API_KEY deploy/docker/.env
 ```
 
+### Issue 7: Summary Generation Not Working (Ollama)
+
+**Symptom:** `summary` field is an empty string in search results
+
+**Causes:**
+- Summary model not pulled into the Ollama container
+- `ENABLE_SUMMARY_GENERATION` set to `false`
+
+**Solutions:**
+```bash
+# Pull the summary model
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3:1.7b
+
+# Verify model is available
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama list
+
+# Check server logs for summary errors
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs mcp-context-server | grep -i summary
+```
+
+**Note:** Summaries are generated before the database transaction during `store_context` and `update_context` operations (in parallel with embedding generation). The summary is available immediately in the response and in subsequent search results.
+
 ### Common Error Messages
 
 | Error                                  | Cause                          | Solution                                                    |
@@ -557,6 +593,7 @@ grep OPENAI_API_KEY deploy/docker/.env
 | `pgvector extension is not installed`  | pgvector not enabled           | Enable via dashboard or CREATE EXTENSION (exit 78)          |
 | `insufficient privileges`              | Cannot create pgvector         | Grant permissions via dashboard (exit 78)                   |
 | `[Errno 111] Connection refused`       | PostgreSQL not running         | Wait for PostgreSQL to start (exit 69, will retry)          |
+| `summary field is empty`               | Summary model not pulled       | Run `ollama pull qwen3:1.7b` in the ollama container        |
 
 ## Advanced Configuration
 
@@ -574,7 +611,7 @@ services:
 
   ollama:
     environment:
-      - MODEL=nomic-embed-text
+      - EMBEDDING_MODEL=nomic-embed-text
 ```
 
 ### Custom Embedding Model (OpenAI)
@@ -654,6 +691,44 @@ docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-al
 | `embeddings-all`         | All providers    | All packages          |
 
 **Note:** The OpenAI Docker Compose configurations automatically pass the correct build argument. If using Ollama configurations, no build argument is needed (default is `embeddings-ollama`).
+
+### Building with Different Summary Providers
+
+The Dockerfile supports building with different summary providers via the `SUMMARY_EXTRA` build argument:
+
+```bash
+# Build with Ollama summaries (default)
+docker build -t mcp-context-server .
+
+# Build with OpenAI summaries
+docker build --build-arg SUMMARY_EXTRA=summary-openai -t mcp-context-server-openai-summary .
+
+# Build with Anthropic summaries
+docker build --build-arg SUMMARY_EXTRA=summary-anthropic -t mcp-context-server-anthropic-summary .
+
+# Combine embedding and summary build args
+docker build \
+  --build-arg EMBEDDING_EXTRA=embeddings-openai \
+  --build-arg SUMMARY_EXTRA=summary-openai \
+  -t mcp-context-server-openai .
+```
+
+**Available Summary Extras:**
+
+| Extra               | Provider          | Package               | Default Model     |
+|---------------------|-------------------|-----------------------|-------------------|
+| `summary-ollama`    | Ollama (default)  | langchain-ollama      | qwen3:1.7b        |
+| `summary-openai`    | OpenAI            | langchain-openai      | gpt-5-nano        |
+| `summary-anthropic` | Anthropic         | langchain-anthropic   | claude-haiku-4-5  |
+
+To disable summary generation entirely (no `SUMMARY_EXTRA` needed):
+
+```yaml
+environment:
+  - ENABLE_SUMMARY_GENERATION=false
+```
+
+For detailed summary generation configuration, see the [Summary Generation Guide](../summary-generation.md).
 
 ### Horizontal Scaling with Docker Compose
 

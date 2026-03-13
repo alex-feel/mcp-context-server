@@ -72,8 +72,8 @@ class TestSearchContextResponseStructure:
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
-    async def test_entry_has_is_truncated_field(self) -> None:
-        """Each entry must have is_truncated field."""
+    async def test_entry_has_is_text_content_truncated_field(self) -> None:
+        """Each entry must have is_text_content_truncated field."""
         # Store a test entry with long content
         long_text = 'A' * 200  # Longer than 150 chars truncation limit
         await store_context(
@@ -84,7 +84,22 @@ class TestSearchContextResponseStructure:
 
         result = await search_context(thread_id='test_truncated_field', limit=10)
         for entry in result['results']:
-            assert 'is_truncated' in entry
+            assert 'is_text_content_truncated' in entry
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_entry_has_summary_field(self) -> None:
+        """Each entry must have summary field as string (empty when absent)."""
+        await store_context(
+            thread_id='test_summary_field',
+            source='agent',
+            text='Test content for summary field check',
+        )
+
+        result = await search_context(thread_id='test_summary_field', limit=10)
+        for entry in result['results']:
+            assert 'summary' in entry
+            assert isinstance(entry['summary'], str)
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')

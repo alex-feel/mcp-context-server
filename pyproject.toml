@@ -37,6 +37,7 @@ constraint-dependencies = [
     "langsmith>=0.6.3",  # CVE-2026-25528 fix
     "langchain-core>=1.2.11",  # CVE-2026-26013 fix
     "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
+    "authlib>=1.6.7",  # CVE-2026-28802 fix
 ]
 
 [project.optional-dependencies]
@@ -106,6 +107,24 @@ langsmith = [
     "langsmith>=0.6.3",  # CVE-2026-25528 fix
 ]
 
+# Summary providers - install ONE based on SUMMARY_PROVIDER setting
+summary-ollama = [
+    "langchain-ollama>=0.3.0",
+]
+summary-openai = [
+    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
+]
+summary-anthropic = [
+    "langchain-anthropic>=0.3.0",
+]
+
+# Convenience: all summary providers (for testing/development)
+summary-all = [
+    "langchain-ollama>=0.3.0",
+    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
+    "langchain-anthropic>=0.3.0",
+]
+
 [dependency-groups]
 dev = [
     "pre-commit",
@@ -136,7 +155,9 @@ extend-include = ["tests/**/*.py"]
 #   BEFORE importing app.server (which triggers httpx import). See conftest.py comments for details.
 # - app/instructions.py: E501, W293 required - DEFAULT_INSTRUCTIONS is a triple-quoted Markdown string
 #   where long lines and indented blank lines are intentional content formatting.
-extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "app/instructions.py" = ["E501", "W293"] }
+# - app/summary/instructions.py: E501, W293 required - DEFAULT_SUMMARY_PROMPT uses concatenated strings
+#   where long lines are intentional prompt formatting.
+extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "app/instructions.py" = ["E501", "W293"], "app/summary/instructions.py" = ["E501", "W293"] }
 
 [tool.ruff.lint]
 # Ignore specific rules
@@ -286,6 +307,10 @@ module = [
   'langchain_huggingface',
   'langchain_voyageai',
   'langchain_ollama',
+  'langchain_anthropic',
+  'langchain_anthropic.*',
+  'langchain_core',
+  'langchain_core.*',
   'langchain_text_splitters',
   'langchain_text_splitters.*',
   'flashrank',
@@ -325,6 +350,14 @@ reportAttributeAccessIssue = false
 
 [[tool.pyright.executionEnvironments]]
 root = "app/reranking/providers"
+reportMissingImports = false
+reportUnknownVariableType = false
+reportAttributeAccessIssue = false
+reportMissingTypeStubs = false
+
+# Suppress optional dependency errors in app/summary/providers (langchain_*)
+[[tool.pyright.executionEnvironments]]
+root = "app/summary/providers"
 reportMissingImports = false
 reportUnknownVariableType = false
 reportAttributeAccessIssue = false

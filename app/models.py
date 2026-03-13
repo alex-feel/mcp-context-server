@@ -71,6 +71,7 @@ class ContextEntry(BaseModel):
     text_content: str | None = Field(default=None)
     images: list[Any] = Field(default_factory=list, max_length=10)  # Pyright false positive - ImageAttachment is defined
     metadata: MetadataDict | None = Field(default=None)
+    summary: str | None = Field(default=None, description='LLM-generated summary for search result display')
     tags: list[str] = Field(default_factory=list)
     created_at: datetime | None = Field(default=None)
     updated_at: datetime | None = Field(default=None)

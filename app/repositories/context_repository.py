@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # This constant is used in all SELECT queries that return context entries to ensure
 # only the expected columns are returned, preventing internal PostgreSQL columns from
 # leaking into API responses.
-CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, created_at, updated_at'
+CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at'
 
 
 class ContextRepository(BaseRepository):
@@ -55,6 +55,7 @@ class ContextRepository(BaseRepository):
         content_type: str,
         text_content: str,
         metadata: str | None = None,
+        summary: str | None = None,
         txn: TransactionContext | None = None,
     ) -> tuple[int, bool]:
         """Store context entry with deduplication logic.
@@ -69,6 +70,7 @@ class ContextRepository(BaseRepository):
             content_type: 'text' or 'multimodal'
             text_content: The actual text content
             metadata: JSON metadata string or None
+            summary: LLM-generated summary text or None
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
@@ -78,6 +80,11 @@ class ContextRepository(BaseRepository):
             an existing entry was updated, False means new entry was inserted.
         """
         backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        # Normalize empty/whitespace summary to None for proper COALESCE behavior.
+        # COALESCE(NULL, existing_value) preserves existing; COALESCE("", existing_value) overwrites.
+        if summary is not None and not summary.strip():
+            summary = None
 
         if backend_type == 'sqlite':
 
@@ -105,10 +112,11 @@ class ContextRepository(BaseRepository):
                         UPDATE context_entries
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
                             content_type = {self._placeholder(2)},
+                            summary = COALESCE({self._placeholder(3)}, summary),
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(3)}
+                        WHERE id = {self._placeholder(4)}
                         ''',
-                        (metadata, content_type, existing_id),
+                        (metadata, content_type, summary, existing_id),
                     )
                     rows_affected = cursor.rowcount
                     if rows_affected == 0:
@@ -123,10 +131,10 @@ class ContextRepository(BaseRepository):
                 cursor.execute(
                     f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata)
-                    VALUES ({self._placeholders(5)})
+                    (thread_id, source, content_type, text_content, metadata, summary)
+                    VALUES ({self._placeholders(6)})
                     ''',
-                    (thread_id, source, content_type, text_content, metadata),
+                    (thread_id, source, content_type, text_content, metadata, summary),
                 )
                 new_id: int = cursor.lastrowid if cursor.lastrowid is not None else 0
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
@@ -159,11 +167,13 @@ class ContextRepository(BaseRepository):
                         UPDATE context_entries
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
                             content_type = {self._placeholder(2)},
+                            summary = COALESCE({self._placeholder(3)}, summary),
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(3)}
+                        WHERE id = {self._placeholder(4)}
                         ''',
                     metadata,
                     content_type,
+                    summary,
                     existing_id,
                 )
                 rows_affected = int(result.split()[-1]) if result else 0
@@ -179,8 +189,8 @@ class ContextRepository(BaseRepository):
             new_id_result = await conn.fetchval(
                 f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata)
-                    VALUES ({self._placeholders(5)})
+                    (thread_id, source, content_type, text_content, metadata, summary)
+                    VALUES ({self._placeholders(6)})
                     RETURNING id
                     ''',
                 thread_id,
@@ -188,6 +198,7 @@ class ContextRepository(BaseRepository):
                 content_type,
                 text_content,
                 metadata,
+                summary,
             )
             new_id = cast(int, new_id_result)
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
@@ -255,6 +266,53 @@ class ContextRepository(BaseRepository):
             return None
 
         return await self.backend.execute_read(_check_postgresql)
+
+    async def get_summary(self, context_id: int) -> str | None:
+        """Get the summary for a context entry.
+
+        Used during deduplication to check if a summary already exists,
+        avoiding unnecessary LLM calls for duplicate entries.
+
+        Args:
+            context_id: ID of the context entry.
+
+        Returns:
+            Summary string if exists, None otherwise.
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _get_summary_sqlite(conn: sqlite3.Connection) -> str | None:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'SELECT summary FROM context_entries WHERE id = {self._placeholder(1)}',
+                    (context_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    value = cast(str | None, row['summary'])
+                    # Normalize empty/whitespace to None for consistent behavior
+                    if value is not None and not value.strip():
+                        return None
+                    return value
+                return None
+
+            return await self.backend.execute_read(_get_summary_sqlite)
+
+        # PostgreSQL
+        async def _get_summary_postgresql(conn: asyncpg.Connection) -> str | None:
+            row = await conn.fetchrow(
+                f'SELECT summary FROM context_entries WHERE id = {self._placeholder(1)}',
+                context_id,
+            )
+            if row:
+                value = cast(str | None, row['summary'])
+                # Normalize empty/whitespace to None for consistent behavior
+                if value is not None and not value.strip():
+                    return None
+                return value
+            return None
+
+        return await self.backend.execute_read(_get_summary_postgresql)
 
     async def search_contexts(
         self,
@@ -697,6 +755,8 @@ class ContextRepository(BaseRepository):
         context_id: int,
         text_content: str | None = None,
         metadata: str | None = None,
+        summary: str | None = None,
+        clear_summary: bool = False,
         txn: TransactionContext | None = None,
     ) -> tuple[bool, list[str]]:
         """Update text content and/or metadata of a context entry.
@@ -705,6 +765,9 @@ class ContextRepository(BaseRepository):
             context_id: ID of the context entry to update
             text_content: New text content (if provided)
             metadata: New metadata JSON string (if provided)
+            summary: New LLM-generated summary text (if provided)
+            clear_summary: If True, explicitly set summary to NULL in the database.
+                Takes precedence over summary parameter.
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
@@ -741,6 +804,14 @@ class ContextRepository(BaseRepository):
                     update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
                     params.append(metadata)
                     updated_fields.append('metadata')
+
+                if clear_summary:
+                    update_parts.append('summary = NULL')
+                    updated_fields.append('summary')
+                elif summary is not None:
+                    update_parts.append(f'summary = {self._placeholder(len(params) + 1)}')
+                    params.append(summary)
+                    updated_fields.append('summary')
 
                 # If no fields to update, return early
                 if not update_parts:
@@ -790,6 +861,14 @@ class ContextRepository(BaseRepository):
                 update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
                 params.append(metadata)
                 updated_fields.append('metadata')
+
+            if clear_summary:
+                update_parts.append('summary = NULL')
+                updated_fields.append('summary')
+            elif summary is not None:
+                update_parts.append(f'summary = {self._placeholder(len(params) + 1)}')
+                params.append(summary)
+                updated_fields.append('summary')
 
             # If no fields to update, return early
             if not update_parts:

@@ -15,55 +15,56 @@ if TYPE_CHECKING:
 # Default server instructions sent to MCP clients during initialization.
 # Override at runtime via MCP_SERVER_INSTRUCTIONS environment variable.
 DEFAULT_INSTRUCTIONS: str = ('''
-    # MCP Context Server
+# MCP Context Server
 
-    Persistent context storage for LLM agents. Store, search, and retrieve context entries across sessions.
+Persistent context storage for LLM agents. Store, search, and retrieve context entries across sessions.
 
-    ## Tools
-    
-    | Tool                      | Purpose                                     |
-    |---------------------------|---------------------------------------------|
-    | `store_context`           | Store new entry                             |
-    | `get_context_by_ids`      | Retrieve full entries by ID                 |
-    | `search_context`          | Browse/filter entries (truncated 150 chars) |
-    | `hybrid_search_context`   | Combined FTS + semantic (RRF)               |
-    | `semantic_search_context` | Vector similarity search                    |
-    | `fts_search_context`      | Full-text linguistic search                 |
-    | `update_context`          | Update existing entry                       |
-    | `delete_context`          | Delete entries by ID                        |
-    | `list_threads`            | List all thread IDs                         |
-    | `get_statistics`          | Database statistics                         |
+## Tools
 
-    Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries each).
-    
-    ## Core Concepts
-    
-    - **thread_id**: Groups related entries (e.g., one per knowledge base, project, session, or task). Scope searches with thread_id when working within a specific thread; omit for cross-thread knowledge discovery.
-    - **source**: "user" or "agent" — filters by entry creator.
-    - **text**: Prefer storing context in pure Markdown format.
-    - **metadata**: JSON object for structured data. Use metadata_filters for advanced operators (gt, lt, contains, exists, etc.). Include descriptive fields (agent_name, task_name, status, project, references) for discoverability. Link entries into a knowledge graph with references. Store cross-references when creating entries: `metadata: {"references": {"context_ids": [<id_1>, <id_2>, ...]}}`. Retrieve referenced entries with `get_context_by_ids` to follow the knowledge chain.
-    - **tags**: Lowercase labels for categorization (OR logic).
-    
-    ## Best Practices
-    
-    **Searching:**
-    - Use `search_context` to browse and list entries within a thread (e.g., fetch recent messages by source filter), then use `get_context_by_ids` to retrieve full content.
-    - Use `hybrid_search_context` for knowledge discovery — finding past decisions, patterns, and related work, typically cross-thread (e.g., by project metadata filter or across all projects).
-    - These tools complement each other: `search_context` for thread-scoped context loading, `hybrid_search_context` for cross-thread knowledge search.
-    - Use `fts_search_context` for precise linguistic queries only (stemming, boolean operators).
-    - Use `semantic_search_context` for meaning-based similarity.
-    - Prefer `hybrid_search_context` over `fts_search_context` and `semantic_search_context` when available.
-    
-    **Storing:**
-    - Always include descriptive metadata (agent_name, task_name, status, project, references) for discoverability.
-    - Add tags for cross-cutting categorization.
-    - Add `metadata.references.context_ids` to metadata linking to entries your work builds upon.
-    - Use `metadata_patch` (not `metadata`) in `update_context` to preserve fields you do not change.
-    
-    **Retrieving:**
-    - `search_context` returns truncated previews (150 chars) — you can query tens of entries without hurting the context window. Always call `get_context_by_ids` for relevant entries for full content.
-    - Check `metadata.references.context_ids` in retrieved entries and follow them with `get_context_by_ids` for deeper context.
-''')
+| Tool                      | Purpose                                                      |
+|---------------------------|--------------------------------------------------------------|
+| `store_context`           | Store new entry                                              |
+| `get_context_by_ids`      | Retrieve full entries by ID                                  |
+| `search_context`          | Browse/filter entries (truncated text + summary)             |
+| `hybrid_search_context`   | Combined FTS + semantic (truncated text + summary)           |
+| `semantic_search_context` | Vector similarity search (truncated text + summary)          |
+| `fts_search_context`      | Full-text linguistic search (truncated text + summary)       |
+| `update_context`          | Update existing entry                                        |
+| `delete_context`          | Delete entries by ID                                         |
+| `list_threads`            | List all thread IDs                                          |
+| `get_statistics`          | Database statistics                                          |
+
+Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries each).
+
+## Core Concepts
+
+- **thread_id**: Groups related entries (e.g., one per knowledge base, project, session, or task). Scope searches with thread_id when working within a specific thread; omit for cross-thread knowledge discovery.
+- **source**: "user" or "agent" — filters by entry creator.
+- **text**: Prefer storing context in pure Markdown format.
+- **metadata**: JSON object for structured data. Use metadata_filters for advanced operators (gt, lt, contains, exists, etc.). Include descriptive fields (agent_name, task_name, status, project, references) for discoverability. Link entries into a knowledge graph with references. Store cross-references when creating entries: `metadata: {"references": {"context_ids": [<id_1>, <id_2>, ...]}}`. Retrieve referenced entries with `get_context_by_ids` to follow the knowledge chain.
+- **tags**: Lowercase labels for categorization (OR logic).
+
+## Best Practices
+
+**Searching:**
+- All search tools return truncated `text_content` and a `summary` field. Use `get_context_by_ids` to retrieve full content of entries that look relevant based on the truncated preview, summary, and metadata.
+- Use `search_context` to browse and list entries within a thread (e.g., fetch recent messages by source filter).
+- Use `hybrid_search_context` for knowledge discovery — finding past decisions, patterns, and related work, typically cross-thread (e.g., by project metadata filter or across all projects).
+- These tools complement each other: `search_context` for thread-scoped context loading, `hybrid_search_context` for cross-thread knowledge search.
+- Use `fts_search_context` for precise linguistic queries only (stemming, boolean operators).
+- Use `semantic_search_context` for meaning-based similarity.
+- Prefer `hybrid_search_context` over `fts_search_context` and `semantic_search_context` when available.
+
+**Storing:**
+- Always include descriptive metadata (agent_name, task_name, status, project, references) for discoverability.
+- Add tags for cross-cutting categorization.
+- Add `metadata.references.context_ids` to metadata linking to entries your work builds upon.
+- Use `metadata_patch` (not `metadata`) in `update_context` to preserve fields you do not change.
+
+**Retrieving:**
+- All search tools return truncated `text_content` with `is_text_content_truncated` flag, plus a `summary` field (empty string when not generated). You can query many entries without hurting the context window. Always call `get_context_by_ids` for full content of relevant entries.
+- Check `metadata.references.context_ids` in retrieved entries and follow them with `get_context_by_ids` for deeper context.
+''').strip()
 
 
 def resolve_instructions(instructions_settings: InstructionsSettings) -> str:

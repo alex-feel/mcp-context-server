@@ -170,20 +170,20 @@ class ChunkingService:
             >>> chunks[0].end_index
             10
         """
-        logger.debug(f'[CHUNKING] Split request: enabled={self._enabled}, text_len={len(text)}, chunk_size={self._chunk_size}')
+        logger.debug(f'Split request: enabled={self._enabled}, text_len={len(text)}, chunk_size={self._chunk_size}')
 
         if not self._enabled or len(text) <= self._chunk_size:
-            logger.debug('[CHUNKING] Fast path: text <= chunk_size, returning 1 chunk')
+            logger.debug('Fast path: text <= chunk_size, returning 1 chunk')
             return [TextChunk(text=text, chunk_index=0, start_index=0, end_index=len(text))]
 
-        logger.debug('[CHUNKING] Invoking text splitter with boundary tracking')
+        logger.debug('Invoking text splitter with boundary tracking')
 
         # Use create_documents to get metadata with start_index
         assert self._splitter is not None  # Type narrowing for mypy
         split_docs = self._splitter.create_documents([text])
 
         # Key operational event: shows chunking produced results
-        logger.info(f'[CHUNKING] Split complete: {len(split_docs)} chunks with boundaries')
+        logger.info(f'Split complete: {len(split_docs)} chunks with boundaries')
 
         return [
             TextChunk(

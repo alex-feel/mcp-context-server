@@ -65,6 +65,27 @@ helm install mcp ./deploy/helm/mcp-context-server \
   --set ollama.enabled=true
 ```
 
+### With Summary Generation
+
+Enable automatic LLM-based summarization with Ollama sidecar:
+
+```bash
+helm install mcp ./deploy/helm/mcp-context-server \
+  --set ollama.enabled=true \
+  --set search.summary.enabled=true \
+  --set search.summary.provider=ollama \
+  --set search.summary.model=qwen3:1.7b
+```
+
+**Note:** When using the Ollama sidecar, models must be pulled manually before use:
+
+```bash
+# Pull the summary model
+kubectl exec -it <pod-name> -c ollama -- ollama pull qwen3:1.7b
+# Pull the embedding model (if semantic search is also enabled)
+kubectl exec -it <pod-name> -c ollama -- ollama pull qwen3-embedding:0.6b
+```
+
 ### Full-Featured Production
 
 All features enabled with PostgreSQL:
@@ -78,6 +99,7 @@ helm install mcp ./deploy/helm/mcp-context-server \
   --set search.fts.enabled=true \
   --set search.semantic.enabled=true \
   --set search.hybrid.enabled=true \
+  --set search.summary.enabled=true \
   --set ollama.enabled=true \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=mcp.example.com
@@ -154,6 +176,32 @@ search:
   hybrid:
     enabled: false
     rrfK: 60
+```
+
+### Summary Generation
+
+```yaml
+search:
+  summary:
+    enabled: true             # ENABLE_SUMMARY_GENERATION
+    provider: "ollama"        # SUMMARY_PROVIDER: ollama, openai, or anthropic
+    model: "qwen3:1.7b"      # SUMMARY_MODEL
+    maxTokens: 2000           # SUMMARY_MAX_TOKENS (tokens, 50-5000)
+    minContentLength: 300     # SUMMARY_MIN_CONTENT_LENGTH (chars, 0=always)
+    prompt: ""                # SUMMARY_PROMPT: empty uses built-in default
+    timeout: 30.0             # SUMMARY_TIMEOUT_S
+    retryMaxAttempts: 3       # SUMMARY_RETRY_MAX_ATTEMPTS
+    retryBaseDelay: 1.0       # SUMMARY_RETRY_BASE_DELAY_S
+    maxConcurrent: 3          # SUMMARY_MAX_CONCURRENT (1-20)
+```
+
+For OpenAI or Anthropic providers, configure API keys:
+
+```yaml
+summarySecrets:
+  openaiApiKey: ""        # For summary.provider=openai
+  anthropicApiKey: ""     # For summary.provider=anthropic
+  existingSecret: ""      # Use pre-existing Kubernetes secret
 ```
 
 ### Ollama Sidecar
@@ -397,5 +445,6 @@ kubectl logs -l app.kubernetes.io/name=mcp-context-server
 
 - [Kubernetes Deployment Guide](kubernetes.md) - General Kubernetes deployment
 - [Docker Deployment Guide](docker.md) - Alternative Docker Compose deployment
+- [Summary Generation Guide](../summary-generation.md) - LLM-based summary configuration
 - [Database Backends](../database-backends.md) - Database configuration details
 - [Semantic Search](../semantic-search.md) - Ollama and embedding configuration

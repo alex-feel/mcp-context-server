@@ -143,7 +143,7 @@ def register_tool(
     tool_name = name or func.__name__
 
     if is_tool_disabled(tool_name):
-        logger.info(f'[!] {tool_name} not registered (in DISABLED_TOOLS)')
+        logger.info(f'{tool_name} not registered (in DISABLED_TOOLS)')
         return False
 
     # Get annotations from centralized mapping
@@ -155,7 +155,7 @@ def register_tool(
     else:
         mcp_instance.tool(annotations=annotations)(func)
 
-    logger.info(f'[OK] {tool_name} registered')
+    logger.info(f'{tool_name} registered')
     return True
 
 

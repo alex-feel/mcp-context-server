@@ -72,7 +72,8 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         coverage_percentage), fts (dict with enabled, available, language, backend,
         engine, indexed_entries, coverage_percentage), chunking (dict with enabled,
         chunk_size, chunk_overlap, aggregation), reranking (dict with enabled,
-        available, provider, model).
+        available, provider, model), summary (dict with enabled, available,
+        provider, model, summary_count, coverage_percentage, min_content_length).
 
     Raises:
         ToolError: If retrieving statistics fails.
@@ -97,7 +98,7 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
                 embedding_stats = await repos.embeddings.get_statistics()
-                logger.debug(f'[STATISTICS] Embedding repository stats: {embedding_stats}')
+                logger.debug(f'Embedding repository stats: {embedding_stats}')
                 stats['semantic_search'] = {
                     'enabled': True,
                     'available': True,
@@ -178,6 +179,34 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
                 }
         else:
             stats['reranking'] = {
+                'enabled': False,
+                'available': False,
+            }
+
+        # Add summary generation statistics
+        from app.startup import get_summary_provider
+
+        summary_provider = get_summary_provider()
+        if settings.summary.generation_enabled:
+            if summary_provider is not None:
+                summary_stats = await repos.statistics.get_summary_statistics()
+                stats['summary'] = {
+                    'enabled': True,
+                    'available': True,
+                    'provider': settings.summary.provider,
+                    'model': settings.summary.model,
+                    'summary_count': summary_stats['summary_count'],
+                    'coverage_percentage': summary_stats['coverage_percentage'],
+                    'min_content_length': settings.summary.min_content_length,
+                }
+            else:
+                stats['summary'] = {
+                    'enabled': True,
+                    'available': False,
+                    'message': 'Summary provider not initialized',
+                }
+        else:
+            stats['summary'] = {
                 'enabled': False,
                 'available': False,
             }

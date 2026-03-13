@@ -157,7 +157,9 @@ When FTS is enabled, a new MCP tool becomes available.
       "thread_id": "thread-abc",
       "source": "agent",
       "content_type": "text",
-      "text_content": "matching context content",
+      "text_content": "matching context content...",
+      "summary": "Full summary of the matching context content with key entities and decisions.",
+      "is_text_content_truncated": true,
       "metadata": {"status": "completed"},
       "created_at": "2025-12-01T10:00:00Z",
       "updated_at": "2025-12-01T10:00:00Z",
@@ -536,6 +538,7 @@ Both operations automatically rebuild the index from existing data.
 ### Related Documentation
 
 - **API Reference**: [API Reference](api-reference.md) - complete tool documentation
+- **Summary Generation**: [Summary Generation Guide](summary-generation.md) - LLM-based automatic summarization for search results
 - **Database Backends**: [Database Backends Guide](database-backends.md) - database configuration
 - **Semantic Search**: [Semantic Search Guide](semantic-search.md) - meaning-based search with embeddings
 - **Hybrid Search**: [Hybrid Search Guide](hybrid-search.md) - combined FTS + semantic search with RRF fusion

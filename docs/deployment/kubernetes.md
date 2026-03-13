@@ -160,17 +160,21 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 The deployment uses a ConfigMap for non-sensitive configuration:
 
-| Variable                 | Description                                |
-|--------------------------|--------------------------------------------|
-| `MCP_TRANSPORT`          | Transport mode (http for Kubernetes)       |
-| `FASTMCP_HOST`           | HTTP bind address                          |
-| `FASTMCP_PORT`           | HTTP port                                  |
-| `FASTMCP_STATELESS_HTTP` | Stateless HTTP mode (enabled by default)   |
-| `LOG_LEVEL`              | Logging level                              |
-| `STORAGE_BACKEND`        | sqlite or postgresql                       |
-| `ENABLE_FTS`             | Full-text search                           |
-| `ENABLE_SEMANTIC_SEARCH` | Semantic search                            |
-| `ENABLE_HYBRID_SEARCH`   | Hybrid search                              |
+| Variable                    | Description                                                  |
+|-----------------------------|--------------------------------------------------------------|
+| `MCP_TRANSPORT`             | Transport mode (http for Kubernetes)                         |
+| `FASTMCP_HOST`              | HTTP bind address                                            |
+| `FASTMCP_PORT`              | HTTP port                                                    |
+| `FASTMCP_STATELESS_HTTP`    | Stateless HTTP mode (enabled by default)                     |
+| `LOG_LEVEL`                 | Logging level                                                |
+| `STORAGE_BACKEND`           | sqlite or postgresql                                         |
+| `ENABLE_SUMMARY_GENERATION` | Enable automatic LLM-based summary generation                |
+| `SUMMARY_PROVIDER`          | Summary provider: ollama, openai, or anthropic               |
+| `SUMMARY_MODEL`             | Summary model name (default: qwen3:1.7b for Ollama)          |
+| `SUMMARY_MAX_TOKENS`        | Maximum output tokens for summary generation (default: 2000) |
+| `ENABLE_FTS`                | Full-text search                                             |
+| `ENABLE_SEMANTIC_SEARCH`    | Semantic search                                              |
+| `ENABLE_HYBRID_SEARCH`      | Hybrid search                                                |
 
 ### Secrets
 
@@ -373,5 +377,6 @@ kubectl describe pvc mcp-context-server-data
 
 - [Helm Deployment Guide](helm.md) - Detailed Helm configuration
 - [Docker Deployment Guide](docker.md) - Alternative Docker Compose deployment
+- [Summary Generation Guide](../summary-generation.md) - LLM-based summary configuration
 - [Database Backends](../database-backends.md) - Database configuration
 - [API Reference](../api-reference.md) - MCP tools documentation

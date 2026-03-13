@@ -1263,6 +1263,7 @@ class TestInternalColumnsNotExposed:
             'content_type',
             'text_content',
             'metadata',
+            'summary',
             'created_at',
             'updated_at',
         }

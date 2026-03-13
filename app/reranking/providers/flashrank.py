@@ -238,14 +238,14 @@ class FlashRankProvider:
         # Warn if any passage likely exceeds token limit
         if max_tokens > self._max_length:
             logger.warning(
-                f'[RERANKING] Passage may exceed token limit: '
+                f'Passage may exceed token limit: '
                 f'~{int(max_tokens)} tokens estimated (limit: {self._max_length}). '
                 f'Largest passage: {max(passage_sizes)} chars, '
                 f'batches={num_batches}',
             )
         else:
             logger.info(
-                f'[RERANKING] Reranked {len(results)} results: '
+                f'Reranked {len(results)} results: '
                 f'{min(passage_sizes)}-{max(passage_sizes)} chars '
                 f'(~{int(min(token_estimates))}-{int(max(token_estimates))} tokens, '
                 f'limit: {self._max_length}), query="{query_preview}", '
