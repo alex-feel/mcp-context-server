@@ -159,6 +159,9 @@ ollama:
   truncate: false
   # Context window size in tokens (range: 512-131072)
   numCtx: 4096
+  # Auto-pull models on startup via initContainer (derived from search.semantic.model and search.summary.model)
+  # Set to false to disable auto-pull (models must be pre-loaded manually)
+  autoPull: true
   image:
     repository: ollama/ollama
     tag: "latest"

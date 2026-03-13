@@ -14,7 +14,7 @@ until OLLAMA_HOST=127.0.0.1:11155 ollama list >/dev/null 2>&1; do
 done
 
 echo "Checking if model '$EMBEDDING_MODEL' exists..."
-if ! OLLAMA_HOST=127.0.0.1:11155 ollama list | grep -q "${EMBEDDING_MODEL%%:*}"; then
+if ! OLLAMA_HOST=127.0.0.1:11155 ollama show "$EMBEDDING_MODEL" >/dev/null 2>&1; then
   echo "Pulling model: $EMBEDDING_MODEL..."
   OLLAMA_HOST=127.0.0.1:11155 ollama pull "$EMBEDDING_MODEL"
   echo "Model pulled successfully!"
@@ -25,7 +25,7 @@ fi
 # Pull summary model if configured and different from embedding model
 if [ -n "$SUMMARY_MODEL" ] && [ "$SUMMARY_MODEL" != "$EMBEDDING_MODEL" ]; then
   echo "Checking if summary model '$SUMMARY_MODEL' exists..."
-  if ! OLLAMA_HOST=127.0.0.1:11155 ollama list | grep -q "${SUMMARY_MODEL%%:*}"; then
+  if ! OLLAMA_HOST=127.0.0.1:11155 ollama show "$SUMMARY_MODEL" >/dev/null 2>&1; then
     echo "Pulling summary model: $SUMMARY_MODEL..."
     OLLAMA_HOST=127.0.0.1:11155 ollama pull "$SUMMARY_MODEL"
     echo "Summary model pulled successfully!"

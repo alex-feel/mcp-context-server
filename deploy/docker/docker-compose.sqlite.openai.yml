@@ -16,6 +16,7 @@ services:
       dockerfile: Dockerfile
       args:
         EMBEDDING_EXTRA: embeddings-openai
+        SUMMARY_EXTRA: summary-openai
     pull_policy: build
     ports:
       - "8000:8000"
@@ -39,6 +40,9 @@ services:
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
+      # Summary generation (uses OpenAI -- same API key as embeddings)
+      - SUMMARY_PROVIDER=openai
+      - SUMMARY_MODEL=gpt-5-mini
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
     volumes:

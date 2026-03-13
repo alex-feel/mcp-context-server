@@ -62,7 +62,7 @@ services:
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "ollama list | grep -q \"$${EMBEDDING_MODEL%%:*}\" || exit 1"]
+      test: ["CMD-SHELL", "ollama show \"$${EMBEDDING_MODEL}\" >/dev/null 2>&1 && ollama show \"$${SUMMARY_MODEL}\" >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 30s
       retries: 30
