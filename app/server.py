@@ -624,7 +624,7 @@ def main() -> None:
         )
 
         if transport == 'stdio':
-            mcp.run(transport=transport)
+            mcp.run(transport=transport, show_banner=False)
         else:
             # Register health check endpoint for container orchestration (HTTP only)
             async def _health_handler(_: Request) -> JSONResponse:
@@ -649,6 +649,7 @@ def main() -> None:
                     host=host,
                     port=port,
                     stateless_http=stateless_http,
+                    show_banner=False,
                 )
             else:
                 # SSE transport: stateless_http parameter is silently ignored by FastMCP
@@ -656,6 +657,7 @@ def main() -> None:
                     transport=cast(Literal['stdio', 'http', 'sse', 'streamable-http'], transport),
                     host=host,
                     port=port,
+                    show_banner=False,
                 )
 
     except KeyboardInterrupt:
