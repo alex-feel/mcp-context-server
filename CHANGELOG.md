@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/alex-feel/mcp-context-server/compare/v1.7.1...v2.0.0) (2026-03-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* This release introduces two breaking changes:
+
+### Features
+
+* add LLM-powered summary generation for context entries ([9f4c9e2](https://github.com/alex-feel/mcp-context-server/commit/9f4c9e2706beedbc25946365ce00d73eb9c6a5b9))
+
 ## [1.7.1](https://github.com/alex-feel/mcp-context-server/compare/v1.7.0...v1.7.1) (2026-03-09)
 
 
