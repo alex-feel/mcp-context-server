@@ -60,7 +60,7 @@ class OpenAISummaryProvider:
         }
         self._chat_model = ChatOpenAI(**kwargs)
         logger.info(
-            f'Initialized OpenAI summary provider: model={self._model}, '
+            f'Initialized OpenAI summary provider: {self._model}, '
             f'max_tokens={self._max_tokens}',
         )
 

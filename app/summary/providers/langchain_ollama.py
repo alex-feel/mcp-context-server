@@ -65,8 +65,8 @@ class OllamaSummaryProvider:
             num_predict=self._max_tokens,
         )
         logger.info(
-            f'Initialized Ollama summary provider: model={self._model}, '
-            f'base_url={self._base_url}, max_tokens={self._max_tokens}',
+            f'Initialized Ollama summary provider: {self._model} at {self._base_url}, '
+            f'max_tokens={self._max_tokens}',
         )
 
     async def shutdown(self) -> None:

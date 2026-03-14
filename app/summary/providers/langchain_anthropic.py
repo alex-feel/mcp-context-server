@@ -60,7 +60,7 @@ class AnthropicSummaryProvider:
         }
         self._chat_model = ChatAnthropic(**kwargs)
         logger.info(
-            f'Initialized Anthropic summary provider: model={self._model}, '
+            f'Initialized Anthropic summary provider: {self._model}, '
             f'max_tokens={self._max_tokens}',
         )
 
