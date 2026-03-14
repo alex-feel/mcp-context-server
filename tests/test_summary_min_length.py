@@ -188,7 +188,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='generated summary',
             ),
@@ -220,7 +220,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='boundary summary',
             ) as mock_gen_summary,
@@ -233,7 +233,7 @@ class TestStoreContextMinContentLength:
             )
 
             assert result['success'] is True
-            # _generate_summary_with_timeout should have been called
+            # generate_summary_with_timeout should have been called
             mock_gen_summary.assert_called_once_with(boundary_text)
 
     @pytest.mark.asyncio
@@ -277,7 +277,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='above-boundary summary',
             ) as mock_gen_summary,
@@ -318,7 +318,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='short summary',
             ) as mock_gen_summary,
@@ -349,7 +349,7 @@ class TestUpdateContextMinContentLength:
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools.context._generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id=1,
@@ -380,11 +380,11 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='updated summary',
             ),
-            patch('app.tools.context._generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id=1,

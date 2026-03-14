@@ -6,12 +6,14 @@ This module contains tools for bulk context management:
 - update_context_batch: Update multiple entries in one operation
 - delete_context_batch: Delete entries by various criteria
 
-Embedding-First + Summary-First Pattern:
-This module implements atomic embedding + summary + data storage for batch operations.
-When embeddings and/or summaries are enabled:
-1. ALL embeddings and summaries are generated FIRST (outside any database transaction)
+Generation-First Transactional Integrity:
+This module implements atomic generation + data storage for batch operations.
+Each entry's embedding + summary are generated in PARALLEL via asyncio.gather(return_exceptions=True),
+reusing generate_embeddings_with_timeout and generate_summary_with_timeout from context.py.
+Entries within a batch are processed SEQUENTIALLY. When generation is enabled:
+1. Per-entry: embeddings and summaries run in parallel OUTSIDE any database transaction
 2. If ANY generation fails in atomic mode, NO data is saved
-3. If ALL generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+3. If all generation succeeds, ALL database operations occur in a SINGLE atomic transaction
 """
 
 import asyncio
@@ -28,6 +30,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.migrations import format_exception_message
+from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.startup import MAX_IMAGE_SIZE_MB
 from app.startup import MAX_TOTAL_SIZE_MB
@@ -89,10 +92,6 @@ async def store_context_batch(
     Raises:
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
-    # Import types at function level to avoid linter removing unused module-level imports
-    from app.repositories.embedding_repository import ChunkEmbedding
-    from app.startup import get_chunking_service
-
     try:
         if ctx:
             await ctx.info(f'Batch storing {len(entries)} context entries (atomic={atomic})')
@@ -201,77 +200,98 @@ async def store_context_batch(
                 message='All entries failed validation',
             )
 
-        # === PHASE 2: Generate ALL Embeddings FIRST (Outside Transaction) ===
-        # CRITICAL: Embedding generation happens BEFORE any database modifications.
-        # If it fails in atomic mode, NO data is saved.
-        embedding_provider = get_embedding_provider()
-        chunking_service = get_chunking_service()
+        # === PHASE 2: Generate Embeddings + Summaries per entry (Outside Transaction) ===
+        # CRITICAL: Generation happens BEFORE any database modifications.
+        # Each entry runs embedding+summary in parallel via asyncio.gather.
+        # Entries are processed sequentially to limit provider load.
+        from collections.abc import Awaitable
+        from typing import cast
 
-        # Mapping: validated_entry_index -> list[ChunkEmbedding] | None
+        from app.startup import get_summary_provider
+        from app.tools.context import generate_embeddings_with_timeout
+        from app.tools.context import generate_summary_with_timeout
+
         entry_embeddings: dict[int, list[ChunkEmbedding] | None] = {}
-        embedding_errors: list[tuple[int, str]] = []  # (original_idx, error_message)
+        entry_summaries: dict[int, str | None] = {}
+        generation_errors: list[tuple[int, str]] = []  # (original_idx, error_message)
 
-        if embedding_provider is not None:
-            for ve_idx, entry in enumerate(validated_entries):
-                original_idx = entry['index']
-                text_content = entry['text_content']
+        embedding_provider = get_embedding_provider()
+        summary_provider = get_summary_provider()
+        min_content_length = settings.summary.min_content_length
 
-                try:
-                    if chunking_service is not None and chunking_service.is_enabled:
-                        # Chunked embedding for long documents
-                        chunks = chunking_service.split_text(text_content)
-                        chunk_texts = [chunk.text for chunk in chunks]
-                        embeddings = await embedding_provider.embed_documents(chunk_texts)
+        for ve_idx, entry in enumerate(validated_entries):
+            original_idx = entry['index']
+            text_content = entry['text_content']
 
-                        chunk_embeddings = [
-                            ChunkEmbedding(
-                                embedding=emb,
-                                start_index=chunk.start_index,
-                                end_index=chunk.end_index,
-                            )
-                            for emb, chunk in zip(embeddings, chunks, strict=True)
-                        ]
-                        entry_embeddings[ve_idx] = chunk_embeddings
-                    else:
-                        # Single embedding (chunking disabled)
-                        embedding = await embedding_provider.embed_query(text_content)
-                        entry_embeddings[ve_idx] = [
-                            ChunkEmbedding(
-                                embedding=embedding,
-                                start_index=0,
-                                end_index=len(text_content),
-                            ),
-                        ]
-                except Exception as emb_err:
-                    logger.error(f'Embedding generation failed at index {original_idx}: {emb_err}')
-                    if atomic:
-                        # CRITICAL: In atomic mode, embedding failure fails the ENTIRE batch
-                        # NO data has been saved yet, so we can safely return error
-                        raise ToolError(
-                            f'Embedding generation failed at index {original_idx}: '
-                            f'{format_exception_message(emb_err)}. No data was saved.',
-                        ) from emb_err
-                    # Non-atomic mode: record error, skip this entry
-                    embedding_errors.append((original_idx, f'Embedding generation failed: {str(emb_err)}'))
-                    entry_embeddings[ve_idx] = None  # Mark as failed
-        else:
-            # No embedding provider - all entries get None
-            for ve_idx in range(len(validated_entries)):
+            tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
+            task_names: list[str] = []
+
+            # Embedding task
+            if embedding_provider is not None:
+                tasks_to_run.append(generate_embeddings_with_timeout(text_content))
+                task_names.append('embedding')
+
+            # Summary task (min_content_length pre-check OUTSIDE wrapper)
+            if summary_provider is not None:
+                if min_content_length > 0 and len(text_content) < min_content_length:
+                    logger.info(
+                        'Skipping summary generation at index %d: '
+                        'text length %d < min_content_length %d',
+                        original_idx, len(text_content), min_content_length,
+                    )
+                    entry_summaries[ve_idx] = None
+                else:
+                    tasks_to_run.append(generate_summary_with_timeout(text_content))
+                    task_names.append('summary')
+
+            if not tasks_to_run:
                 entry_embeddings[ve_idx] = None
+                if ve_idx not in entry_summaries:
+                    entry_summaries[ve_idx] = None
+                continue
 
-        # In non-atomic mode, add embedding errors to results
-        if not atomic:
-            for original_idx, error in embedding_errors:
+            gather_results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+
+            errors: list[tuple[str, BaseException]] = []
+            for name, result in zip(task_names, gather_results, strict=True):
+                if isinstance(result, BaseException):
+                    errors.append((name, result))
+                    logger.error(
+                        'Generation failed for %s at index %d (retries exhausted): %s',
+                        name, original_idx, result,
+                    )
+                elif name == 'embedding':
+                    entry_embeddings[ve_idx] = cast(list[ChunkEmbedding] | None, result)
+                elif name == 'summary':
+                    entry_summaries[ve_idx] = cast(str | None, result)
+
+            if errors:
+                error_details = '; '.join(
+                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
+                )
+                if atomic:
+                    raise ToolError(
+                        f'Generation failed at index {original_idx} after exhausting '
+                        f'configured retries: {error_details}. No data was saved.',
+                    )
+                generation_errors.append((original_idx, f'Generation failed: {error_details}'))
+                entry_embeddings.setdefault(ve_idx, None)
+                entry_summaries.setdefault(ve_idx, None)
+            else:
+                entry_embeddings.setdefault(ve_idx, None)
+                if ve_idx not in entry_summaries:
+                    entry_summaries[ve_idx] = None
+
+        # In non-atomic mode, add generation errors to results and filter
+        if not atomic and generation_errors:
+            for original_idx, error in generation_errors:
                 results.append(BulkStoreResultItemDict(
                     index=original_idx,
                     success=False,
                     context_id=None,
                     error=error,
                 ))
-
-        # Filter out entries with embedding failures in non-atomic mode
-        if not atomic and embedding_errors:
-            failed_indices = {idx for idx, _ in embedding_errors}
+            failed_indices = {idx for idx, _ in generation_errors}
             validated_entries_filtered = [
                 (ve_idx, e) for ve_idx, e in enumerate(validated_entries)
                 if e['index'] not in failed_indices
@@ -280,7 +300,6 @@ async def store_context_batch(
             validated_entries_filtered = list(enumerate(validated_entries))
 
         if not validated_entries_filtered:
-            # All entries failed (validation or embedding)
             results.sort(key=operator.itemgetter('index'))
             return BulkStoreResponseDict(
                 success=False,
@@ -288,96 +307,10 @@ async def store_context_batch(
                 succeeded=0,
                 failed=len(entries),
                 results=results,
-                message='All entries failed validation or embedding generation',
+                message='All entries failed validation or generation',
             )
 
-        # === PHASE 3: Generate ALL Summaries (Outside Transaction) ===
-        from app.startup import get_summary_provider
-        from app.summary.retry import compute_summary_total_timeout
-
-        summary_provider = get_summary_provider()
-        entry_summaries: dict[int, str | None] = {}
-        summary_errors: list[tuple[int, str]] = []
-
-        if summary_provider is not None:
-            summary_total_timeout = compute_summary_total_timeout()
-            min_content_length = settings.summary.min_content_length
-
-            for ve_idx, entry in validated_entries_filtered:
-                original_idx = entry['index']
-                text_content = entry['text_content']
-
-                # Skip summary for short content
-                if min_content_length > 0 and len(text_content) < min_content_length:
-                    entry_summaries[ve_idx] = None
-                    logger.info(
-                        'Skipping summary generation at index %d: '
-                        'text length %d < min_content_length %d',
-                        original_idx, len(text_content), min_content_length,
-                    )
-                    continue
-
-                try:
-                    logger.info(
-                        'Generating summary at index %d: text_len=%d',
-                        original_idx, len(text_content),
-                    )
-                    summary = await asyncio.wait_for(
-                        summary_provider.summarize(text_content),
-                        timeout=summary_total_timeout,
-                    )
-                    entry_summaries[ve_idx] = summary
-                    logger.info(
-                        'Summary generated at index %d: text_len=%d, summary_len=%d',
-                        original_idx, len(text_content), len(summary) if summary else 0,
-                    )
-                except Exception as sum_err:
-                    logger.error(
-                        f'Summary generation failed at index {original_idx}: {sum_err}',
-                    )
-                    if atomic:
-                        raise ToolError(
-                            f'Summary generation failed at index {original_idx}: '
-                            f'{format_exception_message(sum_err)}. No data was saved.',
-                        ) from sum_err
-                    summary_errors.append((original_idx, f'Summary generation failed: {str(sum_err)}'))
-                    entry_summaries[ve_idx] = None
-        else:
-            for ve_idx, _ in validated_entries_filtered:
-                entry_summaries[ve_idx] = None
-
-        # In non-atomic mode, add summary errors to results
-        if not atomic:
-            for original_idx, error in summary_errors:
-                if not any(r['index'] == original_idx for r in results):
-                    results.append(BulkStoreResultItemDict(
-                        index=original_idx,
-                        success=False,
-                        context_id=None,
-                        error=error,
-                    ))
-
-        # Filter out entries with summary failures in non-atomic mode
-        if not atomic and summary_errors:
-            summary_failed_indices = {idx for idx, _ in summary_errors}
-            validated_entries_filtered = [
-                (ve_idx, e) for ve_idx, e in validated_entries_filtered
-                if e['index'] not in summary_failed_indices
-            ]
-
-        if not validated_entries_filtered:
-            # All entries failed (validation, embedding, or summary)
-            results.sort(key=operator.itemgetter('index'))
-            return BulkStoreResponseDict(
-                success=False,
-                total=len(entries),
-                succeeded=0,
-                failed=len(entries),
-                results=results,
-                message='All entries failed validation, embedding generation, or summary generation',
-            )
-
-        # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
+        # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
 
         if atomic:
@@ -633,10 +566,6 @@ async def update_context_batch(
     Raises:
         ToolError: If validation fails, embedding generation fails (atomic), or batch operation fails.
     """
-    # Import types at function level to avoid linter removing unused module-level imports
-    from app.repositories.embedding_repository import ChunkEmbedding
-    from app.startup import get_chunking_service
-
     try:
         if ctx:
             await ctx.info(f'Batch updating {len(updates)} context entries (atomic={atomic})')
@@ -807,73 +736,101 @@ async def update_context_batch(
                 message='All updates failed validation or entry not found',
             )
 
-        # === PHASE 3: Generate ALL Embeddings FIRST (Outside Transaction) ===
-        # CRITICAL: Embedding generation happens BEFORE any database modifications.
-        # If it fails in atomic mode, NO data is modified - original data is preserved.
-        embedding_provider = get_embedding_provider()
-        chunking_service = get_chunking_service()
+        # === PHASE 3: Generate Embeddings + Summaries per entry (Outside Transaction) ===
+        # CRITICAL: Generation happens BEFORE any database modifications.
+        # Each entry runs embedding+summary in parallel via asyncio.gather.
+        # Entries are processed sequentially to limit provider load.
+        # Only entries with text changes need generation.
+        from collections.abc import Awaitable
+        from typing import cast
 
-        # Mapping: validated_update_index -> list[ChunkEmbedding] | None
+        from app.startup import get_summary_provider
+        from app.tools.context import generate_embeddings_with_timeout
+        from app.tools.context import generate_summary_with_timeout
+
         update_embeddings: dict[int, list[ChunkEmbedding] | None] = {}
-        embedding_errors: list[tuple[int, int, str]] = []  # (original_idx, context_id, error_message)
+        update_summaries: dict[int, str | None] = {}
+        update_clear_summaries: set[int] = set()
+        generation_errors: list[tuple[int, int, str]] = []  # (original_idx, context_id, error)
 
-        if embedding_provider is not None:
-            for vu_idx, update in validated_updates_filtered:
-                original_idx = update['index']
-                context_id = update['context_id']
-                text_content = update.get('text')
+        embedding_provider = get_embedding_provider()
+        summary_provider = get_summary_provider()
+        min_content_length = settings.summary.min_content_length
 
-                # Only generate embedding if text is being changed
-                if text_content is None:
-                    update_embeddings[vu_idx] = None  # No text change, no embedding needed
-                    continue
+        for vu_idx, update in validated_updates_filtered:
+            original_idx = update['index']
+            context_id = update['context_id']
+            text_content = update.get('text')
 
-                try:
-                    if chunking_service is not None and chunking_service.is_enabled:
-                        # Chunked embedding for long documents
-                        chunks = chunking_service.split_text(text_content)
-                        chunk_texts = [chunk.text for chunk in chunks]
-                        embeddings = await embedding_provider.embed_documents(chunk_texts)
-
-                        chunk_embeddings = [
-                            ChunkEmbedding(
-                                embedding=emb,
-                                start_index=chunk.start_index,
-                                end_index=chunk.end_index,
-                            )
-                            for emb, chunk in zip(embeddings, chunks, strict=True)
-                        ]
-                        update_embeddings[vu_idx] = chunk_embeddings
-                    else:
-                        # Single embedding (chunking disabled)
-                        embedding = await embedding_provider.embed_query(text_content)
-                        update_embeddings[vu_idx] = [
-                            ChunkEmbedding(
-                                embedding=embedding,
-                                start_index=0,
-                                end_index=len(text_content),
-                            ),
-                        ]
-                except Exception as emb_err:
-                    logger.error(f'Embedding generation failed for context {context_id} at index {original_idx}: {emb_err}')
-                    if atomic:
-                        # CRITICAL: In atomic mode, embedding failure fails the ENTIRE batch
-                        # NO data has been modified yet, so we can safely return error
-                        raise ToolError(
-                            f'Embedding generation failed for context {context_id} at index {original_idx}: '
-                            f'{format_exception_message(emb_err)}. No data was modified.',
-                        ) from emb_err
-                    # Non-atomic mode: record error, skip this entry
-                    embedding_errors.append((original_idx, context_id, f'Embedding generation failed: {str(emb_err)}'))
-                    update_embeddings[vu_idx] = None  # Mark as failed
-        else:
-            # No embedding provider - all entries get None
-            for vu_idx, _ in validated_updates_filtered:
+            # No text change -- skip generation entirely
+            if text_content is None:
                 update_embeddings[vu_idx] = None
+                update_summaries[vu_idx] = None
+                continue
 
-        # In non-atomic mode, add embedding errors to results
-        if not atomic:
-            for original_idx, context_id, error in embedding_errors:
+            tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
+            task_names: list[str] = []
+
+            # Embedding task
+            if embedding_provider is not None:
+                tasks_to_run.append(generate_embeddings_with_timeout(text_content))
+                task_names.append('embedding')
+
+            # Summary task (min_content_length pre-check OUTSIDE wrapper)
+            if summary_provider is not None:
+                if min_content_length > 0 and len(text_content) < min_content_length:
+                    update_summaries[vu_idx] = None
+                    update_clear_summaries.add(vu_idx)
+                    logger.info(
+                        'Skipping summary for context %d at index %d: '
+                        'text length %d < min_content_length %d. Existing summary will be cleared.',
+                        context_id, original_idx, len(text_content), min_content_length,
+                    )
+                else:
+                    tasks_to_run.append(generate_summary_with_timeout(text_content))
+                    task_names.append('summary')
+
+            if not tasks_to_run:
+                update_embeddings.setdefault(vu_idx, None)
+                if vu_idx not in update_summaries:
+                    update_summaries[vu_idx] = None
+                continue
+
+            gather_results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+
+            errors: list[tuple[str, BaseException]] = []
+            for name, result in zip(task_names, gather_results, strict=True):
+                if isinstance(result, BaseException):
+                    errors.append((name, result))
+                    logger.error(
+                        'Generation failed for %s on context %d at index %d (retries exhausted): %s',
+                        name, context_id, original_idx, result,
+                    )
+                elif name == 'embedding':
+                    update_embeddings[vu_idx] = cast(list[ChunkEmbedding] | None, result)
+                elif name == 'summary':
+                    update_summaries[vu_idx] = cast(str | None, result)
+
+            if errors:
+                error_details = '; '.join(
+                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
+                )
+                if atomic:
+                    raise ToolError(
+                        f'Generation failed for context {context_id} at index {original_idx} '
+                        f'after exhausting configured retries: {error_details}. No data was modified.',
+                    )
+                generation_errors.append((original_idx, context_id, f'Generation failed: {error_details}'))
+                update_embeddings.setdefault(vu_idx, None)
+                update_summaries.setdefault(vu_idx, None)
+            else:
+                update_embeddings.setdefault(vu_idx, None)
+                if vu_idx not in update_summaries:
+                    update_summaries[vu_idx] = None
+
+        # In non-atomic mode, add generation errors to results and filter
+        if not atomic and generation_errors:
+            for original_idx, context_id, error in generation_errors:
                 results.append(BulkUpdateResultItemDict(
                     index=original_idx,
                     context_id=context_id,
@@ -881,10 +838,7 @@ async def update_context_batch(
                     updated_fields=None,
                     error=error,
                 ))
-
-        # Filter out entries with embedding failures in non-atomic mode
-        if not atomic and embedding_errors:
-            failed_ctx_ids = {ctx_id for _, ctx_id, _ in embedding_errors}
+            failed_ctx_ids = {ctx_id for _, ctx_id, _ in generation_errors}
             validated_updates_final = [
                 (vu_idx, u) for vu_idx, u in validated_updates_filtered
                 if u['context_id'] not in failed_ctx_ids
@@ -893,7 +847,6 @@ async def update_context_batch(
             validated_updates_final = validated_updates_filtered
 
         if not validated_updates_final:
-            # All entries failed (validation, existence, or embedding)
             results.sort(key=operator.itemgetter('index'))
             return BulkUpdateResponseDict(
                 success=False,
@@ -901,108 +854,10 @@ async def update_context_batch(
                 succeeded=0,
                 failed=len(updates),
                 results=results,
-                message='All updates failed validation, entry not found, or embedding generation',
+                message='All updates failed validation, entry not found, or generation',
             )
 
-        # === PHASE 4: Generate ALL Summaries (Outside Transaction) ===
-        from app.startup import get_summary_provider
-        from app.summary.retry import compute_summary_total_timeout
-
-        summary_provider = get_summary_provider()
-        update_summaries: dict[int, str | None] = {}
-        update_clear_summaries: set[int] = set()
-        summary_errors_update: list[tuple[int, int, str]] = []  # (original_idx, context_id, error)
-
-        if summary_provider is not None:
-            summary_total_timeout = compute_summary_total_timeout()
-            min_content_length = settings.summary.min_content_length
-
-            for vu_idx, update in validated_updates_final:
-                original_idx = update['index']
-                context_id = update['context_id']
-                text_content = update.get('text')
-
-                # Only generate summary if text is being changed
-                if text_content is None:
-                    update_summaries[vu_idx] = None
-                    continue
-
-                # Skip summary for short content and mark for clearing
-                if min_content_length > 0 and len(text_content) < min_content_length:
-                    update_summaries[vu_idx] = None
-                    update_clear_summaries.add(vu_idx)
-                    logger.info(
-                        'Skipping summary generation for context %d at index %d: '
-                        'text length %d < min_content_length %d. '
-                        'Existing summary will be cleared.',
-                        context_id, original_idx, len(text_content), min_content_length,
-                    )
-                    continue
-
-                try:
-                    logger.info(
-                        'Generating summary for context %d at index %d: text_len=%d',
-                        context_id, original_idx, len(text_content),
-                    )
-                    summary = await asyncio.wait_for(
-                        summary_provider.summarize(text_content),
-                        timeout=summary_total_timeout,
-                    )
-                    update_summaries[vu_idx] = summary
-                    logger.info(
-                        'Summary generated for context %d at index %d: text_len=%d, summary_len=%d',
-                        context_id, original_idx, len(text_content), len(summary) if summary else 0,
-                    )
-                except Exception as sum_err:
-                    logger.error(
-                        f'Summary generation failed for context {context_id} at index {original_idx}: {sum_err}',
-                    )
-                    if atomic:
-                        raise ToolError(
-                            f'Summary generation failed for context {context_id} at index {original_idx}: '
-                            f'{format_exception_message(sum_err)}. No data was modified.',
-                        ) from sum_err
-                    summary_errors_update.append(
-                        (original_idx, context_id, f'Summary generation failed: {str(sum_err)}'),
-                    )
-                    update_summaries[vu_idx] = None
-        else:
-            for vu_idx, _ in validated_updates_final:
-                update_summaries[vu_idx] = None
-
-        # In non-atomic mode, add summary errors to results
-        if not atomic:
-            for original_idx, context_id, error in summary_errors_update:
-                if not any(r['index'] == original_idx for r in results):
-                    results.append(BulkUpdateResultItemDict(
-                        index=original_idx,
-                        context_id=context_id,
-                        success=False,
-                        updated_fields=None,
-                        error=error,
-                    ))
-
-        # Filter out entries with summary failures in non-atomic mode
-        if not atomic and summary_errors_update:
-            summary_failed_ctx_ids = {ctx_id for _, ctx_id, _ in summary_errors_update}
-            validated_updates_final = [
-                (vu_idx, u) for vu_idx, u in validated_updates_final
-                if u['context_id'] not in summary_failed_ctx_ids
-            ]
-
-        if not validated_updates_final:
-            # All entries failed (validation, existence, embedding, or summary)
-            results.sort(key=operator.itemgetter('index'))
-            return BulkUpdateResponseDict(
-                success=False,
-                total=len(updates),
-                succeeded=0,
-                failed=len(updates),
-                results=results,
-                message='All updates failed validation, entry not found, embedding generation, or summary generation',
-            )
-
-        # === PHASE 5: Single Atomic Transaction for ALL Database Operations ===
+        # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
 
         if atomic:

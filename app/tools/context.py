@@ -7,11 +7,15 @@ This module contains the core context management tools:
 - update_context: Update an existing context entry
 - delete_context: Delete context entries
 
-Embedding-First Pattern:
-This module implements atomic embedding + data storage. When embeddings are enabled:
-1. Embeddings are generated FIRST (outside any database transaction)
-2. If embedding generation fails, NO data is saved (returns error immediately)
-3. If embedding generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+Generation-First Transactional Integrity:
+This module implements atomic generation + data storage. When embedding or summary
+generation is enabled:
+1. Embeddings and summaries are generated in PARALLEL via asyncio.gather(return_exceptions=True)
+   OUTSIDE any database transaction
+2. Each result is independently inspected -- if ANY generation fails, NO data is saved
+3. Retry budgets are fully managed by app/embeddings/retry.py and app/summary/retry.py;
+   no re-invocation occurs at the gather level
+4. If all generation succeeds, ALL database operations occur in a SINGLE atomic transaction
 """
 
 import asyncio
@@ -134,7 +138,7 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
         raise ToolError(f'Embedding generation failed: {format_exception_message(e)}') from e
 
 
-async def _generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | None:
+async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | None:
     """Generate embeddings with concurrency limiting and total timeout.
 
     Wraps _generate_embeddings_for_text with:
@@ -142,9 +146,8 @@ async def _generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] |
     - Total timeout computed from retry settings
     - ToolError on timeout for clear client feedback
 
-    This is the single source of truth for the embedding-first pattern
-    used by store_context and update_context. Batch operations have
-    their own embedding generation loop.
+    Used by all four tools: store_context, update_context, store_context_batch,
+    and update_context_batch.
 
     Args:
         text: Text content to generate embeddings for.
@@ -173,13 +176,16 @@ async def _generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] |
         ) from None
 
 
-async def _generate_summary_with_timeout(text: str) -> str | None:
+async def generate_summary_with_timeout(text: str) -> str | None:
     """Generate summary with concurrency limiting and total timeout.
 
     Wraps summary_provider.summarize() with:
     - Concurrency-limited access via summary semaphore
     - Total timeout computed from retry settings
     - ToolError on timeout for clear client feedback
+
+    Used by all four tools: store_context, update_context,
+    store_context_batch, and update_context_batch.
 
     Args:
         text: Text content to generate summary for.
@@ -417,10 +423,10 @@ async def store_context(
                         'generating embeddings',
                         likely_duplicate_id, thread_id,
                     )
-                    tasks_to_run.append(_generate_embeddings_with_timeout(text))
+                    tasks_to_run.append(generate_embeddings_with_timeout(text))
                     task_names.append('embedding')
             else:
-                tasks_to_run.append(_generate_embeddings_with_timeout(text))
+                tasks_to_run.append(generate_embeddings_with_timeout(text))
                 task_names.append('embedding')
 
         # Summary task (mirrors embedding pre-check pattern)
@@ -441,22 +447,33 @@ async def store_context(
                         likely_duplicate_id, thread_id,
                     )
                 else:
-                    tasks_to_run.append(_generate_summary_with_timeout(text))
+                    tasks_to_run.append(generate_summary_with_timeout(text))
                     task_names.append('summary')
             else:
-                tasks_to_run.append(_generate_summary_with_timeout(text))
+                tasks_to_run.append(generate_summary_with_timeout(text))
                 task_names.append('summary')
 
         # Execute all tasks in parallel
         if tasks_to_run:
-            results = await asyncio.gather(*tasks_to_run)
+            results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+
+            errors: list[tuple[str, BaseException]] = []
             for name, result in zip(task_names, results, strict=True):
-                if name == 'embedding':
+                if isinstance(result, BaseException):
+                    errors.append((name, result))
+                    logger.error('Generation failed for %s (retries exhausted): %s', name, result)
+                elif name == 'embedding':
                     chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
                     embedding_generated = chunk_embeddings is not None
                 elif name == 'summary':
                     summary_text = cast(str | None, result)
                     summary_generated = bool(summary_text)
+
+            if errors:
+                error_details = '; '.join(
+                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
+                )
+                raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
@@ -859,7 +876,7 @@ async def update_context(
             tasks: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
             task_names: list[str] = []
 
-            tasks.append(_generate_embeddings_with_timeout(text))
+            tasks.append(generate_embeddings_with_timeout(text))
             task_names.append('embedding')
 
             if get_summary_provider() is not None:
@@ -872,17 +889,28 @@ async def update_context(
                         len(text), min_content_length,
                     )
                 else:
-                    tasks.append(_generate_summary_with_timeout(text))
+                    tasks.append(generate_summary_with_timeout(text))
                     task_names.append('summary')
 
-            results = await asyncio.gather(*tasks)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            errors: list[tuple[str, BaseException]] = []
             for name, result in zip(task_names, results, strict=True):
-                if name == 'embedding':
+                if isinstance(result, BaseException):
+                    errors.append((name, result))
+                    logger.error('Generation failed for %s (retries exhausted): %s', name, result)
+                elif name == 'embedding':
                     chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
                     embedding_generated = chunk_embeddings is not None
                 elif name == 'summary':
                     summary_text = cast(str | None, result)
                     summary_generated = bool(summary_text)
+
+            if errors:
+                error_details = '; '.join(
+                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
+                )
+                raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend

@@ -314,7 +314,7 @@ All three layers use identical patterns:
 
 ### Generation-First Transactional Integrity
 
-**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_SUMMARY_GENERATION=true` and generation fails, NO data is saved — transaction rolls back completely. Embeddings and summaries are generated OUTSIDE the transaction via `asyncio.gather()`, then all DB ops (context + tags + images + embeddings + summary) in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `_generate_embeddings_with_timeout` is the single source of truth for the timeout/semaphore pattern used by single-entry operations; batch operations have their own generation loop.
+**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_SUMMARY_GENERATION=true` and generation fails, NO data is saved — transaction rolls back completely. Embeddings and summaries are generated OUTSIDE the transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops (context + tags + images + embeddings + summary) in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` are the single sources of truth for the timeout/semaphore pattern, used by all four tools: `store_context`, `update_context`, `store_context_batch`, and `update_context_batch`. Each `gather` result is independently inspected for exceptions — if any generation task fails, the error is raised (or collected in non-atomic batch mode) without cancelling the other task.
 
 ### Deduplication Behavior (store_context)
 

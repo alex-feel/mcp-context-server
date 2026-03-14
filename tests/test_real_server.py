@@ -7686,6 +7686,171 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_store_context_generation_first_return_exceptions(self) -> bool:
+        """Test that store_context works end-to-end with the generation-first pattern.
+
+        Verifies the refactored asyncio.gather(return_exceptions=True) code path
+        succeeds when no providers are configured (default test server).
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_context_generation_first_return_exceptions'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            gen_first_thread = f'{self.test_thread_id}_gen_first_store'
+
+            # Store context -- should succeed through the refactored gather path
+            store_result = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': gen_first_thread,
+                    'source': 'agent',
+                    'text': 'Generation-first pattern integration test for store_context',
+                    'metadata': {'test_type': 'generation_first'},
+                },
+            )
+            store_data = self._extract_content(store_result)
+            if not store_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'store_context failed: {store_data}'),
+                )
+                return False
+
+            context_id = store_data['context_id']
+
+            # Update the same entry with new text -- exercises update_context gather path
+            update_result = await self.client.call_tool(
+                'update_context',
+                {
+                    'context_id': context_id,
+                    'text': 'Updated text through generation-first pattern',
+                },
+            )
+            update_data = self._extract_content(update_result)
+            if not update_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'update_context failed: {update_data}'),
+                )
+                return False
+
+            # Verify updated text persisted
+            get_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            get_data = self._extract_content(get_result)
+            results = get_data.get('results', [])
+            if len(results) != 1:
+                self.test_results.append(
+                    (test_name, False, f'Expected 1 result, got {len(results)}'),
+                )
+                return False
+
+            if results[0]['text_content'] != 'Updated text through generation-first pattern':
+                self.test_results.append(
+                    (test_name, False,
+                     f'Text mismatch after update: {results[0]["text_content"]!r}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 'store_context and update_context succeed through generation-first gather path'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_batch_store_generation_first_return_exceptions(self) -> bool:
+        """Test that batch operations work end-to-end with the generation-first pattern.
+
+        Verifies the refactored per-entry asyncio.gather(return_exceptions=True) code path
+        succeeds for both store_context_batch and update_context_batch.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'batch_store_generation_first_return_exceptions'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            gen_first_batch_thread = f'{self.test_thread_id}_gen_first_batch'
+
+            # Batch store -- exercises per-entry parallel gather path
+            entries = [
+                {
+                    'thread_id': gen_first_batch_thread,
+                    'source': 'user',
+                    'text': 'Batch generation-first entry one',
+                },
+                {
+                    'thread_id': gen_first_batch_thread,
+                    'source': 'agent',
+                    'text': 'Batch generation-first entry two',
+                },
+            ]
+
+            store_result = await self.client.call_tool(
+                'store_context_batch',
+                {'entries': entries, 'atomic': True},
+            )
+            store_data = self._extract_content(store_result)
+            if not store_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'store_context_batch failed: {store_data}'),
+                )
+                return False
+
+            if store_data.get('succeeded') != 2:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected 2 succeeded, got {store_data.get("succeeded")}'),
+                )
+                return False
+
+            # Batch update -- exercises per-entry parallel gather path for updates
+            context_ids = [r['context_id'] for r in store_data.get('results', [])]
+            updates = [
+                {'context_id': context_ids[0], 'text': 'Updated batch entry one via gather'},
+            ]
+
+            update_result = await self.client.call_tool(
+                'update_context_batch',
+                {'updates': updates, 'atomic': True},
+            )
+            update_data = self._extract_content(update_result)
+            if not update_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'update_context_batch failed: {update_data}'),
+                )
+                return False
+
+            # Verify updated text persisted
+            get_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_ids[0]]},
+            )
+            get_data = self._extract_content(get_result)
+            results = get_data.get('results', [])
+            if len(results) != 1 or results[0]['text_content'] != 'Updated batch entry one via gather':
+                self.test_results.append(
+                    (test_name, False,
+                     f'Text mismatch after batch update: {results}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 'store_context_batch and update_context_batch succeed through generation-first gather path'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -7822,6 +7987,9 @@ class MCPServerIntegrationTest:
             ('Store Context With Summary Field', self.test_store_context_with_summary_field),
             ('Search Context Summary Display', self.test_search_context_summary_display),
             ('Batch Store Summary Field', self.test_batch_store_summary_field),
+            # Generation-First Pattern Tests
+            ('Store Context Generation First', self.test_store_context_generation_first_return_exceptions),
+            ('Batch Store Generation First', self.test_batch_store_generation_first_return_exceptions),
         ]
 
         print('\nRunning tests...\n')

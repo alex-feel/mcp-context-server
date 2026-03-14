@@ -77,7 +77,7 @@ class TestStoreContextEmbeddingFirst:
             from app.tools.context import store_context
 
             # Attempt to store context - should fail due to embedding error
-            with pytest.raises(ToolError, match='Embedding generation failed'):
+            with pytest.raises(ToolError, match='Generation failed'):
                 await store_context(
                     thread_id='test-thread',
                     source='agent',
@@ -192,7 +192,7 @@ class TestUpdateContextEmbeddingFirst:
             from app.tools.context import update_context
 
             # Attempt to update context - should fail due to embedding error
-            with pytest.raises(ToolError, match='Embedding generation failed'):
+            with pytest.raises(ToolError, match='Generation failed'):
                 await update_context(
                     context_id=entry_id,
                     text='Updated content that should not be saved',
@@ -333,7 +333,9 @@ class TestStoreContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
         ):
             from fastmcp.exceptions import ToolError
 
@@ -346,7 +348,7 @@ class TestStoreContextBatchEmbeddingFirst:
             ]
 
             # Attempt atomic batch store - should fail completely
-            with pytest.raises(ToolError, match='Embedding generation failed'):
+            with pytest.raises(ToolError, match='Generation failed'):
                 await store_context_batch(entries=entries, atomic=True)
 
         # Verify NO entries were saved (atomic rollback)
@@ -384,7 +386,9 @@ class TestStoreContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
             patch.object(repos.embeddings, 'store', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
@@ -533,7 +537,9 @@ class TestUpdateContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
         ):
             from fastmcp.exceptions import ToolError
 
@@ -546,7 +552,7 @@ class TestUpdateContextBatchEmbeddingFirst:
             ]
 
             # Attempt atomic batch update - should fail completely
-            with pytest.raises(ToolError, match='Embedding generation failed'):
+            with pytest.raises(ToolError, match='Generation failed'):
                 await update_context_batch(updates=updates, atomic=True)
 
         # Verify ALL entries retain original content (atomic rollback)
@@ -586,7 +592,9 @@ class TestUpdateContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
             patch.object(repos.embeddings, 'store', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),

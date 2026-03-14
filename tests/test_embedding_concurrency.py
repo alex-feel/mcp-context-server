@@ -403,21 +403,21 @@ def test_embedding_max_concurrent_setting_bounds() -> None:
     assert settings_max.max_concurrent == 20
 
 
-# --- Tests for _generate_embeddings_with_timeout helper ---
+# --- Tests for generate_embeddings_with_timeout helper ---
 
 
 @pytest.mark.asyncio
-async def test_generate_embeddings_with_timeout_returns_none_when_no_provider() -> None:
+async def testgenerate_embeddings_with_timeout_returns_none_when_no_provider() -> None:
     """Verify helper returns None when embedding provider is not configured."""
     with patch('app.tools.context.get_embedding_provider', return_value=None):
-        from app.tools.context import _generate_embeddings_with_timeout
+        from app.tools.context import generate_embeddings_with_timeout
 
-        result = await _generate_embeddings_with_timeout('test text')
+        result = await generate_embeddings_with_timeout('test text')
         assert result is None
 
 
 @pytest.mark.asyncio
-async def test_generate_embeddings_with_timeout_success() -> None:
+async def testgenerate_embeddings_with_timeout_success() -> None:
     """Verify helper returns embeddings on success."""
     mock_embeddings = [MagicMock()]
 
@@ -435,16 +435,16 @@ async def test_generate_embeddings_with_timeout_success() -> None:
         ctx_module._embedding_semaphore = None
 
         try:
-            from app.tools.context import _generate_embeddings_with_timeout
+            from app.tools.context import generate_embeddings_with_timeout
 
-            result = await _generate_embeddings_with_timeout('test text')
+            result = await generate_embeddings_with_timeout('test text')
             assert result == mock_embeddings
         finally:
             ctx_module._embedding_semaphore = original_semaphore
 
 
 @pytest.mark.asyncio
-async def test_generate_embeddings_with_timeout_raises_on_timeout() -> None:
+async def testgenerate_embeddings_with_timeout_raises_on_timeout() -> None:
     """Verify helper raises ToolError when embedding generation times out."""
     from fastmcp.exceptions import ToolError
 
@@ -466,9 +466,9 @@ async def test_generate_embeddings_with_timeout_raises_on_timeout() -> None:
         ctx_module._embedding_semaphore = None
 
         try:
-            from app.tools.context import _generate_embeddings_with_timeout
+            from app.tools.context import generate_embeddings_with_timeout
 
             with pytest.raises(ToolError, match='total timeout'):
-                await _generate_embeddings_with_timeout('test text')
+                await generate_embeddings_with_timeout('test text')
         finally:
             ctx_module._embedding_semaphore = original_semaphore

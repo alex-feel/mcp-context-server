@@ -104,7 +104,7 @@ class TestGenerateSummaryWithTimeout:
         ):
             mock_settings.summary.max_concurrent = 2
 
-            result = await context_tools._generate_summary_with_timeout('Long text')
+            result = await context_tools.generate_summary_with_timeout('Long text')
 
         assert result == 'Generated summary'
         mock_provider.summarize.assert_awaited_once_with('Long text')
@@ -128,13 +128,13 @@ class TestGenerateSummaryWithTimeout:
             mock_settings.summary.max_concurrent = 2
 
             with pytest.raises(ToolError, match='Summary generation exceeded total timeout'):
-                await context_tools._generate_summary_with_timeout('Long text')
+                await context_tools.generate_summary_with_timeout('Long text')
 
     @pytest.mark.asyncio
     async def test_provider_none_skips_generation(self) -> None:
         """Return None when no summary provider is configured."""
         with patch('app.tools.context.get_summary_provider', return_value=None):
-            result = await context_tools._generate_summary_with_timeout('Long text')
+            result = await context_tools.generate_summary_with_timeout('Long text')
 
         assert result is None
 
@@ -164,8 +164,8 @@ class TestSummaryStoreWithMocks:
             patch('app.tools.context.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
             patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools.context._generate_embeddings_with_timeout', side_effect=fake_embedding),
-            patch('app.tools.context._generate_summary_with_timeout', side_effect=fake_summary),
+            patch('app.tools.context.generate_embeddings_with_timeout', side_effect=fake_embedding),
+            patch('app.tools.context.generate_summary_with_timeout', side_effect=fake_summary),
         ):
             long_text = 'x' * 300
             result = await store_context(

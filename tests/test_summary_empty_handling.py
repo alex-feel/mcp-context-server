@@ -2,7 +2,7 @@
 
 Tests that empty/whitespace-only summaries are properly normalized to None
 at multiple defense-in-depth layers:
-- _generate_summary_with_timeout: provider -> None normalization
+- generate_summary_with_timeout: provider -> None normalization
 - store_context: summary_generated flag uses bool() not is not None
 - store_with_deduplication: empty summary -> None before COALESCE
 - get_summary: empty string -> None normalization on read
@@ -78,11 +78,11 @@ def _make_sqlite_read_backend(db_path: str) -> MagicMock:
 
 
 class TestGenerateSummaryWithTimeout:
-    """Tests for _generate_summary_with_timeout empty normalization."""
+    """Tests for generate_summary_with_timeout empty normalization."""
 
     @pytest.mark.asyncio
     async def test_empty_string_returns_none(self) -> None:
-        """Mock provider returning empty string -> _generate_summary_with_timeout returns None."""
+        """Mock provider returning empty string -> generate_summary_with_timeout returns None."""
         mock_provider = MagicMock()
         mock_provider.summarize = AsyncMock(return_value='')
 
@@ -90,15 +90,15 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools.context.compute_summary_total_timeout', return_value=30.0),
         ):
-            from app.tools.context import _generate_summary_with_timeout
+            from app.tools.context import generate_summary_with_timeout
 
-            result = await _generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize')
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_whitespace_only_returns_none(self) -> None:
-        """Mock provider returning whitespace -> _generate_summary_with_timeout returns None."""
+        """Mock provider returning whitespace -> generate_summary_with_timeout returns None."""
         mock_provider = MagicMock()
         mock_provider.summarize = AsyncMock(return_value='   \n\t  ')
 
@@ -106,9 +106,9 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools.context.compute_summary_total_timeout', return_value=30.0),
         ):
-            from app.tools.context import _generate_summary_with_timeout
+            from app.tools.context import generate_summary_with_timeout
 
-            result = await _generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize')
 
         assert result is None
 
@@ -123,9 +123,9 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
             patch('app.tools.context.compute_summary_total_timeout', return_value=30.0),
         ):
-            from app.tools.context import _generate_summary_with_timeout
+            from app.tools.context import generate_summary_with_timeout
 
-            result = await _generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize')
 
         assert result == expected
 
@@ -133,9 +133,9 @@ class TestGenerateSummaryWithTimeout:
     async def test_no_provider_returns_none(self) -> None:
         """No summary provider configured -> returns None without error."""
         with patch('app.tools.context.get_summary_provider', return_value=None):
-            from app.tools.context import _generate_summary_with_timeout
+            from app.tools.context import generate_summary_with_timeout
 
-            result = await _generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize')
 
         assert result is None
 

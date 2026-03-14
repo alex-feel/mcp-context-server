@@ -217,7 +217,9 @@ class TestConcurrentEmbeddingOperations:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
             # Run all batches concurrently
@@ -455,7 +457,9 @@ class TestTransactionRollbackComprehensive:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
         ):
