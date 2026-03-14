@@ -180,7 +180,7 @@ search:
     provider: ollama         # ollama, openai, or anthropic
     model: "qwen3:0.6b"     # Summary model
     maxTokens: 2000          # Max output tokens (50-5000)
-    minContentLength: 300    # Min chars to trigger summary (0=always)
+    minContentLength: 500    # Min chars to trigger summary (0=always)
 ```
 
 For OpenAI or Anthropic providers:

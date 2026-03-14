@@ -36,10 +36,10 @@ update_context = app.server.update_context
 class TestMinContentLengthSettings:
     """Tests for SummarySettings.min_content_length field."""
 
-    def test_default_is_300(self) -> None:
-        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 300."""
+    def test_default_is_500(self) -> None:
+        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 500."""
         settings = SummarySettings()
-        assert settings.min_content_length == 300
+        assert settings.min_content_length == 500
 
     def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_MIN_CONTENT_LENGTH can be set via env var."""
@@ -83,7 +83,7 @@ class TestMinContentLengthSettings:
         from app.settings import AppSettings
 
         settings = AppSettings()
-        assert settings.summary.min_content_length == 300
+        assert settings.summary.min_content_length == 500
 
 
 @asynccontextmanager
@@ -152,7 +152,7 @@ class TestStoreContextMinContentLength:
         mock_summary_provider = Mock()
         mock_summary_provider.summarize = AsyncMock(return_value='a summary')
 
-        short_text = 'a' * 299  # Just below default threshold of 300
+        short_text = 'a' * 499  # Just below default threshold of 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
@@ -181,7 +181,7 @@ class TestStoreContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        long_text = 'a' * 300  # Exactly at default threshold of 300
+        long_text = 'a' * 500  # Exactly at default threshold of 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
@@ -212,8 +212,8 @@ class TestStoreContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        # Text at exactly 300 chars should be summarized
-        boundary_text = 'x' * 300
+        # Text at exactly 500 chars should be summarized
+        boundary_text = 'x' * 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
@@ -245,8 +245,8 @@ class TestStoreContextMinContentLength:
         mock_summary_provider = Mock()
         mock_summary_provider.summarize = AsyncMock(return_value='a summary')
 
-        # 299 chars = one below default threshold of 300
-        below_text = 'b' * 299
+        # 499 chars = one below default threshold of 500
+        below_text = 'b' * 499
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
@@ -269,8 +269,8 @@ class TestStoreContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        # 301 chars = one above default threshold of 300
-        above_text = 'c' * 301
+        # 501 chars = one above default threshold of 500
+        above_text = 'c' * 501
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
@@ -344,7 +344,7 @@ class TestUpdateContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        short_text = 'a' * 100  # Well below default threshold of 300
+        short_text = 'a' * 100  # Well below default threshold of 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),

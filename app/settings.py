@@ -591,13 +591,14 @@ class SummarySettings(CommonSettings):
     )
 
     min_content_length: int = Field(
-        default=300,
+        default=500,
         ge=0,
         le=10000,
         alias='SUMMARY_MIN_CONTENT_LENGTH',
         description='Minimum text content length (characters) to trigger summary generation. '
-                    'Content shorter than this threshold is not summarized (the text itself is '
-                    'short enough to serve as its own summary). '
+                    'Content shorter than this threshold is not summarized (the truncated preview '
+                    'at 300 characters adequately represents the content, so a separate '
+                    'LLM-generated summary adds minimal value for small models). '
                     'Set to 0 to always generate summaries regardless of content length.',
     )
 
@@ -703,11 +704,11 @@ class SearchSettings(CommonSettings):
                     'created_at and updated_at will be added in future releases)',
     )
     truncation_length: int = Field(
-        default=150,
+        default=300,
         ge=50,
         le=1000,
         alias='SEARCH_TRUNCATION_LENGTH',
-        description='Maximum character length for truncated text_content in search results (default: 150)',
+        description='Maximum character length for truncated text_content in search results (default: 300)',
     )
 
 

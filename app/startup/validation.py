@@ -121,12 +121,12 @@ def deserialize_json_param(
     return value
 
 
-def truncate_text(text: str | None, max_length: int = 150) -> tuple[str | None, bool]:
+def truncate_text(text: str | None, max_length: int = 300) -> tuple[str | None, bool]:
     """Truncate text at word boundary when possible.
 
     Args:
         text: The text to truncate
-        max_length: Maximum character length (default: 150)
+        max_length: Maximum character length (default: 300)
 
     Returns:
         tuple: (truncated_text, is_truncated)

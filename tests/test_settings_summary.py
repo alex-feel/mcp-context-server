@@ -195,10 +195,10 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.provider == 'anthropic'
 
-    def test_min_content_length_default_is_300(self) -> None:
-        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 300."""
+    def test_min_content_length_default_is_500(self) -> None:
+        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 500."""
         settings = SummarySettings()
-        assert settings.min_content_length == 300
+        assert settings.min_content_length == 500
 
     def test_min_content_length_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_MIN_CONTENT_LENGTH accepts 0 (ge=0)."""
@@ -249,9 +249,9 @@ class TestSummarySettingsFieldAliases:
         assert field_info.alias == 'SUMMARY_MIN_CONTENT_LENGTH'
 
     def test_min_content_length_field_constraints(self) -> None:
-        """Verify min_content_length field has default=300, ge=0, le=10000."""
+        """Verify min_content_length field has default=500, ge=0, le=10000."""
         field_info = SummarySettings.model_fields['min_content_length']
-        assert field_info.default == 300
+        assert field_info.default == 500
         metadata = field_info.metadata
         ge_values = [m.ge for m in metadata if hasattr(m, 'ge')]
         le_values = [m.le for m in metadata if hasattr(m, 'le')]

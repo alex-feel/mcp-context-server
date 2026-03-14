@@ -4,7 +4,7 @@
 
 Summary generation automatically creates concise, dense summaries for each stored context entry using a local or cloud LLM. Summaries are stored alongside the full text and returned in all search tool results (`search_context`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context`), giving LLM agents more actionable information per token when browsing large context collections.
 
-**Key benefit:** All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 150 characters). With summary generation enabled, the `summary` field is populated with a concise LLM-generated summary of the full entry (token limit controlled by `SUMMARY_MAX_TOKENS`), capturing key topics, decisions, and action items that help an agent determine relevance without fetching the full entry.
+**Key benefit:** All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters). With summary generation enabled, the `summary` field is populated with a concise LLM-generated summary of the full entry (token limit controlled by `SUMMARY_MAX_TOKENS`), capturing key topics, decisions, and action items that help an agent determine relevance without fetching the full entry.
 
 This feature is **enabled by default** when the `summary-ollama` extra is installed (included in the recommended setup).
 
@@ -98,7 +98,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 | `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                                              |
 | `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)                             |
 | `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)                                 |
-| `SUMMARY_MIN_CONTENT_LENGTH` | `300`        | Minimum text length (characters) to trigger summary generation. 0 = always generate     |
+| `SUMMARY_MIN_CONTENT_LENGTH` | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate     |
 | `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt. Overrides the default prompt. See [Custom Prompt](#custom-prompt) |
 
 #### Qwen3 Model Options (Ollama)
@@ -258,11 +258,11 @@ Set `SUMMARY_PROMPT` to your custom system message:
 
 ### Minimum Content Length
 
-By default, summary generation is skipped for short text (fewer than 300 characters). Short text already fits within search result truncation limits, so a separate summary adds no value and wastes LLM resources.
+By default, summary generation is skipped for short text (fewer than 500 characters). Text under 500 characters is adequately served by the 300-character truncated preview returned by all search tools, so a separate LLM-generated summary adds minimal value -- particularly for small models like qwen3:0.6b that tend to produce paraphrases rather than distillations for short inputs.
 
 | Variable                       | Default | Range      | Description                                                      |
 |--------------------------------|---------|------------|------------------------------------------------------------------|
-| `SUMMARY_MIN_CONTENT_LENGTH`   | `300`   | 0 - 10000  | Minimum text length (characters) to trigger summary generation   |
+| `SUMMARY_MIN_CONTENT_LENGTH`   | `500`   | 0 - 10000  | Minimum text length (characters) to trigger summary generation   |
 
 **Behavior by operation:**
 
@@ -296,7 +296,7 @@ The `summary` field appears in all search tool results when available:
 }
 ```
 
-All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 150 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 2000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated. Use `get_context_by_ids` to retrieve the full, untruncated text content.
+All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 2000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated. Use `get_context_by_ids` to retrieve the full, untruncated text content.
 
 ## Disabling Summary Generation
 

@@ -91,8 +91,8 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Batch summary')
 
         entries = [
-            {'thread_id': 'batch-sum-1', 'source': 'user', 'text': 'x' * 300},
-            {'thread_id': 'batch-sum-1', 'source': 'agent', 'text': 'y' * 300},
+            {'thread_id': 'batch-sum-1', 'source': 'user', 'text': 'x' * 500},
+            {'thread_id': 'batch-sum-1', 'source': 'agent', 'text': 'y' * 500},
         ]
 
         with (
@@ -149,7 +149,7 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=RuntimeError('LLM unavailable'))
 
         entries = [
-            {'thread_id': 'batch-fail-1', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'batch-fail-1', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
@@ -184,8 +184,8 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=selective_summary)
 
         entries = [
-            {'thread_id': 'partial-sum', 'source': 'user', 'text': 'x' * 300},
-            {'thread_id': 'partial-sum', 'source': 'agent', 'text': 'y' * 300},
+            {'thread_id': 'partial-sum', 'source': 'user', 'text': 'x' * 500},
+            {'thread_id': 'partial-sum', 'source': 'agent', 'text': 'y' * 500},
         ]
 
         with (
@@ -217,7 +217,7 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='New summary for dedup')
 
         entries = [
-            {'thread_id': 'dedup-sum', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'dedup-sum', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
@@ -247,7 +247,7 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=slow_summary)
 
         entries = [
-            {'thread_id': 'timeout-sum', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'timeout-sum', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
@@ -276,8 +276,8 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Updated batch summary')
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 300},
-            {'context_id': 2, 'text': 'y' * 300},
+            {'context_id': 1, 'text': 'x' * 500},
+            {'context_id': 2, 'text': 'y' * 500},
         ]
 
         with (
@@ -335,7 +335,7 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=RuntimeError('Provider down'))
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 300},
+            {'context_id': 1, 'text': 'x' * 500},
         ]
 
         with (
@@ -369,8 +369,8 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=selective_summary)
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 300},
-            {'context_id': 2, 'text': 'y' * 300},
+            {'context_id': 1, 'text': 'x' * 500},
+            {'context_id': 2, 'text': 'y' * 500},
         ]
 
         with (
@@ -408,7 +408,7 @@ class TestBatchSummaryEdgeCases:
         mock_summary.summarize = AsyncMock(return_value='Combined summary')
 
         entries = [
-            {'thread_id': 'both-gen', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'both-gen', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
@@ -442,7 +442,7 @@ class TestBatchSummaryEdgeCases:
         mock_summary.summarize = AsyncMock(return_value='Summary text')
 
         entries = [
-            {'thread_id': 'emb-fail', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'emb-fail', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (

@@ -167,7 +167,7 @@ class TestSummaryStoreWithMocks:
             patch('app.tools.context.generate_embeddings_with_timeout', side_effect=fake_embedding),
             patch('app.tools.context.generate_summary_with_timeout', side_effect=fake_summary),
         ):
-            long_text = 'x' * 300
+            long_text = 'x' * 500
             result = await store_context(
                 thread_id='parallel-summary-thread',
                 source='agent',
@@ -209,7 +209,7 @@ class TestSummaryIntegration:
         mock_provider = MagicMock()
         mock_provider.summarize = AsyncMock(return_value='Updated summary')
 
-        updated_text = 'x' * 300
+        updated_text = 'x' * 500
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
@@ -258,7 +258,7 @@ class TestSummaryIntegration:
     async def test_search_context_shows_truncated_text_and_summary(self) -> None:
         """Search results show truncated text_content alongside summary field."""
         repos = await ensure_repositories()
-        long_text = 'A' * 250
+        long_text = 'A' * 400
         await repos.context.store_with_deduplication(
             thread_id='search-summary-thread',
             source='agent',
@@ -273,7 +273,7 @@ class TestSummaryIntegration:
         entry = result['results'][0]
         # text_content is truncated original text, NOT summary
         assert entry['text_content'] != long_text
-        assert len(entry['text_content']) <= 153  # 150 + '...'
+        assert len(entry['text_content']) <= 303  # 300 + '...'
         assert entry['is_text_content_truncated'] is True
         # summary is a separate field
         assert entry['summary'] == 'Short summary for search results'
@@ -282,7 +282,7 @@ class TestSummaryIntegration:
     async def test_search_context_truncates_without_summary(self) -> None:
         """Truncate long text and show empty summary when no summary stored."""
         repos = await ensure_repositories()
-        long_text = 'B' * 250
+        long_text = 'B' * 400
         await repos.context.store_with_deduplication(
             thread_id='search-fallback-thread',
             source='agent',
@@ -311,7 +311,7 @@ class TestSummaryIntegration:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
-            dedup_text = 'x' * 300
+            dedup_text = 'x' * 500
             first_result = await store_context(
                 thread_id='dedup-summary-thread',
                 source='agent',
@@ -336,7 +336,7 @@ class TestSummaryIntegration:
         mock_provider = MagicMock()
         mock_provider.summarize = AsyncMock(return_value='Newly generated summary')
 
-        dedup_text = 'y' * 300
+        dedup_text = 'y' * 500
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),

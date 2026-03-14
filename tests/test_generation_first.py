@@ -128,7 +128,7 @@ class TestStoreContextGenerationFirst:
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
             await store_context(
-                thread_id='gf-test-1', source='agent', text='x' * 300,
+                thread_id='gf-test-1', source='agent', text='x' * 500,
             )
 
         async with backend.get_connection(readonly=True) as conn:
@@ -164,7 +164,7 @@ class TestStoreContextGenerationFirst:
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
             await store_context(
-                thread_id='gf-test-2', source='agent', text='y' * 300,
+                thread_id='gf-test-2', source='agent', text='y' * 500,
             )
 
         async with backend.get_connection(readonly=True) as conn:
@@ -201,7 +201,7 @@ class TestStoreContextGenerationFirst:
             patch('app.tools.context.compute_summary_total_timeout', return_value=5.0), pytest.raises(ToolError) as exc_info,
         ):
             await store_context(
-                thread_id='gf-test-3', source='agent', text='z' * 300,
+                thread_id='gf-test-3', source='agent', text='z' * 500,
             )
         error_msg = str(exc_info.value)
         assert 'embedding' in error_msg
@@ -232,7 +232,7 @@ class TestStoreContextGenerationFirst:
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock()),
         ):
             result = await store_context(
-                thread_id='gf-test-4', source='agent', text='w' * 300,
+                thread_id='gf-test-4', source='agent', text='w' * 500,
             )
         assert result['success'] is True
 
@@ -394,7 +394,7 @@ class TestUpdateContextGenerationFirst:
             patch('app.tools.context.compute_summary_total_timeout', return_value=5.0),
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
-            await update_context(context_id=entry_id, text='Updated text ' * 30)
+            await update_context(context_id=entry_id, text='Updated text ' * 40)
 
         async with backend.get_connection(readonly=True) as conn:
             cursor = conn.execute(
@@ -424,7 +424,7 @@ class TestUpdateContextGenerationFirst:
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
             patch('app.tools.context.compute_summary_total_timeout', return_value=5.0), pytest.raises(ToolError) as exc_info,
         ):
-            await update_context(context_id=entry_id, text='Updated text ' * 30)
+            await update_context(context_id=entry_id, text='Updated text ' * 40)
         error_msg = str(exc_info.value)
         assert 'embedding' in error_msg
         assert 'summary' in error_msg
@@ -453,14 +453,14 @@ class TestUpdateContextGenerationFirst:
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock()),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock()),
         ):
-            result = await update_context(context_id=entry_id, text='Updated text ' * 30)
+            result = await update_context(context_id=entry_id, text='Updated text ' * 40)
         assert result['success'] is True
 
         async with backend.get_connection(readonly=True) as conn:
             cursor = conn.execute(
                 'SELECT text_content FROM context_entries WHERE id = ?', (entry_id,),
             )
-            assert cursor.fetchone()[0] == ('Updated text ' * 30).strip()
+            assert cursor.fetchone()[0] == ('Updated text ' * 40).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +517,7 @@ class TestStoreContextBatchGenerationFirst:
         ):
             await app.server.store_context_batch(
                 entries=[
-                    {'thread_id': 'bf-2', 'source': 'agent', 'text': 'x' * 300},
+                    {'thread_id': 'bf-2', 'source': 'agent', 'text': 'x' * 500},
                 ],
                 atomic=True,
             )
@@ -550,8 +550,8 @@ class TestStoreContextBatchGenerationFirst:
         ):
             result = await app.server.store_context_batch(
                 entries=[
-                    {'thread_id': 'bf-3', 'source': 'agent', 'text': 'x' * 300},
-                    {'thread_id': 'bf-3', 'source': 'agent', 'text': 'y' * 300},
+                    {'thread_id': 'bf-3', 'source': 'agent', 'text': 'x' * 500},
+                    {'thread_id': 'bf-3', 'source': 'agent', 'text': 'y' * 500},
                 ],
                 atomic=False,
             )
@@ -581,8 +581,8 @@ class TestStoreContextBatchGenerationFirst:
         ):
             result = await app.server.store_context_batch(
                 entries=[
-                    {'thread_id': 'bf-4', 'source': 'agent', 'text': 'x' * 300},
-                    {'thread_id': 'bf-4', 'source': 'agent', 'text': 'y' * 300},
+                    {'thread_id': 'bf-4', 'source': 'agent', 'text': 'x' * 500},
+                    {'thread_id': 'bf-4', 'source': 'agent', 'text': 'y' * 500},
                 ],
                 atomic=True,
             )
@@ -641,7 +641,7 @@ class TestUpdateContextBatchGenerationFirst:
             pytest.raises(ToolError, match='Generation failed for context 1'),
         ):
             await app.server.update_context_batch(
-                updates=[{'context_id': 1, 'text': 'x' * 300}],
+                updates=[{'context_id': 1, 'text': 'x' * 500}],
                 atomic=True,
             )
 
@@ -672,8 +672,8 @@ class TestUpdateContextBatchGenerationFirst:
         ):
             result = await app.server.update_context_batch(
                 updates=[
-                    {'context_id': 1, 'text': 'x' * 300},
-                    {'context_id': 2, 'text': 'y' * 300},
+                    {'context_id': 1, 'text': 'x' * 500},
+                    {'context_id': 2, 'text': 'y' * 500},
                 ],
                 atomic=False,
             )
@@ -728,7 +728,7 @@ class TestUpdateContextBatchGenerationFirst:
                 new=mock_gen_sum,
             ),
         ):
-            # Text is short (< default min_content_length of 300)
+            # Text is short (< default min_content_length of 500)
             result = await app.server.update_context_batch(
                 updates=[{'context_id': 1, 'text': 'Short text'}],
                 atomic=True,

@@ -42,20 +42,20 @@ class TestTruncateText:
         assert is_truncated is False
 
     def test_truncate_text_at_default_length(self) -> None:
-        """Test text at exactly 150 characters is not truncated."""
-        text_150 = 'x' * 150
-        result, is_truncated = truncate_text(text_150)
-        assert result == text_150
+        """Test text at exactly 300 characters is not truncated."""
+        text_300 = 'x' * 300
+        result, is_truncated = truncate_text(text_300)
+        assert result == text_300
         assert is_truncated is False
 
     def test_truncate_long_text(self) -> None:
         """Test that long text is truncated with ellipsis."""
-        long_text = 'x' * 200
+        long_text = 'x' * 400
         result, is_truncated = truncate_text(long_text)
         assert is_truncated is True
         assert result is not None
         assert result.endswith('...')
-        assert len(result) <= 153  # 150 + '...'
+        assert len(result) <= 303  # 300 + '...'
 
     def test_truncate_custom_max_length(self) -> None:
         """Test truncation with custom max_length."""
@@ -68,8 +68,8 @@ class TestTruncateText:
 
     def test_truncate_at_word_boundary(self) -> None:
         """Test that truncation happens at word boundaries when possible."""
-        # Text with a space after position 105 (70% of 150)
-        text = 'This is a sentence with several words ' + 'x' * 115 + ' end'
+        # Text with a space after position 210 (70% of 300)
+        text = 'This is a sentence with several words ' + 'x' * 265 + ' end'
         result, is_truncated = truncate_text(text)
         assert is_truncated is True
         assert result is not None
@@ -78,18 +78,18 @@ class TestTruncateText:
     def test_truncate_no_word_boundary(self) -> None:
         """Test truncation when no good word boundary exists."""
         # Text without spaces within the 70% threshold
-        text = 'x' * 200  # No spaces at all
+        text = 'x' * 400  # No spaces at all
         result, is_truncated = truncate_text(text)
         assert is_truncated is True
         assert result is not None
         assert result.endswith('...')
-        assert len(result) == 153  # Exact truncation at 150 + '...'
+        assert len(result) == 303  # Exact truncation at 300 + '...'
 
     def test_truncate_word_boundary_threshold(self) -> None:
         """Test word boundary threshold (70% of max_length)."""
-        # max_length=150, 70% = 105
-        # Place a space at position 100 (below threshold) and another at 110 (above)
-        text = 'x' * 100 + ' ' + 'y' * 9 + ' ' + 'z' * 100
+        # max_length=300, 70% = 210
+        # Place a space at position 200 (below threshold) and another at 220 (above)
+        text = 'x' * 200 + ' ' + 'y' * 19 + ' ' + 'z' * 200
         result, is_truncated = truncate_text(text)
         assert is_truncated is True
         # Should truncate at position 110 (the space above threshold)

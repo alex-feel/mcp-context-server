@@ -529,7 +529,7 @@
           "name": "SUMMARY_PROMPT"
         },
         {
-          "description": "Minimum text content length in characters to trigger summary generation (default: 300, range: 0-10000). Set to 0 to always generate.",
+          "description": "Minimum text content length in characters to trigger summary generation (default: 500, range: 0-10000). Set to 0 to always generate.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -599,7 +599,7 @@
           "name": "SEARCH_DEFAULT_SORT_BY"
         },
         {
-          "description": "Maximum character length for truncated text_content in search results (default: 150, range: 50-1000)",
+          "description": "Maximum character length for truncated text_content in search results (default: 300, range: 50-1000)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1422,7 +1422,7 @@
           "name": "SUMMARY_PROMPT"
         },
         {
-          "description": "Minimum text content length in characters to trigger summary generation (default: 300, range: 0-10000). Set to 0 to always generate.",
+          "description": "Minimum text content length in characters to trigger summary generation (default: 500, range: 0-10000). Set to 0 to always generate.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1492,7 +1492,7 @@
           "name": "SEARCH_DEFAULT_SORT_BY"
         },
         {
-          "description": "Maximum character length for truncated text_content in search results (default: 150, range: 50-1000)",
+          "description": "Maximum character length for truncated text_content in search results (default: 300, range: 50-1000)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
