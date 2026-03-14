@@ -171,3 +171,28 @@ async def test_multiple_failures_then_success() -> None:
 
     assert result == [0.1, 0.2, 0.3]
     assert mock_func.call_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_embedding_settings')
+async def test_retry_log_shows_operation_name(caplog: pytest.LogCaptureFixture) -> None:
+    """Verify retry log message shows operation name, not <unknown>."""
+    call_count = 0
+
+    async def flaky_func() -> list[float]:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ConnectionError('transient failure')
+        return [0.1, 0.2]
+
+    with caplog.at_level('WARNING'):
+        result = await with_retry_and_timeout(flaky_func, 'test_embed_operation')
+
+    assert result == [0.1, 0.2]
+    assert call_count == 2
+
+    retry_messages = [r.message for r in caplog.records if 'Retrying' in r.message]
+    assert len(retry_messages) >= 1
+    assert 'test_embed_operation' in retry_messages[0]
+    assert '<unknown>' not in retry_messages[0]

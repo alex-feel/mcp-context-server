@@ -192,3 +192,28 @@ def test_compute_summary_total_timeout() -> None:
         # = 401.5
         assert total > 0
         assert total == pytest.approx(401.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_summary_settings')
+async def test_retry_log_shows_operation_name(caplog: pytest.LogCaptureFixture) -> None:
+    """Verify retry log message shows operation name, not <unknown>."""
+    call_count = 0
+
+    async def flaky_func() -> str:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ConnectionError('transient failure')
+        return 'summary result'
+
+    with caplog.at_level('WARNING'):
+        result = await with_summary_retry_and_timeout(flaky_func, 'test_summarize_operation')
+
+    assert result == 'summary result'
+    assert call_count == 2
+
+    retry_messages = [r.message for r in caplog.records if 'Retrying' in r.message]
+    assert len(retry_messages) >= 1
+    assert 'test_summarize_operation' in retry_messages[0]
+    assert '<unknown>' not in retry_messages[0]

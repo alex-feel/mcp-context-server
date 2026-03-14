@@ -101,60 +101,7 @@ class TestPassageBoundary:
 
 
 # ============================================================
-# 3.3: Retry Logging Tests
-# ============================================================
-
-
-class TestRetryLogging:
-    """Tests for meaningful retry log messages via __qualname__ fix."""
-
-    def test_qualname_set_on_closure(self) -> None:
-        """Verify the __qualname__ replacement logic for inner closures."""
-
-        async def _embed():
-            return [1.0, 2.0]
-
-        _embed.__qualname__ = 'OllamaEmbeddingProvider.embed_query.<locals>._embed'
-
-        # Simulate what with_retry_and_timeout does
-        if hasattr(_embed, '__qualname__') and '.<locals>.' in _embed.__qualname__:
-            _embed.__qualname__ = 'embed_query'
-
-        assert _embed.__qualname__ == 'embed_query'
-
-    def test_qualname_not_modified_for_top_level_functions(self) -> None:
-        """Verify that __qualname__ is preserved for non-closure functions."""
-
-        async def top_level_func():
-            return [1.0, 2.0]
-
-        # Simulate a truly top-level function (no .<locals>. in qualname)
-        top_level_func.__qualname__ = 'top_level_func'
-        original_qualname = top_level_func.__qualname__
-
-        # Should NOT modify because no '.<locals>.' in qualname
-        qualname = getattr(top_level_func, '__qualname__', '')
-        if qualname and '.<locals>.' in qualname:
-            top_level_func.__qualname__ = 'overridden'
-
-        assert top_level_func.__qualname__ == original_qualname
-
-    def test_qualname_set_on_nested_closure(self) -> None:
-        """Verify __qualname__ replacement with deeply nested closure."""
-
-        async def _embed():
-            return [1.0, 2.0]
-
-        _embed.__qualname__ = 'AzureEmbeddingProvider.embed_documents.<locals>._embed'
-
-        if hasattr(_embed, '__qualname__') and '.<locals>.' in _embed.__qualname__:
-            _embed.__qualname__ = 'embed_documents'
-
-        assert _embed.__qualname__ == 'embed_documents'
-
-
-# ============================================================
-# 3.4: Warnings Field Tests
+# 3.3: Warnings Field Tests
 # ============================================================
 
 
