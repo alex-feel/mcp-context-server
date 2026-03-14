@@ -178,7 +178,7 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **Feature Toggles**: `ENABLE_EMBEDDING_GENERATION` (true*), `ENABLE_SEMANTIC_SEARCH` (false*), `ENABLE_FTS` (false*), `ENABLE_HYBRID_SEARCH` (false*), `ENABLE_CHUNKING` (true*), `ENABLE_RERANKING` (true*), `ENABLE_SUMMARY_GENERATION` (true*)
 
-**Embedding**: `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (30*), `EMBEDDING_MAX_CONCURRENT` (3*)
+**Embedding**: `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (60*), `EMBEDDING_MAX_CONCURRENT` (3*)
 
 **Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:1.7b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (300*; text shorter than this skips summary; 0 = always generate), `SUMMARY_PROMPT`
 

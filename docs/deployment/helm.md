@@ -189,7 +189,7 @@ search:
     maxTokens: 2000           # SUMMARY_MAX_TOKENS (tokens, 50-5000)
     minContentLength: 300     # SUMMARY_MIN_CONTENT_LENGTH (chars, 0=always)
     prompt: ""                # SUMMARY_PROMPT: empty uses built-in default
-    timeout: 30.0             # SUMMARY_TIMEOUT_S
+    timeout: 120.0            # SUMMARY_TIMEOUT_S
     retryMaxAttempts: 3       # SUMMARY_RETRY_MAX_ATTEMPTS
     retryBaseDelay: 1.0       # SUMMARY_RETRY_BASE_DELAY_S
     maxConcurrent: 3          # SUMMARY_MAX_CONCURRENT (1-20)

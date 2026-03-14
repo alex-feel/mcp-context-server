@@ -724,7 +724,7 @@ class TestValidatePoolTimeoutForEmbedding:
         mock_storage_settings.postgresql_pool_timeout_s = 5.0  # Short timeout
 
         mock_embedding_settings = MagicMock()
-        mock_embedding_settings.timeout_s = 30.0  # Long embedding timeout
+        mock_embedding_settings.timeout_s = 60.0  # Long embedding timeout
         mock_embedding_settings.retry_max_attempts = 3
         mock_embedding_settings.retry_base_delay_s = 1.0
 
@@ -749,10 +749,10 @@ class TestValidatePoolTimeoutForEmbedding:
 
         # Create settings where pool timeout > embedding timeout + retry delays
         mock_storage_settings = MagicMock()
-        mock_storage_settings.postgresql_pool_timeout_s = 120.0  # Long timeout
+        mock_storage_settings.postgresql_pool_timeout_s = 250.0  # Long timeout
 
         mock_embedding_settings = MagicMock()
-        mock_embedding_settings.timeout_s = 30.0
+        mock_embedding_settings.timeout_s = 60.0
         mock_embedding_settings.retry_max_attempts = 3
         mock_embedding_settings.retry_base_delay_s = 1.0
 

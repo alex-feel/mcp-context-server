@@ -88,7 +88,7 @@ class TestGenerateSummaryWithTimeout:
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=30.0),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=120.0),
         ):
             from app.tools.context import generate_summary_with_timeout
 
@@ -104,7 +104,7 @@ class TestGenerateSummaryWithTimeout:
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=30.0),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=120.0),
         ):
             from app.tools.context import generate_summary_with_timeout
 
@@ -121,7 +121,7 @@ class TestGenerateSummaryWithTimeout:
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=30.0),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=120.0),
         ):
             from app.tools.context import generate_summary_with_timeout
 

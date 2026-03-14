@@ -27,7 +27,7 @@ def mock_summary_settings():
         mock.return_value.summary.model = 'qwen3:1.7b'
         mock.return_value.summary.max_tokens = 2000
         mock.return_value.summary.prompt = None
-        mock.return_value.summary.timeout_s = 30.0
+        mock.return_value.summary.timeout_s = 120.0
         mock.return_value.summary.retry_max_attempts = 3
         mock.return_value.summary.retry_base_delay_s = 0.01
         mock.return_value.embedding.ollama_host = 'http://localhost:11434'

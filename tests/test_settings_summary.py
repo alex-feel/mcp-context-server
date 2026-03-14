@@ -69,10 +69,10 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.max_tokens == 5000
 
-    def test_summary_timeout_default_30(self) -> None:
-        """Verify SUMMARY_TIMEOUT_S defaults to 30.0."""
+    def test_summary_timeout_default_120(self) -> None:
+        """Verify SUMMARY_TIMEOUT_S defaults to 120.0."""
         settings = SummarySettings()
-        assert settings.timeout_s == 30.0
+        assert settings.timeout_s == 120.0
 
     def test_summary_timeout_zero_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_TIMEOUT_S rejects zero."""
@@ -166,7 +166,7 @@ class TestSummarySettings:
         monkeypatch.setenv('SUMMARY_PROVIDER', 'openai')
         monkeypatch.setenv('SUMMARY_MODEL', 'gpt-5-nano')
         monkeypatch.setenv('SUMMARY_MAX_TOKENS', '500')
-        monkeypatch.setenv('SUMMARY_TIMEOUT_S', '60')
+        monkeypatch.setenv('SUMMARY_TIMEOUT_S', '90')
         monkeypatch.setenv('SUMMARY_RETRY_MAX_ATTEMPTS', '5')
         monkeypatch.setenv('SUMMARY_RETRY_BASE_DELAY_S', '2.0')
         monkeypatch.setenv('SUMMARY_MAX_CONCURRENT', '10')
@@ -177,7 +177,7 @@ class TestSummarySettings:
         assert settings.provider == 'openai'
         assert settings.model == 'gpt-5-nano'
         assert settings.max_tokens == 500
-        assert settings.timeout_s == 60.0
+        assert settings.timeout_s == 90.0
         assert settings.retry_max_attempts == 5
         assert settings.retry_base_delay_s == 2.0
         assert settings.max_concurrent == 10
@@ -344,7 +344,7 @@ class TestAppSettingsSummaryIntegration:
         assert settings.summary.provider == 'ollama'
         assert settings.summary.model == 'qwen3:1.7b'
         assert settings.summary.max_tokens == 2000
-        assert settings.summary.timeout_s == 30.0
+        assert settings.summary.timeout_s == 120.0
         assert settings.summary.retry_max_attempts == 3
         assert settings.summary.retry_base_delay_s == 1.0
         assert settings.summary.max_concurrent == 3

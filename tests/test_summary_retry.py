@@ -179,16 +179,16 @@ async def test_multiple_failures_then_success() -> None:
 def test_compute_summary_total_timeout() -> None:
     """Test compute_summary_total_timeout() returns a positive value."""
     with patch('app.summary.retry.get_settings') as mock:
-        mock.return_value.summary.timeout_s = 30.0
+        mock.return_value.summary.timeout_s = 120.0
         mock.return_value.summary.retry_max_attempts = 3
         mock.return_value.summary.retry_base_delay_s = 1.0
 
         total = compute_summary_total_timeout()
 
         # Formula: (max_attempts * timeout_s + total_backoff) * 1.1
-        # = (3 * 30 + (min(1*1+1, 60) + min(1*2+1, 60))) * 1.1
-        # = (90 + (2 + 3)) * 1.1
-        # = 95 * 1.1
-        # = 104.5
+        # = (3 * 120 + (min(1*1+1, 60) + min(1*2+1, 60))) * 1.1
+        # = (360 + (2 + 3)) * 1.1
+        # = 365 * 1.1
+        # = 401.5
         assert total > 0
-        assert total == pytest.approx(104.5)
+        assert total == pytest.approx(401.5)

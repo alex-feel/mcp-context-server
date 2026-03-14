@@ -125,7 +125,7 @@ For more details on environment variable expansion, see: <https://docs.claude.co
 - **SUMMARY_PROVIDER**: Summary provider - `ollama` (default, local/free), `openai`, or `anthropic`
 - **SUMMARY_MODEL**: Summary model name - defaults to `qwen3:1.7b`. Qwen3 alternatives: `qwen3:4b` (higher quality), `qwen3:8b` (highest quality), `qwen3:0.6b` (minimal resources)
 - **SUMMARY_MAX_TOKENS**: Maximum output tokens for summary generation (50-5000) - defaults to 2000
-- **SUMMARY_TIMEOUT_S**: Timeout in seconds for summary generation API calls - defaults to 30.0
+- **SUMMARY_TIMEOUT_S**: Timeout in seconds for summary generation API calls - defaults to 120.0
 - **SUMMARY_RETRY_MAX_ATTEMPTS**: Maximum retry attempts on transient errors - defaults to 3
 - **SUMMARY_RETRY_BASE_DELAY_S**: Base delay in seconds between retries (exponential backoff) - defaults to 1.0
 - **SUMMARY_MAX_CONCURRENT**: Maximum concurrent summary generation operations (1-20) - defaults to 3

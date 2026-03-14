@@ -264,7 +264,7 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `SUMMARY_PROVIDER`           | `ollama`     | Summary provider: `ollama`, `openai`, or `anthropic`            |
 | `SUMMARY_MODEL`              | `qwen3:1.7b` | Summary model name (provider-specific)                          |
 | `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)          |
-| `SUMMARY_TIMEOUT_S`          | `30.0`       | Timeout in seconds for summary generation API calls             |
+| `SUMMARY_TIMEOUT_S`          | `120.0`      | Timeout in seconds for summary generation API calls             |
 | `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                      |
 | `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)     |
 | `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)         |
