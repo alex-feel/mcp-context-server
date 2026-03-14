@@ -71,7 +71,7 @@ helm install mcp ./deploy/helm/mcp-context-server \
 | `search.reranking.model`           | Reranking model name                           | `ms-marco-MiniLM-L-12-v2`              |
 | `search.summary.enabled`           | Enable LLM-based summary generation            | `true`                                 |
 | `search.summary.provider`          | Summary provider (ollama/openai/anthropic)     | `"ollama"`                             |
-| `search.summary.model`             | Summary generation model                       | `"qwen3:1.7b"`                         |
+| `search.summary.model`             | Summary generation model                       | `"qwen3:0.6b"`                         |
 | `ollama.enabled`                   | Enable Ollama sidecar                          | `false`                                |
 
 ### Storage Configuration
@@ -178,7 +178,7 @@ search:
   summary:
     enabled: true
     provider: ollama         # ollama, openai, or anthropic
-    model: "qwen3:1.7b"     # Summary model
+    model: "qwen3:0.6b"     # Summary model
     maxTokens: 2000          # Max output tokens (50-5000)
     minContentLength: 300    # Min chars to trigger summary (0=always)
 ```

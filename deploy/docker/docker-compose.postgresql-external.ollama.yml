@@ -37,7 +37,7 @@ services:
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
       # Summary generation
-      - SUMMARY_MODEL=qwen3:1.7b
+      - SUMMARY_MODEL=qwen3:0.6b
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
       # LangSmith tracing (optional, disabled by default)
@@ -59,7 +59,7 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
       - EMBEDDING_MODEL=qwen3-embedding:0.6b
-      - SUMMARY_MODEL=qwen3:1.7b
+      - SUMMARY_MODEL=qwen3:0.6b
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:

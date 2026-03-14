@@ -480,7 +480,7 @@
           "name": "SUMMARY_PROVIDER"
         },
         {
-          "description": "Summary generation model name (default: qwen3:1.7b)",
+          "description": "Summary generation model name (default: qwen3:0.6b)",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1373,7 +1373,7 @@
           "name": "SUMMARY_PROVIDER"
         },
         {
-          "description": "Summary generation model name (default: qwen3:1.7b)",
+          "description": "Summary generation model name (default: qwen3:0.6b)",
           "isRequired": false,
           "format": "string",
           "isSecret": false,

@@ -531,11 +531,11 @@ class SummarySettings(CommonSettings):
     )
 
     model: str = Field(
-        default='qwen3:1.7b',
+        default='qwen3:0.6b',
         alias='SUMMARY_MODEL',
-        description='Summary generation model name. Default: qwen3:1.7b. '
-                    'Alternatives: qwen3:4b (higher quality), qwen3:8b (highest quality), '
-                    'qwen3:0.6b (minimal resources)',
+        description='Summary generation model name. Default: qwen3:0.6b. '
+                    'Alternatives: qwen3:1.7b (higher quality), qwen3:4b (high quality), '
+                    'qwen3:8b (highest quality)',
     )
 
     max_tokens: int = Field(

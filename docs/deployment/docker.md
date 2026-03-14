@@ -262,7 +262,7 @@ All Docker Compose files use environment variables for configuration. Key settin
 |------------------------------|--------------|-----------------------------------------------------------------|
 | `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable automatic LLM-based summary generation                   |
 | `SUMMARY_PROVIDER`           | `ollama`     | Summary provider: `ollama`, `openai`, or `anthropic`            |
-| `SUMMARY_MODEL`              | `qwen3:1.7b` | Summary model name (provider-specific)                          |
+| `SUMMARY_MODEL`              | `qwen3:0.6b` | Summary model name (provider-specific)                          |
 | `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)          |
 | `SUMMARY_TIMEOUT_S`          | `120.0`      | Timeout in seconds for summary generation API calls             |
 | `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                      |
@@ -568,7 +568,7 @@ grep OPENAI_API_KEY deploy/docker/.env
 **Solutions:**
 ```bash
 # Pull the summary model
-docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3:1.7b
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3:0.6b
 
 # Verify model is available
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama list
@@ -593,7 +593,7 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs mcp-contex
 | `pgvector extension is not installed`  | pgvector not enabled           | Enable via dashboard or CREATE EXTENSION (exit 78)          |
 | `insufficient privileges`              | Cannot create pgvector         | Grant permissions via dashboard (exit 78)                   |
 | `[Errno 111] Connection refused`       | PostgreSQL not running         | Wait for PostgreSQL to start (exit 69, will retry)          |
-| `summary field is empty`               | Summary model not pulled       | Run `ollama pull qwen3:1.7b` in the ollama container        |
+| `summary field is empty`               | Summary model not pulled       | Run `ollama pull qwen3:0.6b` in the ollama container        |
 
 ## Advanced Configuration
 
@@ -717,7 +717,7 @@ docker build \
 
 | Extra               | Provider          | Package               | Default Model     |
 |---------------------|-------------------|-----------------------|-------------------|
-| `summary-ollama`    | Ollama (default)  | langchain-ollama      | qwen3:1.7b        |
+| `summary-ollama`    | Ollama (default)  | langchain-ollama      | qwen3:0.6b        |
 | `summary-openai`    | OpenAI            | langchain-openai      | gpt-5-nano        |
 | `summary-anthropic` | Anthropic         | langchain-anthropic   | claude-haiku-4-5  |
 

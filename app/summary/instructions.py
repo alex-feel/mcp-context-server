@@ -2,7 +2,7 @@
 
 Provides the DEFAULT_SUMMARY_PROMPT constant used when SUMMARY_PROMPT
 environment variable is not set. The prompt is optimized for small
-models (qwen3:1.7b) and follows best practices for LLM summarization.
+models (qwen3:0.6b) and follows best practices for LLM summarization.
 
 The prompt uses a system message format:
 - Contains /no_think instruction for Qwen3 models

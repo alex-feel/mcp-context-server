@@ -1,11 +1,11 @@
 """Ollama summary provider using LangChain ChatOllama integration.
 
 Uses ChatOllama for LLM-based abstractive summarization.
-Default model: qwen3:1.7b (configurable via SUMMARY_MODEL).
+Default model: qwen3:0.6b (configurable via SUMMARY_MODEL).
 
 Qwen3 Family Model Recommendations:
-    - qwen3:0.6b  - Minimal resources, basic summaries
-    - qwen3:1.7b  - Default, good balance of quality and speed
+    - qwen3:0.6b  - Default, lightweight and fast
+    - qwen3:1.7b  - Higher quality, good balance of quality and speed
     - qwen3:4b    - Higher quality, proven stability, concurrent support
     - qwen3:8b    - Highest quality, requires more resources
     - qwen3:14b   - Near-frontier quality, significant resources
@@ -32,7 +32,7 @@ class OllamaSummaryProvider:
     Environment Variables:
         SUMMARY_PROVIDER: Must be 'ollama' (default)
         OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
-        SUMMARY_MODEL: Model name (default: qwen3:1.7b)
+        SUMMARY_MODEL: Model name (default: qwen3:0.6b)
         SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
     """
 

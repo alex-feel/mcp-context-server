@@ -74,14 +74,14 @@ helm install mcp ./deploy/helm/mcp-context-server \
   --set ollama.enabled=true \
   --set search.summary.enabled=true \
   --set search.summary.provider=ollama \
-  --set search.summary.model=qwen3:1.7b
+  --set search.summary.model=qwen3:0.6b
 ```
 
 **Note:** When using the Ollama sidecar, models must be pulled manually before use:
 
 ```bash
 # Pull the summary model
-kubectl exec -it <pod-name> -c ollama -- ollama pull qwen3:1.7b
+kubectl exec -it <pod-name> -c ollama -- ollama pull qwen3:0.6b
 # Pull the embedding model (if semantic search is also enabled)
 kubectl exec -it <pod-name> -c ollama -- ollama pull qwen3-embedding:0.6b
 ```
@@ -185,7 +185,7 @@ search:
   summary:
     enabled: true             # ENABLE_SUMMARY_GENERATION
     provider: "ollama"        # SUMMARY_PROVIDER: ollama, openai, or anthropic
-    model: "qwen3:1.7b"      # SUMMARY_MODEL
+    model: "qwen3:0.6b"      # SUMMARY_MODEL
     maxTokens: 2000           # SUMMARY_MAX_TOKENS (tokens, 50-5000)
     minContentLength: 300     # SUMMARY_MIN_CONTENT_LENGTH (chars, 0=always)
     prompt: ""                # SUMMARY_PROMPT: empty uses built-in default

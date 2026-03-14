@@ -2,7 +2,7 @@
 set -e
 
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-qwen3-embedding:0.6b}"
-SUMMARY_MODEL="${SUMMARY_MODEL:-qwen3:1.7b}"
+SUMMARY_MODEL="${SUMMARY_MODEL:-qwen3:0.6b}"
 
 # Start Ollama server in background on temporary internal port
 OLLAMA_HOST=127.0.0.1:11155 /bin/ollama serve &

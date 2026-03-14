@@ -25,7 +25,7 @@ def _make_summary_settings() -> SummarySettings:
     """Create SummarySettings with defaults for testing."""
     env = {
         'SUMMARY_PROVIDER': 'ollama',
-        'SUMMARY_MODEL': 'qwen3:1.7b',
+        'SUMMARY_MODEL': 'qwen3:0.6b',
     }
     with patch.dict(os.environ, env, clear=False):
         return SummarySettings()
@@ -132,7 +132,7 @@ class TestCheckSummaryOllama:
 
         # Mock ollama client to fail model check
         mock_ollama_client = MagicMock()
-        mock_ollama_client.show.side_effect = Exception("model 'qwen3:1.7b' not found")
+        mock_ollama_client.show.side_effect = Exception("model 'qwen3:0.6b' not found")
         mock_ollama = MagicMock()
         mock_ollama.Client.return_value = mock_ollama_client
 
@@ -266,7 +266,7 @@ class TestClassifyProviderErrorForSummary:
     def test_model_not_found_returns_configuration_error(self) -> None:
         """Model not found requires human action (ollama pull) -> ConfigurationError."""
         error_class = classify_provider_error(
-            "Summary model \"qwen3:1.7b\" not available: model 'qwen3:1.7b' not found",
+            "Summary model \"qwen3:0.6b\" not available: model 'qwen3:0.6b' not found",
         )
         assert error_class is ConfigurationError
 

@@ -28,7 +28,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - Ollama (for embedding and summary generation - default behavior):
   - Install from [ollama.com/download](https://ollama.com/download)
   - Pull embedding model: `ollama pull qwen3-embedding:0.6b`
-  - Pull summary model: `ollama pull qwen3:1.7b`
+  - Pull summary model: `ollama pull qwen3:0.6b`
 
 ## Adding the Server to Claude Code
 
@@ -64,7 +64,7 @@ Add the following to your `.mcp.json` file in your project directory:
 }
 ```
 
-**Prerequisites:** Ollama must be installed with the required models pulled: `ollama pull qwen3-embedding:0.6b` and `ollama pull qwen3:1.7b`.
+**Prerequisites:** Ollama must be installed with the required models pulled: `ollama pull qwen3-embedding:0.6b` and `ollama pull qwen3:0.6b`.
 
 For the latest development version from GitHub, use:
 ```json
@@ -123,7 +123,7 @@ For more details on environment variable expansion, see: <https://docs.claude.co
 **Summary Generation Settings:**
 - **ENABLE_SUMMARY_GENERATION**: Enable automatic LLM-based summary generation (true/false) - defaults to true. When true and provider dependencies are unavailable, the server will NOT start. Set to false to disable.
 - **SUMMARY_PROVIDER**: Summary provider - `ollama` (default, local/free), `openai`, or `anthropic`
-- **SUMMARY_MODEL**: Summary model name - defaults to `qwen3:1.7b`. Qwen3 alternatives: `qwen3:4b` (higher quality), `qwen3:8b` (highest quality), `qwen3:0.6b` (minimal resources)
+- **SUMMARY_MODEL**: Summary model name - defaults to `qwen3:0.6b`. Qwen3 alternatives: `qwen3:1.7b` (higher quality), `qwen3:4b` (high quality), `qwen3:8b` (highest quality)
 - **SUMMARY_MAX_TOKENS**: Maximum output tokens for summary generation (50-5000) - defaults to 2000
 - **SUMMARY_TIMEOUT_S**: Timeout in seconds for summary generation API calls - defaults to 120.0
 - **SUMMARY_RETRY_MAX_ATTEMPTS**: Maximum retry attempts on transient errors - defaults to 3
@@ -195,7 +195,7 @@ For a complete list of all configuration options, see [app/settings.py](app/sett
 
 Summary generation automatically creates concise LLM-based summaries for each stored context entry. Summaries are returned in the `summary` field of all search tool results alongside truncated `text_content`, providing dense, informative summaries that help agents determine relevance without fetching full entries.
 
-This feature is **enabled by default** when the `summary-ollama` extra is installed. The default model is `qwen3:1.7b` (local Ollama). Alternative models in the same family: `qwen3:4b` (higher quality), `qwen3:8b` (highest quality), `qwen3:0.6b` (minimal resources).
+This feature is **enabled by default** when the `summary-ollama` extra is installed. The default model is `qwen3:0.6b` (local Ollama). Alternative models in the same family: `qwen3:1.7b` (higher quality), `qwen3:4b` (high quality), `qwen3:8b` (highest quality).
 
 For detailed instructions including all providers (Ollama, OpenAI, Anthropic), model selection, and custom prompt configuration, see the [Summary Generation Guide](docs/summary-generation.md).
 

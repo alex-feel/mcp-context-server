@@ -14,7 +14,7 @@ The server supports three summary providers via LangChain integration:
 
 | Provider             | Default Model    | Cost            | Best For                     |
 |----------------------|------------------|-----------------|------------------------------|
-| **Ollama** (default) | qwen3:1.7b       | Free (local)    | Development, privacy-focused |
+| **Ollama** (default) | qwen3:0.6b       | Free (local)    | Development, privacy-focused |
 | **OpenAI**           | gpt-5-nano       | Pay-per-use API | Production, high quality     |
 | **Anthropic**        | claude-haiku-4-5 | Pay-per-use API | Production, high quality     |
 
@@ -24,7 +24,7 @@ Select a provider via the `SUMMARY_PROVIDER` environment variable.
 
 - **Python**: 3.12+ (already required by MCP Context Server)
 - **Ollama** (for default provider): Installed from [ollama.com/download](https://ollama.com/download)
-- **RAM**: 4GB minimum for `qwen3:1.7b`; 8GB recommended for `qwen3:4b`
+- **RAM**: 2GB minimum for `qwen3:0.6b`; 8GB recommended for `qwen3:4b`
 
 ## Installation
 
@@ -51,7 +51,7 @@ See the provider-specific sections below for model and credential requirements.
 
 ### Ollama (Default)
 
-Ollama runs summary models locally with no API costs. The default model `qwen3:1.7b` is optimized for fast, accurate summaries on consumer hardware.
+Ollama runs summary models locally with no API costs. The default model `qwen3:0.6b` is optimized for fast summaries with minimal resource requirements.
 
 #### Setup
 
@@ -59,7 +59,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:1
 
 2. **Pull the summary model**:
    ```bash
-   ollama pull qwen3:1.7b
+   ollama pull qwen3:0.6b
    ```
 
 3. **Verify**:
@@ -79,7 +79,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:1
       "env": {
         "ENABLE_SUMMARY_GENERATION": "true",
         "SUMMARY_PROVIDER": "ollama",
-        "SUMMARY_MODEL": "qwen3:1.7b"
+        "SUMMARY_MODEL": "qwen3:0.6b"
       }
     }
   }
@@ -92,7 +92,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:1
 |------------------------------|--------------|-----------------------------------------------------------------------------------------|
 | `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable/disable summary generation                                                       |
 | `SUMMARY_PROVIDER`           | `ollama`     | Set to `ollama`                                                                         |
-| `SUMMARY_MODEL`              | `qwen3:1.7b` | Ollama model name (see model table below)                                               |
+| `SUMMARY_MODEL`              | `qwen3:0.6b` | Ollama model name (see model table below)                                               |
 | `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)                                  |
 | `SUMMARY_TIMEOUT_S`          | `120.0`      | Timeout in seconds for summary generation API calls                                     |
 | `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                                              |
@@ -107,12 +107,12 @@ The Qwen3 family offers a range of sizes for different resource constraints and 
 
 | Model        | RAM Required | Quality   | Speed     | Notes                                          |
 |--------------|--------------|-----------|-----------|------------------------------------------------|
-| `qwen3:0.6b` | ~2GB         | Basic     | Fastest   | Minimal resources, suitable for CI/testing     |
-| `qwen3:1.7b` | ~4GB         | Good      | Fast      | **Default**. Best balance for most deployments |
+| `qwen3:0.6b` | ~2GB         | Basic     | Fastest   | **Default**. Lightweight, minimal resources    |
+| `qwen3:1.7b` | ~4GB         | Good      | Fast      | Higher quality, good balance for most uses     |
 | `qwen3:4b`   | ~8GB         | Better    | Moderate  | Recommended when higher quality is needed      |
 | `qwen3:8b`   | ~16GB        | Best      | Slower    | Highest quality, requires dedicated hardware   |
 
-**Recommendation:** Start with `qwen3:1.7b` (default). Upgrade to `qwen3:4b` if summary quality is insufficient for your use case.
+**Recommendation:** Start with `qwen3:0.6b` (default). Upgrade to `qwen3:1.7b` or `qwen3:4b` if summary quality is insufficient for your use case.
 
 Pull any alternative model before use:
 ```bash
@@ -342,7 +342,7 @@ uv sync --extra embeddings-ollama --extra summary-openai --extra reranking
         "EMBEDDING_PROVIDER": "ollama",
         "EMBEDDING_MODEL": "qwen3-embedding:0.6b",
         "SUMMARY_PROVIDER": "ollama",
-        "SUMMARY_MODEL": "qwen3:1.7b",
+        "SUMMARY_MODEL": "qwen3:0.6b",
         "OLLAMA_HOST": "http://localhost:11434"
       }
     }
@@ -363,7 +363,7 @@ uv sync --extra embeddings-ollama --extra summary-openai --extra reranking
 | `ENABLE_SUMMARY_GENERATION=false` | Set to `true` and install provider dependencies           |
 | Provider package not installed    | Run `uv sync --extra summary-ollama` or `summary-openai`  |
 | Ollama not running                | Start Ollama: `ollama serve`                              |
-| Model not pulled                  | Run `ollama pull qwen3:1.7b`                              |
+| Model not pulled                  | Run `ollama pull qwen3:0.6b`                              |
 | Generation timed out              | Raise `SUMMARY_TIMEOUT_S` (default 120s) for slow models  |
 | API key missing                   | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`               |
 
@@ -390,7 +390,7 @@ Or disable summary generation: `ENABLE_SUMMARY_GENERATION=false`
 
 **Solutions:**
 - Increase `SUMMARY_TIMEOUT_S` (e.g., `180`)
-- Use a smaller/faster model (`qwen3:1.7b` or `qwen3:0.6b`)
+- Use a smaller/faster model (`qwen3:0.6b`) or upgrade to `qwen3:1.7b` for better quality
 - Reduce `SUMMARY_MAX_CONCURRENT` to limit parallel generation load on the model server
 
 ## Additional Resources

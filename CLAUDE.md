@@ -64,7 +64,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 7. **Reranking Layer** (`app/reranking/`): `RerankingProvider` Protocol, same factory pattern. Provider: FlashRank (default, 34MB model, ONNX inference offloaded to thread pool).
 
-8. **Summary Generation Layer** (`app/summary/`): `SummaryProvider` Protocol, same factory pattern. Providers: Ollama, OpenAI, Anthropic. Retry via tenacity. Default model: `qwen3:1.7b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
+8. **Summary Generation Layer** (`app/summary/`): `SummaryProvider` Protocol, same factory pattern. Providers: Ollama, OpenAI, Anthropic. Retry via tenacity. Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
 
 9. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain's `RecursiveCharacterTextSplitter`). `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
 
@@ -180,7 +180,7 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **Embedding**: `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (60*), `EMBEDDING_MAX_CONCURRENT` (3*)
 
-**Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:1.7b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (300*; text shorter than this skips summary; 0 = always generate), `SUMMARY_PROMPT`
+**Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:0.6b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (300*; text shorter than this skips summary; 0 = always generate), `SUMMARY_PROMPT`
 
 **Provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, and metadata indexing vars**: See `app/settings.py` for complete list with defaults and descriptions.
 
@@ -234,7 +234,7 @@ set LOG_LEVEL=DEBUG && uv run mcp-context-server  # Debug logs (Windows)
 uv run python -c "from app.startup import init_database; import asyncio; asyncio.run(init_database())"  # Test DB
 ```
 
-**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → `ENABLE_SEMANTIC_SEARCH=true` + `uv sync --extra embeddings-ollama`. FTS unavailable → `ENABLE_FTS=true`. Summary generation unavailable → `ENABLE_SUMMARY_GENERATION=true` + `uv sync --extra summary-ollama` + `ollama pull qwen3:1.7b`.
+**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → `ENABLE_SEMANTIC_SEARCH=true` + `uv sync --extra embeddings-ollama`. FTS unavailable → `ENABLE_FTS=true`. Summary generation unavailable → `ENABLE_SUMMARY_GENERATION=true` + `uv sync --extra summary-ollama` + `ollama pull qwen3:0.6b`.
 
 ## Code Quality Standards
 

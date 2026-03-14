@@ -36,9 +36,9 @@ class TestSummarySettings:
         assert settings.provider == 'ollama'
 
     def test_summary_model_default_is_qwen3_1_7b(self) -> None:
-        """Verify SUMMARY_MODEL defaults to 'qwen3:1.7b'."""
+        """Verify SUMMARY_MODEL defaults to 'qwen3:0.6b'."""
         settings = SummarySettings()
-        assert settings.model == 'qwen3:1.7b'
+        assert settings.model == 'qwen3:0.6b'
 
     def test_summary_max_tokens_default_is_2000(self) -> None:
         """Verify SUMMARY_MAX_TOKENS defaults to 2000."""
@@ -342,7 +342,7 @@ class TestAppSettingsSummaryIntegration:
         settings = AppSettings()
         assert settings.summary.generation_enabled is True
         assert settings.summary.provider == 'ollama'
-        assert settings.summary.model == 'qwen3:1.7b'
+        assert settings.summary.model == 'qwen3:0.6b'
         assert settings.summary.max_tokens == 2000
         assert settings.summary.timeout_s == 120.0
         assert settings.summary.retry_max_attempts == 3

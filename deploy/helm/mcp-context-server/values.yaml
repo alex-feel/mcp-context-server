@@ -139,7 +139,7 @@ search:
   summary:
     enabled: true
     provider: "ollama"       # ollama (default), openai, or anthropic
-    model: "qwen3:1.7b"     # Summary model
+    model: "qwen3:0.6b"     # Summary model
     maxTokens: 2000          # Max output tokens (50-5000)
     minContentLength: 300    # Min chars to trigger summary (0=always)
     prompt: ""               # Custom prompt (empty = built-in default)

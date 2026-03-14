@@ -24,7 +24,7 @@ import pytest
 def mock_summary_settings():
     """Mock settings for Ollama summary provider tests."""
     with patch('app.summary.providers.langchain_ollama.get_settings') as mock:
-        mock.return_value.summary.model = 'qwen3:1.7b'
+        mock.return_value.summary.model = 'qwen3:0.6b'
         mock.return_value.summary.max_tokens = 2000
         mock.return_value.summary.prompt = None
         mock.return_value.summary.timeout_s = 120.0
@@ -55,7 +55,7 @@ class TestOllamaSummaryProviderInit:
         from app.summary.providers.langchain_ollama import OllamaSummaryProvider
 
         provider = OllamaSummaryProvider()
-        assert provider._model == 'qwen3:1.7b'
+        assert provider._model == 'qwen3:0.6b'
 
     def test_init_reads_base_url_from_settings(self) -> None:
         """__init__ reads OLLAMA_HOST from embedding settings (shared Ollama instance)."""
@@ -97,7 +97,7 @@ class TestOllamaSummaryProviderInitialize:
                 await provider.initialize()
 
                 mock_chat.assert_called_once_with(
-                    model='qwen3:1.7b',
+                    model='qwen3:0.6b',
                     base_url='http://localhost:11434',
                     temperature=0,
                     num_predict=2000,
