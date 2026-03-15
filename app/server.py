@@ -263,7 +263,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
             # Step 2: Check provider-specific dependencies based on EMBEDDING_PROVIDER
             provider = settings.embedding.provider
-            provider_check = await check_provider_dependencies(provider, settings.embedding)
+            provider_check = await check_provider_dependencies(provider, settings.embedding, settings.ollama.host)
 
             if not provider_check['available']:
                 install_hint = provider_check.get('install_instructions') or 'Check provider configuration'
@@ -397,7 +397,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
             summary_provider_name = settings.summary.provider
             summary_check = await check_summary_provider_dependencies(
-                summary_provider_name, settings.summary, settings.embedding,
+                summary_provider_name, settings.summary, settings.ollama.host,
             )
 
             if not summary_check['available']:

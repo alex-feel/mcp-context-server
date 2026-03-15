@@ -128,6 +128,20 @@ class InstructionsSettings(CommonSettings):
     )
 
 
+class OllamaSettings(CommonSettings):
+    """Shared Ollama infrastructure settings.
+
+    Contains settings shared by all features that use Ollama
+    (embeddings, summary generation).
+    """
+
+    host: str = Field(
+        default='http://localhost:11434',
+        alias='OLLAMA_HOST',
+        description='Ollama server URL',
+    )
+
+
 class EmbeddingSettings(CommonSettings):
     """Embedding provider settings following LangChain conventions.
 
@@ -211,24 +225,19 @@ class EmbeddingSettings(CommonSettings):
                     'Default 3 balances throughput vs resource contention.',
     )
 
-    # Ollama-specific (matches OLLAMA_HOST convention)
-    ollama_host: str = Field(
-        default='http://localhost:11434',
-        alias='OLLAMA_HOST',
-        description='Ollama server URL',
-    )
+    # Ollama-specific context and truncation settings
     ollama_num_ctx: int = Field(
         default=4096,
-        alias='OLLAMA_NUM_CTX',
+        alias='EMBEDDING_OLLAMA_NUM_CTX',
         ge=512,
-        le=131072,
-        description='Ollama context length in tokens. Default 4096. '
+        le=2097152,
+        description='Ollama embedding context length in tokens. Default 4096. '
                     'Must match or exceed model capabilities.',
     )
     ollama_truncate: bool = Field(
         default=False,
-        alias='OLLAMA_TRUNCATE',
-        description='Control text truncation when exceeding context length. '
+        alias='EMBEDDING_OLLAMA_TRUNCATE',
+        description='Control text truncation when exceeding embedding context length. '
                     'False (default): Returns error on exceeded context. '
                     'True: Silently truncates input (may degrade embedding quality).',
     )
@@ -602,6 +611,23 @@ class SummarySettings(CommonSettings):
                     'Set to 0 to always generate summaries regardless of content length.',
     )
 
+    # Ollama-specific context and truncation settings
+    ollama_num_ctx: int = Field(
+        default=32768,
+        alias='SUMMARY_OLLAMA_NUM_CTX',
+        ge=512,
+        le=2097152,
+        description='Ollama summary context length in tokens. Default 32768 (matches qwen3 native context). '
+                    'Must match or exceed model capabilities for summary generation.',
+    )
+    ollama_truncate: bool = Field(
+        default=False,
+        alias='SUMMARY_OLLAMA_TRUNCATE',
+        description='Control text truncation when exceeding summary context length. '
+                    'False (default): Returns error on exceeded context. '
+                    'True: Silently truncates input (summary generated from incomplete text).',
+    )
+
 
 class FtsSettings(CommonSettings):
     """Full-text search feature configuration.
@@ -949,6 +975,9 @@ class AppSettings(CommonSettings):
     summary: SummarySettings = Field(default_factory=lambda: SummarySettings())
     chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
     reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
+
+    # Shared Ollama settings
+    ollama: OllamaSettings = Field(default_factory=lambda: OllamaSettings())
 
     # Infrastructure settings
     transport: TransportSettings = Field(default_factory=lambda: TransportSettings())

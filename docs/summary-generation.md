@@ -88,18 +88,20 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 
 #### Environment Variables
 
-| Variable                     | Default      | Description                                                                             |
-|------------------------------|--------------|-----------------------------------------------------------------------------------------|
-| `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable/disable summary generation                                                       |
-| `SUMMARY_PROVIDER`           | `ollama`     | Set to `ollama`                                                                         |
-| `SUMMARY_MODEL`              | `qwen3:0.6b` | Ollama model name (see model table below)                                               |
-| `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)                                  |
-| `SUMMARY_TIMEOUT_S`          | `120.0`      | Timeout in seconds for summary generation API calls                                     |
-| `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                                              |
-| `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)                             |
-| `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)                                 |
-| `SUMMARY_MIN_CONTENT_LENGTH` | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate     |
-| `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt. Overrides the default prompt. See [Custom Prompt](#custom-prompt) |
+| Variable                       | Default      | Description                                                                                          |
+|--------------------------------|--------------|------------------------------------------------------------------------------------------------------|
+| `ENABLE_SUMMARY_GENERATION`    | `true`       | Enable/disable summary generation                                                                    |
+| `SUMMARY_PROVIDER`             | `ollama`     | Set to `ollama`                                                                                      |
+| `SUMMARY_MODEL`                | `qwen3:0.6b` | Ollama model name (see model table below)                                                            |
+| `SUMMARY_MAX_TOKENS`           | `2000`       | Maximum output tokens for summary generation (50-5000)                                               |
+| `SUMMARY_TIMEOUT_S`            | `120.0`      | Timeout in seconds for summary generation API calls                                                  |
+| `SUMMARY_RETRY_MAX_ATTEMPTS`   | `3`          | Maximum retry attempts on transient errors                                                           |
+| `SUMMARY_RETRY_BASE_DELAY_S`   | `1.0`        | Base delay in seconds between retries (exponential backoff)                                          |
+| `SUMMARY_MAX_CONCURRENT`       | `3`          | Maximum concurrent summary generation operations (1-20)                                              |
+| `SUMMARY_MIN_CONTENT_LENGTH`   | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate                  |
+| `SUMMARY_PROMPT`               | (built-in)   | Custom system prompt. Overrides the default prompt. See [Custom Prompt](#custom-prompt)              |
+| `SUMMARY_OLLAMA_NUM_CTX`       | `32768`      | Ollama context window in tokens (512-2097152). Must accommodate input text + prompt + output budget  |
+| `SUMMARY_OLLAMA_TRUNCATE`      | `false`      | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
 
 #### Qwen3 Model Options (Ollama)
 
@@ -274,6 +276,58 @@ By default, summary generation is skipped for short text (fewer than 500 charact
 
 - `0` disables the threshold entirely — summaries are always generated regardless of text length.
 - The comparison uses strict `<` (text at exactly the threshold length IS summarized).
+
+### Context Length and Truncation Control (Ollama)
+
+When using Ollama for summary generation, context length and truncation behavior are configurable. OpenAI and Anthropic providers handle context limits server-side and return explicit HTTP errors when limits are exceeded.
+
+#### Truncation Behavior by Provider
+
+| Provider        | Truncation Control | Default Behavior                        | Configuration                     |
+|-----------------|--------------------|-----------------------------------------|-----------------------------------|
+| **Ollama**      | Configurable       | Error on context exceed                 | `SUMMARY_OLLAMA_TRUNCATE=false`   |
+| **OpenAI**      | Always error       | Returns HTTP 400 if input exceeds limit | N/A                               |
+| **Anthropic**   | Always error       | Returns HTTP 400 if input exceeds limit | N/A                               |
+
+#### Recommended Configuration
+
+For production use, keep truncation **disabled** (default):
+
+```bash
+SUMMARY_OLLAMA_TRUNCATE=false       # Default - errors prevent silent quality degradation
+```
+
+When truncation is disabled, text length is estimated before calling the Ollama API. If the estimated token count exceeds the available input budget (context window minus output budget minus prompt overhead), an error is raised with actionable guidance.
+
+**Available input budget** = `SUMMARY_OLLAMA_NUM_CTX` - `SUMMARY_MAX_TOKENS` - prompt overhead (~120 tokens for default prompt)
+
+Example error:
+```text
+ValueError: Text length (15000 chars, ~5000 estimated tokens) may exceed available input budget
+(30538 tokens from model spec (32768) capped by SUMMARY_OLLAMA_NUM_CTX (32768),
+after reserving 2000 output + ~230 prompt tokens) for model qwen3:0.6b.
+Options: 1) Increase SUMMARY_OLLAMA_NUM_CTX,
+         2) Set SUMMARY_OLLAMA_TRUNCATE=true to allow silent truncation,
+         3) Use a larger-context model.
+```
+
+**Note**: The effective context limit for Ollama models is `min(model_max_input_tokens, SUMMARY_OLLAMA_NUM_CTX)`. The `SummaryModelSpec` registry in `app/summary/context_limits.py` contains known model specifications.
+
+#### Context Limits by Model
+
+| Model              | Provider    | Max Input Tokens | Notes                                        |
+|--------------------|-------------|------------------|----------------------------------------------|
+| qwen3:0.6b         | Ollama      | 32,768           | Default model                                |
+| qwen3:1.7b         | Ollama      | 32,768           | Higher quality                               |
+| qwen3:4b           | Ollama      | 131,072          | YaRN enabled by default on Ollama            |
+| qwen3:8b           | Ollama      | 32,768           | Highest quality for Ollama                   |
+| qwen3:14b          | Ollama      | 32,768           | Large model, dedicated hardware required     |
+| qwen3:32b          | Ollama      | 32,768           | Largest Ollama model                         |
+| gpt-5-nano         | OpenAI      | 400,000          | Always returns error on exceed               |
+| gpt-5-mini         | OpenAI      | 400,000          | Always returns error on exceed               |
+| gpt-5              | OpenAI      | 400,000          | Always returns error on exceed               |
+| claude-haiku-4-5   | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
+| claude-sonnet-4    | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
 
 ### Summary in Search Results
 

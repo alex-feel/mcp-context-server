@@ -106,10 +106,11 @@ async def check_vector_storage_dependencies(backend_type: str = 'sqlite') -> boo
 async def check_provider_dependencies(
     provider: str,
     embedding_settings: EmbeddingSettings,
+    ollama_host: str = 'http://localhost:11434',
 ) -> ProviderCheckResult:
     """Check provider-specific dependencies based on EMBEDDING_PROVIDER setting.
 
-    Dispatches to provider-specific check functions based on the selected provider.
+    Dispatches uniformly to the provider-specific check function.
     Each provider has different requirements:
     - ollama: Requires Ollama service running and model available
     - openai: Requires OPENAI_API_KEY
@@ -120,13 +121,14 @@ async def check_provider_dependencies(
     Args:
         provider: Provider name from EMBEDDING_PROVIDER setting
         embedding_settings: EmbeddingSettings instance with provider configuration
+        ollama_host: Ollama server URL (from OllamaSettings.host)
 
     Returns:
         ProviderCheckResult with available, reason, and install_instructions
     """
     check_functions: dict[
         str,
-        Callable[[EmbeddingSettings], Any],
+        Callable[..., Any],
     ] = {
         'ollama': _check_ollama_dependencies,
         'openai': _check_openai_dependencies,
@@ -143,11 +145,14 @@ async def check_provider_dependencies(
         )
 
     logger.info(f'Checking {provider} provider dependencies...')
-    result = await check_functions[provider](embedding_settings)
+    result = await check_functions[provider](embedding_settings, ollama_host)
     return cast(ProviderCheckResult, result)
 
 
-async def _check_ollama_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+async def _check_ollama_dependencies(
+    embedding_settings: EmbeddingSettings,
+    ollama_host: str,
+) -> ProviderCheckResult:
     """Check Ollama-specific dependencies.
 
     Checks:
@@ -156,7 +161,8 @@ async def _check_ollama_dependencies(embedding_settings: EmbeddingSettings) -> P
     3. Embedding model is available
 
     Args:
-        embedding_settings: EmbeddingSettings with ollama_host and model
+        embedding_settings: EmbeddingSettings with model name
+        ollama_host: Ollama server URL (from OllamaSettings.host)
 
     Returns:
         ProviderCheckResult
@@ -184,18 +190,18 @@ async def _check_ollama_dependencies(embedding_settings: EmbeddingSettings) -> P
         import httpx
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(embedding_settings.ollama_host, timeout=2.0)
+            response = await client.get(ollama_host, timeout=2.0)
             if response.status_code != 200:
                 return ProviderCheckResult(
                     available=False,
                     reason=f'Ollama service returned status {response.status_code}',
                     install_instructions='Start Ollama service: ollama serve',
                 )
-        logger.debug(f'Ollama service running at {embedding_settings.ollama_host}')
+        logger.debug(f'Ollama service running at {ollama_host}')
     except Exception as e:
         return ProviderCheckResult(
             available=False,
-            reason=f'Ollama service not accessible at {embedding_settings.ollama_host}: {e}',
+            reason=f'Ollama service not accessible at {ollama_host}: {e}',
             install_instructions='Start Ollama service: ollama serve',
         )
 
@@ -203,7 +209,7 @@ async def _check_ollama_dependencies(embedding_settings: EmbeddingSettings) -> P
     try:
         import ollama
 
-        ollama_client = ollama.Client(host=embedding_settings.ollama_host, timeout=5.0)
+        ollama_client = ollama.Client(host=ollama_host, timeout=5.0)
         ollama_client.show(embedding_settings.model)
         logger.debug(f'Embedding model "{embedding_settings.model}" available')
     except Exception as e:
@@ -217,7 +223,10 @@ async def _check_ollama_dependencies(embedding_settings: EmbeddingSettings) -> P
     return ProviderCheckResult(available=True, reason=None, install_instructions=None)
 
 
-async def _check_openai_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+async def _check_openai_dependencies(
+    embedding_settings: EmbeddingSettings,
+    _ollama_host: str,
+) -> ProviderCheckResult:
     """Check OpenAI-specific dependencies.
 
     Checks:
@@ -226,6 +235,7 @@ async def _check_openai_dependencies(embedding_settings: EmbeddingSettings) -> P
 
     Args:
         embedding_settings: EmbeddingSettings with openai_api_key
+        _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -261,7 +271,10 @@ async def _check_openai_dependencies(embedding_settings: EmbeddingSettings) -> P
     return ProviderCheckResult(available=True, reason=None, install_instructions=None)
 
 
-async def _check_azure_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+async def _check_azure_dependencies(
+    embedding_settings: EmbeddingSettings,
+    _ollama_host: str,
+) -> ProviderCheckResult:
     """Check Azure OpenAI-specific dependencies.
 
     Checks:
@@ -272,6 +285,7 @@ async def _check_azure_dependencies(embedding_settings: EmbeddingSettings) -> Pr
 
     Args:
         embedding_settings: EmbeddingSettings with Azure configuration
+        _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -315,7 +329,10 @@ async def _check_azure_dependencies(embedding_settings: EmbeddingSettings) -> Pr
     return ProviderCheckResult(available=True, reason=None, install_instructions=None)
 
 
-async def _check_huggingface_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+async def _check_huggingface_dependencies(
+    embedding_settings: EmbeddingSettings,
+    _ollama_host: str,
+) -> ProviderCheckResult:
     """Check HuggingFace-specific dependencies.
 
     Checks:
@@ -324,6 +341,7 @@ async def _check_huggingface_dependencies(embedding_settings: EmbeddingSettings)
 
     Args:
         embedding_settings: EmbeddingSettings with huggingface_api_key
+        _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -359,7 +377,10 @@ async def _check_huggingface_dependencies(embedding_settings: EmbeddingSettings)
     return ProviderCheckResult(available=True, reason=None, install_instructions=None)
 
 
-async def _check_voyage_dependencies(embedding_settings: EmbeddingSettings) -> ProviderCheckResult:
+async def _check_voyage_dependencies(
+    embedding_settings: EmbeddingSettings,
+    _ollama_host: str,
+) -> ProviderCheckResult:
     """Check Voyage AI-specific dependencies.
 
     Checks:
@@ -368,6 +389,7 @@ async def _check_voyage_dependencies(embedding_settings: EmbeddingSettings) -> P
 
     Args:
         embedding_settings: EmbeddingSettings with voyage_api_key
+        _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -406,11 +428,11 @@ async def _check_voyage_dependencies(embedding_settings: EmbeddingSettings) -> P
 async def check_summary_provider_dependencies(
     provider: str,
     summary_settings: 'SummarySettings',
-    embedding_settings: EmbeddingSettings,
+    ollama_host: str = 'http://localhost:11434',
 ) -> ProviderCheckResult:
     """Check provider-specific dependencies for summary generation.
 
-    Dispatches to provider-specific check functions based on the selected provider.
+    Dispatches uniformly to the provider-specific check function.
     Each provider has different requirements:
     - ollama: Requires langchain-ollama, Ollama service, summary model available
     - openai: Requires langchain-openai, OPENAI_API_KEY
@@ -419,7 +441,7 @@ async def check_summary_provider_dependencies(
     Args:
         provider: Provider name from SUMMARY_PROVIDER setting
         summary_settings: SummarySettings instance with provider configuration
-        embedding_settings: EmbeddingSettings instance (Ollama reuses OLLAMA_HOST)
+        ollama_host: Ollama server URL (from OllamaSettings.host)
 
     Returns:
         ProviderCheckResult with available, reason, and install_instructions
@@ -438,13 +460,13 @@ async def check_summary_provider_dependencies(
         )
 
     logger.info(f'Checking {provider} summary provider dependencies...')
-    result = await check_functions[provider](summary_settings, embedding_settings)
+    result = await check_functions[provider](summary_settings, ollama_host)
     return cast(ProviderCheckResult, result)
 
 
 async def _check_ollama_summary_dependencies(
     summary_settings: 'SummarySettings',
-    embedding_settings: EmbeddingSettings,
+    ollama_host: str,
 ) -> ProviderCheckResult:
     """Check Ollama-specific dependencies for summary generation.
 
@@ -455,7 +477,7 @@ async def _check_ollama_summary_dependencies(
 
     Args:
         summary_settings: SummarySettings with model name
-        embedding_settings: EmbeddingSettings with ollama_host (shared between features)
+        ollama_host: Ollama server URL (from OllamaSettings.host)
 
     Returns:
         ProviderCheckResult
@@ -483,18 +505,18 @@ async def _check_ollama_summary_dependencies(
         import httpx
 
         async with httpx.AsyncClient() as client:
-            response = await client.get(embedding_settings.ollama_host, timeout=2.0)
+            response = await client.get(ollama_host, timeout=2.0)
             if response.status_code != 200:
                 return ProviderCheckResult(
                     available=False,
                     reason=f'Ollama service returned status {response.status_code}',
                     install_instructions='Start Ollama service: ollama serve',
                 )
-        logger.debug(f'Ollama service running at {embedding_settings.ollama_host}')
+        logger.debug(f'Ollama service running at {ollama_host}')
     except Exception as e:
         return ProviderCheckResult(
             available=False,
-            reason=f'Ollama service not accessible at {embedding_settings.ollama_host}: {e}',
+            reason=f'Ollama service not accessible at {ollama_host}: {e}',
             install_instructions='Start Ollama service: ollama serve',
         )
 
@@ -502,7 +524,7 @@ async def _check_ollama_summary_dependencies(
     try:
         import ollama
 
-        ollama_client = ollama.Client(host=embedding_settings.ollama_host, timeout=5.0)
+        ollama_client = ollama.Client(host=ollama_host, timeout=5.0)
         ollama_client.show(summary_settings.model)
         logger.debug(f'Summary model "{summary_settings.model}" available')
     except Exception as e:
@@ -518,13 +540,17 @@ async def _check_ollama_summary_dependencies(
 
 async def _check_openai_summary_dependencies(
     _summary_settings: 'SummarySettings',
-    _embedding_settings: EmbeddingSettings,
+    _ollama_host: str,
 ) -> ProviderCheckResult:
     """Check OpenAI-specific dependencies for summary generation.
 
     Checks:
     1. langchain-openai package is installed
     2. OPENAI_API_KEY is set
+
+    Args:
+        _summary_settings: SummarySettings instance (unused, accepted for uniform dispatch interface)
+        _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -562,13 +588,17 @@ async def _check_openai_summary_dependencies(
 
 async def _check_anthropic_summary_dependencies(
     _summary_settings: 'SummarySettings',
-    _embedding_settings: EmbeddingSettings,
+    _ollama_host: str,
 ) -> ProviderCheckResult:
     """Check Anthropic-specific dependencies for summary generation.
 
     Checks:
     1. langchain-anthropic package is installed
     2. ANTHROPIC_API_KEY is set
+
+    Args:
+        _summary_settings: SummarySettings instance (unused, accepted for uniform dispatch interface)
+        _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult

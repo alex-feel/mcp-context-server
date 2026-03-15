@@ -31,7 +31,7 @@ EMBEDDING_MODEL_SPECS: dict[str, EmbeddingModelSpec] = {
         max_tokens=32000,
         dimension=1024,
         truncation_behavior='configurable',
-        notes='Context controlled by OLLAMA_NUM_CTX. Truncation controlled by OLLAMA_TRUNCATE.',
+        notes='Context controlled by EMBEDDING_OLLAMA_NUM_CTX. Truncation controlled by EMBEDDING_OLLAMA_TRUNCATE.',
     ),
     'qwen3-embedding:4b': EmbeddingModelSpec(
         provider='ollama',

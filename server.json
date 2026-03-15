@@ -410,18 +410,18 @@
           "name": "OLLAMA_HOST"
         },
         {
-          "description": "Ollama truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "description": "Ollama embedding truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
-          "name": "OLLAMA_TRUNCATE"
+          "name": "EMBEDDING_OLLAMA_TRUNCATE"
         },
         {
-          "description": "Ollama context window size in tokens (default: 4096, range: 512-131072)",
+          "description": "Ollama embedding context window size in tokens (default: 4096, range: 512-2097152)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
-          "name": "OLLAMA_NUM_CTX"
+          "name": "EMBEDDING_OLLAMA_NUM_CTX"
         },
         {
           "description": "Embedding model name for semantic search",
@@ -534,6 +534,20 @@
           "format": "number",
           "isSecret": false,
           "name": "SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
+          "description": "Ollama summary context window size in tokens (default: 32768, range: 512-2097152)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_OLLAMA_NUM_CTX"
+        },
+        {
+          "description": "Ollama summary truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "SUMMARY_OLLAMA_TRUNCATE"
         },
         {
           "description": "Enable full-text search functionality",
@@ -1303,18 +1317,18 @@
           "name": "OLLAMA_HOST"
         },
         {
-          "description": "Ollama truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "description": "Ollama embedding truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
-          "name": "OLLAMA_TRUNCATE"
+          "name": "EMBEDDING_OLLAMA_TRUNCATE"
         },
         {
-          "description": "Ollama context window size in tokens (default: 4096, range: 512-131072)",
+          "description": "Ollama embedding context window size in tokens (default: 4096, range: 512-2097152)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
-          "name": "OLLAMA_NUM_CTX"
+          "name": "EMBEDDING_OLLAMA_NUM_CTX"
         },
         {
           "description": "Embedding model name for semantic search",
@@ -1427,6 +1441,20 @@
           "format": "number",
           "isSecret": false,
           "name": "SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
+          "description": "Ollama summary context window size in tokens (default: 32768, range: 512-2097152)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "SUMMARY_OLLAMA_NUM_CTX"
+        },
+        {
+          "description": "Ollama summary truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "SUMMARY_OLLAMA_TRUNCATE"
         },
         {
           "description": "Enable full-text search functionality",

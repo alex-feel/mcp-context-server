@@ -47,6 +47,10 @@ data:
   # Ollama host (shared by semantic search and summary generation)
   {{- if and .Values.ollama.enabled (or (eq .Values.search.semantic.provider "ollama") (eq .Values.search.summary.provider "ollama")) }}
   OLLAMA_HOST: "http://localhost:11434"
+  EMBEDDING_OLLAMA_TRUNCATE: {{ .Values.ollama.embeddingTruncate | quote }}
+  EMBEDDING_OLLAMA_NUM_CTX: {{ .Values.ollama.embeddingNumCtx | quote }}
+  SUMMARY_OLLAMA_TRUNCATE: {{ .Values.ollama.summaryTruncate | quote }}
+  SUMMARY_OLLAMA_NUM_CTX: {{ .Values.ollama.summaryNumCtx | quote }}
   {{- end }}
   # LangSmith tracing (optional)
   {{- if .Values.langsmith.enabled }}

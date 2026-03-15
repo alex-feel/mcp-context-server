@@ -17,7 +17,6 @@ from app.errors import ConfigurationError
 from app.errors import DependencyError
 from app.errors import classify_provider_error
 from app.migrations.dependencies import check_summary_provider_dependencies
-from app.settings import EmbeddingSettings
 from app.settings import SummarySettings
 
 
@@ -31,17 +30,6 @@ def _make_summary_settings() -> SummarySettings:
         return SummarySettings()
 
 
-def _make_embedding_settings() -> EmbeddingSettings:
-    """Create EmbeddingSettings with defaults for testing."""
-    env = {
-        'EMBEDDING_PROVIDER': 'ollama',
-        'EMBEDDING_MODEL': 'qwen3-embedding:0.6b',
-        'OLLAMA_HOST': 'http://localhost:11434',
-    }
-    with patch.dict(os.environ, env, clear=False):
-        return EmbeddingSettings()
-
-
 class TestCheckSummaryOllama:
     """Tests for Ollama summary provider dependency checks."""
 
@@ -49,7 +37,6 @@ class TestCheckSummaryOllama:
     async def test_all_available(self) -> None:
         """Test that all checks pass when Ollama is fully available."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         # Mock httpx success
         mock_response = MagicMock()
@@ -70,7 +57,7 @@ class TestCheckSummaryOllama:
             patch.dict('sys.modules', {'ollama': mock_ollama}),
         ):
             result = await check_summary_provider_dependencies(
-                'ollama', summary_settings, embedding_settings,
+                'ollama', summary_settings, 'http://localhost:11434',
             )
 
         assert result['available'] is True
@@ -80,11 +67,10 @@ class TestCheckSummaryOllama:
     async def test_package_missing(self) -> None:
         """Test failure when langchain-ollama is not installed."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         with patch('importlib.util.find_spec', return_value=None):
             result = await check_summary_provider_dependencies(
-                'ollama', summary_settings, embedding_settings,
+                'ollama', summary_settings, 'http://localhost:11434',
             )
 
         assert result['available'] is False
@@ -95,7 +81,6 @@ class TestCheckSummaryOllama:
     async def test_service_unavailable(self) -> None:
         """Test failure when Ollama service is not running."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         # Create async context manager mock that raises on get()
         mock_httpx_client = MagicMock()
@@ -109,7 +94,7 @@ class TestCheckSummaryOllama:
             patch('httpx.AsyncClient', return_value=async_cm),
         ):
             result = await check_summary_provider_dependencies(
-                'ollama', summary_settings, embedding_settings,
+                'ollama', summary_settings, 'http://localhost:11434',
             )
 
         assert result['available'] is False
@@ -120,7 +105,6 @@ class TestCheckSummaryOllama:
     async def test_model_not_found(self) -> None:
         """Test failure when summary model is not pulled."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         # Mock httpx success
         mock_response = MagicMock()
@@ -142,7 +126,7 @@ class TestCheckSummaryOllama:
             patch.dict('sys.modules', {'ollama': mock_ollama}),
         ):
             result = await check_summary_provider_dependencies(
-                'ollama', summary_settings, embedding_settings,
+                'ollama', summary_settings, 'http://localhost:11434',
             )
 
         assert result['available'] is False
@@ -157,14 +141,13 @@ class TestCheckSummaryOpenAI:
     async def test_all_available(self) -> None:
         """Test that checks pass when OpenAI deps are available."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         with (
             patch('importlib.util.find_spec', return_value=MagicMock()),
             patch.dict(os.environ, {'OPENAI_API_KEY': 'sk-test-key'}),
         ):
             result = await check_summary_provider_dependencies(
-                'openai', summary_settings, embedding_settings,
+                'openai', summary_settings,
             )
 
         assert result['available'] is True
@@ -174,7 +157,6 @@ class TestCheckSummaryOpenAI:
     async def test_api_key_missing(self) -> None:
         """Test failure when OPENAI_API_KEY is not set."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         env = {k: v for k, v in os.environ.items() if k != 'OPENAI_API_KEY'}
         with (
@@ -182,7 +164,7 @@ class TestCheckSummaryOpenAI:
             patch.dict(os.environ, env, clear=True),
         ):
             result = await check_summary_provider_dependencies(
-                'openai', summary_settings, embedding_settings,
+                'openai', summary_settings,
             )
 
         assert result['available'] is False
@@ -196,11 +178,10 @@ class TestCheckSummaryAnthropic:
     async def test_package_missing(self) -> None:
         """Test failure when langchain-anthropic is not installed."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         with patch('importlib.util.find_spec', return_value=None):
             result = await check_summary_provider_dependencies(
-                'anthropic', summary_settings, embedding_settings,
+                'anthropic', summary_settings,
             )
 
         assert result['available'] is False
@@ -211,7 +192,6 @@ class TestCheckSummaryAnthropic:
     async def test_api_key_missing(self) -> None:
         """Test failure when ANTHROPIC_API_KEY is not set."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         env = {k: v for k, v in os.environ.items() if k != 'ANTHROPIC_API_KEY'}
         with (
@@ -219,7 +199,7 @@ class TestCheckSummaryAnthropic:
             patch.dict(os.environ, env, clear=True),
         ):
             result = await check_summary_provider_dependencies(
-                'anthropic', summary_settings, embedding_settings,
+                'anthropic', summary_settings,
             )
 
         assert result['available'] is False
@@ -229,14 +209,13 @@ class TestCheckSummaryAnthropic:
     async def test_all_available(self) -> None:
         """Test that checks pass when Anthropic deps are available."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         with (
             patch('importlib.util.find_spec', return_value=MagicMock()),
             patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'sk-ant-test-key'}),
         ):
             result = await check_summary_provider_dependencies(
-                'anthropic', summary_settings, embedding_settings,
+                'anthropic', summary_settings,
             )
 
         assert result['available'] is True
@@ -250,10 +229,9 @@ class TestCheckSummaryUnknownProvider:
     async def test_unknown_provider(self) -> None:
         """Test that unknown provider name returns not available."""
         summary_settings = _make_summary_settings()
-        embedding_settings = _make_embedding_settings()
 
         result = await check_summary_provider_dependencies(
-            'nonexistent', summary_settings, embedding_settings,
+            'nonexistent', summary_settings,
         )
 
         assert result['available'] is False

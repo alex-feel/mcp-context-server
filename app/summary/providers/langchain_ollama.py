@@ -34,14 +34,18 @@ class OllamaSummaryProvider:
         OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
         SUMMARY_MODEL: Model name (default: qwen3:0.6b)
         SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
+        SUMMARY_OLLAMA_NUM_CTX: Context length in tokens (default: 32768)
+        SUMMARY_OLLAMA_TRUNCATE: Control truncation behavior (default: false = error on exceed)
     """
 
     def __init__(self) -> None:
         """Initialize provider configuration from settings."""
         settings = get_settings()
         self._model = settings.summary.model
-        self._base_url = settings.embedding.ollama_host
+        self._base_url = settings.ollama.host
         self._max_tokens = settings.summary.max_tokens
+        self._truncate = settings.summary.ollama_truncate
+        self._num_ctx = settings.summary.ollama_num_ctx
         self._prompt = resolve_summary_prompt(settings.summary)
         self._chat_model: Any = None
 
@@ -63,11 +67,17 @@ class OllamaSummaryProvider:
             base_url=self._base_url,
             temperature=0,
             num_predict=self._max_tokens,
+            num_ctx=self._num_ctx,
         )
         logger.info(
             f'Initialized Ollama summary provider: {self._model} at {self._base_url}, '
-            f'max_tokens={self._max_tokens}',
+            f'num_ctx={self._num_ctx}, max_tokens={self._max_tokens}',
         )
+        if not self._truncate:
+            logger.info(
+                'SUMMARY_OLLAMA_TRUNCATE=false. Text length validation enabled. '
+                'Texts exceeding context limit will raise error before summarization.',
+            )
 
     async def shutdown(self) -> None:
         """Cleanup resources."""
@@ -90,6 +100,10 @@ class OllamaSummaryProvider:
         """
         if self._chat_model is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        # Pre-validate text length when truncation disabled
+        if not self._truncate:
+            self._validate_text_length(text)
 
         from langchain_core.messages import HumanMessage
         from langchain_core.messages import SystemMessage
@@ -117,6 +131,59 @@ class OllamaSummaryProvider:
         return await with_summary_retry_and_timeout(
             _summarize, f'{self.provider_name}_summarize',
         )
+
+    def _validate_text_length(self, text: str) -> None:
+        """Validate text length against estimated context window.
+
+        When SUMMARY_OLLAMA_TRUNCATE=false, provides fail-fast behavior by checking
+        if text is likely to exceed the context window BEFORE calling the summary API.
+
+        Unlike embedding validation, summary validation must account for:
+        - SUMMARY_PROMPT system message token consumption
+        - SUMMARY_MAX_TOKENS output token reservation
+
+        Args:
+            text: Text to validate
+
+        Raises:
+            ValueError: If text likely exceeds context window and truncation disabled
+        """
+        from app.summary.context_limits import get_summary_model_spec
+
+        spec = get_summary_model_spec(self._model)
+        if spec:
+            max_tokens = min(spec.max_input_tokens, self._num_ctx)
+            source = f'model spec ({spec.max_input_tokens}) capped by SUMMARY_OLLAMA_NUM_CTX ({self._num_ctx})'
+        else:
+            max_tokens = self._num_ctx
+            source = f'SUMMARY_OLLAMA_NUM_CTX ({self._num_ctx})'
+
+        # Reserve tokens for output and prompt overhead
+        # SUMMARY_MAX_TOKENS is the output budget
+        # Prompt overhead estimated at ~3 chars per token (conservative for English)
+        prompt_overhead = len(self._prompt) // 3
+        available_input_tokens = max_tokens - self._max_tokens - prompt_overhead
+
+        if available_input_tokens <= 0:
+            raise ValueError(
+                f'Context window ({max_tokens} tokens from {source}) is too small '
+                f'for output budget ({self._max_tokens} tokens) + prompt overhead (~{prompt_overhead} tokens). '
+                f'Increase SUMMARY_OLLAMA_NUM_CTX or decrease SUMMARY_MAX_TOKENS.',
+            )
+
+        # Heuristic: 1 token ~ 3 characters for English
+        estimated_tokens = len(text) / 3
+
+        if estimated_tokens > available_input_tokens:
+            raise ValueError(
+                f'Text length ({len(text)} chars, ~{int(estimated_tokens)} estimated tokens) '
+                f'may exceed available input budget ({available_input_tokens} tokens from {source}, '
+                f'after reserving {self._max_tokens} output + ~{prompt_overhead} prompt tokens) '
+                f'for model {self._model}. '
+                f'Options: 1) Increase SUMMARY_OLLAMA_NUM_CTX, '
+                f'2) Set SUMMARY_OLLAMA_TRUNCATE=true to allow silent truncation, '
+                f'3) Use a larger-context model.',
+            )
 
     async def is_available(self) -> bool:
         """Check if Ollama model is available.

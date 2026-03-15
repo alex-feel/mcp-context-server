@@ -22,7 +22,7 @@ class TestOllamaEmbeddingProvider:
         """Create mock settings for Ollama provider."""
         mock = MagicMock()
         mock.embedding.model = 'test-model'
-        mock.embedding.ollama_host = 'http://localhost:11434'
+        mock.ollama.host = 'http://localhost:11434'
         mock.embedding.dim = 768
         mock.embedding.ollama_truncate = False
         mock.embedding.ollama_num_ctx = 4096
@@ -296,14 +296,14 @@ class TestOllamaEmbeddingProvider:
             call_kwargs = mock_langchain.OllamaEmbeddings.call_args[1]
             assert 'truncate' not in call_kwargs
             assert call_kwargs['model'] == mock_settings.embedding.model
-            assert call_kwargs['base_url'] == mock_settings.embedding.ollama_host
+            assert call_kwargs['base_url'] == mock_settings.ollama.host
 
     @pytest.mark.asyncio
     async def test_text_length_validation_when_truncate_disabled(
         self,
         mock_settings: MagicMock,
     ) -> None:
-        """Test that text length is validated when OLLAMA_TRUNCATE=false."""
+        """Test that text length is validated when EMBEDDING_OLLAMA_TRUNCATE=false."""
         mock_settings.embedding.ollama_truncate = False
         mock_settings.embedding.ollama_num_ctx = 1000  # Small context for testing
         mock_settings.embedding.model = 'qwen3-embedding:0.6b'
@@ -331,7 +331,7 @@ class TestOllamaEmbeddingProvider:
         self,
         mock_settings: MagicMock,
     ) -> None:
-        """Test that text length is NOT validated when OLLAMA_TRUNCATE=true."""
+        """Test that text length is NOT validated when EMBEDDING_OLLAMA_TRUNCATE=true."""
         mock_settings.embedding.ollama_truncate = True
         mock_settings.embedding.ollama_num_ctx = 1000
         mock_settings.embedding.model = 'qwen3-embedding:0.6b'
@@ -358,7 +358,7 @@ class TestOllamaEmbeddingProvider:
         self,
         mock_settings: MagicMock,
     ) -> None:
-        """Test that embed_documents validates all texts when OLLAMA_TRUNCATE=false."""
+        """Test that embed_documents validates all texts when EMBEDDING_OLLAMA_TRUNCATE=false."""
         mock_settings.embedding.ollama_truncate = False
         mock_settings.embedding.ollama_num_ctx = 1000
         mock_settings.embedding.model = 'qwen3-embedding:0.6b'

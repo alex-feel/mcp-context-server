@@ -64,7 +64,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 7. **Reranking Layer** (`app/reranking/`): `RerankingProvider` Protocol, same factory pattern. Provider: FlashRank (default, 34MB model, ONNX inference offloaded to thread pool).
 
-8. **Summary Generation Layer** (`app/summary/`): `SummaryProvider` Protocol, same factory pattern. Providers: Ollama, OpenAI, Anthropic. Retry via tenacity. Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
+8. **Summary Generation Layer** (`app/summary/`): `SummaryProvider` Protocol, same factory pattern. Providers: Ollama, OpenAI, Anthropic. Retry via tenacity. Context limits registry (`context_limits.py`). Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
 
 9. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain's `RecursiveCharacterTextSplitter`). `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
 
@@ -274,7 +274,7 @@ class AppSettings(CommonSettings):
     my_feature: MyFeatureSettings = Field(default_factory=MyFeatureSettings)
 ```
 
-Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `TransportSettings`, `AuthSettings`, `InstructionsSettings`, `StorageSettings` (extends `BaseSettings`), `EmbeddingSettings`, `SummarySettings`, `SemanticSearchSettings`, `FtsSettings`, `HybridSearchSettings`, `SearchSettings`, `ChunkingSettings`, `RerankingSettings`, `FtsPassageSettings`, `LangSmithSettings`.
+Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `TransportSettings`, `AuthSettings`, `InstructionsSettings`, `OllamaSettings`, `StorageSettings` (extends `BaseSettings`), `EmbeddingSettings`, `SummarySettings`, `SemanticSearchSettings`, `FtsSettings`, `HybridSearchSettings`, `SearchSettings`, `ChunkingSettings`, `RerankingSettings`, `FtsPassageSettings`, `LangSmithSettings`.
 
 ### FASTMCP_* Env Var Governance
 
@@ -315,6 +315,8 @@ All three layers use identical patterns:
 ### Generation-First Transactional Integrity
 
 **CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_SUMMARY_GENERATION=true` and generation fails, NO data is saved — transaction rolls back completely. Embeddings and summaries are generated OUTSIDE the transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops (context + tags + images + embeddings + summary) in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` are the single sources of truth for the timeout/semaphore pattern, used by all four tools: `store_context`, `update_context`, `store_context_batch`, and `update_context_batch`. Each `gather` result is independently inspected for exceptions — if any generation task fails, the error is raised (or collected in non-atomic batch mode) without cancelling the other task.
+
+**NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embedding generation fails, or `ENABLE_SUMMARY_GENERATION=true` and summary generation fails, the entry MUST NOT be saved. There is no "store without embeddings" or "store without summary" fallback when generation is enabled. This is non-negotiable mandatory behavior. The only way to skip generation is to explicitly disable it via `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`. Only the user can make this decision.
 
 ### Deduplication Behavior (store_context)
 
