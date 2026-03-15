@@ -64,6 +64,7 @@ from app.startup import get_embedding_provider
 from app.startup import get_reranking_provider
 from app.startup import get_summary_provider
 from app.startup import init_database
+from app.startup import prewarm_ollama_models
 from app.startup import propagate_langsmith_settings
 from app.startup import set_backend
 from app.startup import set_chunking_service
@@ -451,7 +452,10 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_summary_provider(None)
             logger.info('Summary generation disabled (ENABLE_SUMMARY_GENERATION=false)')
 
-        # 17) Register semantic search tool if enabled AND embedding provider is available
+        # 17) Pre-warm Ollama models (load into memory for instant first-request response)
+        await prewarm_ollama_models()
+
+        # 18) Register semantic search tool if enabled AND embedding provider is available
         # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
@@ -468,7 +472,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('semantic_search_context not registered (feature disabled)')
 
-        # 18) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 19) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.fts.enabled:
             # Generate backend-specific FTS description for AI agents
@@ -491,7 +495,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('fts_search_context not registered (feature disabled)')
 
-        # 19) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 20) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.hybrid_search.enabled:
             semantic_available_for_hybrid = (
                 settings.semantic_search.enabled and get_embedding_provider() is not None

@@ -177,6 +177,8 @@ ollama:
     limits:
       cpu: "2000m"
       memory: "4Gi"
+      # Uncomment to enable NVIDIA GPU acceleration (requires NVIDIA device plugin)
+      # nvidia.com/gpu: "1"
   persistence:
     enabled: true
     size: 5Gi

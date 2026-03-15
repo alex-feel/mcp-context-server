@@ -242,6 +242,8 @@ spec:
           env:
             - name: OLLAMA_HOST
               value: "0.0.0.0"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "-1"
           resources:
             {{- toYaml .Values.ollama.resources | nindent 12 }}
           {{- if .Values.ollama.persistence.enabled }}

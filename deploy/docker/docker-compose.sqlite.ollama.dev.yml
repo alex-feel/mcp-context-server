@@ -60,10 +60,19 @@ services:
     pull_policy: build
     environment:
       - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=-1
       - EMBEDDING_MODEL=qwen3-embedding:0.6b
       - SUMMARY_MODEL=qwen3:0.6b
     volumes:
       - ollama-data:/root/.ollama
+    # Uncomment to enable NVIDIA GPU acceleration (requires NVIDIA Container Toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "ollama show \"$${EMBEDDING_MODEL}\" >/dev/null 2>&1 && ollama show \"$${SUMMARY_MODEL}\" >/dev/null 2>&1 || exit 1"]
       interval: 10s
