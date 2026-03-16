@@ -609,7 +609,7 @@ All providers support these settings:
 
 | Variable                       | Default | Description                |
 |--------------------------------|---------|----------------------------|
-| `EMBEDDING_TIMEOUT_S`          | `60.0`  | API timeout in seconds     |
+| `EMBEDDING_TIMEOUT_S`          | `240.0` | API timeout in seconds     |
 | `EMBEDDING_RETRY_MAX_ATTEMPTS` | `3`     | Max retry attempts         |
 | `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0`   | Base delay between retries |
 
@@ -628,7 +628,7 @@ All providers support these settings:
         "EMBEDDING_MODEL": "text-embedding-3-small",
         "EMBEDDING_DIM": "1536",
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-        "EMBEDDING_TIMEOUT_S": "60",
+        "EMBEDDING_TIMEOUT_S": "240",
         "EMBEDDING_RETRY_MAX_ATTEMPTS": "3",
         "LANGSMITH_TRACING": "true",
         "LANGSMITH_API_KEY": "${LANGSMITH_API_KEY}"
@@ -1012,7 +1012,7 @@ VOYAGE_BATCH_SIZE=20  # Higher for throughput, lower for latency
 
 Increase timeout for slow connections:
 ```bash
-EMBEDDING_TIMEOUT_S=120
+EMBEDDING_TIMEOUT_S=300
 ```
 
 ## Additional Resources

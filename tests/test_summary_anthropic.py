@@ -30,7 +30,7 @@ def mock_anthropic_settings():
         mock.return_value.summary.model = 'claude-haiku-4-5-20251001'
         mock.return_value.summary.max_tokens = 1800
         mock.return_value.summary.prompt = None
-        mock.return_value.summary.timeout_s = 120.0
+        mock.return_value.summary.timeout_s = 240.0
         mock.return_value.summary.retry_max_attempts = 3
         mock.return_value.summary.retry_base_delay_s = 0.01
         yield mock

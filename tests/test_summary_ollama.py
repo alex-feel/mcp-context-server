@@ -27,7 +27,7 @@ def mock_summary_settings():
         mock.return_value.summary.model = 'qwen3:0.6b'
         mock.return_value.summary.max_tokens = 2000
         mock.return_value.summary.prompt = None
-        mock.return_value.summary.timeout_s = 120.0
+        mock.return_value.summary.timeout_s = 240.0
         mock.return_value.summary.retry_max_attempts = 3
         mock.return_value.summary.retry_base_delay_s = 0.01
         mock.return_value.summary.ollama_truncate = False
@@ -431,7 +431,7 @@ class TestOllamaSummaryProviderValidateTextLength:
             mock_settings.return_value.summary.model = 'qwen3:0.6b'
             mock_settings.return_value.summary.max_tokens = 2000
             mock_settings.return_value.summary.prompt = None
-            mock_settings.return_value.summary.timeout_s = 120.0
+            mock_settings.return_value.summary.timeout_s = 240.0
             mock_settings.return_value.summary.retry_max_attempts = 3
             mock_settings.return_value.summary.retry_base_delay_s = 0.01
             mock_settings.return_value.summary.ollama_truncate = True
@@ -472,7 +472,7 @@ class TestOllamaSummaryProviderSummarizeValidation:
             mock_settings.return_value.summary.model = 'qwen3:0.6b'
             mock_settings.return_value.summary.max_tokens = 2000
             mock_settings.return_value.summary.prompt = None
-            mock_settings.return_value.summary.timeout_s = 120.0
+            mock_settings.return_value.summary.timeout_s = 240.0
             mock_settings.return_value.summary.retry_max_attempts = 3
             mock_settings.return_value.summary.retry_base_delay_s = 0.01
             mock_settings.return_value.summary.ollama_truncate = True

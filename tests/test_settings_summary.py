@@ -69,10 +69,10 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.max_tokens == 5000
 
-    def test_summary_timeout_default_120(self) -> None:
-        """Verify SUMMARY_TIMEOUT_S defaults to 120.0."""
+    def test_summary_timeout_default_240(self) -> None:
+        """Verify SUMMARY_TIMEOUT_S defaults to 240.0."""
         settings = SummarySettings()
-        assert settings.timeout_s == 120.0
+        assert settings.timeout_s == 240.0
 
     def test_summary_timeout_zero_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_TIMEOUT_S rejects zero."""
@@ -344,7 +344,7 @@ class TestAppSettingsSummaryIntegration:
         assert settings.summary.provider == 'ollama'
         assert settings.summary.model == 'qwen3:0.6b'
         assert settings.summary.max_tokens == 2000
-        assert settings.summary.timeout_s == 120.0
+        assert settings.summary.timeout_s == 240.0
         assert settings.summary.retry_max_attempts == 3
         assert settings.summary.retry_base_delay_s == 1.0
         assert settings.summary.max_concurrent == 3

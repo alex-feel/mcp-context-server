@@ -94,7 +94,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 | `SUMMARY_PROVIDER`             | `ollama`     | Set to `ollama`                                                                                      |
 | `SUMMARY_MODEL`                | `qwen3:0.6b` | Ollama model name (see model table below)                                                            |
 | `SUMMARY_MAX_TOKENS`           | `2000`       | Maximum output tokens for summary generation (50-5000)                                               |
-| `SUMMARY_TIMEOUT_S`            | `120.0`      | Timeout in seconds for summary generation API calls                                                  |
+| `SUMMARY_TIMEOUT_S`            | `240.0`      | Timeout in seconds for summary generation API calls                                                  |
 | `SUMMARY_RETRY_MAX_ATTEMPTS`   | `3`          | Maximum retry attempts on transient errors                                                           |
 | `SUMMARY_RETRY_BASE_DELAY_S`   | `1.0`        | Base delay in seconds between retries (exponential backoff)                                          |
 | `SUMMARY_MAX_CONCURRENT`       | `3`          | Maximum concurrent summary generation operations (1-20)                                              |
@@ -418,7 +418,7 @@ uv sync --extra embeddings-ollama --extra summary-openai --extra reranking
 | Provider package not installed    | Run `uv sync --extra summary-ollama` or `summary-openai`  |
 | Ollama not running                | Start Ollama: `ollama serve`                              |
 | Model not pulled                  | Run `ollama pull qwen3:0.6b`                              |
-| Generation timed out              | Raise `SUMMARY_TIMEOUT_S` (default 120s) for slow models  |
+| Generation timed out              | Raise `SUMMARY_TIMEOUT_S` (default 240s) for slow models  |
 | API key missing                   | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`               |
 
 ### Server Won't Start
@@ -440,10 +440,10 @@ Or disable summary generation: `ENABLE_SUMMARY_GENERATION=false`
 
 ### Timeout Errors
 
-**Error**: `Summary generation timed out after 120s`
+**Error**: `Summary generation timed out after 240s`
 
 **Solutions:**
-- Increase `SUMMARY_TIMEOUT_S` (e.g., `180`)
+- Increase `SUMMARY_TIMEOUT_S` (e.g., `300`)
 - Use a smaller/faster model (`qwen3:0.6b`) or upgrade to `qwen3:1.7b` for better quality
 - Reduce `SUMMARY_MAX_CONCURRENT` to limit parallel generation load on the model server
 

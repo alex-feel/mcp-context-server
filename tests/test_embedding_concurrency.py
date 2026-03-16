@@ -29,8 +29,8 @@ def mock_retry_settings():
 
 
 def test_compute_timeout_default_settings(mock_retry_settings: MagicMock) -> None:
-    """Test timeout computation with default settings (60s, 3 attempts, 1.0s delay)."""
-    mock_retry_settings.return_value.embedding.timeout_s = 60.0
+    """Test timeout computation with default settings (240s, 3 attempts, 1.0s delay)."""
+    mock_retry_settings.return_value.embedding.timeout_s = 240.0
     mock_retry_settings.return_value.embedding.retry_max_attempts = 3
     mock_retry_settings.return_value.embedding.retry_base_delay_s = 1.0
 
@@ -38,9 +38,9 @@ def test_compute_timeout_default_settings(mock_retry_settings: MagicMock) -> Non
 
     result = compute_embedding_total_timeout()
 
-    # (3 * 60 + (min(1*1+1, 60) + min(1*2+1, 60))) * 1.1
-    # = (180 + (2 + 3)) * 1.1 = 185 * 1.1 = 203.5
-    assert result == pytest.approx(203.5, abs=0.1)
+    # (3 * 240 + (min(1*1+1, 60) + min(1*2+1, 60))) * 1.1
+    # = (720 + (2 + 3)) * 1.1 = 725 * 1.1 = 797.5
+    assert result == pytest.approx(797.5, abs=0.1)
 
 
 def test_compute_timeout_user_deployed_settings(mock_retry_settings: MagicMock) -> None:
@@ -59,7 +59,7 @@ def test_compute_timeout_user_deployed_settings(mock_retry_settings: MagicMock) 
 
 def test_compute_timeout_single_attempt(mock_retry_settings: MagicMock) -> None:
     """Test timeout computation with single attempt (no backoff intervals)."""
-    mock_retry_settings.return_value.embedding.timeout_s = 60.0
+    mock_retry_settings.return_value.embedding.timeout_s = 240.0
     mock_retry_settings.return_value.embedding.retry_max_attempts = 1
     mock_retry_settings.return_value.embedding.retry_base_delay_s = 1.0
 
@@ -67,8 +67,8 @@ def test_compute_timeout_single_attempt(mock_retry_settings: MagicMock) -> None:
 
     result = compute_embedding_total_timeout()
 
-    # (1 * 60 + 0) * 1.1 = 66.0 (no backoff with single attempt)
-    assert result == pytest.approx(66.0, abs=0.1)
+    # (1 * 240 + 0) * 1.1 = 264.0 (no backoff with single attempt)
+    assert result == pytest.approx(264.0, abs=0.1)
 
 
 def test_compute_timeout_high_config(mock_retry_settings: MagicMock) -> None:

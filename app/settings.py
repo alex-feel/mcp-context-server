@@ -193,7 +193,7 @@ class EmbeddingSettings(CommonSettings):
 
     # Timeout and retry settings
     timeout_s: float = Field(
-        default=60.0,
+        default=240.0,
         alias='EMBEDDING_TIMEOUT_S',
         gt=0,
         le=300,
@@ -559,7 +559,7 @@ class SummarySettings(CommonSettings):
     )
 
     timeout_s: float = Field(
-        default=120.0,
+        default=240.0,
         alias='SUMMARY_TIMEOUT_S',
         gt=0,
         le=300,

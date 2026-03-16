@@ -111,7 +111,7 @@ search:
     model: "qwen3-embedding:0.6b"
     dim: 1024
     # Timeout and retry settings
-    timeout: 60
+    timeout: 240
     retryMaxAttempts: 3
     retryBaseDelay: 1.0
     # Concurrency control
@@ -144,7 +144,7 @@ search:
     minContentLength: 500    # Min chars to trigger summary (0=always)
     prompt: ""               # Custom prompt (empty = built-in default)
     # Timeout and retry settings
-    timeout: 120.0
+    timeout: 240.0
     retryMaxAttempts: 3
     retryBaseDelay: 1.0
     # Concurrency control
