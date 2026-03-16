@@ -191,90 +191,30 @@ class TestResetConnectionRollback:
 class TestAdvisoryLockDDL:
     """Test advisory lock serialization for DDL operations.
 
-    Verifies that PostgreSQL DDL operations (schema initialization, migrations)
-    use advisory locks to prevent 'tuple concurrently updated' errors in
-    multi-pod Kubernetes deployments.
+    Verifies that PostgreSQL DDL operations (schema initialization via
+    init_database(), migrations) use advisory locks to prevent
+    'tuple concurrently updated' errors in multi-pod Kubernetes deployments.
     """
 
-    def test_initialize_schema_uses_advisory_lock(self) -> None:
-        """Verify _initialize_schema acquires and releases advisory lock.
-
-        The advisory lock should:
-        1. Be acquired before DDL statements
-        2. Be released in finally block (even on error)
-        3. Use consistent lock key: hashtext('mcp_context_schema_init')
-        """
-        # Verify a backend can be created (configuration validation)
-        backend = PostgreSQLBackend(
-            connection_string='postgresql://postgres:password@localhost:5432/test',
-        )
-        assert backend.backend_type == 'postgresql'
-
-        # Verify lock key is the expected value
-        expected_lock_key = "hashtext('mcp_context_schema_init')"
-
-        # Verify the lock is acquired and released correctly by inspecting the code
-        # The implementation uses: SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))
-        # and: SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))
-        assert expected_lock_key == "hashtext('mcp_context_schema_init')"
-
-    def test_advisory_lock_released_on_error(self) -> None:
-        """Verify advisory lock is released even if DDL fails.
-
-        The lock release must be in a finally block to ensure cleanup
-        even when schema statements raise exceptions.
-        """
-        import asyncio
-        import contextlib
-        from unittest.mock import AsyncMock
-
-        mock_conn = AsyncMock()
-
-        # Simulate DDL failure after lock acquisition
-        execute_count = 0
-
-        async def execute_side_effect(sql):
-            nonlocal execute_count
-            execute_count += 1
-            if 'pg_advisory_lock' in sql:
-                return  # Lock acquired
-            if execute_count == 2:  # First DDL statement
-                raise RuntimeError('Simulated DDL failure')
-            if 'pg_advisory_unlock' in sql:
-                return  # Lock released
-
-        mock_conn.execute = AsyncMock(side_effect=execute_side_effect)
-
-        async def simulate_with_error():
-            """Simulate _initialize_schema behavior with error."""
-            await mock_conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-            try:
-                await mock_conn.execute('CREATE TABLE test (id INT)')  # This will fail
-            finally:
-                await mock_conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
-
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_event_loop().run_until_complete(simulate_with_error())
-
-        # Verify lock was acquired and released despite error
-        calls = mock_conn.execute.call_args_list
-        assert any('pg_advisory_lock' in str(c) for c in calls), 'Lock should be acquired'
-        assert any('pg_advisory_unlock' in str(c) for c in calls), 'Lock should be released'
-
     def test_migration_uses_same_lock_key(self) -> None:
-        """Verify all migrations use the same advisory lock key.
+        """Verify all DDL operations use the same advisory lock key.
 
-        All DDL operations must use the same lock key to serialize against
-        each other in multi-pod deployments.
+        All DDL operations (schema init, migrations) must use the same lock
+        key to serialize against each other in multi-pod deployments.
         """
-        # The consistent lock key ensures all DDL operations serialize correctly
-        # Using different keys would allow concurrent DDL on different tables
-        expected_lock_sql = "SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))"
-        expected_unlock_sql = "SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))"
+        import inspect
 
-        # This test documents the requirement - actual verification happens in code review
-        assert 'mcp_context_schema_init' in expected_lock_sql
-        assert 'mcp_context_schema_init' in expected_unlock_sql
+        from app.startup import init_database
+
+        source = inspect.getsource(init_database)
+
+        # init_database() must use transaction-level advisory lock
+        assert 'pg_advisory_xact_lock' in source, (
+            'init_database() must use pg_advisory_xact_lock for multi-pod safety'
+        )
+        assert "hashtext('mcp_context_schema_init')" in source, (
+            'init_database() must use the standard lock key'
+        )
 
 
 class TestTcpKeepaliveSettings:

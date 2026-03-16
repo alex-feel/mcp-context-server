@@ -20,10 +20,11 @@ Usage:
     )
 
     # Initialize
-    set_backend(create_backend(backend_type=None, db_path=DB_PATH))
-    await _backend.initialize()
-    await init_database(backend=_backend)
-    set_repositories(RepositoryContainer(_backend))
+    backend = create_backend(backend_type=None, db_path=DB_PATH)
+    await backend.initialize()  # Connection pool + Pgpool-II detection (no schema)
+    set_backend(backend)
+    await init_database(backend=backend)  # Schema initialization (single source of truth)
+    set_repositories(RepositoryContainer(backend))
 
     # In MCP tools (app/tools/*.py):
     from app.startup import ensure_repositories, get_reranking_provider
@@ -207,6 +208,11 @@ async def init_database(backend: StorageBackend | None = None) -> None:
             else:  # postgresql
 
                 async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
+                    # Acquire transaction-level advisory lock for multi-pod safety.
+                    # Serializes DDL execution across concurrent Kubernetes pods.
+                    # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+
                     # PostgreSQL: parse and execute statements individually
                     statements: list[str] = []
                     current_stmt: list[str] = []
@@ -232,10 +238,16 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                         statements.append('\n'.join(current_stmt))
 
                     # Execute each statement
-                    for stmt in statements:
+                    for i, stmt in enumerate(statements):
                         stmt = stmt.strip()
                         if stmt and not stmt.startswith('--'):
-                            await conn.execute(stmt)
+                            try:
+                                await conn.execute(stmt)
+                                logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
+                            except Exception as e:
+                                logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
+                                logger.error('Statement: %s...', stmt[:200])
+                                raise
 
                 await backend.execute_write(cast(Any, _init_schema_postgresql))
             logger.info(f'Database schema initialized successfully ({backend.backend_type})')
@@ -253,6 +265,11 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                 else:  # postgresql
 
                     async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
+                        # Acquire transaction-level advisory lock for multi-pod safety.
+                        # Serializes DDL execution across concurrent Kubernetes pods.
+                        # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
+                        await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+
                         # PostgreSQL: parse and execute statements individually
                         statements: list[str] = []
                         current_stmt: list[str] = []
@@ -273,10 +290,16 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                         if current_stmt:
                             statements.append('\n'.join(current_stmt))
 
-                        for stmt in statements:
+                        for i, stmt in enumerate(statements):
                             stmt = stmt.strip()
                             if stmt and not stmt.startswith('--'):
-                                await conn.execute(stmt)
+                                try:
+                                    await conn.execute(stmt)
+                                    logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
+                                except Exception as e:
+                                    logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
+                                    logger.error('Statement: %s...', stmt[:200])
+                                    raise
 
                     await temp_manager.execute_write(cast(Any, _init_schema_postgresql))
                 logger.info(f'Database schema initialized successfully ({temp_manager.backend_type})')
@@ -294,8 +317,13 @@ async def ensure_backend() -> StorageBackend:
     In tests, FastMCP lifespan isn't running, so tools need a lazy
     initializer to operate directly.
 
+    Note:
+        This initializes the connection pool only (no schema).
+        For full database setup including schema, call init_database()
+        after ensure_backend().
+
     Returns:
-        Initialized `StorageBackend` singleton to use for DB ops.
+        Initialized ``StorageBackend`` singleton to use for DB ops.
     """
     global _backend
     if _backend is None:

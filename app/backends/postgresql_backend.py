@@ -26,7 +26,6 @@ import asyncpg
 
 from app.errors import ConfigurationError
 from app.errors import DependencyError
-from app.schemas import load_schema
 from app.settings import get_settings
 
 # Get settings (used for connection configuration)
@@ -339,7 +338,7 @@ class PostgreSQLBackend:
             raise DependencyError(f'pgvector extension is required but could not be created: {e}') from e
 
     async def initialize(self) -> None:
-        """Initialize the PostgreSQL backend with connection pool and schema."""
+        """Initialize the PostgreSQL backend with connection pool."""
         logger.info(f'Initializing PostgreSQL backend: {self.backend_type}')
 
         try:
@@ -529,9 +528,6 @@ class PostgreSQLBackend:
                 **pool_kwargs,
             )
 
-            # Verify connection and apply schema
-            await self._initialize_schema()
-
             # Detect Pgpool-II and log result
             await self._detect_pgpool_ii()
 
@@ -541,69 +537,6 @@ class PostgreSQLBackend:
             logger.error(f'Failed to initialize PostgreSQL backend: {e}')
             await self.circuit_breaker.record_failure()
             raise
-
-    async def _initialize_schema(self) -> None:
-        """Initialize database schema if tables don't exist.
-
-        Uses advisory lock to serialize DDL execution across multiple pods
-        in Kubernetes deployments, preventing 'tuple concurrently updated' errors
-        when concurrent instances attempt schema initialization simultaneously.
-        """
-        schema_sql_template = load_schema(self.backend_type)
-
-        # Template the schema SQL with configured schema name
-        # This replaces {SCHEMA} placeholders with the actual schema (default: 'public')
-        schema_sql = schema_sql_template.replace('{SCHEMA}', settings.storage.postgresql_schema)
-
-        # Split schema into individual statements
-        statements: list[str] = []
-        current_statement: list[str] = []
-        in_function = False
-
-        for line in schema_sql.split('\n'):
-            stripped = line.strip()
-
-            # Skip comment-only lines
-            if stripped.startswith('--'):
-                continue
-
-            # Track dollar-quoted strings (function bodies use $$)
-            if '$$' in stripped:
-                in_function = not in_function
-
-            if stripped:
-                current_statement.append(line)
-
-            # End of statement: semicolon when not in dollar quotes
-            if stripped.endswith(';') and not in_function:
-                statements.append('\n'.join(current_statement))
-                current_statement = []
-
-        # Add any remaining statement
-        if current_statement:
-            statements.append('\n'.join(current_statement))
-
-        # Execute each statement with advisory lock for multi-pod safety
-        assert self._pool is not None, 'Pool not initialized'
-        async with self._pool.acquire() as conn:
-            # Acquire advisory lock to serialize DDL across pods
-            await conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-            try:
-                for i, stmt in enumerate(statements):
-                    stmt = stmt.strip()
-                    if stmt and not stmt.startswith('--'):
-                        try:
-                            await conn.execute(stmt)
-                            logger.debug(f'Schema statement {i + 1}/{len(statements)}: SUCCESS')
-                        except Exception as e:
-                            logger.error(f'Schema statement {i + 1} FAILED: {e}')
-                            logger.error(f'Statement: {stmt[:200]}...')
-                            raise
-            finally:
-                # Always release lock, even on error
-                await conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
-
-        logger.info('Database schema initialized')
 
     async def _detect_pgpool_ii(self) -> None:
         """Detect if connected through Pgpool-II and log result.

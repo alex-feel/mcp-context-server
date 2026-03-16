@@ -385,3 +385,19 @@ class TestDatabasePerformance:
         # Convert Row objects to strings for checking
         plan_str = ''.join(str(dict(row)) for row in plan)
         assert 'idx_thread_source' in plan_str or 'USING INDEX' in plan_str
+
+
+class TestInitDatabaseAdvisoryLock:
+    """Verify init_database() uses advisory lock for PostgreSQL multi-pod safety."""
+
+    def test_postgresql_path_uses_advisory_xact_lock(self) -> None:
+        """Verify advisory lock is acquired before DDL execution in PostgreSQL path."""
+        import inspect
+
+        source = inspect.getsource(init_database)
+        assert 'pg_advisory_xact_lock' in source, (
+            'init_database() must use pg_advisory_xact_lock for multi-pod safety'
+        )
+        assert "hashtext('mcp_context_schema_init')" in source, (
+            'init_database() must use the same lock key for DDL serialization'
+        )
