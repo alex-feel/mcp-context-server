@@ -7,6 +7,7 @@ including CRUD operations and deduplication logic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -31,6 +32,22 @@ logger = logging.getLogger(__name__)
 # only the expected columns are returned, preventing internal PostgreSQL columns from
 # leaking into API responses.
 CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at'
+
+
+def compute_content_hash(text: str) -> str:
+    """Compute SHA-256 hash of text content for deduplication.
+
+    Used to avoid transferring full text_content over the network when
+    checking for duplicates. The hash is stored alongside text_content
+    and compared instead of the full text.
+
+    Args:
+        text: The text content to hash.
+
+    Returns:
+        SHA-256 hex digest string (64 characters).
+    """
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 class ContextRepository(BaseRepository):
@@ -86,15 +103,21 @@ class ContextRepository(BaseRepository):
         if summary is not None and not summary.strip():
             summary = None
 
+        # Compute content hash for deduplication optimization.
+        # Avoids transferring full text_content over the network for duplicate checks.
+        content_hash = compute_content_hash(text_content)
+
         if backend_type == 'sqlite':
 
             def _store_sqlite(conn: sqlite3.Connection) -> tuple[int, bool]:
                 cursor = conn.cursor()
 
-                # Check if the LATEST entry (by id) for this thread_id and source has the same text_content
+                # Check if the LATEST entry (by id) for this thread_id and source is a duplicate.
+                # Fetches content_hash instead of full text_content to reduce data transfer.
+                # Falls back to text comparison when content_hash is NULL (pre-migration rows).
                 cursor.execute(
                     f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -104,7 +127,17 @@ class ContextRepository(BaseRepository):
 
                 latest_row = cursor.fetchone()
 
-                if latest_row and latest_row['text_content'] == text_content:
+                is_duplicate = False
+                if latest_row:
+                    existing_hash = latest_row['content_hash']
+                    if existing_hash is not None:
+                        # Hash-based comparison (fast path)
+                        is_duplicate = existing_hash == content_hash
+                    else:
+                        # Fallback for pre-migration rows without content_hash
+                        is_duplicate = latest_row['text_content'] == text_content
+
+                if is_duplicate and latest_row:
                     # The latest entry has identical text - update metadata, content_type, and timestamp
                     existing_id = latest_row['id']
                     cursor.execute(
@@ -113,10 +146,11 @@ class ContextRepository(BaseRepository):
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
                             content_type = {self._placeholder(2)},
                             summary = COALESCE({self._placeholder(3)}, summary),
+                            content_hash = {self._placeholder(4)},
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(4)}
+                        WHERE id = {self._placeholder(5)}
                         ''',
-                        (metadata, content_type, summary, existing_id),
+                        (metadata, content_type, summary, content_hash, existing_id),
                     )
                     rows_affected = cursor.rowcount
                     if rows_affected == 0:
@@ -131,10 +165,10 @@ class ContextRepository(BaseRepository):
                 cursor.execute(
                     f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary)
-                    VALUES ({self._placeholders(6)})
+                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(7)})
                     ''',
-                    (thread_id, source, content_type, text_content, metadata, summary),
+                    (thread_id, source, content_type, text_content, metadata, summary, content_hash),
                 )
                 new_id: int = cursor.lastrowid if cursor.lastrowid is not None else 0
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
@@ -147,10 +181,11 @@ class ContextRepository(BaseRepository):
         # PostgreSQL
         # Note: TYPE_CHECKING ensures asyncpg.Connection type is only used during type checking
         async def _store_postgresql(conn: asyncpg.Connection) -> tuple[int, bool]:
-            # Check latest entry
+            # Check latest entry - fetches content_hash instead of full text_content.
+            # Falls back to text comparison when content_hash is NULL (pre-migration rows).
             latest_row = await conn.fetchrow(
                 f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -159,7 +194,15 @@ class ContextRepository(BaseRepository):
                 source,
             )
 
-            if latest_row and latest_row['text_content'] == text_content:
+            is_duplicate = False
+            if latest_row:
+                existing_hash = latest_row['content_hash']
+                if existing_hash is not None:
+                    is_duplicate = existing_hash == content_hash
+                else:
+                    is_duplicate = latest_row['text_content'] == text_content
+
+            if is_duplicate and latest_row:
                 # Update metadata, content_type, and timestamp
                 existing_id = latest_row['id']
                 result = await conn.execute(
@@ -168,12 +211,14 @@ class ContextRepository(BaseRepository):
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
                             content_type = {self._placeholder(2)},
                             summary = COALESCE({self._placeholder(3)}, summary),
+                            content_hash = {self._placeholder(4)},
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(4)}
+                        WHERE id = {self._placeholder(5)}
                         ''',
                     metadata,
                     content_type,
                     summary,
+                    content_hash,
                     existing_id,
                 )
                 rows_affected = int(result.split()[-1]) if result else 0
@@ -189,8 +234,8 @@ class ContextRepository(BaseRepository):
             new_id_result = await conn.fetchval(
                 f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary)
-                    VALUES ({self._placeholders(6)})
+                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(7)})
                     RETURNING id
                     ''',
                 thread_id,
@@ -199,6 +244,7 @@ class ContextRepository(BaseRepository):
                 text_content,
                 metadata,
                 summary,
+                content_hash,
             )
             new_id = cast(int, new_id_result)
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
@@ -229,13 +275,15 @@ class ContextRepository(BaseRepository):
         Returns:
             The context_id of the matching entry if duplicate found, None otherwise.
         """
+        content_hash = compute_content_hash(text_content)
+
         if self.backend.backend_type == 'sqlite':
 
             def _check_sqlite(conn: sqlite3.Connection) -> int | None:
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -243,7 +291,14 @@ class ContextRepository(BaseRepository):
                     (thread_id, source),
                 )
                 row = cursor.fetchone()
-                if row and row['text_content'] == text_content:
+                if not row:
+                    return None
+                # Hash-based comparison; fall back to text for pre-migration rows (NULL hash)
+                existing_hash = row['content_hash']
+                if existing_hash is not None:
+                    if existing_hash == content_hash:
+                        return cast(int, row['id'])
+                elif row['text_content'] == text_content:
                     return cast(int, row['id'])
                 return None
 
@@ -253,7 +308,7 @@ class ContextRepository(BaseRepository):
         async def _check_postgresql(conn: asyncpg.Connection) -> int | None:
             row = await conn.fetchrow(
                 f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -261,7 +316,14 @@ class ContextRepository(BaseRepository):
                 thread_id,
                 source,
             )
-            if row and row['text_content'] == text_content:
+            if not row:
+                return None
+            # Hash-based comparison; fall back to text for pre-migration rows (NULL hash)
+            existing_hash = row['content_hash']
+            if existing_hash is not None:
+                if existing_hash == content_hash:
+                    return cast(int, row['id'])
+            elif row['text_content'] == text_content:
                 return cast(int, row['id'])
             return None
 
@@ -796,8 +858,11 @@ class ContextRepository(BaseRepository):
                 params: list[Any] = []
 
                 if text_content is not None:
-                    update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
-                    params.append(text_content)
+                    update_parts.extend([
+                        f'text_content = {self._placeholder(len(params) + 1)}',
+                        f'content_hash = {self._placeholder(len(params) + 2)}',
+                    ])
+                    params.extend([text_content, compute_content_hash(text_content)])
                     updated_fields.append('text_content')
 
                 if metadata is not None:
@@ -853,8 +918,11 @@ class ContextRepository(BaseRepository):
             params: list[Any] = []
 
             if text_content is not None:
-                update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
-                params.append(text_content)
+                update_parts.extend([
+                    f'text_content = {self._placeholder(len(params) + 1)}',
+                    f'content_hash = {self._placeholder(len(params) + 2)}',
+                ])
+                params.extend([text_content, compute_content_hash(text_content)])
                 updated_fields.append('text_content')
 
             if metadata is not None:
@@ -1207,33 +1275,45 @@ class ContextRepository(BaseRepository):
                         text_content = entry['text_content']
                         metadata = entry.get('metadata')
                         content_type = entry.get('content_type', 'text')
+                        content_hash = compute_content_hash(text_content)
 
-                        # Check for deduplication - find latest entry with same thread_id, source, text_content
+                        # Check for deduplication using hash-based comparison
                         cursor.execute(
                             f'''
-                            SELECT id FROM context_entries
+                            SELECT id, content_hash, text_content FROM context_entries
                             WHERE thread_id = {self._placeholder(1)}
                             AND source = {self._placeholder(2)}
-                            AND text_content = {self._placeholder(3)}
                             ORDER BY id DESC
                             LIMIT 1
                             ''',
-                            (thread_id, source, text_content),
+                            (thread_id, source),
                         )
                         existing = cursor.fetchone()
 
+                        # Determine if duplicate: hash comparison with NULL fallback
+                        is_duplicate = False
+                        existing_id = None
                         if existing:
+                            existing_hash = existing['content_hash']
+                            if existing_hash is not None:
+                                is_duplicate = existing_hash == content_hash
+                            else:
+                                is_duplicate = existing['text_content'] == text_content
+                            if is_duplicate:
+                                existing_id = existing['id']
+
+                        if is_duplicate and existing_id is not None:
                             # Update existing entry
-                            existing_id = existing['id']
                             cursor.execute(
                                 f'''
                                 UPDATE context_entries
                                 SET metadata = {self._placeholder(1)},
                                     content_type = {self._placeholder(2)},
+                                    content_hash = {self._placeholder(3)},
                                     updated_at = CURRENT_TIMESTAMP
-                                WHERE id = {self._placeholder(3)}
+                                WHERE id = {self._placeholder(4)}
                                 ''',
-                                (metadata, content_type, existing_id),
+                                (metadata, content_type, content_hash, existing_id),
                             )
                             results.append((idx, existing_id, None))
                             logger.debug(f'Batch: updated existing context entry {existing_id}')
@@ -1242,10 +1322,10 @@ class ContextRepository(BaseRepository):
                             cursor.execute(
                                 f'''
                                 INSERT INTO context_entries
-                                (thread_id, source, content_type, text_content, metadata)
-                                VALUES ({self._placeholders(5)})
+                                (thread_id, source, content_type, text_content, metadata, content_hash)
+                                VALUES ({self._placeholders(6)})
                                 ''',
-                                (thread_id, source, content_type, text_content, metadata),
+                                (thread_id, source, content_type, text_content, metadata, content_hash),
                             )
                             new_id = cursor.lastrowid or 0
                             results.append((idx, new_id, None))
@@ -1270,35 +1350,47 @@ class ContextRepository(BaseRepository):
                     text_content = entry['text_content']
                     metadata = entry.get('metadata')
                     content_type = entry.get('content_type', 'text')
+                    content_hash = compute_content_hash(text_content)
 
-                    # Check for deduplication
+                    # Check for deduplication using hash-based comparison
                     existing = await conn.fetchrow(
                         f'''
-                        SELECT id FROM context_entries
+                        SELECT id, content_hash, text_content FROM context_entries
                         WHERE thread_id = {self._placeholder(1)}
                         AND source = {self._placeholder(2)}
-                        AND text_content = {self._placeholder(3)}
                         ORDER BY id DESC
                         LIMIT 1
                         ''',
                         thread_id,
                         source,
-                        text_content,
                     )
 
+                    # Determine if duplicate: hash comparison with NULL fallback
+                    is_duplicate = False
+                    existing_id = None
                     if existing:
+                        existing_hash = existing['content_hash']
+                        if existing_hash is not None:
+                            is_duplicate = existing_hash == content_hash
+                        else:
+                            is_duplicate = existing['text_content'] == text_content
+                        if is_duplicate:
+                            existing_id = existing['id']
+
+                    if is_duplicate and existing_id is not None:
                         # Update existing entry
-                        existing_id = existing['id']
                         await conn.execute(
                             f'''
                             UPDATE context_entries
                             SET metadata = {self._placeholder(1)},
                                 content_type = {self._placeholder(2)},
+                                content_hash = {self._placeholder(3)},
                                 updated_at = CURRENT_TIMESTAMP
-                            WHERE id = {self._placeholder(3)}
+                            WHERE id = {self._placeholder(4)}
                             ''',
                             metadata,
                             content_type,
+                            content_hash,
                             existing_id,
                         )
                         results.append((idx, existing_id, None))
@@ -1308,8 +1400,8 @@ class ContextRepository(BaseRepository):
                         new_id_result = await conn.fetchval(
                             f'''
                             INSERT INTO context_entries
-                            (thread_id, source, content_type, text_content, metadata)
-                            VALUES ({self._placeholders(5)})
+                            (thread_id, source, content_type, text_content, metadata, content_hash)
+                            VALUES ({self._placeholders(6)})
                             RETURNING id
                             ''',
                             thread_id,
@@ -1317,6 +1409,7 @@ class ContextRepository(BaseRepository):
                             content_type,
                             text_content,
                             metadata,
+                            content_hash,
                         )
                         new_id = cast(int, new_id_result)
                         results.append((idx, new_id, None))

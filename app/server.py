@@ -45,6 +45,7 @@ from app.migrations import ProviderCheckResult
 
 # Import migration functions from the migrations package
 from app.migrations import apply_chunking_migration
+from app.migrations import apply_content_hash_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
 from app.migrations import apply_jsonb_merge_patch_migration
@@ -218,14 +219,16 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_chunking_migration(backend=backend)
         # 8) Apply summary column migration (always runs, column required for search display)
         await apply_summary_migration(backend=backend)
-        # 9) Validate pool timeout for embedding operations (PostgreSQL only)
+        # 9) Apply content_hash column migration (deduplication optimization)
+        await apply_content_hash_migration(backend=backend)
+        # 10) Validate pool timeout for embedding operations (PostgreSQL only)
         if backend.backend_type == 'postgresql':
             validate_pool_timeout_for_embedding()
-        # 10) Initialize repositories with the backend
+        # 11) Initialize repositories with the backend
         repos = RepositoryContainer(backend)
         set_repositories(repos)
 
-        # 11) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
+        # 12) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
         # Additive tools (create new entries)
         register_tool(mcp, store_context)
         register_tool(mcp, store_context_batch)
@@ -244,11 +247,11 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, delete_context)
         register_tool(mcp, delete_context_batch)
 
-        # 12) Propagate LangSmith settings to os.environ BEFORE embedding provider init
+        # 13) Propagate LangSmith settings to os.environ BEFORE embedding provider init
         # This enables LangSmith SDK auto-detection when users configure via .env file
         propagate_langsmith_settings()
 
-        # 13) Initialize embedding generation if enabled (BEFORE semantic search)
+        # 14) Initialize embedding generation if enabled (BEFORE semantic search)
         # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
         # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
         if settings.embedding.generation_enabled:
@@ -318,7 +321,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_embedding_provider(None)
             logger.info('Embedding generation disabled (ENABLE_EMBEDDING_GENERATION=false)')
 
-        # 14) Initialize reranking provider if enabled
+        # 15) Initialize reranking provider if enabled
         # Reranking improves search precision by re-scoring results with a cross-encoder
         if settings.reranking.enabled:
             try:
@@ -358,7 +361,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_reranking_provider(None)
             logger.info('Reranking disabled (ENABLE_RERANKING=false)')
 
-        # 15) Initialize chunking service if enabled
+        # 16) Initialize chunking service if enabled
         # Chunking splits long documents into smaller pieces for better semantic search quality
         if settings.chunking.enabled:
             try:
@@ -391,7 +394,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_chunking_service(None)
             logger.info('Chunking disabled (ENABLE_CHUNKING=false)')
 
-        # 16) Initialize summary provider if enabled
+        # 17) Initialize summary provider if enabled
         if settings.summary.generation_enabled:
             # Step 1: Check provider-specific dependencies based on SUMMARY_PROVIDER
             from app.migrations import check_summary_provider_dependencies
@@ -452,10 +455,10 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_summary_provider(None)
             logger.info('Summary generation disabled (ENABLE_SUMMARY_GENERATION=false)')
 
-        # 17) Pre-warm Ollama models (load into memory for instant first-request response)
+        # 18) Pre-warm Ollama models (load into memory for instant first-request response)
         await prewarm_ollama_models()
 
-        # 18) Register semantic search tool if enabled AND embedding provider is available
+        # 19) Register semantic search tool if enabled AND embedding provider is available
         # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
@@ -472,7 +475,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('semantic_search_context not registered (feature disabled)')
 
-        # 19) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 20) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.fts.enabled:
             # Generate backend-specific FTS description for AI agents
@@ -495,7 +498,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('fts_search_context not registered (feature disabled)')
 
-        # 20) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 21) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.hybrid_search.enabled:
             semantic_available_for_hybrid = (
                 settings.semantic_search.enabled and get_embedding_provider() is not None

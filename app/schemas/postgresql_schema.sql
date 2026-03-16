@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS context_entries (
     text_content TEXT,
     metadata JSONB,
     summary TEXT,
+    content_hash TEXT,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );

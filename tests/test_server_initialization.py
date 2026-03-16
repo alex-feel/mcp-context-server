@@ -372,6 +372,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
@@ -441,6 +442,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
@@ -503,6 +505,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
@@ -571,6 +574,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),

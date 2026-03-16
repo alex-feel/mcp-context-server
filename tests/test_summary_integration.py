@@ -619,6 +619,7 @@ class TestSummaryLifespan:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch(
@@ -684,6 +685,7 @@ class TestSummaryLifespan:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
