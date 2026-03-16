@@ -32,7 +32,7 @@ Note: Integration tests use SQLite-only temporary databases. PostgreSQL is produ
 
 ### MCP Server Architecture
 
-FastMCP 2.0-based server providing persistent context storage for LLM agents:
+FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
    - Entry point with FastMCP instance, lifespan management, and main() function (~680 lines)
@@ -42,6 +42,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
    - Global state and initialization in `app/startup/` package: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`
    - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup. See "Known Upstream Bugs" section.
+   - **Middleware** (`app/middleware/`): Schema-aware `JsonStringDeserializerMiddleware` for MCP client compatibility. Uses FastMCP 3.1.x Middleware API. Registered via `mcp.add_middleware()` in lifespan() after all tool registrations. See "Known Upstream Bugs" section.
 
 2. **Authentication Layer** (`app/auth/simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison. Configured via `MCP_AUTH_PROVIDER` and `MCP_AUTH_TOKEN`.
 
@@ -118,6 +119,7 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
    - **Protocol** (`@runtime_checkable`): `StorageBackend`, `TransactionContext`, `EmbeddingProvider`, `SummaryProvider`, `RerankingProvider`
    - **Repository**: All SQL in `app/repositories/`, never in server.py or tools
    - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_summary_provider()`, `create_reranking_provider()` — dynamic imports via `PROVIDER_MODULES` dicts
+   - **Middleware**: `JsonStringDeserializerMiddleware` extends FastMCP `Middleware` base class, registered via `mcp.add_middleware()`
    - **DI**: `RepositoryContainer` injects all repositories
 
 5. **Error Classification** (`app/errors.py`): `ConfigurationError` (exit 78, supervisor never retries), `DependencyError` (exit 69, may retry with backoff). `classify_provider_error()` classifies embedding/summary provider failures. BSD sysexits.h exit codes for Docker/Kubernetes restart policies.
@@ -345,3 +347,10 @@ Temporary monkey-patch for MCP Python SDK where `BaseSession._send_response()` a
 
 - **Upstream tracking**: [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), PRs [#2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [#2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
 - **Removal**: When upstream MCP SDK fixes this, update `mcp` dependency, delete `app/patches/`, remove patch import/call from `app/server.py`, delete `tests/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/test_real_server.py`, remove this section.
+
+**Client JSON String Serialization** (`app/middleware/json_string_deserializer.py`):
+
+Schema-aware FastMCP middleware that fixes MCP clients (including Claude Code) intermittently serializing list/dict parameters as JSON strings instead of native types. Uses the FastMCP 3.1.x Middleware API (`Middleware` base class, `on_call_tool` override). The `build_schema_map()` helper inspects each tool's JSON Schema at startup to identify parameters with type `array` or `object` (including `Optional` variants via `anyOf` and `$ref` definitions). At runtime, only those parameters are candidates for deserialization — string parameters are never touched. Handles double-encoding. Registered in `app/server.py` lifespan (step 22) via `mcp.add_middleware()`, after all `register_tool()` calls.
+
+- **Upstream tracking**: [Claude Code #22394](https://github.com/anthropics/claude-code/issues/22394) (closed NOT_PLANNED), [Claude Code #26094](https://github.com/anthropics/claude-code/issues/26094), [FastMCP #932](https://github.com/jlowin/fastmcp/issues/932), Claude Code #5504, #4192, #3084
+- **Removal**: When upstream clients fix their serialization, delete `app/middleware/`, remove middleware import and registration block (step 22) from `app/server.py` lifespan(), delete `tests/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/test_real_server.py`, remove this section.

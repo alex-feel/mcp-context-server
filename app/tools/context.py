@@ -42,10 +42,8 @@ from app.startup import ensure_repositories
 from app.startup import get_chunking_service
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
-from app.startup.validation import deserialize_json_param
 from app.summary.retry import compute_summary_total_timeout
 from app.types import ContextEntryDict
-from app.types import JsonValue
 from app.types import MetadataDict
 from app.types import StoreContextSuccessDict
 from app.types import UpdateContextSuccessDict
@@ -335,14 +333,6 @@ async def store_context(
         # Log info if context is available
         if ctx:
             await ctx.info(f'Storing context for thread: {thread_id}')
-
-        # Deserialize JSON parameters if needed
-        images_raw = deserialize_json_param(cast(JsonValue | None, images))
-        images = cast(list[dict[str, str]] | None, images_raw)
-        tags_raw = deserialize_json_param(cast(JsonValue | None, tags))
-        tags = cast(list[str] | None, tags_raw)
-        metadata_raw = deserialize_json_param(cast(JsonValue | None, metadata))
-        metadata = cast(MetadataDict | None, metadata_raw)
 
         # Determine content type and validate images
         content_type: Literal['text', 'multimodal'] = 'text'

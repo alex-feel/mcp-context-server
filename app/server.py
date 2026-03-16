@@ -40,6 +40,10 @@ from app.embeddings import create_embedding_provider
 from app.errors import ConfigurationError
 from app.errors import DependencyError
 from app.errors import classify_provider_error
+
+# Import middleware for client serialization compatibility
+from app.middleware import JsonStringDeserializerMiddleware
+from app.middleware import build_schema_map
 from app.migrations import FtsMigrationStatus
 from app.migrations import ProviderCheckResult
 
@@ -76,7 +80,6 @@ from app.startup import set_summary_provider
 
 # Backward compatibility re-exports for validation utilities
 # Tests and external code may import these from app.server
-from app.startup.validation import deserialize_json_param
 from app.startup.validation import truncate_text
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
@@ -106,7 +109,6 @@ __all__ = [
     'TOOL_ANNOTATIONS',
     'is_tool_disabled',
     # From app.startup.validation (for tests)
-    'deserialize_json_param',
     'truncate_text',
     'validate_date_param',
     'validate_date_range',
@@ -523,6 +525,25 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         else:
             logger.info('Hybrid search disabled (ENABLE_HYBRID_SEARCH=false)')
             logger.info('hybrid_search_context not registered (feature disabled)')
+
+        # 22) Register schema-aware JSON string deserializer middleware
+        # Handles client serialization issues where list/dict params arrive as JSON strings
+        # Must run AFTER all tool registrations so schema map includes all tools
+        all_tools = await mcp.list_tools(run_middleware=False)
+        schema_map = build_schema_map(all_tools)
+        if schema_map:
+            mcp.add_middleware(JsonStringDeserializerMiddleware(schema_map))
+            logger.info(
+                'JSON string deserializer middleware registered '
+                '(protecting %d tools, %d parameters)',
+                len(schema_map),
+                sum(len(params) for params in schema_map.values()),
+            )
+        else:
+            logger.info(
+                'JSON string deserializer middleware not needed '
+                '(no complex params found)',
+            )
 
         logger.info(f'MCP Context Server initialized (backend: {backend.backend_type})')
     except Exception as e:

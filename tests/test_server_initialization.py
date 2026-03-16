@@ -447,6 +447,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
                 mock_mcp = MagicMock()
+                mock_mcp.list_tools = AsyncMock(return_value=[])
 
                 # Server should start successfully when ENABLE_EMBEDDING_GENERATION=false
                 async with lifespan(mock_mcp):
@@ -510,6 +511,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
                 mock_mcp = MagicMock()
+                mock_mcp.list_tools = AsyncMock(return_value=[])
 
                 # Should NOT raise despite shutdown error
                 async with lifespan(mock_mcp):
@@ -585,6 +587,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.create_embedding_provider', return_value=mock_embedding_provider),
             ):
                 mock_mcp = MagicMock()
+                mock_mcp.list_tools = AsyncMock(return_value=[])
 
                 async with lifespan(mock_mcp):
                     # Verify embedding provider was set

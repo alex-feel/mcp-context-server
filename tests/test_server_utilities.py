@@ -1,21 +1,17 @@
 """Tests for server utility functions.
 
 This module tests utility functions in app/server.py including
-text truncation, JSON deserialization, and helper functions.
+text truncation and helper functions.
 """
 
 from __future__ import annotations
 
-import json
-import math
-from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 
-from app.server import deserialize_json_param
 from app.server import truncate_text
 
 
@@ -95,119 +91,6 @@ class TestTruncateText:
         # Should truncate at position 110 (the space above threshold)
         assert result is not None
         assert result.endswith('...')
-
-
-class TestDeserializeJsonParam:
-    """Test the deserialize_json_param utility function."""
-
-    def test_deserialize_none(self) -> None:
-        """Test that None returns None."""
-        result = deserialize_json_param(None)
-        assert result is None
-
-    def test_deserialize_non_string_passthrough(self) -> None:
-        """Test that non-string values pass through unchanged."""
-        # Integer - primitive JsonValue type
-        int_val: int = 42
-        result = deserialize_json_param(int_val)
-        assert result == int_val
-
-        # Boolean - primitive JsonValue type
-        bool_val: bool = True
-        result = deserialize_json_param(bool_val)
-        assert result is True
-
-        # Float - primitive JsonValue type
-        float_val: float = math.pi
-        result = deserialize_json_param(float_val)
-        assert result == float_val
-
-    def test_deserialize_list_passthrough(self) -> None:
-        """Test that list values pass through unchanged."""
-        # Test with JSON string that deserializes to list
-        json_list = '["a", "b", "c"]'
-        result = deserialize_json_param(json_list)
-        assert result == ['a', 'b', 'c']
-
-    def test_deserialize_dict_passthrough(self) -> None:
-        """Test that dict values pass through unchanged."""
-        # Test with JSON string that deserializes to dict
-        json_dict = '{"key": 1}'
-        result = deserialize_json_param(json_dict)
-        assert result == {'key': 1}
-
-    def test_deserialize_json_string_to_list(self) -> None:
-        """Test deserializing JSON string to list."""
-        json_str = '["tag1", "tag2", "tag3"]'
-        result = deserialize_json_param(json_str)
-        assert result == ['tag1', 'tag2', 'tag3']
-
-    def test_deserialize_json_string_to_dict(self) -> None:
-        """Test deserializing JSON string to dict."""
-        json_str = '{"key": "value", "number": 42}'
-        result = deserialize_json_param(json_str)
-        assert result == {'key': 'value', 'number': 42}
-
-    def test_deserialize_invalid_json_string(self) -> None:
-        """Test that invalid JSON strings return as-is."""
-        invalid_json = 'not valid json {'
-        result = deserialize_json_param(invalid_json)
-        assert result == invalid_json
-
-    def test_deserialize_plain_string(self) -> None:
-        """Test that plain strings return as-is."""
-        plain_str = 'just a plain string'
-        result = deserialize_json_param(plain_str)
-        assert result == plain_str
-
-    def test_deserialize_double_encoded_json(self) -> None:
-        """Test handling of double-encoded JSON strings."""
-        # This simulates: json.dumps(json.dumps(['a', 'b']))
-        inner = json.dumps(['a', 'b'])
-        double_encoded = json.dumps(inner)
-        result = deserialize_json_param(double_encoded)
-        assert result == ['a', 'b']
-
-    def test_deserialize_json_number_string(self) -> None:
-        """Test deserializing JSON number string."""
-        json_str = '42'
-        result = deserialize_json_param(json_str)
-        assert result == 42
-
-    def test_deserialize_json_boolean_string(self) -> None:
-        """Test deserializing JSON boolean string."""
-        result_true = deserialize_json_param('true')
-        assert result_true is True
-
-        result_false = deserialize_json_param('false')
-        assert result_false is False
-
-    def test_deserialize_json_null_string(self) -> None:
-        """Test deserializing JSON null string."""
-        result = deserialize_json_param('null')
-        assert result is None
-
-    def test_deserialize_whitespace_string(self) -> None:
-        """Test that whitespace-only strings return as-is."""
-        result = deserialize_json_param('   ')
-        assert result == '   '
-
-    def test_deserialize_string_with_special_chars(self) -> None:
-        """Test strings with special characters that aren't valid JSON."""
-        special = 'path/to/file.txt'
-        result = deserialize_json_param(special)
-        assert result == special
-
-    def test_deserialize_complex_nested_json(self) -> None:
-        """Test deserializing complex nested JSON."""
-        complex_obj: dict[str, Any] = {
-            'nested': {'level': {'deep': [1, 2, 3]}},
-            'array': ['a', 'b'],
-            'number': 42.5,
-        }
-        json_str = json.dumps(complex_obj)
-        result = deserialize_json_param(json_str)
-        assert result == complex_obj
 
 
 class TestServerEnsureFunctions:
