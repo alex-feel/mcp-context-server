@@ -121,8 +121,13 @@ class TestBatchStoreMessageFormat:
         parts: list[str] = []
         succeeded = 5
         total = 5
+        embeddings_generated_count = 5
+        summaries_generated_count = 5
 
-        parts.extend(['embeddings generated', 'summaries generated'])
+        if embeddings_generated_count > 0:
+            parts.append('embeddings generated')
+        if summaries_generated_count > 0:
+            parts.append('summaries generated')
 
         base = f'Stored {succeeded}/{total} entries successfully'
         message = f'{base} ({", ".join(parts)})' if parts else base
@@ -134,25 +139,74 @@ class TestBatchStoreMessageFormat:
         parts: list[str] = []
         succeeded = 3
         total = 3
+        embeddings_generated_count = 0
+        summaries_generated_count = 0
+
+        if embeddings_generated_count > 0:
+            parts.append('embeddings generated')
+        if summaries_generated_count > 0:
+            parts.append('summaries generated')
 
         base = f'Stored {succeeded}/{total} entries successfully'
         message = f'{base} ({", ".join(parts)})' if parts else base
 
         assert message == 'Stored 3/3 entries successfully'
 
+    def test_no_summaries_when_all_skipped(self) -> None:
+        """Provider configured but all entries skipped: no 'summaries generated' in message."""
+        parts: list[str] = []
+        succeeded = 3
+        total = 3
+        embeddings_generated_count = 3
+        summaries_generated_count = 0
+
+        if embeddings_generated_count > 0:
+            parts.append('embeddings generated')
+        if summaries_generated_count > 0:
+            parts.append('summaries generated')
+
+        base = f'Stored {succeeded}/{total} entries successfully'
+        message = f'{base} ({", ".join(parts)})' if parts else base
+
+        assert message == 'Stored 3/3 entries successfully (embeddings generated)'
+        assert 'summaries generated' not in message
+
 
 class TestBatchUpdateMessageFormat:
     """Tests for update_context_batch aggregate message construction."""
 
     def test_with_features(self) -> None:
-        """Single parenthetical: 'Updated 3/3 entries successfully (embeddings regenerated, summaries generated)'."""
+        """Single parenthetical: 'Updated 3/3 entries successfully (embeddings regenerated, summaries regenerated)'."""
         parts: list[str] = []
         succeeded = 3
         total = 3
+        embeddings_generated_count = 3
+        summaries_generated_count = 3
 
-        parts.extend(['embeddings regenerated', 'summaries generated'])
+        if embeddings_generated_count > 0:
+            parts.append('embeddings regenerated')
+        if summaries_generated_count > 0:
+            parts.append('summaries regenerated')
 
         base = f'Updated {succeeded}/{total} entries successfully'
         message = f'{base} ({", ".join(parts)})' if parts else base
 
-        assert message == 'Updated 3/3 entries successfully (embeddings regenerated, summaries generated)'
+        assert message == 'Updated 3/3 entries successfully (embeddings regenerated, summaries regenerated)'
+
+    def test_no_regeneration_when_all_skipped(self) -> None:
+        """Provider configured but no text changes: no generation info in message."""
+        parts: list[str] = []
+        succeeded = 2
+        total = 2
+        embeddings_generated_count = 0
+        summaries_generated_count = 0
+
+        if embeddings_generated_count > 0:
+            parts.append('embeddings regenerated')
+        if summaries_generated_count > 0:
+            parts.append('summaries regenerated')
+
+        base = f'Updated {succeeded}/{total} entries successfully'
+        message = f'{base} ({", ".join(parts)})' if parts else base
+
+        assert message == 'Updated 2/2 entries successfully'

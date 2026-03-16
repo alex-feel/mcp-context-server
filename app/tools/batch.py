@@ -218,6 +218,8 @@ async def store_context_batch(
         embedding_provider = get_embedding_provider()
         summary_provider = get_summary_provider()
         min_content_length = settings.summary.min_content_length
+        embeddings_generated_count = 0
+        summaries_generated_count = 0
 
         for ve_idx, entry in enumerate(validated_entries):
             original_idx = entry['index']
@@ -264,6 +266,12 @@ async def store_context_batch(
                     entry_embeddings[ve_idx] = cast(list[ChunkEmbedding] | None, result)
                 elif name == 'summary':
                     entry_summaries[ve_idx] = cast(str | None, result)
+
+            if not errors:
+                if entry_embeddings.get(ve_idx) is not None:
+                    embeddings_generated_count += 1
+                if entry_summaries.get(ve_idx) and isinstance(entry_summaries[ve_idx], str):
+                    summaries_generated_count += 1
 
             if errors:
                 error_details = '; '.join(
@@ -494,9 +502,9 @@ async def store_context_batch(
         logger.info(f'Batch store completed: {succeeded}/{len(entries)} succeeded')
 
         parts: list[str] = []
-        if embedding_provider is not None:
+        if embeddings_generated_count > 0:
             parts.append('embeddings generated')
-        if summary_provider is not None:
+        if summaries_generated_count > 0:
             parts.append('summaries generated')
         base = f'Stored {succeeded}/{len(entries)} entries successfully'
         message = f'{base} ({", ".join(parts)})' if parts else base
@@ -756,6 +764,8 @@ async def update_context_batch(
         embedding_provider = get_embedding_provider()
         summary_provider = get_summary_provider()
         min_content_length = settings.summary.min_content_length
+        embeddings_generated_count = 0
+        summaries_generated_count = 0
 
         for vu_idx, update in validated_updates_filtered:
             original_idx = update['index']
@@ -810,6 +820,12 @@ async def update_context_batch(
                     update_embeddings[vu_idx] = cast(list[ChunkEmbedding] | None, result)
                 elif name == 'summary':
                     update_summaries[vu_idx] = cast(str | None, result)
+
+            if not errors:
+                if update_embeddings.get(vu_idx) is not None:
+                    embeddings_generated_count += 1
+                if update_summaries.get(vu_idx) and isinstance(update_summaries[vu_idx], str):
+                    summaries_generated_count += 1
 
             if errors:
                 error_details = '; '.join(
@@ -1068,10 +1084,10 @@ async def update_context_batch(
         logger.info(f'Batch update completed: {succeeded}/{len(updates)} succeeded')
 
         parts: list[str] = []
-        if embedding_provider is not None:
+        if embeddings_generated_count > 0:
             parts.append('embeddings regenerated')
-        if summary_provider is not None:
-            parts.append('summaries generated')
+        if summaries_generated_count > 0:
+            parts.append('summaries regenerated')
         base = f'Updated {succeeded}/{len(updates)} entries successfully'
         message = f'{base} ({", ".join(parts)})' if parts else base
 

@@ -291,7 +291,7 @@ class TestUpdateContextBatchWithSummary:
 
         assert result['success'] is True
         assert result['succeeded'] == 2
-        assert '(summaries generated)' in result['message']
+        assert '(summaries regenerated)' in result['message']
         assert mock_summary.summarize.await_count == 2
 
         # Verify summary passed to update_context_entry
@@ -460,3 +460,100 @@ class TestBatchSummaryEdgeCases:
         assert result['failed'] == 1
         # With parallel gather, summary IS called even when embedding fails
         mock_summary.summarize.assert_awaited_once()
+
+
+@pytest.mark.usefixtures('mock_server_dependencies')
+class TestBatchMessageAccuracy:
+    """Tests that batch message reflects actual generation, not provider availability."""
+
+    @pytest.mark.asyncio
+    async def test_store_batch_short_text_no_summary_message(self) -> None:
+        """Message omits 'summaries generated' when all entries skip summary due to min_content_length."""
+        repos = _create_mock_repositories()
+        repos.context.store_with_deduplication = AsyncMock(
+            side_effect=[(101, False), (102, False)],
+        )
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should not be called')
+
+        entries = [
+            {'thread_id': 'batch-short', 'source': 'user', 'text': 'Short text'},
+            {'thread_id': 'batch-short', 'source': 'agent', 'text': 'Also short'},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.startup.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+        ):
+            result = await store_context_batch(entries=entries, atomic=True)
+
+        assert result['success'] is True
+        assert 'summaries generated' not in result['message']
+        mock_summary.summarize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_batch_short_text_no_summary_message(self) -> None:
+        """Message omits 'summaries regenerated' when all entries skip summary due to min_content_length."""
+        repos = _create_mock_repositories()
+        repos.context.check_entry_exists = AsyncMock(return_value=True)
+        repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should not be called')
+
+        updates = [
+            {'context_id': 1, 'text': 'Short text'},
+            {'context_id': 2, 'text': 'Also short'},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.startup.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        assert 'summaries regenerated' not in result['message']
+        assert 'summaries generated' not in result['message']
+        mock_summary.summarize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_batch_no_text_change_no_regeneration_message(self) -> None:
+        """Message omits generation info when only metadata is updated (no text changes)."""
+        repos = _create_mock_repositories()
+        repos.context.check_entry_exists = AsyncMock(return_value=True)
+        repos.context.update_context_entry = AsyncMock(return_value=(True, ['metadata']))
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should not be called')
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2])
+
+        updates = [
+            {'context_id': 1, 'metadata': {'key': 'val1'}},
+            {'context_id': 2, 'metadata': {'key': 'val2'}},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.startup.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        assert 'embeddings regenerated' not in result['message']
+        assert 'summaries regenerated' not in result['message']
+        mock_summary.summarize.assert_not_awaited()
+        mock_embedding.embed_query.assert_not_awaited()
