@@ -49,7 +49,7 @@ services:
       - RERANKING_CACHE_DIR=/cache/flashrank
     volumes:
       - flashrank-cache:/cache/flashrank
-    restart: on-failure
+    restart: on-failure:5
 
 volumes:
   flashrank-cache:

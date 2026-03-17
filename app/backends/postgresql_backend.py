@@ -533,10 +533,49 @@ class PostgreSQLBackend:
 
             logger.info('PostgreSQL backend initialized successfully')
 
+        except (
+            OSError,  # Includes ConnectionRefusedError, TimeoutError
+            asyncpg.exceptions.ConnectionDoesNotExistError,
+            asyncpg.exceptions.InterfaceError,
+            asyncpg.exceptions.TooManyConnectionsError,
+        ) as e:
+            logger.error(f'Failed to initialize PostgreSQL backend: {e}')
+            await self.circuit_breaker.record_failure()
+            raise DependencyError(
+                f'PostgreSQL connection failed: {e}. '
+                'Ensure PostgreSQL is running and accessible.',
+            ) from e
+
+        except asyncpg.exceptions.InvalidPasswordError as e:
+            logger.error(f'PostgreSQL authentication failed: {e}')
+            await self.circuit_breaker.record_failure()
+            raise ConfigurationError(
+                f'PostgreSQL authentication failed: {e}. '
+                'Check POSTGRESQL_USER and POSTGRESQL_PASSWORD.',
+            ) from e
+
+        except asyncpg.exceptions.InvalidCatalogNameError as e:
+            logger.error(f'PostgreSQL database does not exist: {e}')
+            await self.circuit_breaker.record_failure()
+            raise ConfigurationError(
+                f'PostgreSQL database does not exist: {e}. '
+                'Create the database or check POSTGRESQL_DATABASE.',
+            ) from e
+
+        except ConfigurationError:
+            raise  # Re-raise already-classified errors (from _init_connection)
+
+        except DependencyError:
+            raise  # Re-raise already-classified errors (from _ensure_pgvector_extension)
+
         except Exception as e:
             logger.error(f'Failed to initialize PostgreSQL backend: {e}')
             await self.circuit_breaker.record_failure()
-            raise
+            # Default to DependencyError for unknown errors (safer - allows retry)
+            raise DependencyError(
+                f'PostgreSQL initialization failed: {e}. '
+                'Ensure PostgreSQL is running and accessible.',
+            ) from e
 
     async def _detect_pgpool_ii(self) -> None:
         """Detect if connected through Pgpool-II and log result.

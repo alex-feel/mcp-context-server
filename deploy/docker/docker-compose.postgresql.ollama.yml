@@ -56,7 +56,7 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
-    restart: on-failure
+    restart: on-failure:5
 
   ollama:
     build:

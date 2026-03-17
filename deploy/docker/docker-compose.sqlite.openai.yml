@@ -48,7 +48,7 @@ services:
     volumes:
       - mcp-data:/data
       - flashrank-cache:/cache/flashrank
-    restart: on-failure
+    restart: on-failure:5
 
 volumes:
   mcp-data:

@@ -6,6 +6,10 @@ configuration, connection string handling, advisory locks, and
 connection reset behavior.
 """
 
+import unittest.mock
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
 
@@ -366,3 +370,176 @@ class TestTransactionRetry:
         """
         # Document the idempotency requirement
         assert True  # Idempotency is guaranteed by store_with_deduplication SQL
+
+
+class TestInitializeErrorClassification:
+    """Test error classification in PostgreSQLBackend.initialize().
+
+    When initialize() fails, errors must be classified as either
+    DependencyError (exit code 69, retryable) or ConfigurationError
+    (exit code 78, non-retryable) to enable proper Docker/Kubernetes
+    restart policy behavior.
+    """
+
+    @pytest.mark.asyncio
+    async def test_connection_refused_raises_dependency_error(self) -> None:
+        """ConnectionRefusedError during pool creation raises DependencyError."""
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=ConnectionRefusedError('Connection refused'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_os_error_raises_dependency_error(self) -> None:
+        """OSError (network unreachable, timeout) during pool creation raises DependencyError."""
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=OSError('Network is unreachable'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_too_many_connections_raises_dependency_error(self) -> None:
+        """TooManyConnectionsError during pool creation raises DependencyError."""
+        import asyncpg
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=asyncpg.exceptions.TooManyConnectionsError('too many connections'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_invalid_password_raises_configuration_error(self) -> None:
+        """InvalidPasswordError during pool creation raises ConfigurationError."""
+        import asyncpg
+
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:wrong@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=asyncpg.exceptions.InvalidPasswordError('password authentication failed'),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL authentication failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_invalid_catalog_name_raises_configuration_error(self) -> None:
+        """InvalidCatalogNameError during pool creation raises ConfigurationError."""
+        import asyncpg
+
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/nonexistent',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=asyncpg.exceptions.InvalidCatalogNameError('database "nonexistent" does not exist'),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL database does not exist'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_unknown_exception_raises_dependency_error(self) -> None:
+        """Unknown exceptions during pool creation default to DependencyError."""
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=RuntimeError('unexpected internal error'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL initialization failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_configuration_error_from_init_connection_reraised(self) -> None:
+        """ConfigurationError from _init_connection is re-raised without wrapping."""
+
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=ConfigurationError('pgvector codec registration failed'),
+            ),
+            pytest.raises(ConfigurationError, match='pgvector codec registration failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_dependency_error_from_ensure_pgvector_reraised(self) -> None:
+        """DependencyError from _ensure_pgvector_extension is re-raised without wrapping."""
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(
+                backend,
+                '_ensure_pgvector_extension',
+                new_callable=AsyncMock,
+                side_effect=DependencyError('PostgreSQL connection failed: Connection refused'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()

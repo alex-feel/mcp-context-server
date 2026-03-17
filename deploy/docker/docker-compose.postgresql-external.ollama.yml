@@ -49,7 +49,7 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
-    restart: on-failure
+    restart: on-failure:5
 
   ollama:
     build:

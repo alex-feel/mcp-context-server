@@ -56,7 +56,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    restart: on-failure
+    restart: on-failure:5
 
   postgres:
     image: pgvector/pgvector:pg18-trixie
