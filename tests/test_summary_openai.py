@@ -31,7 +31,7 @@ def mock_openai_settings():
         mock.return_value.summary.max_tokens = 1500
         mock.return_value.summary.prompt = None
         mock.return_value.summary.timeout_s = 240.0
-        mock.return_value.summary.retry_max_attempts = 3
+        mock.return_value.summary.retry_max_attempts = 5
         mock.return_value.summary.retry_base_delay_s = 0.01
         yield mock
 

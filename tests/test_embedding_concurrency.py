@@ -29,32 +29,32 @@ def mock_retry_settings():
 
 
 def test_compute_timeout_default_settings(mock_retry_settings: MagicMock) -> None:
-    """Test timeout computation with default settings (240s, 3 attempts, 1.0s delay)."""
+    """Test timeout computation with default settings (240s, 5 attempts, 1.0s delay)."""
     mock_retry_settings.return_value.embedding.timeout_s = 240.0
-    mock_retry_settings.return_value.embedding.retry_max_attempts = 3
+    mock_retry_settings.return_value.embedding.retry_max_attempts = 5
     mock_retry_settings.return_value.embedding.retry_base_delay_s = 1.0
 
     from app.embeddings.retry import compute_embedding_total_timeout
 
     result = compute_embedding_total_timeout()
 
-    # (3 * 240 + (min(1*1+1, 60) + min(1*2+1, 60))) * 1.1
-    # = (720 + (2 + 3)) * 1.1 = 725 * 1.1 = 797.5
-    assert result == pytest.approx(797.5, abs=0.1)
+    # (5 * 240 + (min(1*1+1, 60) + min(1*2+1, 60) + min(1*4+1, 60) + min(1*8+1, 60))) * 1.1
+    # = (1200 + (2 + 3 + 5 + 9)) * 1.1 = 1219 * 1.1 = 1340.9
+    assert result == pytest.approx(1340.9, abs=0.1)
 
 
 def test_compute_timeout_user_deployed_settings(mock_retry_settings: MagicMock) -> None:
-    """Test timeout computation with user deployed settings (90s, 3 attempts, 1.0s delay)."""
+    """Test timeout computation with user deployed settings (90s, 5 attempts, 1.0s delay)."""
     mock_retry_settings.return_value.embedding.timeout_s = 90.0
-    mock_retry_settings.return_value.embedding.retry_max_attempts = 3
+    mock_retry_settings.return_value.embedding.retry_max_attempts = 5
     mock_retry_settings.return_value.embedding.retry_base_delay_s = 1.0
 
     from app.embeddings.retry import compute_embedding_total_timeout
 
     result = compute_embedding_total_timeout()
 
-    # (3 * 90 + (2 + 3)) * 1.1 = 275 * 1.1 = 302.5
-    assert result == pytest.approx(302.5, abs=0.1)
+    # (5 * 90 + (2 + 3 + 5 + 9)) * 1.1 = 469 * 1.1 = 515.9
+    assert result == pytest.approx(515.9, abs=0.1)
 
 
 def test_compute_timeout_single_attempt(mock_retry_settings: MagicMock) -> None:

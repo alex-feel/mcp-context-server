@@ -27,7 +27,7 @@ def mock_embedding_settings():
     """Mock embedding settings for fast tests."""
     with patch('app.embeddings.retry.get_settings') as mock:
         mock.return_value.embedding.timeout_s = 1.0
-        mock.return_value.embedding.retry_max_attempts = 3
+        mock.return_value.embedding.retry_max_attempts = 5
         mock.return_value.embedding.retry_base_delay_s = 0.01  # Fast retries for testing
         yield mock
 
@@ -96,8 +96,8 @@ async def test_exhausted_retries_raises_error() -> None:
     with pytest.raises(EmbeddingRetryExhaustedError) as exc_info:
         await with_retry_and_timeout(mock_func, 'test_operation')
 
-    assert 'failed after 3 attempts' in str(exc_info.value)
-    assert mock_func.call_count == 3
+    assert 'failed after 5 attempts' in str(exc_info.value)
+    assert mock_func.call_count == 5
 
 
 @pytest.mark.asyncio

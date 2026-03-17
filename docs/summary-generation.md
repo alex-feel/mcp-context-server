@@ -95,7 +95,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 | `SUMMARY_MODEL`                | `qwen3:0.6b` | Ollama model name (see model table below)                                                            |
 | `SUMMARY_MAX_TOKENS`           | `2000`       | Maximum output tokens for summary generation (50-5000)                                               |
 | `SUMMARY_TIMEOUT_S`            | `240.0`      | Timeout in seconds for summary generation API calls                                                  |
-| `SUMMARY_RETRY_MAX_ATTEMPTS`   | `3`          | Maximum retry attempts on transient errors                                                           |
+| `SUMMARY_RETRY_MAX_ATTEMPTS`   | `5`          | Maximum retry attempts on transient errors                                                           |
 | `SUMMARY_RETRY_BASE_DELAY_S`   | `1.0`        | Base delay in seconds between retries (exponential backoff)                                          |
 | `SUMMARY_MAX_CONCURRENT`       | `3`          | Maximum concurrent summary generation operations (1-20)                                              |
 | `SUMMARY_MIN_CONTENT_LENGTH`   | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate                  |

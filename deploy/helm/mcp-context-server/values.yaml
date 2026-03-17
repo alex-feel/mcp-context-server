@@ -112,7 +112,7 @@ search:
     dim: 1024
     # Timeout and retry settings
     timeout: 240
-    retryMaxAttempts: 3
+    retryMaxAttempts: 5
     retryBaseDelay: 1.0
     # Concurrency control
     maxConcurrent: 3     # Maximum parallel embedding requests (1-20)
@@ -145,7 +145,7 @@ search:
     prompt: ""               # Custom prompt (empty = built-in default)
     # Timeout and retry settings
     timeout: 240.0
-    retryMaxAttempts: 3
+    retryMaxAttempts: 5
     retryBaseDelay: 1.0
     # Concurrency control
     maxConcurrent: 3         # Maximum parallel summary requests (1-20)

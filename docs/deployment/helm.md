@@ -190,7 +190,7 @@ search:
     minContentLength: 500     # SUMMARY_MIN_CONTENT_LENGTH (chars, 0=always)
     prompt: ""                # SUMMARY_PROMPT: empty uses built-in default
     timeout: 240.0            # SUMMARY_TIMEOUT_S
-    retryMaxAttempts: 3       # SUMMARY_RETRY_MAX_ATTEMPTS
+    retryMaxAttempts: 5       # SUMMARY_RETRY_MAX_ATTEMPTS
     retryBaseDelay: 1.0       # SUMMARY_RETRY_BASE_DELAY_S
     maxConcurrent: 3          # SUMMARY_MAX_CONCURRENT (1-20)
 ```

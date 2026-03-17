@@ -200,7 +200,7 @@ class EmbeddingSettings(CommonSettings):
         description='Timeout in seconds for embedding generation API calls',
     )
     retry_max_attempts: int = Field(
-        default=3,
+        default=5,
         alias='EMBEDDING_RETRY_MAX_ATTEMPTS',
         ge=1,
         le=10,
@@ -567,7 +567,7 @@ class SummarySettings(CommonSettings):
     )
 
     retry_max_attempts: int = Field(
-        default=3,
+        default=5,
         alias='SUMMARY_RETRY_MAX_ATTEMPTS',
         ge=1,
         le=10,

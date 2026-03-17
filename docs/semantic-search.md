@@ -610,7 +610,7 @@ All providers support these settings:
 | Variable                       | Default | Description                |
 |--------------------------------|---------|----------------------------|
 | `EMBEDDING_TIMEOUT_S`          | `240.0` | API timeout in seconds     |
-| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `3`     | Max retry attempts         |
+| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `5`     | Max retry attempts         |
 | `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0`   | Base delay between retries |
 
 ### Full Configuration Example
@@ -629,7 +629,7 @@ All providers support these settings:
         "EMBEDDING_DIM": "1536",
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "EMBEDDING_TIMEOUT_S": "240",
-        "EMBEDDING_RETRY_MAX_ATTEMPTS": "3",
+        "EMBEDDING_RETRY_MAX_ATTEMPTS": "5",
         "LANGSMITH_TRACING": "true",
         "LANGSMITH_API_KEY": "${LANGSMITH_API_KEY}"
       }

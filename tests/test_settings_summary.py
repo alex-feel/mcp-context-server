@@ -86,10 +86,10 @@ class TestSummarySettings:
         with pytest.raises(ValidationError):
             SummarySettings()
 
-    def test_summary_retry_max_attempts_default_3(self) -> None:
-        """Verify SUMMARY_RETRY_MAX_ATTEMPTS defaults to 3."""
+    def test_summary_retry_max_attempts_default_5(self) -> None:
+        """Verify SUMMARY_RETRY_MAX_ATTEMPTS defaults to 5."""
         settings = SummarySettings()
-        assert settings.retry_max_attempts == 3
+        assert settings.retry_max_attempts == 5
 
     def test_summary_retry_max_attempts_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_RETRY_MAX_ATTEMPTS accepts minimum value of 1."""
@@ -167,7 +167,7 @@ class TestSummarySettings:
         monkeypatch.setenv('SUMMARY_MODEL', 'gpt-5-nano')
         monkeypatch.setenv('SUMMARY_MAX_TOKENS', '500')
         monkeypatch.setenv('SUMMARY_TIMEOUT_S', '90')
-        monkeypatch.setenv('SUMMARY_RETRY_MAX_ATTEMPTS', '5')
+        monkeypatch.setenv('SUMMARY_RETRY_MAX_ATTEMPTS', '7')
         monkeypatch.setenv('SUMMARY_RETRY_BASE_DELAY_S', '2.0')
         monkeypatch.setenv('SUMMARY_MAX_CONCURRENT', '10')
         monkeypatch.setenv('SUMMARY_PROMPT', 'Custom prompt text')
@@ -178,7 +178,7 @@ class TestSummarySettings:
         assert settings.model == 'gpt-5-nano'
         assert settings.max_tokens == 500
         assert settings.timeout_s == 90.0
-        assert settings.retry_max_attempts == 5
+        assert settings.retry_max_attempts == 7
         assert settings.retry_base_delay_s == 2.0
         assert settings.max_concurrent == 10
         assert settings.prompt == 'Custom prompt text'
@@ -345,7 +345,7 @@ class TestAppSettingsSummaryIntegration:
         assert settings.summary.model == 'qwen3:0.6b'
         assert settings.summary.max_tokens == 2000
         assert settings.summary.timeout_s == 240.0
-        assert settings.summary.retry_max_attempts == 3
+        assert settings.summary.retry_max_attempts == 5
         assert settings.summary.retry_base_delay_s == 1.0
         assert settings.summary.max_concurrent == 3
         assert settings.summary.prompt is None
