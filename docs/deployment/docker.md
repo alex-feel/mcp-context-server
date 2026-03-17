@@ -334,7 +334,7 @@ Text chunking and cross-encoder reranking are enabled by default to improve sear
 | `ENABLE_CHUNKING`  | `true`                    | Text chunking for long document embedding       |
 | `CHUNK_SIZE`       | `1500`                    | Target chunk size in characters                 |
 | `ENABLE_RERANKING` | `true`                    | Cross-encoder result reranking                  |
-| `RERANKING_MODEL`  | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB, downloads on first use) |
+| `RERANKING_MODEL`  | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB, downloads on startup)   |
 
 To disable these features, set the environment variables to `false` in your Docker Compose file:
 

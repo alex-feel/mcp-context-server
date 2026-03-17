@@ -164,7 +164,7 @@ search:
   reranking:
     enabled: true
     provider: flashrank
-    model: ms-marco-MiniLM-L-12-v2  # ~34MB, downloads on first use
+    model: ms-marco-MiniLM-L-12-v2  # ~34MB, downloads on startup
     maxLength: 512
     overfetch: 4
 ```

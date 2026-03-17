@@ -21,7 +21,7 @@ class FlashRankProvider:
     """FlashRank reranking provider.
 
     Implements the RerankingProvider protocol using FlashRank library.
-    Uses lazy initialization - model loaded on first rerank() call.
+    Eagerly loads model during initialization with constrained ONNX settings.
     Applies constrained ONNX SessionOptions to prevent thread explosion
     in containerized environments.
 
@@ -49,23 +49,30 @@ class FlashRankProvider:
         self._intra_op_threads = settings.reranking.intra_op_threads
         self._cpu_mem_arena = settings.reranking.cpu_mem_arena
         self._batch_size = settings.reranking.batch_size
-        self._ranker: Any = None  # Lazy initialization
+        self._ranker: Any = None
+        self._init_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """Validate FlashRank is available (model loaded lazily).
+        """Initialize provider and eagerly load model.
+
+        Downloads the model (if not cached) and creates an ONNX
+        InferenceSession with constrained resource settings.
+        Runs synchronous model loading in a worker thread to
+        avoid blocking the event loop.
 
         Raises:
-            ImportError: If flashrank package is not installed
+            ImportError: If flashrank package is not installed.
         """
         try:
             from flashrank import Ranker
 
-            # Validate import succeeded by checking the class exists
             _ = Ranker
         except ImportError as e:
             raise ImportError(
                 'flashrank package required',
             ) from e
+
+        await self._ensure_ranker()
 
         logger.info(
             f'FlashRank provider initialized: model={self._model_name}, '
@@ -163,15 +170,21 @@ class FlashRankProvider:
         )
 
     async def _ensure_ranker(self) -> None:
-        """Ensure the FlashRank Ranker model is loaded, offloading to a worker thread.
+        """Ensure the FlashRank Ranker model is loaded, with concurrency protection.
 
-        Uses asyncio.to_thread to prevent blocking the event loop during
-        ONNX model loading (2-5 seconds on first call). Subsequent calls
-        return immediately via fast-path check.
+        Uses double-checked locking with asyncio.Lock to prevent concurrent
+        coroutines from triggering duplicate model loading. The fast-path
+        check outside the lock avoids lock acquisition overhead for the
+        common case (model already loaded).
+
+        With eager loading in initialize(), this serves as a defense-in-depth
+        safety net.
         """
         if self._ranker is not None:
             return
-        await asyncio.to_thread(self._load_ranker_sync)
+        async with self._init_lock:
+            if self._ranker is None:
+                await asyncio.to_thread(self._load_ranker_sync)
 
     async def rerank(
         self,
@@ -212,7 +225,7 @@ class FlashRankProvider:
                 'meta': {'original_index': i},
             })
 
-        # Ensure ranker is loaded (lazy initialization, offloaded to worker thread)
+        # Ensure ranker is loaded (defense-in-depth, normally loaded during initialize())
         await self._ensure_ranker()
 
         # Micro-batch to prevent OOM from unbounded ONNX Runtime inference.

@@ -476,7 +476,7 @@ Currently only `max` aggregation is supported. The `avg` and `sum` methods will 
 
 Reranking uses a cross-encoder model (FlashRank) to improve search result precision by re-scoring candidates using the full query-document context.
 
-**Key point:** Reranking is enabled by default. The FlashRank model (~34MB) downloads automatically on first use.
+**Key point:** Reranking is enabled by default. The FlashRank model (~34MB) downloads automatically during server startup.
 
 ### Installation
 
@@ -520,7 +520,7 @@ uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-c
 
 ### Performance Considerations
 
-- **First Request**: Model downloads on first use (~34MB for default model)
+- **Startup**: Model downloads during server initialization (~34MB for default model)
 - **Latency**: Adds 20-100ms per search depending on candidate count
 - **Memory**: ~200MB RAM for default model
 - **Cache**: Model cached in `~/.cache/flashrank/` by default

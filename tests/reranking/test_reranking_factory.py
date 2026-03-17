@@ -507,81 +507,124 @@ class TestFlashRankProvider:
             ]
             reranked = await provider.rerank('topic', results)
 
-            # 1 for _load_ranker_sync + 3 inference batches (5 passages / batch_size=2)
-            assert to_thread_call_count == 4
+            # 3 inference batches only (5 passages / batch_size=2)
+            # Model already loaded during initialize(), so no _load_ranker_sync call
+            assert to_thread_call_count == 3
             assert len(reranked) == 5
         finally:
             await provider.shutdown()
             get_settings.cache_clear()
 
     @pytest.mark.asyncio
-    async def test_ensure_ranker_uses_asyncio_to_thread(
-        self, provider: RerankingProvider, monkeypatch: pytest.MonkeyPatch,
+    async def test_initialize_loads_model_eagerly(
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Model loading in _ensure_ranker should use asyncio.to_thread."""
+        """initialize() should eagerly load model via asyncio.to_thread."""
         import asyncio
+
+        provider = create_reranking_provider()
+
+        original_to_thread = asyncio.to_thread
+        to_thread_calls: list[object] = []
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            to_thread_calls.append(func)
+            return await original_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, 'to_thread', tracking_to_thread)
 
         await provider.initialize()
         try:
-            original_to_thread = asyncio.to_thread
-            ensure_ranker_to_thread_calls: list[tuple[object, ...]] = []
-
-            async def tracking_to_thread(func, *args, **kwargs):
-                ensure_ranker_to_thread_calls.append((func, args, kwargs))
-                return await original_to_thread(func, *args, **kwargs)
-
-            monkeypatch.setattr(asyncio, 'to_thread', tracking_to_thread)
-
-            # First rerank triggers _ensure_ranker -> asyncio.to_thread for model load
-            results = [{'id': 0, 'text': 'Test document about Python'}]
-            await provider.rerank('test', results)
-
-            # asyncio.to_thread should have been called for BOTH:
-            # 1. _load_ranker_sync (model initialization)
-            # 2. self._ranker.rerank (batch inference)
-            assert len(ensure_ranker_to_thread_calls) >= 2
-
-            # Verify the first call is the model loading function
+            # Model loading should have happened during initialize()
             from typing import Any
             from typing import cast
             concrete = cast(Any, provider)
-            first_call_func = ensure_ranker_to_thread_calls[0][0]
-            assert first_call_func == concrete._load_ranker_sync
+            assert concrete._load_ranker_sync in to_thread_calls
+            assert concrete._ranker is not None
         finally:
             await provider.shutdown()
 
     @pytest.mark.asyncio
-    async def test_ensure_ranker_fast_path_skips_thread(
+    async def test_rerank_skips_model_loading_after_initialize(
         self, provider: RerankingProvider, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Second rerank call should skip asyncio.to_thread for model loading."""
+        """After initialize(), rerank() should not trigger model loading."""
         import asyncio
 
         await provider.initialize()
         try:
-            # First call - triggers model loading
-            results = [{'id': 0, 'text': 'Test document'}]
-            await provider.rerank('test', results)
-
-            # Now track to_thread calls for the SECOND rerank
             original_to_thread = asyncio.to_thread
-            second_call_funcs: list[object] = []
+            rerank_call_funcs: list[object] = []
 
             async def tracking_to_thread(func, *args, **kwargs):
-                second_call_funcs.append(func)
+                rerank_call_funcs.append(func)
                 return await original_to_thread(func, *args, **kwargs)
 
             monkeypatch.setattr(asyncio, 'to_thread', tracking_to_thread)
 
-            await provider.rerank('test2', results)
+            results = [{'id': 0, 'text': 'Test document'}]
+            await provider.rerank('test', results)
 
             # Only batch inference calls should use asyncio.to_thread
-            # _load_ranker_sync should NOT appear (model already loaded)
+            # _load_ranker_sync should NOT appear (model already loaded during initialize)
             from typing import Any
             from typing import cast
             concrete = cast(Any, provider)
-            assert concrete._load_ranker_sync not in second_call_funcs
+            assert concrete._load_ranker_sync not in rerank_call_funcs
             # But batch inference should still use asyncio.to_thread
-            assert len(second_call_funcs) >= 1
+            assert len(rerank_call_funcs) >= 1
         finally:
             await provider.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_ensure_ranker_concurrent_safety(
+        self,
+    ) -> None:
+        """Concurrent _ensure_ranker calls should only load the model once."""
+        import asyncio
+        from typing import Any
+        from typing import cast
+
+        provider = create_reranking_provider()
+
+        # Validate import so _ensure_ranker can proceed
+        from flashrank import Ranker
+        _ = Ranker
+
+        concrete = cast(Any, provider)
+
+        # Count how many times _load_ranker_sync is actually called
+        original_load = concrete._load_ranker_sync
+        load_count = 0
+
+        def counting_load():
+            nonlocal load_count
+            load_count += 1
+            original_load()
+
+        concrete._load_ranker_sync = counting_load
+
+        try:
+            # Simulate concurrent _ensure_ranker calls
+            await asyncio.gather(
+                concrete._ensure_ranker(),
+                concrete._ensure_ranker(),
+                concrete._ensure_ranker(),
+            )
+
+            # Model should be loaded exactly once despite 3 concurrent calls
+            assert load_count == 1
+            assert concrete._ranker is not None
+        finally:
+            await concrete.shutdown()
+
+    def test_init_lock_attribute_exists(self) -> None:
+        """Provider should have _init_lock attribute as asyncio.Lock."""
+        import asyncio
+        from typing import Any
+        from typing import cast
+
+        provider = create_reranking_provider()
+        concrete = cast(Any, provider)
+        assert hasattr(concrete, '_init_lock')
+        assert isinstance(concrete._init_lock, asyncio.Lock)
