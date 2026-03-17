@@ -629,6 +629,7 @@ class TestSummaryLifespan:
                 patch('app.summary.create_summary_provider', return_value=mock_summary_provider),
             ):
                 mock_mcp = MagicMock()
+                mock_mcp.list_tools = AsyncMock(return_value=[])
 
                 async with lifespan(mock_mcp):
                     assert app.startup.get_summary_provider() is mock_summary_provider
@@ -690,6 +691,7 @@ class TestSummaryLifespan:
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
                 mock_mcp = MagicMock()
+                mock_mcp.list_tools = AsyncMock(return_value=[])
 
                 async with lifespan(mock_mcp):
                     assert app.startup.get_summary_provider() is None
