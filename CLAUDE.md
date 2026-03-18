@@ -166,6 +166,8 @@ Build args: `EMBEDDING_EXTRA` (default: `embeddings-ollama`), `SUMMARY_EXTRA` (d
 
 `server.json` enables MCP client discovery. Every `Field(alias=...)` in `app/settings.py` MUST have a corresponding entry in `server.json` `environmentVariables`. This invariant is enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
 
+When adding or modifying environment variables in `app/settings.py`, update **both** `server.json` **and** `docs/environment-variables.md`.
+
 ## Environment Variables
 
 Configuration via `.env` file or environment. **Canonical source**: `app/settings.py` — all env vars with defaults, descriptions, and validation.
@@ -257,7 +259,7 @@ Ruff (127 chars, single quotes), mypy/pyright strict for `app/`. **Never** `from
 # CORRECT: get_settings().storage.db_path
 ```
 
-Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` for new env vars.
+Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` and `docs/environment-variables.md` for new env vars.
 
 ### Settings Class Architecture
 
