@@ -64,6 +64,10 @@ Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up
 **Retrieving:**
 - All search tools return truncated `text_content` with `is_text_content_truncated` flag, plus a `summary` field (empty string when not generated). You can query many entries without hurting the context window. Always call `get_context_by_ids` for full content of relevant entries.
 - Check `metadata.references.context_ids` in retrieved entries and follow them with `get_context_by_ids` for deeper context.
+
+## Skill Integration
+
+If you have access to Skills, check their descriptions for any that relate to context storage, context retrieval, context preservation, or working with a context server. Read and apply all matching Skills to extend these default instructions with richer patterns for storing, searching, and retrieving context. If a description is ambiguous, read the full Skill content to determine relevance. Skills are authored by users or teams to customize how you interact with this server — always apply all that are relevant.
 ''').strip()
 
 

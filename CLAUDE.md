@@ -124,7 +124,7 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 
 5. **Error Classification** (`app/errors.py`): `ConfigurationError` (exit 78, supervisor never retries), `DependencyError` (exit 69, may retry with backoff). `classify_provider_error()` classifies embedding/summary provider failures. BSD sysexits.h exit codes for Docker/Kubernetes restart policies.
 
-6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Empty string disables.
+6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Empty string disables. Includes `## Skill Integration` section directing agents to discover and apply context-server-related Skills.
 
 ## Package and Release
 
