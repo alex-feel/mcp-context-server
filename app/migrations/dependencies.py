@@ -30,6 +30,117 @@ class ProviderCheckResult(TypedDict):
     install_instructions: str | None
 
 
+async def _check_ollama_model(
+    *,
+    model_name: str,
+    ollama_host: str,
+    auto_pull: bool,
+    pull_timeout: int,
+    package_name: str,
+    install_cmd: str,
+    feature_label: str,
+) -> ProviderCheckResult:
+    """Check Ollama dependencies and optionally auto-pull missing models.
+
+    Performs three checks:
+    1. Required Python package is installed
+    2. Ollama service is running and accessible
+    3. Requested model is available (auto-pulls if missing and enabled)
+
+    Args:
+        model_name: Ollama model identifier (e.g., 'qwen3-embedding:0.6b')
+        ollama_host: Ollama server URL
+        auto_pull: Whether to auto-pull missing models
+        pull_timeout: Timeout in seconds for model pull operations
+        package_name: Python package to check (e.g., 'langchain_ollama')
+        install_cmd: Install command for the package (e.g., 'uv sync --extra embeddings-ollama')
+        feature_label: Human-readable label for log messages (e.g., 'Embedding', 'Summary')
+
+    Returns:
+        ProviderCheckResult indicating availability and any failure details
+    """
+    # 1. Check required Python package
+    try:
+        if importlib.util.find_spec(package_name) is None:
+            return ProviderCheckResult(
+                available=False,
+                reason=f'{package_name.replace("_", "-")} package not installed',
+                install_instructions=install_cmd,
+            )
+        logger.debug(f'{package_name.replace("_", "-")} package available')
+    except ImportError as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'{package_name.replace("_", "-")} package not available: {e}',
+            install_instructions=install_cmd,
+        )
+
+    # 2. Check Ollama service is running
+    try:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(ollama_host, timeout=2.0)
+            if response.status_code != 200:
+                return ProviderCheckResult(
+                    available=False,
+                    reason=f'Ollama service returned status {response.status_code}',
+                    install_instructions='Start Ollama service: ollama serve',
+                )
+        logger.debug(f'Ollama service running at {ollama_host}')
+    except Exception as e:
+        return ProviderCheckResult(
+            available=False,
+            reason=f'Ollama service not accessible at {ollama_host}: {e}',
+            install_instructions='Start Ollama service: ollama serve',
+        )
+
+    # 3. Check model availability (with optional auto-pull)
+    import ollama as ollama_lib
+
+    try:
+        show_client = ollama_lib.Client(host=ollama_host, timeout=5.0)
+        show_client.show(model_name)
+        logger.debug(f'{feature_label} model "{model_name}" available')
+    except Exception as show_error:
+        if not auto_pull:
+            return ProviderCheckResult(
+                available=False,
+                reason=f'{feature_label} model "{model_name}" not available: {show_error}',
+                install_instructions=f'Download model: ollama pull {model_name}',
+            )
+
+        # Auto-pull: attempt to download the missing model
+        logger.info(f'{feature_label} model "{model_name}" not found, pulling automatically...')
+        try:
+            import asyncio
+
+            pull_client = ollama_lib.Client(host=ollama_host, timeout=float(pull_timeout))
+            await asyncio.to_thread(pull_client.pull, model_name, stream=False)
+            logger.info(f'{feature_label} model "{model_name}" pulled successfully')
+        except Exception as pull_error:
+            return ProviderCheckResult(
+                available=False,
+                reason=f'{feature_label} model "{model_name}" auto-pull failed: {pull_error}',
+                install_instructions=f'Download model manually: ollama pull {model_name}',
+            )
+
+        # Post-pull verification
+        try:
+            verify_client = ollama_lib.Client(host=ollama_host, timeout=5.0)
+            verify_client.show(model_name)
+            logger.debug(f'{feature_label} model "{model_name}" verified after pull')
+        except Exception as verify_error:
+            return ProviderCheckResult(
+                available=False,
+                reason=f'{feature_label} model "{model_name}" not usable after pull: {verify_error}',
+                install_instructions=f'Download model manually: ollama pull {model_name}',
+            )
+
+    logger.info(f'All Ollama {feature_label.lower()} provider dependencies available')
+    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+
+
 async def check_vector_storage_dependencies(backend_type: str = 'sqlite') -> bool:
     """Check vector storage dependencies for semantic search (provider-AGNOSTIC).
 
@@ -107,6 +218,9 @@ async def check_provider_dependencies(
     provider: str,
     embedding_settings: EmbeddingSettings,
     ollama_host: str = 'http://localhost:11434',
+    *,
+    auto_pull: bool = True,
+    pull_timeout: int = 900,
 ) -> ProviderCheckResult:
     """Check provider-specific dependencies based on EMBEDDING_PROVIDER setting.
 
@@ -122,6 +236,8 @@ async def check_provider_dependencies(
         provider: Provider name from EMBEDDING_PROVIDER setting
         embedding_settings: EmbeddingSettings instance with provider configuration
         ollama_host: Ollama server URL (from OllamaSettings.host)
+        auto_pull: Whether to auto-pull missing Ollama models
+        pull_timeout: Timeout in seconds for Ollama model pull operations
 
     Returns:
         ProviderCheckResult with available, reason, and install_instructions
@@ -145,87 +261,45 @@ async def check_provider_dependencies(
         )
 
     logger.info(f'Checking {provider} provider dependencies...')
-    result = await check_functions[provider](embedding_settings, ollama_host)
+    result = await check_functions[provider](
+        embedding_settings, ollama_host, auto_pull=auto_pull, pull_timeout=pull_timeout,
+    )
     return cast(ProviderCheckResult, result)
 
 
 async def _check_ollama_dependencies(
     embedding_settings: EmbeddingSettings,
     ollama_host: str,
+    *,
+    auto_pull: bool = True,
+    pull_timeout: int = 900,
 ) -> ProviderCheckResult:
-    """Check Ollama-specific dependencies.
-
-    Checks:
-    1. langchain-ollama package is installed
-    2. Ollama service is running at OLLAMA_HOST
-    3. Embedding model is available
+    """Check Ollama-specific dependencies for embedding generation.
 
     Args:
         embedding_settings: EmbeddingSettings with model name
         ollama_host: Ollama server URL (from OllamaSettings.host)
+        auto_pull: Whether to auto-pull missing models
+        pull_timeout: Timeout in seconds for model pull operations
 
     Returns:
         ProviderCheckResult
     """
-    install_cmd = 'uv sync --extra embeddings-ollama'
-
-    # 1. Check langchain-ollama package
-    try:
-        if importlib.util.find_spec('langchain_ollama') is None:
-            return ProviderCheckResult(
-                available=False,
-                reason='langchain-ollama package not installed',
-                install_instructions=install_cmd,
-            )
-        logger.debug('langchain-ollama package available')
-    except ImportError as e:
-        return ProviderCheckResult(
-            available=False,
-            reason=f'langchain-ollama package not available: {e}',
-            install_instructions=install_cmd,
-        )
-
-    # 2. Check Ollama service is running
-    try:
-        import httpx
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(ollama_host, timeout=2.0)
-            if response.status_code != 200:
-                return ProviderCheckResult(
-                    available=False,
-                    reason=f'Ollama service returned status {response.status_code}',
-                    install_instructions='Start Ollama service: ollama serve',
-                )
-        logger.debug(f'Ollama service running at {ollama_host}')
-    except Exception as e:
-        return ProviderCheckResult(
-            available=False,
-            reason=f'Ollama service not accessible at {ollama_host}: {e}',
-            install_instructions='Start Ollama service: ollama serve',
-        )
-
-    # 3. Check embedding model is available
-    try:
-        import ollama
-
-        ollama_client = ollama.Client(host=ollama_host, timeout=5.0)
-        ollama_client.show(embedding_settings.model)
-        logger.debug(f'Embedding model "{embedding_settings.model}" available')
-    except Exception as e:
-        return ProviderCheckResult(
-            available=False,
-            reason=f'Embedding model "{embedding_settings.model}" not available: {e}',
-            install_instructions=f'Download model: ollama pull {embedding_settings.model}',
-        )
-
-    logger.info('All Ollama provider dependencies available')
-    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+    return await _check_ollama_model(
+        model_name=embedding_settings.model,
+        ollama_host=ollama_host,
+        auto_pull=auto_pull,
+        pull_timeout=pull_timeout,
+        package_name='langchain_ollama',
+        install_cmd='uv sync --extra embeddings-ollama',
+        feature_label='Embedding',
+    )
 
 
 async def _check_openai_dependencies(
     embedding_settings: EmbeddingSettings,
     _ollama_host: str,
+    **_kwargs: Any,
 ) -> ProviderCheckResult:
     """Check OpenAI-specific dependencies.
 
@@ -236,6 +310,7 @@ async def _check_openai_dependencies(
     Args:
         embedding_settings: EmbeddingSettings with openai_api_key
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
+        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -274,6 +349,7 @@ async def _check_openai_dependencies(
 async def _check_azure_dependencies(
     embedding_settings: EmbeddingSettings,
     _ollama_host: str,
+    **_kwargs: Any,
 ) -> ProviderCheckResult:
     """Check Azure OpenAI-specific dependencies.
 
@@ -286,6 +362,7 @@ async def _check_azure_dependencies(
     Args:
         embedding_settings: EmbeddingSettings with Azure configuration
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
+        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -332,6 +409,7 @@ async def _check_azure_dependencies(
 async def _check_huggingface_dependencies(
     embedding_settings: EmbeddingSettings,
     _ollama_host: str,
+    **_kwargs: Any,
 ) -> ProviderCheckResult:
     """Check HuggingFace-specific dependencies.
 
@@ -342,6 +420,7 @@ async def _check_huggingface_dependencies(
     Args:
         embedding_settings: EmbeddingSettings with huggingface_api_key
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
+        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -380,6 +459,7 @@ async def _check_huggingface_dependencies(
 async def _check_voyage_dependencies(
     embedding_settings: EmbeddingSettings,
     _ollama_host: str,
+    **_kwargs: Any,
 ) -> ProviderCheckResult:
     """Check Voyage AI-specific dependencies.
 
@@ -390,6 +470,7 @@ async def _check_voyage_dependencies(
     Args:
         embedding_settings: EmbeddingSettings with voyage_api_key
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
+        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -429,6 +510,9 @@ async def check_summary_provider_dependencies(
     provider: str,
     summary_settings: 'SummarySettings',
     ollama_host: str = 'http://localhost:11434',
+    *,
+    auto_pull: bool = True,
+    pull_timeout: int = 900,
 ) -> ProviderCheckResult:
     """Check provider-specific dependencies for summary generation.
 
@@ -442,6 +526,8 @@ async def check_summary_provider_dependencies(
         provider: Provider name from SUMMARY_PROVIDER setting
         summary_settings: SummarySettings instance with provider configuration
         ollama_host: Ollama server URL (from OllamaSettings.host)
+        auto_pull: Whether to auto-pull missing Ollama models
+        pull_timeout: Timeout in seconds for Ollama model pull operations
 
     Returns:
         ProviderCheckResult with available, reason, and install_instructions
@@ -460,87 +546,45 @@ async def check_summary_provider_dependencies(
         )
 
     logger.info(f'Checking {provider} summary provider dependencies...')
-    result = await check_functions[provider](summary_settings, ollama_host)
+    result = await check_functions[provider](
+        summary_settings, ollama_host, auto_pull=auto_pull, pull_timeout=pull_timeout,
+    )
     return cast(ProviderCheckResult, result)
 
 
 async def _check_ollama_summary_dependencies(
     summary_settings: 'SummarySettings',
     ollama_host: str,
+    *,
+    auto_pull: bool = True,
+    pull_timeout: int = 900,
 ) -> ProviderCheckResult:
     """Check Ollama-specific dependencies for summary generation.
-
-    Checks:
-    1. langchain-ollama package is installed
-    2. Ollama service is running at OLLAMA_HOST
-    3. Summary model is available
 
     Args:
         summary_settings: SummarySettings with model name
         ollama_host: Ollama server URL (from OllamaSettings.host)
+        auto_pull: Whether to auto-pull missing models
+        pull_timeout: Timeout in seconds for model pull operations
 
     Returns:
         ProviderCheckResult
     """
-    install_cmd = 'uv sync --extra summary-ollama'
-
-    # 1. Check langchain-ollama package
-    try:
-        if importlib.util.find_spec('langchain_ollama') is None:
-            return ProviderCheckResult(
-                available=False,
-                reason='langchain-ollama package not installed',
-                install_instructions=install_cmd,
-            )
-        logger.debug('langchain-ollama package available')
-    except ImportError as e:
-        return ProviderCheckResult(
-            available=False,
-            reason=f'langchain-ollama package not available: {e}',
-            install_instructions=install_cmd,
-        )
-
-    # 2. Check Ollama service is running
-    try:
-        import httpx
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(ollama_host, timeout=2.0)
-            if response.status_code != 200:
-                return ProviderCheckResult(
-                    available=False,
-                    reason=f'Ollama service returned status {response.status_code}',
-                    install_instructions='Start Ollama service: ollama serve',
-                )
-        logger.debug(f'Ollama service running at {ollama_host}')
-    except Exception as e:
-        return ProviderCheckResult(
-            available=False,
-            reason=f'Ollama service not accessible at {ollama_host}: {e}',
-            install_instructions='Start Ollama service: ollama serve',
-        )
-
-    # 3. Check summary model is available
-    try:
-        import ollama
-
-        ollama_client = ollama.Client(host=ollama_host, timeout=5.0)
-        ollama_client.show(summary_settings.model)
-        logger.debug(f'Summary model "{summary_settings.model}" available')
-    except Exception as e:
-        return ProviderCheckResult(
-            available=False,
-            reason=f'Summary model "{summary_settings.model}" not available: {e}',
-            install_instructions=f'Download model: ollama pull {summary_settings.model}',
-        )
-
-    logger.info('All Ollama summary provider dependencies available')
-    return ProviderCheckResult(available=True, reason=None, install_instructions=None)
+    return await _check_ollama_model(
+        model_name=summary_settings.model,
+        ollama_host=ollama_host,
+        auto_pull=auto_pull,
+        pull_timeout=pull_timeout,
+        package_name='langchain_ollama',
+        install_cmd='uv sync --extra summary-ollama',
+        feature_label='Summary',
+    )
 
 
 async def _check_openai_summary_dependencies(
     _summary_settings: 'SummarySettings',
     _ollama_host: str,
+    **_kwargs: Any,
 ) -> ProviderCheckResult:
     """Check OpenAI-specific dependencies for summary generation.
 
@@ -551,6 +595,7 @@ async def _check_openai_summary_dependencies(
     Args:
         _summary_settings: SummarySettings instance (unused, accepted for uniform dispatch interface)
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
+        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -589,6 +634,7 @@ async def _check_openai_summary_dependencies(
 async def _check_anthropic_summary_dependencies(
     _summary_settings: 'SummarySettings',
     _ollama_host: str,
+    **_kwargs: Any,
 ) -> ProviderCheckResult:
     """Check Anthropic-specific dependencies for summary generation.
 
@@ -599,6 +645,7 @@ async def _check_anthropic_summary_dependencies(
     Args:
         _summary_settings: SummarySettings instance (unused, accepted for uniform dispatch interface)
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
+        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult

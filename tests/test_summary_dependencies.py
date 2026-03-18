@@ -103,7 +103,7 @@ class TestCheckSummaryOllama:
 
     @pytest.mark.asyncio
     async def test_model_not_found(self) -> None:
-        """Test failure when summary model is not pulled."""
+        """Test failure when summary model is not pulled and auto-pull disabled."""
         summary_settings = _make_summary_settings()
 
         # Mock httpx success
@@ -127,11 +127,81 @@ class TestCheckSummaryOllama:
         ):
             result = await check_summary_provider_dependencies(
                 'ollama', summary_settings, 'http://localhost:11434',
+                auto_pull=False,
             )
 
         assert result['available'] is False
         assert 'not available' in (result['reason'] or '')
         assert 'ollama pull' in (result['install_instructions'] or '')
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_summary_model(self) -> None:
+        """Test auto-pull downloads missing summary model and succeeds."""
+        summary_settings = _make_summary_settings()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+        mock_httpx_client.__aexit__ = AsyncMock()
+        mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+        # First show() fails (triggers pull), second show() succeeds (verification)
+        mock_ollama_client = MagicMock()
+        mock_ollama_client.show.side_effect = [
+            Exception("model 'qwen3:0.6b' not found"),
+            MagicMock(),
+        ]
+        mock_ollama = MagicMock()
+        mock_ollama.Client.return_value = mock_ollama_client
+
+        mock_to_thread = AsyncMock(return_value=MagicMock())
+        with (
+            patch('importlib.util.find_spec', return_value=MagicMock()),
+            patch('httpx.AsyncClient', return_value=mock_httpx_client),
+            patch.dict('sys.modules', {'ollama': mock_ollama}),
+            patch('asyncio.to_thread', mock_to_thread),
+        ):
+            result = await check_summary_provider_dependencies(
+                'ollama', summary_settings, 'http://localhost:11434',
+                auto_pull=True, pull_timeout=60,
+            )
+
+        assert result['available'] is True
+        assert mock_to_thread.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_disabled_summary(self) -> None:
+        """Test auto-pull disabled does not attempt pull for summary models."""
+        summary_settings = _make_summary_settings()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_httpx_client = MagicMock()
+        mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+        mock_httpx_client.__aexit__ = AsyncMock()
+        mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+        mock_ollama_client = MagicMock()
+        mock_ollama_client.show.side_effect = Exception("model 'qwen3:0.6b' not found")
+        mock_ollama = MagicMock()
+        mock_ollama.Client.return_value = mock_ollama_client
+
+        mock_to_thread = AsyncMock()
+        with (
+            patch('importlib.util.find_spec', return_value=MagicMock()),
+            patch('httpx.AsyncClient', return_value=mock_httpx_client),
+            patch.dict('sys.modules', {'ollama': mock_ollama}),
+            patch('asyncio.to_thread', mock_to_thread),
+        ):
+            result = await check_summary_provider_dependencies(
+                'ollama', summary_settings, 'http://localhost:11434',
+                auto_pull=False,
+            )
+
+        assert result['available'] is False
+        assert 'not available' in (result['reason'] or '')
+        assert mock_to_thread.call_count == 0
 
 
 class TestCheckSummaryOpenAI:

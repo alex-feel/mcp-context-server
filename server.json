@@ -410,6 +410,20 @@
           "name": "OLLAMA_HOST"
         },
         {
+          "description": "Automatically pull missing Ollama models on startup (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "OLLAMA_AUTO_PULL"
+        },
+        {
+          "description": "Timeout in seconds for pulling Ollama models (default: 900, range: 30-3600)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "OLLAMA_PULL_TIMEOUT_S"
+        },
+        {
           "description": "Ollama embedding truncation mode: false (default) returns error when context exceeded, true enables silent truncation",
           "isRequired": false,
           "format": "boolean",
@@ -1315,6 +1329,20 @@
           "format": "string",
           "isSecret": false,
           "name": "OLLAMA_HOST"
+        },
+        {
+          "description": "Automatically pull missing Ollama models on startup (default: true)",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "OLLAMA_AUTO_PULL"
+        },
+        {
+          "description": "Timeout in seconds for pulling Ollama models (default: 900, range: 30-3600)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "OLLAMA_PULL_TIMEOUT_S"
         },
         {
           "description": "Ollama embedding truncation mode: false (default) returns error when context exceeded, true enables silent truncation",

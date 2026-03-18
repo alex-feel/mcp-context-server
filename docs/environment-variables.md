@@ -44,9 +44,11 @@ For detailed authentication setup, see the [Authentication Guide](authentication
 
 ## Ollama Settings (Shared)
 
-| Variable      | Type   | Default                  | Description                                                                             |
-|---------------|--------|--------------------------|-----------------------------------------------------------------------------------------|
-| `OLLAMA_HOST` | string | `http://localhost:11434` | Ollama server URL. Shared by all features using Ollama (embeddings, summary generation) |
+| Variable                | Type    | Default                  | Constraints | Description                                                                                                                         |
+|-------------------------|---------|--------------------------|-------------|-------------------------------------------------------------------------------------------------------------------------------------|
+| `OLLAMA_HOST`           | string  | `http://localhost:11434` |             | Ollama server URL. Shared by all features using Ollama (embeddings, summary generation)                                             |
+| `OLLAMA_AUTO_PULL`      | boolean | `true`                   |             | Automatically pull missing Ollama models on startup. Set to `false` for air-gapped environments or CI/CD pipelines                  |
+| `OLLAMA_PULL_TIMEOUT_S` | integer | `900`                    | 30-3600     | Timeout in seconds for pulling Ollama models. Increase for slow networks or large models                                            |
 
 ## Embedding Settings
 

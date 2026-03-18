@@ -135,6 +135,18 @@ class OllamaSettings(CommonSettings):
         alias='OLLAMA_HOST',
         description='Ollama server URL',
     )
+    auto_pull: bool = Field(
+        default=True,
+        alias='OLLAMA_AUTO_PULL',
+        description='Automatically pull missing Ollama models on startup',
+    )
+    pull_timeout: int = Field(
+        default=900,
+        alias='OLLAMA_PULL_TIMEOUT_S',
+        ge=30,
+        le=3600,
+        description='Timeout in seconds for pulling Ollama models (default: 900s for slow networks)',
+    )
 
 
 class EmbeddingSettings(CommonSettings):

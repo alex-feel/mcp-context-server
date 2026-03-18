@@ -199,7 +199,7 @@ class TestOllamaDependencies:
 
     @pytest.mark.asyncio
     async def test_model_not_available(self) -> None:
-        """Test when embedding model not pulled."""
+        """Test when embedding model not pulled and auto-pull disabled."""
         mock_settings = MagicMock()
         mock_settings.model = 'missing-model'
 
@@ -224,10 +224,158 @@ class TestOllamaDependencies:
             ):
                 from app.migrations.dependencies import _check_ollama_dependencies
 
-                result = await _check_ollama_dependencies(mock_settings, 'http://localhost:11434')
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=False,
+                )
 
                 assert result['available'] is False
                 assert 'not available' in str(result['reason'])
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_success(self) -> None:
+        """Test auto-pull downloads missing model and succeeds."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            # First show() fails (triggers pull), second show() succeeds (verification)
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = [
+                Exception('Model not found'),
+                MagicMock(),  # verification succeeds
+            ]
+            mock_ollama_client.pull.return_value = MagicMock()
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock(return_value=MagicMock())
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=True, pull_timeout=60,
+                )
+
+                assert result['available'] is True
+                assert mock_to_thread.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_failure(self) -> None:
+        """Test auto-pull failure returns unavailable."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = Exception('Model not found')
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock(side_effect=Exception('Network error during pull'))
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=True, pull_timeout=60,
+                )
+
+                assert result['available'] is False
+                assert 'auto-pull failed' in str(result['reason'])
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_disabled(self) -> None:
+        """Test auto-pull disabled does not attempt pull."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = Exception('Model not found')
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock()
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=False,
+                )
+
+                assert result['available'] is False
+                assert 'not available' in str(result['reason'])
+                assert mock_to_thread.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_post_verification_fails(self) -> None:
+        """Test post-pull verification failure returns unavailable."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            # Both show() calls fail (first triggers pull, second is verification)
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = [
+                Exception('Model not found'),
+                Exception('Still not found after pull'),
+            ]
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock(return_value=MagicMock())
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=True, pull_timeout=60,
+                )
+
+                assert result['available'] is False
+                assert 'not usable after pull' in str(result['reason'])
 
     @pytest.mark.asyncio
     async def test_all_dependencies_available(self) -> None:
