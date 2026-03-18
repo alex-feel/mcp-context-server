@@ -75,7 +75,7 @@ class TestSearchContextResponseStructure:
     async def test_entry_has_is_text_content_truncated_field(self) -> None:
         """Each entry must have is_text_content_truncated field."""
         # Store a test entry with long content
-        long_text = 'A' * 200  # Longer than 150 chars truncation limit
+        long_text = 'A' * 400  # Longer than 300 chars truncation limit
         await store_context(
             thread_id='test_truncated_field',
             source='agent',

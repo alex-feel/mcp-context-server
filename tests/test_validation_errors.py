@@ -55,7 +55,7 @@ def mock_repos():
     repos.context = AsyncMock()
     repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.search_contexts = AsyncMock(return_value=([], {}))
     repos.context.get_by_ids = AsyncMock(return_value=[])
@@ -228,7 +228,7 @@ class TestUpdateContextValidation:
     async def test_nonexistent_context(self, mock_repos):
         """Test that updating non-existent context raises ToolError."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=False)
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(False, None))
 
             with pytest.raises(ToolError) as exc_info:
                 await update_context(

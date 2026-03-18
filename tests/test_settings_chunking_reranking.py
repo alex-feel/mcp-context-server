@@ -371,9 +371,9 @@ class TestAppSettingsIntegration:
             AppSettings()
 
     def test_truncation_length_default(self) -> None:
-        """Default truncation_length should be 150."""
+        """Default truncation_length should be 300."""
         settings = AppSettings()
-        assert settings.search.truncation_length == 150
+        assert settings.search.truncation_length == 300
 
     def test_truncation_length_custom(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Custom SEARCH_TRUNCATION_LENGTH should be accepted."""

@@ -59,7 +59,7 @@ def mock_repositories():
     # Mock context repository
     repos.context = Mock()
     repos.context.backend = mock_backend
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -269,7 +269,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_context_not_found_error(self, mock_context, mock_repositories):
         """Test error when context entry doesn't exist."""
-        mock_repositories.context.check_entry_exists.return_value = False
+        mock_repositories.context.check_entry_exists.return_value = (False, None)
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:

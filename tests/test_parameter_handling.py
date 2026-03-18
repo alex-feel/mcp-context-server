@@ -810,25 +810,6 @@ class TestForwardSlashAndSpecialCharacterTags:
         assert texts == {'Config file', 'Test file'}
 
     @pytest.mark.asyncio
-    async def test_json_serialization_of_forward_slash_tags(self) -> None:
-        """Test that forward slash tags survive JSON serialization correctly."""
-        tags = ['module/component', 'path/to/resource', 'namespace/class']
-
-        # Test as JSON string (simulating Claude Code behavior)
-        json_tags = json.dumps(tags)
-
-        # The deserialize_json_param should handle this
-        from app.server import deserialize_json_param
-
-        deserialized = deserialize_json_param(json_tags)
-        assert deserialized == tags
-
-        # Double-encoded JSON (edge case)
-        double_encoded = json.dumps(json_tags)
-        deserialized_double = deserialize_json_param(double_encoded)
-        assert deserialized_double == tags
-
-    @pytest.mark.asyncio
     async def test_extreme_forward_slash_cases(self) -> None:
         """Test edge cases with forward slashes."""
         edge_case_tags = [

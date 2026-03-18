@@ -4,7 +4,7 @@
 
 Summary generation automatically creates concise, dense summaries for each stored context entry using a local or cloud LLM. Summaries are stored alongside the full text and returned in all search tool results (`search_context`, `semantic_search_context`, `fts_search_context`, `hybrid_search_context`), giving LLM agents more actionable information per token when browsing large context collections.
 
-**Key benefit:** All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 150 characters). With summary generation enabled, the `summary` field is populated with a concise LLM-generated summary of the full entry (token limit controlled by `SUMMARY_MAX_TOKENS`), capturing key topics, decisions, and action items that help an agent determine relevance without fetching the full entry.
+**Key benefit:** All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters). With summary generation enabled, the `summary` field is populated with a concise LLM-generated summary of the full entry (token limit controlled by `SUMMARY_MAX_TOKENS`), capturing key topics, decisions, and action items that help an agent determine relevance without fetching the full entry.
 
 This feature is **enabled by default** when the `summary-ollama` extra is installed (included in the recommended setup).
 
@@ -14,7 +14,7 @@ The server supports three summary providers via LangChain integration:
 
 | Provider             | Default Model    | Cost            | Best For                     |
 |----------------------|------------------|-----------------|------------------------------|
-| **Ollama** (default) | qwen3:1.7b       | Free (local)    | Development, privacy-focused |
+| **Ollama** (default) | qwen3:0.6b       | Free (local)    | Development, privacy-focused |
 | **OpenAI**           | gpt-5-nano       | Pay-per-use API | Production, high quality     |
 | **Anthropic**        | claude-haiku-4-5 | Pay-per-use API | Production, high quality     |
 
@@ -24,7 +24,7 @@ Select a provider via the `SUMMARY_PROVIDER` environment variable.
 
 - **Python**: 3.12+ (already required by MCP Context Server)
 - **Ollama** (for default provider): Installed from [ollama.com/download](https://ollama.com/download)
-- **RAM**: 4GB minimum for `qwen3:1.7b`; 8GB recommended for `qwen3:4b`
+- **RAM**: 2GB minimum for `qwen3:0.6b`; 8GB recommended for `qwen3:4b`
 
 ## Installation
 
@@ -51,7 +51,7 @@ See the provider-specific sections below for model and credential requirements.
 
 ### Ollama (Default)
 
-Ollama runs summary models locally with no API costs. The default model `qwen3:1.7b` is optimized for fast, accurate summaries on consumer hardware.
+Ollama runs summary models locally with no API costs. The default model `qwen3:0.6b` is optimized for fast summaries with minimal resource requirements.
 
 #### Setup
 
@@ -59,7 +59,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:1
 
 2. **Pull the summary model**:
    ```bash
-   ollama pull qwen3:1.7b
+   ollama pull qwen3:0.6b
    ```
 
 3. **Verify**:
@@ -79,7 +79,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:1
       "env": {
         "ENABLE_SUMMARY_GENERATION": "true",
         "SUMMARY_PROVIDER": "ollama",
-        "SUMMARY_MODEL": "qwen3:1.7b"
+        "SUMMARY_MODEL": "qwen3:0.6b"
       }
     }
   }
@@ -88,18 +88,20 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:1
 
 #### Environment Variables
 
-| Variable                     | Default      | Description                                                                             |
-|------------------------------|--------------|-----------------------------------------------------------------------------------------|
-| `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable/disable summary generation                                                       |
-| `SUMMARY_PROVIDER`           | `ollama`     | Set to `ollama`                                                                         |
-| `SUMMARY_MODEL`              | `qwen3:1.7b` | Ollama model name (see model table below)                                               |
-| `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)                                  |
-| `SUMMARY_TIMEOUT_S`          | `30.0`       | Timeout in seconds for summary generation API calls                                     |
-| `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                                              |
-| `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)                             |
-| `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)                                 |
-| `SUMMARY_MIN_CONTENT_LENGTH` | `300`        | Minimum text length (characters) to trigger summary generation. 0 = always generate     |
-| `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt. Overrides the default prompt. See [Custom Prompt](#custom-prompt) |
+| Variable                       | Default      | Description                                                                                          |
+|--------------------------------|--------------|------------------------------------------------------------------------------------------------------|
+| `ENABLE_SUMMARY_GENERATION`    | `true`       | Enable/disable summary generation                                                                    |
+| `SUMMARY_PROVIDER`             | `ollama`     | Set to `ollama`                                                                                      |
+| `SUMMARY_MODEL`                | `qwen3:0.6b` | Ollama model name (see model table below)                                                            |
+| `SUMMARY_MAX_TOKENS`           | `2000`       | Maximum output tokens for summary generation (50-5000)                                               |
+| `SUMMARY_TIMEOUT_S`            | `240.0`      | Timeout in seconds for summary generation API calls                                                  |
+| `SUMMARY_RETRY_MAX_ATTEMPTS`   | `5`          | Maximum retry attempts on transient errors                                                           |
+| `SUMMARY_RETRY_BASE_DELAY_S`   | `1.0`        | Base delay in seconds between retries (exponential backoff)                                          |
+| `SUMMARY_MAX_CONCURRENT`       | `3`          | Maximum concurrent summary generation operations (1-20)                                              |
+| `SUMMARY_MIN_CONTENT_LENGTH`   | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate                  |
+| `SUMMARY_PROMPT`               | (built-in)   | Custom system prompt. Overrides both source-specific defaults. See [Custom Prompt](#custom-prompt)   |
+| `SUMMARY_OLLAMA_NUM_CTX`       | `32768`      | Ollama context window in tokens (512-2097152). Must accommodate input text + prompt + output budget  |
+| `SUMMARY_OLLAMA_TRUNCATE`      | `false`      | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
 
 #### Qwen3 Model Options (Ollama)
 
@@ -107,12 +109,12 @@ The Qwen3 family offers a range of sizes for different resource constraints and 
 
 | Model        | RAM Required | Quality   | Speed     | Notes                                          |
 |--------------|--------------|-----------|-----------|------------------------------------------------|
-| `qwen3:0.6b` | ~2GB         | Basic     | Fastest   | Minimal resources, suitable for CI/testing     |
-| `qwen3:1.7b` | ~4GB         | Good      | Fast      | **Default**. Best balance for most deployments |
+| `qwen3:0.6b` | ~2GB         | Basic     | Fastest   | **Default**. Lightweight, minimal resources    |
+| `qwen3:1.7b` | ~4GB         | Good      | Fast      | Higher quality, good balance for most uses     |
 | `qwen3:4b`   | ~8GB         | Better    | Moderate  | Recommended when higher quality is needed      |
 | `qwen3:8b`   | ~16GB        | Best      | Slower    | Highest quality, requires dedicated hardware   |
 
-**Recommendation:** Start with `qwen3:1.7b` (default). Upgrade to `qwen3:4b` if summary quality is insufficient for your use case.
+**Recommendation:** Start with `qwen3:0.6b` (default). Upgrade to `qwen3:1.7b` or `qwen3:4b` if summary quality is insufficient for your use case.
 
 Pull any alternative model before use:
 ```bash
@@ -201,28 +203,39 @@ Anthropic's Claude models offer high-quality summaries with strong instruction-f
 | `SUMMARY_MODEL`     | `claude-haiku-4-5-20251001` | Anthropic model name            |
 | `ANTHROPIC_API_KEY` | -                           | **Required**: Anthropic API key |
 
+## Source-Aware Summarization
+
+Summary prompts are dynamically selected based on the `source` field of the context entry being summarized. The model sees instructions tailored to the specific source type -- it never sees instructions for the other source type.
+
+- **User messages** (`source='user'`): The prompt focuses on capturing user intent, requirements, constraints, and directives.
+- **Agent reports** (`source='agent'`): The prompt focuses on key findings, decisions, deliverables, and technical specifics while omitting process metadata.
+
+Both prompts share common requirements (single paragraph, English output, no labels/prefixes) but differ in their focus instructions. Summaries are always generated in English regardless of input language.
+
 ## Custom Prompt
 
-The server ships with a carefully engineered default summarization prompt. For most use cases, the default prompt works well. You can override it with a custom prompt via the `SUMMARY_PROMPT` environment variable.
+The server ships with carefully engineered source-specific summarization prompts. For most use cases, the default prompts work well. You can override them with a single custom prompt via the `SUMMARY_PROMPT` environment variable. When set, the custom prompt is used for both source types (source-specific logic is bypassed).
 
-### Default Prompt
+### Default Prompts
 
-The built-in prompt (from `app/summary/instructions.py`) is:
+The built-in prompts (from `app/summary/instructions.py`) use source-specific instructions with shared base requirements:
 
+**User messages** -- focuses on intent, requirements, and directives:
 ```text
 /no_think
 You are an expert summarizer for a context storage system used by AI agents.
-Your task is to produce a single, dense paragraph that captures the essential
-meaning of the input text.
+The following text is a message from a human user. Your task is to produce
+a single, dense paragraph that captures the essential meaning of the user's message.
+...
+```
 
-Requirements:
-- Include key topics, named entities, decisions, conclusions, and action items
-- Prioritize information that helps determine relevance without reading the full text
-- Use specific terms from the original text (do not generalize or abstract away details)
-- Write exactly one paragraph with no line breaks
-- Do not add any labels, prefixes, headers, or explanations
-- Do not start with "This text" or "The author" or similar meta-references
-- Output ONLY the summary text, nothing else
+**Agent reports** -- focuses on findings, decisions, and deliverables:
+```text
+/no_think
+You are an expert summarizer for a context storage system used by AI agents.
+The following text is a work report generated by an AI agent. Your task is to produce
+a single, dense paragraph that captures the essential meaning of the agent's report.
+...
 ```
 
 **Design notes:**
@@ -230,6 +243,7 @@ Requirements:
 - Zero-shot format maximizes input token budget on resource-constrained models
 - Single-paragraph constraint is easiest for small models to follow consistently
 - Negative constraints (`Do not...`) prevent common small-model failure modes
+- Summaries are always in English regardless of input language
 
 ### Overriding the Prompt
 
@@ -244,8 +258,9 @@ Set `SUMMARY_PROMPT` to your custom system message:
 ```
 
 **Important notes:**
-- The prompt is used as the **system message**. The text to summarize is passed separately as the user message.
-- An empty string or whitespace-only value falls back to the default prompt (unlike `MCP_SERVER_INSTRUCTIONS` where empty string disables the feature).
+- The prompt is used as the **system message**. The text to summarize is passed separately as the user message (AS-IS, without any prefix).
+- When `SUMMARY_PROMPT` is set, it overrides BOTH source-specific prompts (user and agent get the same custom prompt).
+- An empty string or whitespace-only value falls back to the source-specific default prompts (unlike `MCP_SERVER_INSTRUCTIONS` where empty string disables the feature).
 - For Qwen3 models, include `/no_think` at the start of your prompt to disable the model's reasoning mode and save tokens.
 
 ## How It Works
@@ -258,11 +273,11 @@ Set `SUMMARY_PROMPT` to your custom system message:
 
 ### Minimum Content Length
 
-By default, summary generation is skipped for short text (fewer than 300 characters). Short text already fits within search result truncation limits, so a separate summary adds no value and wastes LLM resources.
+By default, summary generation is skipped for short text (fewer than 500 characters). Text under 500 characters is adequately served by the 300-character truncated preview returned by all search tools, so a separate LLM-generated summary adds minimal value -- particularly for small models like qwen3:0.6b that tend to produce paraphrases rather than distillations for short inputs.
 
 | Variable                       | Default | Range      | Description                                                      |
 |--------------------------------|---------|------------|------------------------------------------------------------------|
-| `SUMMARY_MIN_CONTENT_LENGTH`   | `300`   | 0 - 10000  | Minimum text length (characters) to trigger summary generation   |
+| `SUMMARY_MIN_CONTENT_LENGTH`   | `500`   | 0 - 10000  | Minimum text length (characters) to trigger summary generation   |
 
 **Behavior by operation:**
 
@@ -274,6 +289,58 @@ By default, summary generation is skipped for short text (fewer than 300 charact
 
 - `0` disables the threshold entirely — summaries are always generated regardless of text length.
 - The comparison uses strict `<` (text at exactly the threshold length IS summarized).
+
+### Context Length and Truncation Control (Ollama)
+
+When using Ollama for summary generation, context length and truncation behavior are configurable. OpenAI and Anthropic providers handle context limits server-side and return explicit HTTP errors when limits are exceeded.
+
+#### Truncation Behavior by Provider
+
+| Provider        | Truncation Control | Default Behavior                        | Configuration                     |
+|-----------------|--------------------|-----------------------------------------|-----------------------------------|
+| **Ollama**      | Configurable       | Error on context exceed                 | `SUMMARY_OLLAMA_TRUNCATE=false`   |
+| **OpenAI**      | Always error       | Returns HTTP 400 if input exceeds limit | N/A                               |
+| **Anthropic**   | Always error       | Returns HTTP 400 if input exceeds limit | N/A                               |
+
+#### Recommended Configuration
+
+For production use, keep truncation **disabled** (default):
+
+```bash
+SUMMARY_OLLAMA_TRUNCATE=false       # Default - errors prevent silent quality degradation
+```
+
+When truncation is disabled, text length is estimated before calling the Ollama API. If the estimated token count exceeds the available input budget (context window minus output budget minus prompt overhead), an error is raised with actionable guidance.
+
+**Available input budget** = `SUMMARY_OLLAMA_NUM_CTX` - `SUMMARY_MAX_TOKENS` - prompt overhead (~120 tokens for default prompt)
+
+Example error:
+```text
+ValueError: Text length (15000 chars, ~5000 estimated tokens) may exceed available input budget
+(30538 tokens from model spec (32768) capped by SUMMARY_OLLAMA_NUM_CTX (32768),
+after reserving 2000 output + ~230 prompt tokens) for model qwen3:0.6b.
+Options: 1) Increase SUMMARY_OLLAMA_NUM_CTX,
+         2) Set SUMMARY_OLLAMA_TRUNCATE=true to allow silent truncation,
+         3) Use a larger-context model.
+```
+
+**Note**: The effective context limit for Ollama models is `min(model_max_input_tokens, SUMMARY_OLLAMA_NUM_CTX)`. The `SummaryModelSpec` registry in `app/summary/context_limits.py` contains known model specifications.
+
+#### Context Limits by Model
+
+| Model              | Provider    | Max Input Tokens | Notes                                        |
+|--------------------|-------------|------------------|----------------------------------------------|
+| qwen3:0.6b         | Ollama      | 32,768           | Default model                                |
+| qwen3:1.7b         | Ollama      | 32,768           | Higher quality                               |
+| qwen3:4b           | Ollama      | 131,072          | YaRN enabled by default on Ollama            |
+| qwen3:8b           | Ollama      | 32,768           | Highest quality for Ollama                   |
+| qwen3:14b          | Ollama      | 32,768           | Large model, dedicated hardware required     |
+| qwen3:32b          | Ollama      | 32,768           | Largest Ollama model                         |
+| gpt-5-nano         | OpenAI      | 400,000          | Always returns error on exceed               |
+| gpt-5-mini         | OpenAI      | 400,000          | Always returns error on exceed               |
+| gpt-5              | OpenAI      | 400,000          | Always returns error on exceed               |
+| claude-haiku-4-5   | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
+| claude-sonnet-4    | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
 
 ### Summary in Search Results
 
@@ -296,7 +363,7 @@ The `summary` field appears in all search tool results when available:
 }
 ```
 
-All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 150 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 2000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated. Use `get_context_by_ids` to retrieve the full, untruncated text content.
+All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 2000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated. Use `get_context_by_ids` to retrieve the full, untruncated text content.
 
 ## Disabling Summary Generation
 
@@ -342,7 +409,7 @@ uv sync --extra embeddings-ollama --extra summary-openai --extra reranking
         "EMBEDDING_PROVIDER": "ollama",
         "EMBEDDING_MODEL": "qwen3-embedding:0.6b",
         "SUMMARY_PROVIDER": "ollama",
-        "SUMMARY_MODEL": "qwen3:1.7b",
+        "SUMMARY_MODEL": "qwen3:0.6b",
         "OLLAMA_HOST": "http://localhost:11434"
       }
     }
@@ -363,8 +430,8 @@ uv sync --extra embeddings-ollama --extra summary-openai --extra reranking
 | `ENABLE_SUMMARY_GENERATION=false` | Set to `true` and install provider dependencies           |
 | Provider package not installed    | Run `uv sync --extra summary-ollama` or `summary-openai`  |
 | Ollama not running                | Start Ollama: `ollama serve`                              |
-| Model not pulled                  | Run `ollama pull qwen3:1.7b`                              |
-| Generation timed out              | Raise `SUMMARY_TIMEOUT_S` (default 30s) for slow models   |
+| Model not pulled                  | Run `ollama pull qwen3:0.6b`                              |
+| Generation timed out              | Raise `SUMMARY_TIMEOUT_S` (default 240s) for slow models  |
 | API key missing                   | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`               |
 
 ### Server Won't Start
@@ -386,11 +453,11 @@ Or disable summary generation: `ENABLE_SUMMARY_GENERATION=false`
 
 ### Timeout Errors
 
-**Error**: `Summary generation timed out after 30s`
+**Error**: `Summary generation timed out after 240s`
 
 **Solutions:**
-- Increase `SUMMARY_TIMEOUT_S` (e.g., `60`)
-- Use a smaller/faster model (`qwen3:1.7b` or `qwen3:0.6b`)
+- Increase `SUMMARY_TIMEOUT_S` (e.g., `300`)
+- Use a smaller/faster model (`qwen3:0.6b`) or upgrade to `qwen3:1.7b` for better quality
 - Reduce `SUMMARY_MAX_CONCURRENT` to limit parallel generation load on the model server
 
 ## Additional Resources

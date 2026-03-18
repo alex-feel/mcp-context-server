@@ -34,7 +34,6 @@ class OpenAISummaryProvider:
         settings = get_settings()
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
-        self._prompt = resolve_summary_prompt(settings.summary)
         self._chat_model: Any = None
 
     async def initialize(self) -> None:
@@ -60,7 +59,7 @@ class OpenAISummaryProvider:
         }
         self._chat_model = ChatOpenAI(**kwargs)
         logger.info(
-            f'Initialized OpenAI summary provider: model={self._model}, '
+            f'Initialized OpenAI summary provider: {self._model}, '
             f'max_tokens={self._max_tokens}',
         )
 
@@ -69,11 +68,12 @@ class OpenAISummaryProvider:
         self._chat_model = None
         logger.info('OpenAI summary provider shut down')
 
-    async def summarize(self, text: str) -> str:
+    async def summarize(self, text: str, source: str) -> str:
         """Generate summary for the given text.
 
         Args:
             text: Text content to summarize
+            source: Source type ('user' or 'agent')
 
         Returns:
             Summary string
@@ -87,8 +87,9 @@ class OpenAISummaryProvider:
         from langchain_core.messages import HumanMessage
         from langchain_core.messages import SystemMessage
 
+        prompt = resolve_summary_prompt(source)
         messages = [
-            SystemMessage(content=self._prompt),
+            SystemMessage(content=prompt),
             HumanMessage(content=text),
         ]
 

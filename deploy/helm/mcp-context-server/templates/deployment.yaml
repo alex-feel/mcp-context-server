@@ -28,6 +28,60 @@ spec:
       serviceAccountName: {{ include "mcp-context-server.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if and .Values.ollama.enabled .Values.ollama.autoPull }}
+      initContainers:
+        - name: ollama-model-pull
+          image: {{ include "mcp-context-server.ollamaImage" . }}
+          imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # Start temporary Ollama server for model pulling
+              OLLAMA_HOST=127.0.0.1:11155 /bin/ollama serve &
+              serve_pid=$!
+
+              echo "Waiting for Ollama server to start..."
+              until OLLAMA_HOST=127.0.0.1:11155 ollama list >/dev/null 2>&1; do
+                sleep 1
+              done
+
+              {{- if .Values.search.semantic.enabled }}
+              EMBEDDING_MODEL={{ .Values.search.semantic.model | quote }}
+              echo "Checking embedding model: $EMBEDDING_MODEL"
+              if ! OLLAMA_HOST=127.0.0.1:11155 ollama show "$EMBEDDING_MODEL" >/dev/null 2>&1; then
+                echo "Pulling embedding model: $EMBEDDING_MODEL..."
+                OLLAMA_HOST=127.0.0.1:11155 ollama pull "$EMBEDDING_MODEL"
+                echo "Embedding model pulled successfully!"
+              else
+                echo "Embedding model already exists, skipping."
+              fi
+              {{- end }}
+
+              {{- if and .Values.search.summary.enabled (eq .Values.search.summary.provider "ollama") }}
+              SUMMARY_MODEL={{ .Values.search.summary.model | quote }}
+              echo "Checking summary model: $SUMMARY_MODEL"
+              if ! OLLAMA_HOST=127.0.0.1:11155 ollama show "$SUMMARY_MODEL" >/dev/null 2>&1; then
+                echo "Pulling summary model: $SUMMARY_MODEL..."
+                OLLAMA_HOST=127.0.0.1:11155 ollama pull "$SUMMARY_MODEL"
+                echo "Summary model pulled successfully!"
+              else
+                echo "Summary model already exists, skipping."
+              fi
+              {{- end }}
+
+              echo "Stopping temporary server..."
+              kill $serve_pid
+              wait $serve_pid 2>/dev/null || true
+              echo "Model pull complete."
+          resources:
+            {{- toYaml .Values.ollama.resources | nindent 12 }}
+          {{- if .Values.ollama.persistence.enabled }}
+          volumeMounts:
+            - name: ollama-data
+              mountPath: /root/.ollama
+          {{- end }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
@@ -188,6 +242,8 @@ spec:
           env:
             - name: OLLAMA_HOST
               value: "0.0.0.0"
+            - name: OLLAMA_KEEP_ALIVE
+              value: "-1"
           resources:
             {{- toYaml .Values.ollama.resources | nindent 12 }}
           {{- if .Values.ollama.persistence.enabled }}

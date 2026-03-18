@@ -138,14 +138,14 @@ Ollama runs embedding models locally with no API costs.
 
 #### Environment Variables
 
-| Variable             | Default                  | Description                                                                                          |
-|----------------------|--------------------------|------------------------------------------------------------------------------------------------------|
-| `EMBEDDING_PROVIDER` | `ollama`                 | Set to `ollama`                                                                                      |
-| `EMBEDDING_MODEL`    | `qwen3-embedding:0.6b`   | Ollama model name                                                                                    |
-| `EMBEDDING_DIM`      | `1024`                   | Vector dimensions                                                                                    |
-| `OLLAMA_HOST`        | `http://localhost:11434` | Ollama API URL                                                                                       |
-| `OLLAMA_TRUNCATE`    | `false`                  | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
-| `OLLAMA_NUM_CTX`     | `4096`                   | Context window size in tokens (range: 512-131072)                                                    |
+| Variable                       | Default                  | Description                                                                                          |
+|--------------------------------|--------------------------|------------------------------------------------------------------------------------------------------|
+| `EMBEDDING_PROVIDER`           | `ollama`                 | Set to `ollama`                                                                                      |
+| `EMBEDDING_MODEL`              | `qwen3-embedding:0.6b`   | Ollama model name                                                                                    |
+| `EMBEDDING_DIM`                | `1024`                   | Vector dimensions                                                                                    |
+| `OLLAMA_HOST`                  | `http://localhost:11434` | Ollama API URL                                                                                       |
+| `EMBEDDING_OLLAMA_TRUNCATE`    | `false`                  | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
+| `EMBEDDING_OLLAMA_NUM_CTX`     | `4096`                   | Context window size in tokens (range: 512-2097152)                                                   |
 
 **Docker Networking**: Use `host.docker.internal:11434` (Windows/macOS) or `172.17.0.1:11434` (Linux) when running in containers.
 
@@ -476,7 +476,7 @@ Currently only `max` aggregation is supported. The `avg` and `sum` methods will 
 
 Reranking uses a cross-encoder model (FlashRank) to improve search result precision by re-scoring candidates using the full query-document context.
 
-**Key point:** Reranking is enabled by default. The FlashRank model (~34MB) downloads automatically on first use.
+**Key point:** Reranking is enabled by default. The FlashRank model (~34MB) downloads automatically during server startup.
 
 ### Installation
 
@@ -520,7 +520,7 @@ uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,reranking]" mcp-c
 
 ### Performance Considerations
 
-- **First Request**: Model downloads on first use (~34MB for default model)
+- **Startup**: Model downloads during server initialization (~34MB for default model)
 - **Latency**: Adds 20-100ms per search depending on candidate count
 - **Memory**: ~200MB RAM for default model
 - **Cache**: Model cached in `~/.cache/flashrank/` by default
@@ -531,13 +531,13 @@ Embedding models have maximum context windows (measured in tokens). Text exceedi
 
 ### Truncation Behavior by Provider
 
-| Provider        | Truncation Control | Default Behavior                        | Configuration             |
-|-----------------|--------------------|-----------------------------------------|---------------------------|
-| **Ollama**      | Configurable       | Error on context exceed                 | `OLLAMA_TRUNCATE=false`   |
-| **Voyage**      | Configurable       | Error on context exceed                 | `VOYAGE_TRUNCATION=false` |
-| **OpenAI**      | Always error       | Returns error if input exceeds limit    | N/A                       |
-| **Azure**       | Always error       | Returns error if input exceeds limit    | N/A                       |
-| **HuggingFace** | Always truncate    | Silently truncates (cannot be disabled) | N/A                       |
+| Provider        | Truncation Control | Default Behavior                        | Configuration                         |
+|-----------------|--------------------|-----------------------------------------|---------------------------------------|
+| **Ollama**      | Configurable       | Error on context exceed                 | `EMBEDDING_OLLAMA_TRUNCATE=false`     |
+| **Voyage**      | Configurable       | Error on context exceed                 | `VOYAGE_TRUNCATION=false`             |
+| **OpenAI**      | Always error       | Returns error if input exceeds limit    | N/A                                   |
+| **Azure**       | Always error       | Returns error if input exceeds limit    | N/A                                   |
+| **HuggingFace** | Always truncate    | Silently truncates (cannot be disabled) | N/A                                   |
 
 ### Recommended Configuration
 
@@ -546,16 +546,16 @@ Embedding models have maximum context windows (measured in tokens). Text exceedi
 ```bash
 # Recommended: Chunking handles long documents, errors on unexpected overflows
 ENABLE_CHUNKING=true        # Default
-OLLAMA_TRUNCATE=false       # Default - errors prevent silent quality degradation
+EMBEDDING_OLLAMA_TRUNCATE=false       # Default - errors prevent silent quality degradation
 ```
 
-**Silent truncation** (`OLLAMA_TRUNCATE=true`) is only recommended when:
+**Silent truncation** (`EMBEDDING_OLLAMA_TRUNCATE=true`) is only recommended when:
 - You accept potential embedding quality degradation for very long documents
 - Chunking is disabled and you want graceful handling of edge cases
 
 ### How Pre-Validation Works
 
-When truncation is disabled (`OLLAMA_TRUNCATE=false` or `VOYAGE_TRUNCATION=false`):
+When truncation is disabled (`EMBEDDING_OLLAMA_TRUNCATE=false` or `VOYAGE_TRUNCATION=false`):
 
 1. **Before calling the embedding API**, text length is estimated using heuristic: 1 token ~ 3 characters
 2. If estimated tokens exceed the model's context limit, an error is raised **before** the API call
@@ -564,26 +564,26 @@ When truncation is disabled (`OLLAMA_TRUNCATE=false` or `VOYAGE_TRUNCATION=false
 Example error:
 ```text
 ValueError: Text length (5000 chars, ~1666 estimated tokens) may exceed context window
-(1000 tokens from OLLAMA_NUM_CTX) for model qwen3-embedding:0.6b.
+(1000 tokens from EMBEDDING_OLLAMA_NUM_CTX) for model qwen3-embedding:0.6b.
 Options: 1) Enable chunking (ENABLE_CHUNKING=true, default),
-         2) Increase OLLAMA_NUM_CTX,
-         3) Set OLLAMA_TRUNCATE=true to allow silent truncation.
+         2) Increase EMBEDDING_OLLAMA_NUM_CTX,
+         3) Set EMBEDDING_OLLAMA_TRUNCATE=true to allow silent truncation.
 ```
 
 ### Context Limits by Model
 
 Common embedding models and their context limits:
 
-| Model                  | Provider    | Max Tokens | Notes                       |
-|------------------------|-------------|------------|-----------------------------|
-| qwen3-embedding:0.6b   | Ollama      | 32,000     | Default model               |
-| nomic-embed-text       | Ollama      | 8,192      | Limited by OLLAMA_NUM_CTX   |
-| text-embedding-3-small | OpenAI      | 8,191      | Always error on exceed      |
-| text-embedding-3-large | OpenAI      | 8,191      | Always error on exceed      |
-| voyage-3               | Voyage AI   | 32,000     | Configurable via truncation |
-| all-MiniLM-L6-v2       | HuggingFace | 256        | Always silently truncates   |
+| Model                  | Provider    | Max Tokens | Notes                                 |
+|------------------------|-------------|------------|---------------------------------------|
+| qwen3-embedding:0.6b   | Ollama      | 32,000     | Default model                         |
+| nomic-embed-text       | Ollama      | 8,192      | Limited by EMBEDDING_OLLAMA_NUM_CTX   |
+| text-embedding-3-small | OpenAI      | 8,191      | Always error on exceed                |
+| text-embedding-3-large | OpenAI      | 8,191      | Always error on exceed                |
+| voyage-3               | Voyage AI   | 32,000     | Configurable via truncation           |
+| all-MiniLM-L6-v2       | HuggingFace | 256        | Always silently truncates             |
 
-**Note**: For Ollama models, the effective context limit is `min(model_max_tokens, OLLAMA_NUM_CTX)`.
+**Note**: For Ollama models, the effective context limit is `min(model_max_tokens, EMBEDDING_OLLAMA_NUM_CTX)`.
 
 ### Startup Validation
 
@@ -609,8 +609,8 @@ All providers support these settings:
 
 | Variable                       | Default | Description                |
 |--------------------------------|---------|----------------------------|
-| `EMBEDDING_TIMEOUT_S`          | `30.0`  | API timeout in seconds     |
-| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `3`     | Max retry attempts         |
+| `EMBEDDING_TIMEOUT_S`          | `240.0` | API timeout in seconds     |
+| `EMBEDDING_RETRY_MAX_ATTEMPTS` | `5`     | Max retry attempts         |
 | `EMBEDDING_RETRY_BASE_DELAY_S` | `1.0`   | Base delay between retries |
 
 ### Full Configuration Example
@@ -628,8 +628,8 @@ All providers support these settings:
         "EMBEDDING_MODEL": "text-embedding-3-small",
         "EMBEDDING_DIM": "1536",
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-        "EMBEDDING_TIMEOUT_S": "30",
-        "EMBEDDING_RETRY_MAX_ATTEMPTS": "3",
+        "EMBEDDING_TIMEOUT_S": "240",
+        "EMBEDDING_RETRY_MAX_ATTEMPTS": "5",
         "LANGSMITH_TRACING": "true",
         "LANGSMITH_API_KEY": "${LANGSMITH_API_KEY}"
       }
@@ -1012,7 +1012,7 @@ VOYAGE_BATCH_SIZE=20  # Higher for throughput, lower for latency
 
 Increase timeout for slow connections:
 ```bash
-EMBEDDING_TIMEOUT_S=60
+EMBEDDING_TIMEOUT_S=300
 ```
 
 ## Additional Resources

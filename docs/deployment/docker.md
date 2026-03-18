@@ -262,10 +262,10 @@ All Docker Compose files use environment variables for configuration. Key settin
 |------------------------------|--------------|-----------------------------------------------------------------|
 | `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable automatic LLM-based summary generation                   |
 | `SUMMARY_PROVIDER`           | `ollama`     | Summary provider: `ollama`, `openai`, or `anthropic`            |
-| `SUMMARY_MODEL`              | `qwen3:1.7b` | Summary model name (provider-specific)                          |
+| `SUMMARY_MODEL`              | `qwen3:0.6b` | Summary model name (provider-specific)                          |
 | `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)          |
-| `SUMMARY_TIMEOUT_S`          | `30.0`       | Timeout in seconds for summary generation API calls             |
-| `SUMMARY_RETRY_MAX_ATTEMPTS` | `3`          | Maximum retry attempts on transient errors                      |
+| `SUMMARY_TIMEOUT_S`          | `240.0`      | Timeout in seconds for summary generation API calls             |
+| `SUMMARY_RETRY_MAX_ATTEMPTS` | `5`          | Maximum retry attempts on transient errors                      |
 | `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)     |
 | `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)         |
 | `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt; unset uses the optimized built-in default |
@@ -334,7 +334,7 @@ Text chunking and cross-encoder reranking are enabled by default to improve sear
 | `ENABLE_CHUNKING`  | `true`                    | Text chunking for long document embedding       |
 | `CHUNK_SIZE`       | `1500`                    | Target chunk size in characters                 |
 | `ENABLE_RERANKING` | `true`                    | Cross-encoder result reranking                  |
-| `RERANKING_MODEL`  | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB, downloads on first use) |
+| `RERANKING_MODEL`  | `ms-marco-MiniLM-L-12-v2` | FlashRank model (~34MB, downloads on startup)   |
 
 To disable these features, set the environment variables to `false` in your Docker Compose file:
 
@@ -568,7 +568,7 @@ grep OPENAI_API_KEY deploy/docker/.env
 **Solutions:**
 ```bash
 # Pull the summary model
-docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3:1.7b
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3:0.6b
 
 # Verify model is available
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama list
@@ -593,7 +593,7 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs mcp-contex
 | `pgvector extension is not installed`  | pgvector not enabled           | Enable via dashboard or CREATE EXTENSION (exit 78)          |
 | `insufficient privileges`              | Cannot create pgvector         | Grant permissions via dashboard (exit 78)                   |
 | `[Errno 111] Connection refused`       | PostgreSQL not running         | Wait for PostgreSQL to start (exit 69, will retry)          |
-| `summary field is empty`               | Summary model not pulled       | Run `ollama pull qwen3:1.7b` in the ollama container        |
+| `summary field is empty`               | Summary model not pulled       | Run `ollama pull qwen3:0.6b` in the ollama container        |
 
 ## Advanced Configuration
 
@@ -717,7 +717,7 @@ docker build \
 
 | Extra               | Provider          | Package               | Default Model     |
 |---------------------|-------------------|-----------------------|-------------------|
-| `summary-ollama`    | Ollama (default)  | langchain-ollama      | qwen3:1.7b        |
+| `summary-ollama`    | Ollama (default)  | langchain-ollama      | qwen3:0.6b        |
 | `summary-openai`    | OpenAI            | langchain-openai      | gpt-5-nano        |
 | `summary-anthropic` | Anthropic         | langchain-anthropic   | claude-haiku-4-5  |
 

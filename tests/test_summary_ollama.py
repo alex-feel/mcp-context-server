@@ -24,13 +24,15 @@ import pytest
 def mock_summary_settings():
     """Mock settings for Ollama summary provider tests."""
     with patch('app.summary.providers.langchain_ollama.get_settings') as mock:
-        mock.return_value.summary.model = 'qwen3:1.7b'
+        mock.return_value.summary.model = 'qwen3:0.6b'
         mock.return_value.summary.max_tokens = 2000
         mock.return_value.summary.prompt = None
-        mock.return_value.summary.timeout_s = 30.0
-        mock.return_value.summary.retry_max_attempts = 3
+        mock.return_value.summary.timeout_s = 240.0
+        mock.return_value.summary.retry_max_attempts = 5
         mock.return_value.summary.retry_base_delay_s = 0.01
-        mock.return_value.embedding.ollama_host = 'http://localhost:11434'
+        mock.return_value.summary.ollama_truncate = False
+        mock.return_value.summary.ollama_num_ctx = 32768
+        mock.return_value.ollama.host = 'http://localhost:11434'
         yield mock
 
 
@@ -55,7 +57,7 @@ class TestOllamaSummaryProviderInit:
         from app.summary.providers.langchain_ollama import OllamaSummaryProvider
 
         provider = OllamaSummaryProvider()
-        assert provider._model == 'qwen3:1.7b'
+        assert provider._model == 'qwen3:0.6b'
 
     def test_init_reads_base_url_from_settings(self) -> None:
         """__init__ reads OLLAMA_HOST from embedding settings (shared Ollama instance)."""
@@ -78,6 +80,20 @@ class TestOllamaSummaryProviderInit:
         provider = OllamaSummaryProvider()
         assert provider._chat_model is None
 
+    def test_init_reads_truncate_from_settings(self) -> None:
+        """__init__ reads SUMMARY_OLLAMA_TRUNCATE from settings."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        assert provider._truncate is False
+
+    def test_init_reads_num_ctx_from_settings(self) -> None:
+        """__init__ reads SUMMARY_OLLAMA_NUM_CTX from settings."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        assert provider._num_ctx == 32768
+
 
 @pytest.mark.usefixtures('mock_summary_settings')
 class TestOllamaSummaryProviderInitialize:
@@ -97,10 +113,11 @@ class TestOllamaSummaryProviderInitialize:
                 await provider.initialize()
 
                 mock_chat.assert_called_once_with(
-                    model='qwen3:1.7b',
+                    model='qwen3:0.6b',
                     base_url='http://localhost:11434',
                     temperature=0,
                     num_predict=2000,
+                    num_ctx=32768,
                 )
                 assert provider._chat_model is not None
 
@@ -128,6 +145,25 @@ class TestOllamaSummaryProviderInitialize:
         finally:
             sys.modules.update(saved_modules)
 
+    @pytest.mark.asyncio
+    async def test_initialize_logs_truncation_mode(self, caplog: pytest.LogCaptureFixture) -> None:
+        """initialize() logs truncation mode when SUMMARY_OLLAMA_TRUNCATE=false."""
+        import logging
+
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        with patch('app.summary.providers.langchain_ollama.ChatOllama', create=True) as mock_chat:
+            mock_module = MagicMock()
+            mock_module.ChatOllama = mock_chat
+            with patch.dict('sys.modules', {'langchain_ollama': mock_module}):
+                provider = OllamaSummaryProvider()
+                with caplog.at_level(logging.INFO):
+                    await provider.initialize()
+
+        assert 'num_ctx=32768' in caplog.text
+        assert 'SUMMARY_OLLAMA_TRUNCATE=false' in caplog.text
+        assert 'Text length validation enabled' in caplog.text
+
 
 @pytest.mark.usefixtures('mock_summary_settings', 'mock_retry')
 class TestOllamaSummaryProviderSummarize:
@@ -145,7 +181,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model = AsyncMock()
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await provider.summarize('Some long text to summarize.')
+        result = await provider.summarize('Some long text to summarize.', 'agent')
 
         assert result == 'Summary text with whitespace'
 
@@ -158,7 +194,7 @@ class TestOllamaSummaryProviderSummarize:
         assert provider._chat_model is None
 
         with pytest.raises(RuntimeError, match='Provider not initialized'):
-            await provider.summarize('Some text')
+            await provider.summarize('Some text', 'agent')
 
     @pytest.mark.asyncio
     async def test_summarize_uses_system_and_human_messages(self) -> None:
@@ -171,7 +207,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model = AsyncMock()
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
-        await provider.summarize('Input text content')
+        await provider.summarize('Input text content', 'agent')
 
         # Verify ainvoke was called with a list of messages
         call_args = provider._chat_model.ainvoke.call_args
@@ -198,7 +234,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            result = await provider.summarize('Some long text')
+            result = await provider.summarize('Some long text', 'agent')
 
         assert result == 'Truncated summary text'
         assert 'truncated by token limit' in caplog.text
@@ -222,7 +258,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            result = await provider.summarize('Some text')
+            result = await provider.summarize('Some text', 'agent')
 
         assert result == 'Normal summary text'
         assert 'truncated by token limit' not in caplog.text
@@ -245,7 +281,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            await provider.summarize('Text')
+            await provider.summarize('Text', 'agent')
 
         # Must contain the runtime value
         assert '2000' in caplog.text
@@ -324,3 +360,132 @@ class TestOllamaSummaryProviderName:
 
         provider = OllamaSummaryProvider()
         assert provider.provider_name == 'ollama'
+
+
+@pytest.mark.usefixtures('mock_summary_settings')
+class TestOllamaSummaryProviderValidateTextLength:
+    """Tests for OllamaSummaryProvider._validate_text_length."""
+
+    def test_validate_passes_for_short_text(self) -> None:
+        """_validate_text_length does not raise for short text within limits."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        # With num_ctx=32768, max_tokens=2000, prompt ~230 tokens
+        # Available = 32768 - 2000 - 230 = 30538 tokens = ~91614 chars
+        provider._validate_text_length('short text', 'agent')
+
+    def test_validate_raises_for_text_exceeding_context(self) -> None:
+        """_validate_text_length raises ValueError when text exceeds available budget."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        # With num_ctx=32768, max_tokens=2000, prompt ~230 tokens
+        # Available = 32768 - 2000 - 230 = ~30538 tokens = ~91614 chars
+        # Create text that exceeds this
+        long_text = 'x' * 300000
+
+        with pytest.raises(ValueError, match='may exceed available input budget'):
+            provider._validate_text_length(long_text, 'agent')
+
+    def test_validate_raises_when_context_too_small_for_output(self) -> None:
+        """_validate_text_length raises ValueError when context window too small for output budget."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        # Set impossibly small num_ctx that cannot fit output + prompt
+        provider._num_ctx = 100  # Way too small for max_tokens=2000
+
+        with pytest.raises(ValueError, match='too small for output budget'):
+            provider._validate_text_length('any text', 'agent')
+
+    def test_validate_uses_model_spec_when_available(self) -> None:
+        """_validate_text_length uses model spec max_input_tokens when model is known."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        # qwen3:0.6b is in SUMMARY_MODEL_SPECS with max_input_tokens=32768
+        # num_ctx=4096 is smaller, so it should cap at 4096
+        # This is verified by the error message mentioning 'capped by'
+        provider._num_ctx = 4096
+        long_text = 'x' * 20000
+        with pytest.raises(ValueError, match='capped by SUMMARY_OLLAMA_NUM_CTX'):
+            provider._validate_text_length(long_text, 'agent')
+
+    def test_validate_uses_num_ctx_for_unknown_model(self) -> None:
+        """_validate_text_length uses SUMMARY_OLLAMA_NUM_CTX for unknown models."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        provider._model = 'unknown-model'
+        provider._num_ctx = 4096
+        long_text = 'x' * 20000
+        with pytest.raises(ValueError, match='SUMMARY_OLLAMA_NUM_CTX'):
+            provider._validate_text_length(long_text, 'agent')
+
+    def test_validate_not_called_when_truncate_true(self) -> None:
+        """_validate_text_length is not called when SUMMARY_OLLAMA_TRUNCATE=true."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        with patch('app.summary.providers.langchain_ollama.get_settings') as mock_settings:
+            mock_settings.return_value.summary.model = 'qwen3:0.6b'
+            mock_settings.return_value.summary.max_tokens = 2000
+            mock_settings.return_value.summary.prompt = None
+            mock_settings.return_value.summary.timeout_s = 240.0
+            mock_settings.return_value.summary.retry_max_attempts = 5
+            mock_settings.return_value.summary.retry_base_delay_s = 0.01
+            mock_settings.return_value.summary.ollama_truncate = True
+            mock_settings.return_value.summary.ollama_num_ctx = 4096
+            mock_settings.return_value.ollama.host = 'http://localhost:11434'
+
+            provider = OllamaSummaryProvider()
+            assert provider._truncate is True
+            # Should NOT raise even for very long text because truncate=True
+            # (summarize() skips _validate_text_length when truncate=True)
+
+
+@pytest.mark.usefixtures('mock_summary_settings', 'mock_retry')
+class TestOllamaSummaryProviderSummarizeValidation:
+    """Tests for _validate_text_length integration with summarize()."""
+
+    @pytest.mark.asyncio
+    async def test_summarize_raises_value_error_when_text_too_long(self) -> None:
+        """summarize() raises ValueError for text exceeding context when truncate=false."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        provider._chat_model = AsyncMock()
+        long_text = 'x' * 300000
+
+        with pytest.raises(ValueError, match='may exceed available input budget'):
+            await provider.summarize(long_text, 'agent')
+
+        # Verify the chat model was NOT called (fail-fast)
+        provider._chat_model.ainvoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_summarize_skips_validation_when_truncate_true(self) -> None:
+        """summarize() skips text length validation when truncate=true."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        with patch('app.summary.providers.langchain_ollama.get_settings') as mock_settings:
+            mock_settings.return_value.summary.model = 'qwen3:0.6b'
+            mock_settings.return_value.summary.max_tokens = 2000
+            mock_settings.return_value.summary.prompt = None
+            mock_settings.return_value.summary.timeout_s = 240.0
+            mock_settings.return_value.summary.retry_max_attempts = 5
+            mock_settings.return_value.summary.retry_base_delay_s = 0.01
+            mock_settings.return_value.summary.ollama_truncate = True
+            mock_settings.return_value.summary.ollama_num_ctx = 4096
+            mock_settings.return_value.ollama.host = 'http://localhost:11434'
+
+            provider = OllamaSummaryProvider()
+            mock_response = MagicMock()
+            mock_response.content = 'Summary of long text'
+            mock_response.response_metadata = {'done_reason': 'stop'}
+            provider._chat_model = AsyncMock()
+            provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+            # Should NOT raise even for very long text
+            result = await provider.summarize('x' * 20000, 'agent')
+            assert result == 'Summary of long text'

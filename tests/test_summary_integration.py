@@ -48,7 +48,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(123, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -104,16 +104,16 @@ class TestGenerateSummaryWithTimeout:
         ):
             mock_settings.summary.max_concurrent = 2
 
-            result = await context_tools._generate_summary_with_timeout('Long text')
+            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result == 'Generated summary'
-        mock_provider.summarize.assert_awaited_once_with('Long text')
+        mock_provider.summarize.assert_awaited_once_with('Long text', 'agent')
 
     @pytest.mark.asyncio
     async def test_timeout_raises_tool_error(self) -> None:
         """Raise ToolError when total timeout is exceeded."""
 
-        async def slow_summary(_text: str) -> str:
+        async def slow_summary(_text: str, _source: str) -> str:
             await asyncio.sleep(0.2)
             return 'Too late'
 
@@ -128,13 +128,13 @@ class TestGenerateSummaryWithTimeout:
             mock_settings.summary.max_concurrent = 2
 
             with pytest.raises(ToolError, match='Summary generation exceeded total timeout'):
-                await context_tools._generate_summary_with_timeout('Long text')
+                await context_tools.generate_summary_with_timeout('Long text', 'agent')
 
     @pytest.mark.asyncio
     async def test_provider_none_skips_generation(self) -> None:
         """Return None when no summary provider is configured."""
         with patch('app.tools.context.get_summary_provider', return_value=None):
-            result = await context_tools._generate_summary_with_timeout('Long text')
+            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result is None
 
@@ -155,7 +155,7 @@ class TestSummaryStoreWithMocks:
             await asyncio.wait_for(summary_started.wait(), timeout=0.2)
             return [ChunkEmbedding(embedding=[0.1, 0.2], start_index=0, end_index=len(text))]
 
-        async def fake_summary(_text: str) -> str:
+        async def fake_summary(_text: str, _source: str) -> str:
             summary_started.set()
             await asyncio.wait_for(embedding_started.wait(), timeout=0.2)
             return 'Generated summary'
@@ -164,10 +164,10 @@ class TestSummaryStoreWithMocks:
             patch('app.tools.context.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.context.get_embedding_provider', return_value=MagicMock()),
             patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools.context._generate_embeddings_with_timeout', side_effect=fake_embedding),
-            patch('app.tools.context._generate_summary_with_timeout', side_effect=fake_summary),
+            patch('app.tools.context.generate_embeddings_with_timeout', side_effect=fake_embedding),
+            patch('app.tools.context.generate_summary_with_timeout', side_effect=fake_summary),
         ):
-            long_text = 'x' * 300
+            long_text = 'x' * 500
             result = await store_context(
                 thread_id='parallel-summary-thread',
                 source='agent',
@@ -209,7 +209,7 @@ class TestSummaryIntegration:
         mock_provider = MagicMock()
         mock_provider.summarize = AsyncMock(return_value='Updated summary')
 
-        updated_text = 'x' * 300
+        updated_text = 'x' * 500
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
@@ -225,7 +225,7 @@ class TestSummaryIntegration:
         assert rows[0]['text_content'] == updated_text
         assert rows[0]['summary'] == 'Updated summary'
         assert '(summary regenerated)' in result['message']
-        mock_provider.summarize.assert_awaited_once_with(updated_text)
+        mock_provider.summarize.assert_awaited_once_with(updated_text, 'agent')
 
     @pytest.mark.asyncio
     async def test_update_context_preserves_summary_on_metadata_only_change(self) -> None:
@@ -258,7 +258,7 @@ class TestSummaryIntegration:
     async def test_search_context_shows_truncated_text_and_summary(self) -> None:
         """Search results show truncated text_content alongside summary field."""
         repos = await ensure_repositories()
-        long_text = 'A' * 250
+        long_text = 'A' * 400
         await repos.context.store_with_deduplication(
             thread_id='search-summary-thread',
             source='agent',
@@ -273,7 +273,7 @@ class TestSummaryIntegration:
         entry = result['results'][0]
         # text_content is truncated original text, NOT summary
         assert entry['text_content'] != long_text
-        assert len(entry['text_content']) <= 153  # 150 + '...'
+        assert len(entry['text_content']) <= 303  # 300 + '...'
         assert entry['is_text_content_truncated'] is True
         # summary is a separate field
         assert entry['summary'] == 'Short summary for search results'
@@ -282,7 +282,7 @@ class TestSummaryIntegration:
     async def test_search_context_truncates_without_summary(self) -> None:
         """Truncate long text and show empty summary when no summary stored."""
         repos = await ensure_repositories()
-        long_text = 'B' * 250
+        long_text = 'B' * 400
         await repos.context.store_with_deduplication(
             thread_id='search-fallback-thread',
             source='agent',
@@ -311,7 +311,7 @@ class TestSummaryIntegration:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
-            dedup_text = 'x' * 300
+            dedup_text = 'x' * 500
             first_result = await store_context(
                 thread_id='dedup-summary-thread',
                 source='agent',
@@ -336,7 +336,7 @@ class TestSummaryIntegration:
         mock_provider = MagicMock()
         mock_provider.summarize = AsyncMock(return_value='Newly generated summary')
 
-        dedup_text = 'y' * 300
+        dedup_text = 'y' * 500
 
         with (
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
@@ -382,7 +382,7 @@ class TestSummaryIntegration:
 
         assert second_result['context_id'] == context_id
         assert '(summary generated)' in second_result['message']
-        mock_provider2.summarize.assert_awaited_once_with(dedup_text)
+        mock_provider2.summarize.assert_awaited_once_with(dedup_text, 'agent')
 
         rows = await repos.context.get_by_ids([context_id])
         assert rows[0]['summary'] == 'Summary for missing case'
@@ -619,6 +619,7 @@ class TestSummaryLifespan:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch(
@@ -628,6 +629,7 @@ class TestSummaryLifespan:
                 patch('app.summary.create_summary_provider', return_value=mock_summary_provider),
             ):
                 mock_mcp = MagicMock()
+                mock_mcp.list_tools = AsyncMock(return_value=[])
 
                 async with lifespan(mock_mcp):
                     assert app.startup.get_summary_provider() is mock_summary_provider
@@ -684,10 +686,12 @@ class TestSummaryLifespan:
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
+                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
                 mock_mcp = MagicMock()
+                mock_mcp.list_tools = AsyncMock(return_value=[])
 
                 async with lifespan(mock_mcp):
                     assert app.startup.get_summary_provider() is None

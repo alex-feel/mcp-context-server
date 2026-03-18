@@ -37,8 +37,7 @@ class RerankingProvider(Protocol):
         """Initialize the reranking provider.
 
         This method should:
-        - Load model weights (lazy initialization on first use is acceptable)
-        - Validate configuration
+        - Load model weights and validate configuration
         - Prepare any necessary resources
 
         Raises:

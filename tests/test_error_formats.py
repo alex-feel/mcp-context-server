@@ -134,7 +134,7 @@ class TestErrorFormatConsistency:
         # Mock repository to say entry exists
         with patch('app.tools.context.ensure_repositories') as mock_repos:
             container = MagicMock()
-            container.context.check_entry_exists = AsyncMock(return_value=True)
+            container.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
             mock_repos.return_value = container
 
             with pytest.raises(ToolError) as exc_info:
@@ -156,7 +156,7 @@ class TestErrorFormatConsistency:
         # Mock repository to say entry exists
         with patch('app.tools.context.ensure_repositories') as mock_repos:
             container = MagicMock()
-            container.context.check_entry_exists = AsyncMock(return_value=True)
+            container.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
             mock_repos.return_value = container
 
             with pytest.raises(ToolError) as exc_info:

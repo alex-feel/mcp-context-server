@@ -41,7 +41,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context = MagicMock()
     repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(100, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -91,15 +91,16 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Batch summary')
 
         entries = [
-            {'thread_id': 'batch-sum-1', 'source': 'user', 'text': 'x' * 300},
-            {'thread_id': 'batch-sum-1', 'source': 'agent', 'text': 'y' * 300},
+            {'thread_id': 'batch-sum-1', 'source': 'user', 'text': 'x' * 500},
+            {'thread_id': 'batch-sum-1', 'source': 'agent', 'text': 'y' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
             result = await store_context_batch(entries=entries, atomic=True)
 
@@ -128,7 +129,7 @@ class TestStoreContextBatchWithSummary:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.startup.get_summary_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
         ):
             result = await store_context_batch(entries=entries, atomic=True)
 
@@ -148,15 +149,16 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=RuntimeError('LLM unavailable'))
 
         entries = [
-            {'thread_id': 'batch-fail-1', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'batch-fail-1', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
-            pytest.raises(ToolError, match='Summary generation failed'),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+            pytest.raises(ToolError, match='Generation failed'),
         ):
             await store_context_batch(entries=entries, atomic=True)
 
@@ -171,7 +173,7 @@ class TestStoreContextBatchWithSummary:
 
         call_count = 0
 
-        async def selective_summary(_text: str) -> str:
+        async def selective_summary(_text: str, _source: str) -> str:
             nonlocal call_count
             call_count += 1
             if call_count == 2:
@@ -182,15 +184,16 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=selective_summary)
 
         entries = [
-            {'thread_id': 'partial-sum', 'source': 'user', 'text': 'x' * 300},
-            {'thread_id': 'partial-sum', 'source': 'agent', 'text': 'y' * 300},
+            {'thread_id': 'partial-sum', 'source': 'user', 'text': 'x' * 500},
+            {'thread_id': 'partial-sum', 'source': 'agent', 'text': 'y' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
             result = await store_context_batch(entries=entries, atomic=False)
 
@@ -200,7 +203,7 @@ class TestStoreContextBatchWithSummary:
         failed_results = [r for r in result['results'] if not r['success']]
         assert len(failed_results) == 1
         assert failed_results[0]['error'] is not None
-        assert 'Summary generation failed' in failed_results[0]['error']
+        assert 'Generation failed' in failed_results[0]['error']
 
     @pytest.mark.asyncio
     async def test_store_batch_dedup_preserves_summary(self) -> None:
@@ -214,14 +217,15 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='New summary for dedup')
 
         entries = [
-            {'thread_id': 'dedup-sum', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'dedup-sum', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
             result = await store_context_batch(entries=entries, atomic=True)
 
@@ -243,15 +247,16 @@ class TestStoreContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=slow_summary)
 
         entries = [
-            {'thread_id': 'timeout-sum', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'timeout-sum', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=0.01),
-            pytest.raises(ToolError, match='Summary generation failed'),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=0.01),
+            pytest.raises(ToolError, match='Generation failed'),
         ):
             await store_context_batch(entries=entries, atomic=True)
 
@@ -271,21 +276,22 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Updated batch summary')
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 300},
-            {'context_id': 2, 'text': 'y' * 300},
+            {'context_id': 1, 'text': 'x' * 500},
+            {'context_id': 2, 'text': 'y' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
             result = await update_context_batch(updates=updates, atomic=True)
 
         assert result['success'] is True
         assert result['succeeded'] == 2
-        assert '(summaries generated)' in result['message']
+        assert '(summaries regenerated)' in result['message']
         assert mock_summary.summarize.await_count == 2
 
         # Verify summary passed to update_context_entry
@@ -308,7 +314,8 @@ class TestUpdateContextBatchWithSummary:
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
             result = await update_context_batch(updates=updates, atomic=True)
 
@@ -328,15 +335,16 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=RuntimeError('Provider down'))
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 300},
+            {'context_id': 1, 'text': 'x' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
-            pytest.raises(ToolError, match='Summary generation failed'),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+            pytest.raises(ToolError, match='Generation failed'),
         ):
             await update_context_batch(updates=updates, atomic=True)
 
@@ -350,7 +358,7 @@ class TestUpdateContextBatchWithSummary:
 
         call_count = 0
 
-        async def selective_summary(_text: str) -> str:
+        async def selective_summary(_text: str, _source: str) -> str:
             nonlocal call_count
             call_count += 1
             if call_count == 2:
@@ -361,15 +369,16 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=selective_summary)
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 300},
-            {'context_id': 2, 'text': 'y' * 300},
+            {'context_id': 1, 'text': 'x' * 500},
+            {'context_id': 2, 'text': 'y' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
         ):
             result = await update_context_batch(updates=updates, atomic=False)
 
@@ -379,7 +388,7 @@ class TestUpdateContextBatchWithSummary:
         failed_results = [r for r in result['results'] if not r['success']]
         assert len(failed_results) == 1
         assert failed_results[0]['error'] is not None
-        assert 'Summary generation failed' in failed_results[0]['error']
+        assert 'Generation failed' in failed_results[0]['error']
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -399,15 +408,18 @@ class TestBatchSummaryEdgeCases:
         mock_summary.summarize = AsyncMock(return_value='Combined summary')
 
         entries = [
-            {'thread_id': 'both-gen', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'both-gen', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
             patch('app.startup.get_chunking_service', return_value=None),
+            patch('app.tools.context.get_chunking_service', return_value=None),
         ):
             result = await store_context_batch(entries=entries, atomic=True)
 
@@ -418,8 +430,8 @@ class TestBatchSummaryEdgeCases:
         mock_summary.summarize.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_store_batch_embedding_fails_summary_skipped_non_atomic(self) -> None:
-        """Skip summary generation for entries that failed embedding in non-atomic mode."""
+    async def test_store_batch_embedding_fails_summary_runs_non_atomic(self) -> None:
+        """Both embedding and summary run in parallel via gather; entry fails on embedding error."""
         repos = _create_mock_repositories()
         repos.context.store_with_deduplication = AsyncMock(return_value=(400, False))
 
@@ -430,18 +442,118 @@ class TestBatchSummaryEdgeCases:
         mock_summary.summarize = AsyncMock(return_value='Summary text')
 
         entries = [
-            {'thread_id': 'emb-fail', 'source': 'user', 'text': 'x' * 300},
+            {'thread_id': 'emb-fail', 'source': 'user', 'text': 'x' * 500},
         ]
 
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
             patch('app.startup.get_summary_provider', return_value=mock_summary),
-            patch('app.summary.retry.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
             patch('app.startup.get_chunking_service', return_value=None),
+            patch('app.tools.context.get_chunking_service', return_value=None),
         ):
             result = await store_context_batch(entries=entries, atomic=False)
 
         assert result['failed'] == 1
-        # Summary should not be attempted for embedding-failed entries
+        # With parallel gather, summary IS called even when embedding fails
+        mock_summary.summarize.assert_awaited_once()
+
+
+@pytest.mark.usefixtures('mock_server_dependencies')
+class TestBatchMessageAccuracy:
+    """Tests that batch message reflects actual generation, not provider availability."""
+
+    @pytest.mark.asyncio
+    async def test_store_batch_short_text_no_summary_message(self) -> None:
+        """Message omits 'summaries generated' when all entries skip summary due to min_content_length."""
+        repos = _create_mock_repositories()
+        repos.context.store_with_deduplication = AsyncMock(
+            side_effect=[(101, False), (102, False)],
+        )
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should not be called')
+
+        entries = [
+            {'thread_id': 'batch-short', 'source': 'user', 'text': 'Short text'},
+            {'thread_id': 'batch-short', 'source': 'agent', 'text': 'Also short'},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.startup.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+        ):
+            result = await store_context_batch(entries=entries, atomic=True)
+
+        assert result['success'] is True
+        assert 'summaries generated' not in result['message']
         mock_summary.summarize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_batch_short_text_no_summary_message(self) -> None:
+        """Message omits 'summaries regenerated' when all entries skip summary due to min_content_length."""
+        repos = _create_mock_repositories()
+        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+        repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should not be called')
+
+        updates = [
+            {'context_id': 1, 'text': 'Short text'},
+            {'context_id': 2, 'text': 'Also short'},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.startup.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        assert 'summaries regenerated' not in result['message']
+        assert 'summaries generated' not in result['message']
+        mock_summary.summarize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_batch_no_text_change_no_regeneration_message(self) -> None:
+        """Message omits generation info when only metadata is updated (no text changes)."""
+        repos = _create_mock_repositories()
+        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+        repos.context.update_context_entry = AsyncMock(return_value=(True, ['metadata']))
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should not be called')
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2])
+
+        updates = [
+            {'context_id': 1, 'metadata': {'key': 'val1'}},
+            {'context_id': 2, 'metadata': {'key': 'val2'}},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.startup.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.compute_summary_total_timeout', return_value=1.0),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        assert 'embeddings regenerated' not in result['message']
+        assert 'summaries regenerated' not in result['message']
+        mock_summary.summarize.assert_not_awaited()
+        mock_embedding.embed_query.assert_not_awaited()

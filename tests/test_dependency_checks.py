@@ -165,7 +165,7 @@ class TestOllamaDependencies:
         with patch('importlib.util.find_spec', return_value=None):
             from app.migrations.dependencies import _check_ollama_dependencies
 
-            result = await _check_ollama_dependencies(mock_settings)
+            result = await _check_ollama_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'langchain-ollama' in str(result['reason'])
@@ -177,7 +177,6 @@ class TestOllamaDependencies:
         from app.migrations.dependencies import _check_ollama_dependencies
 
         mock_settings = MagicMock()
-        mock_settings.ollama_host = 'http://localhost:11434'
         mock_settings.model = 'test-model'
 
         # Create async context manager mock that raises on get()
@@ -193,16 +192,15 @@ class TestOllamaDependencies:
             patch('importlib.util.find_spec', return_value=MagicMock()),
             patch('httpx.AsyncClient', return_value=async_cm),
         ):
-            result = await _check_ollama_dependencies(mock_settings)
+            result = await _check_ollama_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'not accessible' in str(result['reason'])
 
     @pytest.mark.asyncio
     async def test_model_not_available(self) -> None:
-        """Test when embedding model not pulled."""
+        """Test when embedding model not pulled and auto-pull disabled."""
         mock_settings = MagicMock()
-        mock_settings.ollama_host = 'http://localhost:11434'
         mock_settings.model = 'missing-model'
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
@@ -226,16 +224,163 @@ class TestOllamaDependencies:
             ):
                 from app.migrations.dependencies import _check_ollama_dependencies
 
-                result = await _check_ollama_dependencies(mock_settings)
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=False,
+                )
 
                 assert result['available'] is False
                 assert 'not available' in str(result['reason'])
 
     @pytest.mark.asyncio
+    async def test_auto_pull_success(self) -> None:
+        """Test auto-pull downloads missing model and succeeds."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            # First show() fails (triggers pull), second show() succeeds (verification)
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = [
+                Exception('Model not found'),
+                MagicMock(),  # verification succeeds
+            ]
+            mock_ollama_client.pull.return_value = MagicMock()
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock(return_value=MagicMock())
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=True, pull_timeout=60,
+                )
+
+                assert result['available'] is True
+                assert mock_to_thread.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_failure(self) -> None:
+        """Test auto-pull failure returns unavailable."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = Exception('Model not found')
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock(side_effect=Exception('Network error during pull'))
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=True, pull_timeout=60,
+                )
+
+                assert result['available'] is False
+                assert 'auto-pull failed' in str(result['reason'])
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_disabled(self) -> None:
+        """Test auto-pull disabled does not attempt pull."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = Exception('Model not found')
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock()
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=False,
+                )
+
+                assert result['available'] is False
+                assert 'not available' in str(result['reason'])
+                assert mock_to_thread.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_auto_pull_post_verification_fails(self) -> None:
+        """Test post-pull verification failure returns unavailable."""
+        mock_settings = MagicMock()
+        mock_settings.model = 'missing-model'
+
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_httpx_client = MagicMock()
+            mock_httpx_client.__aenter__ = AsyncMock(return_value=mock_httpx_client)
+            mock_httpx_client.__aexit__ = AsyncMock()
+            mock_httpx_client.get = AsyncMock(return_value=mock_response)
+
+            # Both show() calls fail (first triggers pull, second is verification)
+            mock_ollama_client = MagicMock()
+            mock_ollama_client.show.side_effect = [
+                Exception('Model not found'),
+                Exception('Still not found after pull'),
+            ]
+            mock_ollama = MagicMock()
+            mock_ollama.Client.return_value = mock_ollama_client
+
+            mock_to_thread = AsyncMock(return_value=MagicMock())
+            with (
+                patch('httpx.AsyncClient', return_value=mock_httpx_client),
+                patch.dict('sys.modules', {'ollama': mock_ollama}),
+                patch('asyncio.to_thread', mock_to_thread),
+            ):
+                from app.migrations.dependencies import _check_ollama_dependencies
+
+                result = await _check_ollama_dependencies(
+                    mock_settings, 'http://localhost:11434', auto_pull=True, pull_timeout=60,
+                )
+
+                assert result['available'] is False
+                assert 'not usable after pull' in str(result['reason'])
+
+    @pytest.mark.asyncio
     async def test_all_dependencies_available(self) -> None:
         """Test successful check with mocked Ollama."""
         mock_settings = MagicMock()
-        mock_settings.ollama_host = 'http://localhost:11434'
         mock_settings.model = 'test-model'
 
         with patch('importlib.util.find_spec', return_value=MagicMock()):
@@ -258,7 +403,7 @@ class TestOllamaDependencies:
             ):
                 from app.migrations.dependencies import _check_ollama_dependencies
 
-                result = await _check_ollama_dependencies(mock_settings)
+                result = await _check_ollama_dependencies(mock_settings, 'http://localhost:11434')
 
                 assert result['available'] is True
                 assert result['reason'] is None
@@ -275,7 +420,7 @@ class TestOpenAIDependencies:
         with patch('importlib.util.find_spec', return_value=None):
             from app.migrations.dependencies import _check_openai_dependencies
 
-            result = await _check_openai_dependencies(mock_settings)
+            result = await _check_openai_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'langchain-openai' in str(result['reason'])
@@ -289,7 +434,7 @@ class TestOpenAIDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_openai_dependencies
 
-            result = await _check_openai_dependencies(mock_settings)
+            result = await _check_openai_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'OPENAI_API_KEY' in str(result['reason'])
@@ -303,7 +448,7 @@ class TestOpenAIDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_openai_dependencies
 
-            result = await _check_openai_dependencies(mock_settings)
+            result = await _check_openai_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is True
 
@@ -319,7 +464,7 @@ class TestAzureDependencies:
         with patch('importlib.util.find_spec', return_value=None):
             from app.migrations.dependencies import _check_azure_dependencies
 
-            result = await _check_azure_dependencies(mock_settings)
+            result = await _check_azure_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'langchain-openai' in str(result['reason'])
@@ -335,7 +480,7 @@ class TestAzureDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_azure_dependencies
 
-            result = await _check_azure_dependencies(mock_settings)
+            result = await _check_azure_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'AZURE_OPENAI_API_KEY' in str(result['reason'])
@@ -351,7 +496,7 @@ class TestAzureDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_azure_dependencies
 
-            result = await _check_azure_dependencies(mock_settings)
+            result = await _check_azure_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'AZURE_OPENAI_ENDPOINT' in str(result['reason'])
@@ -367,7 +512,7 @@ class TestAzureDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_azure_dependencies
 
-            result = await _check_azure_dependencies(mock_settings)
+            result = await _check_azure_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is True
 
@@ -383,7 +528,7 @@ class TestHuggingFaceDependencies:
         with patch('importlib.util.find_spec', return_value=None):
             from app.migrations.dependencies import _check_huggingface_dependencies
 
-            result = await _check_huggingface_dependencies(mock_settings)
+            result = await _check_huggingface_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'langchain-huggingface' in str(result['reason'])
@@ -397,7 +542,7 @@ class TestHuggingFaceDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_huggingface_dependencies
 
-            result = await _check_huggingface_dependencies(mock_settings)
+            result = await _check_huggingface_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'HUGGINGFACEHUB_API_TOKEN' in str(result['reason'])
@@ -411,7 +556,7 @@ class TestHuggingFaceDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_huggingface_dependencies
 
-            result = await _check_huggingface_dependencies(mock_settings)
+            result = await _check_huggingface_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is True
 
@@ -427,7 +572,7 @@ class TestVoyageDependencies:
         with patch('importlib.util.find_spec', return_value=None):
             from app.migrations.dependencies import _check_voyage_dependencies
 
-            result = await _check_voyage_dependencies(mock_settings)
+            result = await _check_voyage_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'langchain-voyageai' in str(result['reason'])
@@ -441,7 +586,7 @@ class TestVoyageDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_voyage_dependencies
 
-            result = await _check_voyage_dependencies(mock_settings)
+            result = await _check_voyage_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is False
             assert 'VOYAGE_API_KEY' in str(result['reason'])
@@ -455,6 +600,6 @@ class TestVoyageDependencies:
         with patch('importlib.util.find_spec', return_value=MagicMock()):
             from app.migrations.dependencies import _check_voyage_dependencies
 
-            result = await _check_voyage_dependencies(mock_settings)
+            result = await _check_voyage_dependencies(mock_settings, 'http://localhost:11434')
 
             assert result['available'] is True

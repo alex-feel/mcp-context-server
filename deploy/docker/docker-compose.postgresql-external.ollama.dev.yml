@@ -26,21 +26,22 @@ services:
       - FASTMCP_PORT=8000
       # Disable Rich log formatting and ASCII banner for clean single-line container logs
       - FASTMCP_ENABLE_RICH_LOGGING=false
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # PostgreSQL backend (connection details from .env file)
       - STORAGE_BACKEND=postgresql
       # Semantic search configuration
       - ENABLE_SEMANTIC_SEARCH=true
       # Embedding provider selection (default: ollama)
-      - EMBEDDING_PROVIDER=ollama
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
       - OLLAMA_HOST=http://ollama:11434
-      - EMBEDDING_MODEL=qwen3-embedding:0.6b
-      - EMBEDDING_DIM=1024
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
       # Summary generation
-      - SUMMARY_MODEL=qwen3:1.7b
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
+      - SUMMARY_PROVIDER=${SUMMARY_PROVIDER:-ollama}
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
       # LangSmith tracing (optional, disabled by default)
@@ -52,7 +53,7 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
-    restart: on-failure
+    restart: on-failure:5
 
   ollama:
     build:
@@ -61,12 +62,21 @@ services:
     pull_policy: build
     environment:
       - OLLAMA_HOST=0.0.0.0
-      - EMBEDDING_MODEL=qwen3-embedding:0.6b
-      - SUMMARY_MODEL=qwen3:1.7b
+      - OLLAMA_KEEP_ALIVE=-1
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
     volumes:
       - ollama-data:/root/.ollama
+    # Uncomment to enable NVIDIA GPU acceleration (requires NVIDIA Container Toolkit)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "ollama list | grep -q \"$${EMBEDDING_MODEL%%:*}\" || exit 1"]
+      test: ["CMD-SHELL", "ollama show \"$${EMBEDDING_MODEL}\" >/dev/null 2>&1 && ollama show \"$${SUMMARY_MODEL}\" >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 30s
       retries: 30

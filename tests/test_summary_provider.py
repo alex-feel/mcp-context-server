@@ -30,8 +30,8 @@ class _CompleteSummaryProvider:
     async def shutdown(self) -> None:
         pass
 
-    async def summarize(self, text: str) -> str:
-        return f'summary of {len(text)} chars'
+    async def summarize(self, text: str, source: str) -> str:
+        return f'summary of {len(text)} chars ({source})'
 
     async def is_available(self) -> bool:
         return True

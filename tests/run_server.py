@@ -143,7 +143,7 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     # Disable in test runs when the default/configured summary model is not available
     # so the integration test suite can start in environments without LLMs.
     if summary_provider is None or summary_provider == 'ollama':
-        check_model = summary_model or 'qwen3:1.7b'
+        check_model = summary_model or 'qwen3:0.6b'
         if not is_ollama_model_available(check_model):
             os.environ['ENABLE_SUMMARY_GENERATION'] = 'false'
             print(

@@ -27,7 +27,7 @@ def mock_embedding_settings():
     """Mock embedding settings for fast tests."""
     with patch('app.embeddings.retry.get_settings') as mock:
         mock.return_value.embedding.timeout_s = 1.0
-        mock.return_value.embedding.retry_max_attempts = 3
+        mock.return_value.embedding.retry_max_attempts = 5
         mock.return_value.embedding.retry_base_delay_s = 0.01  # Fast retries for testing
         yield mock
 
@@ -96,8 +96,8 @@ async def test_exhausted_retries_raises_error() -> None:
     with pytest.raises(EmbeddingRetryExhaustedError) as exc_info:
         await with_retry_and_timeout(mock_func, 'test_operation')
 
-    assert 'failed after 3 attempts' in str(exc_info.value)
-    assert mock_func.call_count == 3
+    assert 'failed after 5 attempts' in str(exc_info.value)
+    assert mock_func.call_count == 5
 
 
 @pytest.mark.asyncio
@@ -171,3 +171,28 @@ async def test_multiple_failures_then_success() -> None:
 
     assert result == [0.1, 0.2, 0.3]
     assert mock_func.call_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_embedding_settings')
+async def test_retry_log_shows_operation_name(caplog: pytest.LogCaptureFixture) -> None:
+    """Verify retry log message shows operation name, not <unknown>."""
+    call_count = 0
+
+    async def flaky_func() -> list[float]:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ConnectionError('transient failure')
+        return [0.1, 0.2]
+
+    with caplog.at_level('WARNING'):
+        result = await with_retry_and_timeout(flaky_func, 'test_embed_operation')
+
+    assert result == [0.1, 0.2]
+    assert call_count == 2
+
+    retry_messages = [r.message for r in caplog.records if 'Retrying' in r.message]
+    assert len(retry_messages) >= 1
+    assert 'test_embed_operation' in retry_messages[0]
+    assert '<unknown>' not in retry_messages[0]

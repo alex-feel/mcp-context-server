@@ -122,7 +122,7 @@ def is_ollama_model_available(model: str | None = None) -> bool:
     try:
         from app.settings import get_settings
 
-        host = get_settings().embedding.ollama_host
+        host = get_settings().ollama.host
     except Exception:
         host = 'http://localhost:11434'
 

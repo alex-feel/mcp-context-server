@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -16,10 +15,6 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
 logger = logging.getLogger(__name__)
-
-# Constants
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class CommonSettings(BaseSettings):
@@ -128,6 +123,32 @@ class InstructionsSettings(CommonSettings):
     )
 
 
+class OllamaSettings(CommonSettings):
+    """Shared Ollama infrastructure settings.
+
+    Contains settings shared by all features that use Ollama
+    (embeddings, summary generation).
+    """
+
+    host: str = Field(
+        default='http://localhost:11434',
+        alias='OLLAMA_HOST',
+        description='Ollama server URL',
+    )
+    auto_pull: bool = Field(
+        default=True,
+        alias='OLLAMA_AUTO_PULL',
+        description='Automatically pull missing Ollama models on startup',
+    )
+    pull_timeout: int = Field(
+        default=900,
+        alias='OLLAMA_PULL_TIMEOUT_S',
+        ge=30,
+        le=3600,
+        description='Timeout in seconds for pulling Ollama models (default: 900s for slow networks)',
+    )
+
+
 class EmbeddingSettings(CommonSettings):
     """Embedding provider settings following LangChain conventions.
 
@@ -179,14 +200,14 @@ class EmbeddingSettings(CommonSettings):
 
     # Timeout and retry settings
     timeout_s: float = Field(
-        default=30.0,
+        default=240.0,
         alias='EMBEDDING_TIMEOUT_S',
         gt=0,
         le=300,
         description='Timeout in seconds for embedding generation API calls',
     )
     retry_max_attempts: int = Field(
-        default=3,
+        default=5,
         alias='EMBEDDING_RETRY_MAX_ATTEMPTS',
         ge=1,
         le=10,
@@ -211,24 +232,19 @@ class EmbeddingSettings(CommonSettings):
                     'Default 3 balances throughput vs resource contention.',
     )
 
-    # Ollama-specific (matches OLLAMA_HOST convention)
-    ollama_host: str = Field(
-        default='http://localhost:11434',
-        alias='OLLAMA_HOST',
-        description='Ollama server URL',
-    )
+    # Ollama-specific context and truncation settings
     ollama_num_ctx: int = Field(
         default=4096,
-        alias='OLLAMA_NUM_CTX',
+        alias='EMBEDDING_OLLAMA_NUM_CTX',
         ge=512,
-        le=131072,
-        description='Ollama context length in tokens. Default 4096. '
+        le=2097152,
+        description='Ollama embedding context length in tokens. Default 4096. '
                     'Must match or exceed model capabilities.',
     )
     ollama_truncate: bool = Field(
         default=False,
-        alias='OLLAMA_TRUNCATE',
-        description='Control text truncation when exceeding context length. '
+        alias='EMBEDDING_OLLAMA_TRUNCATE',
+        description='Control text truncation when exceeding embedding context length. '
                     'False (default): Returns error on exceeded context. '
                     'True: Silently truncates input (may degrade embedding quality).',
     )
@@ -531,11 +547,11 @@ class SummarySettings(CommonSettings):
     )
 
     model: str = Field(
-        default='qwen3:1.7b',
+        default='qwen3:0.6b',
         alias='SUMMARY_MODEL',
-        description='Summary generation model name. Default: qwen3:1.7b. '
-                    'Alternatives: qwen3:4b (higher quality), qwen3:8b (highest quality), '
-                    'qwen3:0.6b (minimal resources)',
+        description='Summary generation model name. Default: qwen3:0.6b. '
+                    'Alternatives: qwen3:1.7b (higher quality), qwen3:4b (high quality), '
+                    'qwen3:8b (highest quality)',
     )
 
     max_tokens: int = Field(
@@ -550,7 +566,7 @@ class SummarySettings(CommonSettings):
     )
 
     timeout_s: float = Field(
-        default=30.0,
+        default=240.0,
         alias='SUMMARY_TIMEOUT_S',
         gt=0,
         le=300,
@@ -558,7 +574,7 @@ class SummarySettings(CommonSettings):
     )
 
     retry_max_attempts: int = Field(
-        default=3,
+        default=5,
         alias='SUMMARY_RETRY_MAX_ATTEMPTS',
         ge=1,
         le=10,
@@ -591,14 +607,32 @@ class SummarySettings(CommonSettings):
     )
 
     min_content_length: int = Field(
-        default=300,
+        default=500,
         ge=0,
         le=10000,
         alias='SUMMARY_MIN_CONTENT_LENGTH',
         description='Minimum text content length (characters) to trigger summary generation. '
-                    'Content shorter than this threshold is not summarized (the text itself is '
-                    'short enough to serve as its own summary). '
+                    'Content shorter than this threshold is not summarized (the truncated preview '
+                    'at 300 characters adequately represents the content, so a separate '
+                    'LLM-generated summary adds minimal value for small models). '
                     'Set to 0 to always generate summaries regardless of content length.',
+    )
+
+    # Ollama-specific context and truncation settings
+    ollama_num_ctx: int = Field(
+        default=32768,
+        alias='SUMMARY_OLLAMA_NUM_CTX',
+        ge=512,
+        le=2097152,
+        description='Ollama summary context length in tokens. Default 32768 (matches qwen3 native context). '
+                    'Must match or exceed model capabilities for summary generation.',
+    )
+    ollama_truncate: bool = Field(
+        default=False,
+        alias='SUMMARY_OLLAMA_TRUNCATE',
+        description='Control text truncation when exceeding summary context length. '
+                    'False (default): Returns error on exceeded context. '
+                    'True: Silently truncates input (summary generated from incomplete text).',
     )
 
 
@@ -703,11 +737,11 @@ class SearchSettings(CommonSettings):
                     'created_at and updated_at will be added in future releases)',
     )
     truncation_length: int = Field(
-        default=150,
+        default=300,
         ge=50,
         le=1000,
         alias='SEARCH_TRUNCATION_LENGTH',
-        description='Maximum character length for truncated text_content in search results (default: 150)',
+        description='Maximum character length for truncated text_content in search results (default: 300)',
     )
 
 
@@ -948,6 +982,9 @@ class AppSettings(CommonSettings):
     summary: SummarySettings = Field(default_factory=lambda: SummarySettings())
     chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
     reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
+
+    # Shared Ollama settings
+    ollama: OllamaSettings = Field(default_factory=lambda: OllamaSettings())
 
     # Infrastructure settings
     transport: TransportSettings = Field(default_factory=lambda: TransportSettings())

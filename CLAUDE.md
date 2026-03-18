@@ -32,7 +32,7 @@ Note: Integration tests use SQLite-only temporary databases. PostgreSQL is produ
 
 ### MCP Server Architecture
 
-FastMCP 2.0-based server providing persistent context storage for LLM agents:
+FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
    - Entry point with FastMCP instance, lifespan management, and main() function (~680 lines)
@@ -42,6 +42,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
    - Global state and initialization in `app/startup/` package: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`
    - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup. See "Known Upstream Bugs" section.
+   - **Middleware** (`app/middleware/`): Schema-aware `JsonStringDeserializerMiddleware` for MCP client compatibility. Uses FastMCP 3.1.x Middleware API. Registered via `mcp.add_middleware()` in lifespan() after all tool registrations. See "Known Upstream Bugs" section.
 
 2. **Authentication Layer** (`app/auth/simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison. Configured via `MCP_AUTH_PROVIDER` and `MCP_AUTH_TOKEN`.
 
@@ -64,7 +65,7 @@ FastMCP 2.0-based server providing persistent context storage for LLM agents:
 
 7. **Reranking Layer** (`app/reranking/`): `RerankingProvider` Protocol, same factory pattern. Provider: FlashRank (default, 34MB model, ONNX inference offloaded to thread pool).
 
-8. **Summary Generation Layer** (`app/summary/`): `SummaryProvider` Protocol, same factory pattern. Providers: Ollama, OpenAI, Anthropic. Retry via tenacity. Default model: `qwen3:1.7b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
+8. **Summary Generation Layer** (`app/summary/`): `SummaryProvider` Protocol, same factory pattern. Providers: Ollama, OpenAI, Anthropic. Retry via tenacity. Context limits registry (`context_limits.py`). Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
 
 9. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain's `RecursiveCharacterTextSplitter`). `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
 
@@ -118,11 +119,12 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
    - **Protocol** (`@runtime_checkable`): `StorageBackend`, `TransactionContext`, `EmbeddingProvider`, `SummaryProvider`, `RerankingProvider`
    - **Repository**: All SQL in `app/repositories/`, never in server.py or tools
    - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_summary_provider()`, `create_reranking_provider()` — dynamic imports via `PROVIDER_MODULES` dicts
+   - **Middleware**: `JsonStringDeserializerMiddleware` extends FastMCP `Middleware` base class, registered via `mcp.add_middleware()`
    - **DI**: `RepositoryContainer` injects all repositories
 
 5. **Error Classification** (`app/errors.py`): `ConfigurationError` (exit 78, supervisor never retries), `DependencyError` (exit 69, may retry with backoff). `classify_provider_error()` classifies embedding/summary provider failures. BSD sysexits.h exit codes for Docker/Kubernetes restart policies.
 
-6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Empty string disables.
+6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Empty string disables. Includes `## Skill Integration` section directing agents to discover and apply context-server-related Skills.
 
 ## Package and Release
 
@@ -164,6 +166,8 @@ Build args: `EMBEDDING_EXTRA` (default: `embeddings-ollama`), `SUMMARY_EXTRA` (d
 
 `server.json` enables MCP client discovery. Every `Field(alias=...)` in `app/settings.py` MUST have a corresponding entry in `server.json` `environmentVariables`. This invariant is enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
 
+When adding or modifying environment variables in `app/settings.py`, update **both** `server.json` **and** `docs/environment-variables.md`.
+
 ## Environment Variables
 
 Configuration via `.env` file or environment. **Canonical source**: `app/settings.py` — all env vars with defaults, descriptions, and validation.
@@ -178,9 +182,9 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **Feature Toggles**: `ENABLE_EMBEDDING_GENERATION` (true*), `ENABLE_SEMANTIC_SEARCH` (false*), `ENABLE_FTS` (false*), `ENABLE_HYBRID_SEARCH` (false*), `ENABLE_CHUNKING` (true*), `ENABLE_RERANKING` (true*), `ENABLE_SUMMARY_GENERATION` (true*)
 
-**Embedding**: `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (30*), `EMBEDDING_MAX_CONCURRENT` (3*)
+**Embedding**: `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (240*), `EMBEDDING_MAX_CONCURRENT` (3*)
 
-**Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:1.7b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (300*; text shorter than this skips summary; 0 = always generate), `SUMMARY_PROMPT`
+**Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:0.6b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (500*; text shorter than this skips summary (truncated preview is sufficient); 0 = always generate), `SUMMARY_PROMPT`
 
 **Provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, and metadata indexing vars**: See `app/settings.py` for complete list with defaults and descriptions.
 
@@ -215,7 +219,11 @@ Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in 
 
 **CRITICAL:** Compose files MUST contain ONLY variables REQUIRED for the deployment to function. All other settings use defaults from `app/settings.py`. This prevents drift between code defaults and hardcoded compose values.
 
-**Required**: Transport (`MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`), `FASTMCP_ENABLE_RICH_LOGGING=false`, `LOG_LEVEL=INFO`, storage backend selection, `OLLAMA_HOST` (sidecar), feature toggles, non-default providers/dimensions, `RERANKING_CACHE_DIR`. Model names on Ollama sidecar (`EMBEDDING_MODEL`, `SUMMARY_MODEL`) are required for auto-pull.
+**Configurable variables** use `${VAR:-default}` interpolation so users can override them from `.env` without editing compose files. The default in `${VAR:-default}` MUST match the value that was previously hardcoded.
+
+**Required (configurable via `${VAR:-default}`)**: `LOG_LEVEL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PROVIDER`, `SUMMARY_MODEL`, `SUMMARY_PROVIDER`. For internal PostgreSQL variants: `POSTGRESQL_USER`, `POSTGRESQL_PASSWORD`, `POSTGRESQL_DATABASE`. Model names on Ollama sidecar (`EMBEDDING_MODEL`, `SUMMARY_MODEL`) use the same interpolation to stay in sync.
+
+**Required (hardcoded, NOT configurable)**: Transport (`MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`), `FASTMCP_ENABLE_RICH_LOGGING=false`, storage backend selection, `OLLAMA_HOST` (sidecar bind + client URL), `OLLAMA_KEEP_ALIVE=-1`, feature toggles (`ENABLE_*`), container paths (`DB_PATH`, `RERANKING_CACHE_DIR`), Docker networking (`POSTGRESQL_HOST`, `POSTGRESQL_PORT`).
 
 **Do NOT add**: Tuning parameters with sensible defaults, feature-specific settings with correct defaults.
 
@@ -234,7 +242,7 @@ set LOG_LEVEL=DEBUG && uv run mcp-context-server  # Debug logs (Windows)
 uv run python -c "from app.startup import init_database; import asyncio; asyncio.run(init_database())"  # Test DB
 ```
 
-**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → `ENABLE_SEMANTIC_SEARCH=true` + `uv sync --extra embeddings-ollama`. FTS unavailable → `ENABLE_FTS=true`. Summary generation unavailable → `ENABLE_SUMMARY_GENERATION=true` + `uv sync --extra summary-ollama` + `ollama pull qwen3:1.7b`.
+**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → `ENABLE_SEMANTIC_SEARCH=true` + `uv sync --extra embeddings-ollama`. FTS unavailable → `ENABLE_FTS=true`. Summary generation unavailable → `ENABLE_SUMMARY_GENERATION=true` + `uv sync --extra summary-ollama` + `ollama pull qwen3:0.6b`.
 
 ## Code Quality Standards
 
@@ -251,7 +259,7 @@ Ruff (127 chars, single quotes), mypy/pyright strict for `app/`. **Never** `from
 # CORRECT: get_settings().storage.db_path
 ```
 
-Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` for new env vars.
+Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` and `docs/environment-variables.md` for new env vars.
 
 ### Settings Class Architecture
 
@@ -274,7 +282,7 @@ class AppSettings(CommonSettings):
     my_feature: MyFeatureSettings = Field(default_factory=MyFeatureSettings)
 ```
 
-Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `TransportSettings`, `AuthSettings`, `InstructionsSettings`, `StorageSettings` (extends `BaseSettings`), `EmbeddingSettings`, `SummarySettings`, `SemanticSearchSettings`, `FtsSettings`, `HybridSearchSettings`, `SearchSettings`, `ChunkingSettings`, `RerankingSettings`, `FtsPassageSettings`, `LangSmithSettings`.
+Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `TransportSettings`, `AuthSettings`, `InstructionsSettings`, `OllamaSettings`, `StorageSettings` (extends `BaseSettings`), `EmbeddingSettings`, `SummarySettings`, `SemanticSearchSettings`, `FtsSettings`, `HybridSearchSettings`, `SearchSettings`, `ChunkingSettings`, `RerankingSettings`, `FtsPassageSettings`, `LangSmithSettings`.
 
 ### FASTMCP_* Env Var Governance
 
@@ -314,7 +322,9 @@ All three layers use identical patterns:
 
 ### Generation-First Transactional Integrity
 
-**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_SUMMARY_GENERATION=true` and generation fails, NO data is saved — transaction rolls back completely. Embeddings and summaries are generated OUTSIDE the transaction via `asyncio.gather()`, then all DB ops (context + tags + images + embeddings + summary) in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `_generate_embeddings_with_timeout` is the single source of truth for the timeout/semaphore pattern used by single-entry operations; batch operations have their own generation loop.
+**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_SUMMARY_GENERATION=true` and generation fails, NO data is saved — transaction rolls back completely. Embeddings and summaries are generated OUTSIDE the transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops (context + tags + images + embeddings + summary) in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` are the single sources of truth for the timeout/semaphore pattern, used by all four tools: `store_context`, `update_context`, `store_context_batch`, and `update_context_batch`. Each `gather` result is independently inspected for exceptions — if any generation task fails, the error is raised (or collected in non-atomic batch mode) without cancelling the other task.
+
+**NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embedding generation fails, or `ENABLE_SUMMARY_GENERATION=true` and summary generation fails, the entry MUST NOT be saved. There is no "store without embeddings" or "store without summary" fallback when generation is enabled. This is non-negotiable mandatory behavior. The only way to skip generation is to explicitly disable it via `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`. Only the user can make this decision.
 
 ### Deduplication Behavior (store_context)
 
@@ -343,3 +353,10 @@ Temporary monkey-patch for MCP Python SDK where `BaseSession._send_response()` a
 
 - **Upstream tracking**: [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), PRs [#2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [#2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
 - **Removal**: When upstream MCP SDK fixes this, update `mcp` dependency, delete `app/patches/`, remove patch import/call from `app/server.py`, delete `tests/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/test_real_server.py`, remove this section.
+
+**Client JSON String Serialization** (`app/middleware/json_string_deserializer.py`):
+
+Schema-aware FastMCP middleware that fixes MCP clients (including Claude Code) intermittently serializing list/dict parameters as JSON strings instead of native types. Uses the FastMCP 3.1.x Middleware API (`Middleware` base class, `on_call_tool` override). The `build_schema_map()` helper inspects each tool's JSON Schema at startup to identify parameters with type `array` or `object` (including `Optional` variants via `anyOf` and `$ref` definitions). At runtime, only those parameters are candidates for deserialization — string parameters are never touched. Handles double-encoding. Registered in `app/server.py` lifespan (step 22) via `mcp.add_middleware()`, after all `register_tool()` calls.
+
+- **Upstream tracking**: [Claude Code #22394](https://github.com/anthropics/claude-code/issues/22394) (closed NOT_PLANNED), [Claude Code #26094](https://github.com/anthropics/claude-code/issues/26094), [FastMCP #932](https://github.com/jlowin/fastmcp/issues/932), Claude Code #5504, #4192, #3084
+- **Removal**: When upstream clients fix their serialization, delete `app/middleware/`, remove middleware import and registration block (step 22) from `app/server.py` lifespan(), delete `tests/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/test_real_server.py`, remove this section.

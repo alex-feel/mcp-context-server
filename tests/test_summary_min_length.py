@@ -36,10 +36,10 @@ update_context = app.server.update_context
 class TestMinContentLengthSettings:
     """Tests for SummarySettings.min_content_length field."""
 
-    def test_default_is_300(self) -> None:
-        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 300."""
+    def test_default_is_500(self) -> None:
+        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 500."""
         settings = SummarySettings()
-        assert settings.min_content_length == 300
+        assert settings.min_content_length == 500
 
     def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_MIN_CONTENT_LENGTH can be set via env var."""
@@ -83,7 +83,7 @@ class TestMinContentLengthSettings:
         from app.settings import AppSettings
 
         settings = AppSettings()
-        assert settings.summary.min_content_length == 300
+        assert settings.summary.min_content_length == 500
 
 
 @asynccontextmanager
@@ -107,7 +107,7 @@ def _make_mock_repos() -> MagicMock:
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
     repos.context.get_summary = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -152,7 +152,7 @@ class TestStoreContextMinContentLength:
         mock_summary_provider = Mock()
         mock_summary_provider.summarize = AsyncMock(return_value='a summary')
 
-        short_text = 'a' * 299  # Just below default threshold of 300
+        short_text = 'a' * 499  # Just below default threshold of 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
@@ -181,14 +181,14 @@ class TestStoreContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        long_text = 'a' * 300  # Exactly at default threshold of 300
+        long_text = 'a' * 500  # Exactly at default threshold of 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='generated summary',
             ),
@@ -212,15 +212,15 @@ class TestStoreContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        # Text at exactly 300 chars should be summarized
-        boundary_text = 'x' * 300
+        # Text at exactly 500 chars should be summarized
+        boundary_text = 'x' * 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='boundary summary',
             ) as mock_gen_summary,
@@ -233,8 +233,8 @@ class TestStoreContextMinContentLength:
             )
 
             assert result['success'] is True
-            # _generate_summary_with_timeout should have been called
-            mock_gen_summary.assert_called_once_with(boundary_text)
+            # generate_summary_with_timeout should have been called
+            mock_gen_summary.assert_called_once_with(boundary_text, 'agent')
 
     @pytest.mark.asyncio
     async def test_one_char_below_threshold_skips(self) -> None:
@@ -245,8 +245,8 @@ class TestStoreContextMinContentLength:
         mock_summary_provider = Mock()
         mock_summary_provider.summarize = AsyncMock(return_value='a summary')
 
-        # 299 chars = one below default threshold of 300
-        below_text = 'b' * 299
+        # 499 chars = one below default threshold of 500
+        below_text = 'b' * 499
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
@@ -269,15 +269,15 @@ class TestStoreContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        # 301 chars = one above default threshold of 300
-        above_text = 'c' * 301
+        # 501 chars = one above default threshold of 500
+        above_text = 'c' * 501
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='above-boundary summary',
             ) as mock_gen_summary,
@@ -290,7 +290,7 @@ class TestStoreContextMinContentLength:
             )
 
             assert result['success'] is True
-            mock_gen_summary.assert_called_once_with(above_text)
+            mock_gen_summary.assert_called_once_with(above_text, 'agent')
 
     @pytest.mark.asyncio
     async def test_zero_threshold_always_generates(
@@ -318,7 +318,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='short summary',
             ) as mock_gen_summary,
@@ -332,7 +332,7 @@ class TestStoreContextMinContentLength:
 
             assert result['success'] is True
             # With threshold=0, summary should be generated even for short text
-            mock_gen_summary.assert_called_once_with(short_text)
+            mock_gen_summary.assert_called_once_with(short_text, 'agent')
 
 
 class TestUpdateContextMinContentLength:
@@ -344,12 +344,12 @@ class TestUpdateContextMinContentLength:
         mock_repos = _make_mock_repos()
         mock_ctx = _make_mock_context()
 
-        short_text = 'a' * 100  # Well below default threshold of 300
+        short_text = 'a' * 100  # Well below default threshold of 500
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
-            patch('app.tools.context._generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id=1,
@@ -380,11 +380,11 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context._generate_summary_with_timeout',
+                'app.tools.context.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='updated summary',
             ),
-            patch('app.tools.context._generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id=1,

@@ -111,8 +111,8 @@ search:
     model: "qwen3-embedding:0.6b"
     dim: 1024
     # Timeout and retry settings
-    timeout: 30
-    retryMaxAttempts: 3
+    timeout: 240
+    retryMaxAttempts: 5
     retryBaseDelay: 1.0
     # Concurrency control
     maxConcurrent: 3     # Maximum parallel embedding requests (1-20)
@@ -139,13 +139,13 @@ search:
   summary:
     enabled: true
     provider: "ollama"       # ollama (default), openai, or anthropic
-    model: "qwen3:1.7b"     # Summary model
+    model: "qwen3:0.6b"     # Summary model
     maxTokens: 2000          # Max output tokens (50-5000)
-    minContentLength: 300    # Min chars to trigger summary (0=always)
+    minContentLength: 500    # Min chars to trigger summary (0=always)
     prompt: ""               # Custom prompt (empty = built-in default)
     # Timeout and retry settings
-    timeout: 30.0
-    retryMaxAttempts: 3
+    timeout: 240.0
+    retryMaxAttempts: 5
     retryBaseDelay: 1.0
     # Concurrency control
     maxConcurrent: 3         # Maximum parallel summary requests (1-20)
@@ -155,10 +155,17 @@ search:
 # Ollama sidecar configuration (used when search.semantic.provider=ollama or search.summary.provider=ollama)
 ollama:
   enabled: false
-  # Truncation control: false (default) returns error when context exceeded, true enables silent truncation
-  truncate: false
-  # Context window size in tokens (range: 512-131072)
-  numCtx: 4096
+  # Embedding truncation control: false (default) returns error when context exceeded, true enables silent truncation
+  embeddingTruncate: false
+  # Embedding context window size in tokens (range: 512-2097152)
+  embeddingNumCtx: 4096
+  # Summary truncation control: false (default) returns error when context exceeded, true enables silent truncation
+  summaryTruncate: false
+  # Summary context window size in tokens (range: 512-2097152)
+  summaryNumCtx: 32768
+  # Auto-pull models on startup via initContainer (derived from search.semantic.model and search.summary.model)
+  # Set to false to disable auto-pull (models must be pre-loaded manually)
+  autoPull: true
   image:
     repository: ollama/ollama
     tag: "latest"
@@ -170,6 +177,8 @@ ollama:
     limits:
       cpu: "2000m"
       memory: "4Gi"
+      # Uncomment to enable NVIDIA GPU acceleration (requires NVIDIA device plugin)
+      # nvidia.com/gpu: "1"
   persistence:
     enabled: true
     size: 5Gi

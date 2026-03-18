@@ -12,6 +12,7 @@ Tests verify:
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -36,9 +37,9 @@ class TestSummarySettings:
         assert settings.provider == 'ollama'
 
     def test_summary_model_default_is_qwen3_1_7b(self) -> None:
-        """Verify SUMMARY_MODEL defaults to 'qwen3:1.7b'."""
+        """Verify SUMMARY_MODEL defaults to 'qwen3:0.6b'."""
         settings = SummarySettings()
-        assert settings.model == 'qwen3:1.7b'
+        assert settings.model == 'qwen3:0.6b'
 
     def test_summary_max_tokens_default_is_2000(self) -> None:
         """Verify SUMMARY_MAX_TOKENS defaults to 2000."""
@@ -69,10 +70,10 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.max_tokens == 5000
 
-    def test_summary_timeout_default_30(self) -> None:
-        """Verify SUMMARY_TIMEOUT_S defaults to 30.0."""
+    def test_summary_timeout_default_240(self) -> None:
+        """Verify SUMMARY_TIMEOUT_S defaults to 240.0."""
         settings = SummarySettings()
-        assert settings.timeout_s == 30.0
+        assert settings.timeout_s == 240.0
 
     def test_summary_timeout_zero_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_TIMEOUT_S rejects zero."""
@@ -86,10 +87,10 @@ class TestSummarySettings:
         with pytest.raises(ValidationError):
             SummarySettings()
 
-    def test_summary_retry_max_attempts_default_3(self) -> None:
-        """Verify SUMMARY_RETRY_MAX_ATTEMPTS defaults to 3."""
+    def test_summary_retry_max_attempts_default_5(self) -> None:
+        """Verify SUMMARY_RETRY_MAX_ATTEMPTS defaults to 5."""
         settings = SummarySettings()
-        assert settings.retry_max_attempts == 3
+        assert settings.retry_max_attempts == 5
 
     def test_summary_retry_max_attempts_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_RETRY_MAX_ATTEMPTS accepts minimum value of 1."""
@@ -166,8 +167,8 @@ class TestSummarySettings:
         monkeypatch.setenv('SUMMARY_PROVIDER', 'openai')
         monkeypatch.setenv('SUMMARY_MODEL', 'gpt-5-nano')
         monkeypatch.setenv('SUMMARY_MAX_TOKENS', '500')
-        monkeypatch.setenv('SUMMARY_TIMEOUT_S', '60')
-        monkeypatch.setenv('SUMMARY_RETRY_MAX_ATTEMPTS', '5')
+        monkeypatch.setenv('SUMMARY_TIMEOUT_S', '90')
+        monkeypatch.setenv('SUMMARY_RETRY_MAX_ATTEMPTS', '7')
         monkeypatch.setenv('SUMMARY_RETRY_BASE_DELAY_S', '2.0')
         monkeypatch.setenv('SUMMARY_MAX_CONCURRENT', '10')
         monkeypatch.setenv('SUMMARY_PROMPT', 'Custom prompt text')
@@ -177,8 +178,8 @@ class TestSummarySettings:
         assert settings.provider == 'openai'
         assert settings.model == 'gpt-5-nano'
         assert settings.max_tokens == 500
-        assert settings.timeout_s == 60.0
-        assert settings.retry_max_attempts == 5
+        assert settings.timeout_s == 90.0
+        assert settings.retry_max_attempts == 7
         assert settings.retry_base_delay_s == 2.0
         assert settings.max_concurrent == 10
         assert settings.prompt == 'Custom prompt text'
@@ -195,10 +196,10 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.provider == 'anthropic'
 
-    def test_min_content_length_default_is_300(self) -> None:
-        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 300."""
+    def test_min_content_length_default_is_500(self) -> None:
+        """Verify SUMMARY_MIN_CONTENT_LENGTH defaults to 500."""
         settings = SummarySettings()
-        assert settings.min_content_length == 300
+        assert settings.min_content_length == 500
 
     def test_min_content_length_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_MIN_CONTENT_LENGTH accepts 0 (ge=0)."""
@@ -249,9 +250,9 @@ class TestSummarySettingsFieldAliases:
         assert field_info.alias == 'SUMMARY_MIN_CONTENT_LENGTH'
 
     def test_min_content_length_field_constraints(self) -> None:
-        """Verify min_content_length field has default=300, ge=0, le=10000."""
+        """Verify min_content_length field has default=500, ge=0, le=10000."""
         field_info = SummarySettings.model_fields['min_content_length']
-        assert field_info.default == 300
+        assert field_info.default == 500
         metadata = field_info.metadata
         ge_values = [m.ge for m in metadata if hasattr(m, 'ge')]
         le_values = [m.le for m in metadata if hasattr(m, 'le')]
@@ -280,7 +281,7 @@ class TestSummarySettingsFieldAliases:
 
 
 class TestSummaryPrompt:
-    """Tests for DEFAULT_SUMMARY_PROMPT and resolve_summary_prompt()."""
+    """Tests for DEFAULT_SUMMARY_PROMPT and resolve_summary_prompt(source)."""
 
     def test_default_prompt_exists_and_non_empty(self) -> None:
         """Verify DEFAULT_SUMMARY_PROMPT is defined and non-empty."""
@@ -298,34 +299,38 @@ class TestSummaryPrompt:
         assert 'do not add' in DEFAULT_SUMMARY_PROMPT.lower()
         assert 'Output ONLY' in DEFAULT_SUMMARY_PROMPT
 
-    def test_resolve_returns_default_when_none(self) -> None:
-        """Verify resolve_summary_prompt returns default when prompt is None."""
-        settings = MagicMock()
-        settings.prompt = None
-        assert resolve_summary_prompt(settings) == DEFAULT_SUMMARY_PROMPT
+    def test_resolve_returns_agent_prompt_when_none(self) -> None:
+        """Verify resolve_summary_prompt('agent') returns AGENT_SUMMARY_PROMPT when no custom."""
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = None
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == DEFAULT_SUMMARY_PROMPT
 
-    def test_resolve_returns_default_when_empty(self) -> None:
-        """Verify resolve_summary_prompt returns default when prompt is empty string."""
-        settings = MagicMock()
-        settings.prompt = ''
-        assert resolve_summary_prompt(settings) == DEFAULT_SUMMARY_PROMPT
+    def test_resolve_returns_user_prompt_when_empty(self) -> None:
+        """Verify resolve_summary_prompt('user') returns USER_SUMMARY_PROMPT when empty."""
+        from app.summary.instructions import USER_SUMMARY_PROMPT
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = ''
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('user') == USER_SUMMARY_PROMPT
 
-    def test_resolve_returns_default_when_whitespace(self) -> None:
-        """Verify resolve_summary_prompt returns default when prompt is whitespace."""
-        settings = MagicMock()
-        settings.prompt = '   '
-        assert resolve_summary_prompt(settings) == DEFAULT_SUMMARY_PROMPT
+    def test_resolve_returns_agent_prompt_when_whitespace(self) -> None:
+        """Verify resolve_summary_prompt returns source-specific prompt for whitespace."""
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = '   '
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == DEFAULT_SUMMARY_PROMPT
 
     def test_resolve_returns_custom_when_set(self) -> None:
         """Verify resolve_summary_prompt returns custom prompt when set."""
-        settings = MagicMock()
-        settings.prompt = 'Custom prompt for testing'
-        assert resolve_summary_prompt(settings) == 'Custom prompt for testing'
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = 'Custom prompt for testing'
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == 'Custom prompt for testing'
 
     def test_resolve_with_real_settings(self) -> None:
-        """Verify resolve_summary_prompt works with real SummarySettings."""
-        settings = SummarySettings()
-        result = resolve_summary_prompt(settings)
+        """Verify resolve_summary_prompt works with real settings (no custom prompt)."""
+        result = resolve_summary_prompt('agent')
         assert result == DEFAULT_SUMMARY_PROMPT
 
 
@@ -342,10 +347,10 @@ class TestAppSettingsSummaryIntegration:
         settings = AppSettings()
         assert settings.summary.generation_enabled is True
         assert settings.summary.provider == 'ollama'
-        assert settings.summary.model == 'qwen3:1.7b'
+        assert settings.summary.model == 'qwen3:0.6b'
         assert settings.summary.max_tokens == 2000
-        assert settings.summary.timeout_s == 30.0
-        assert settings.summary.retry_max_attempts == 3
+        assert settings.summary.timeout_s == 240.0
+        assert settings.summary.retry_max_attempts == 5
         assert settings.summary.retry_base_delay_s == 1.0
         assert settings.summary.max_concurrent == 3
         assert settings.summary.prompt is None

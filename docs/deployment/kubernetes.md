@@ -170,7 +170,7 @@ The deployment uses a ConfigMap for non-sensitive configuration:
 | `STORAGE_BACKEND`           | sqlite or postgresql                                         |
 | `ENABLE_SUMMARY_GENERATION` | Enable automatic LLM-based summary generation                |
 | `SUMMARY_PROVIDER`          | Summary provider: ollama, openai, or anthropic               |
-| `SUMMARY_MODEL`             | Summary model name (default: qwen3:1.7b for Ollama)          |
+| `SUMMARY_MODEL`             | Summary model name (default: qwen3:0.6b for Ollama)          |
 | `SUMMARY_MAX_TOKENS`        | Maximum output tokens for summary generation (default: 2000) |
 | `ENABLE_FTS`                | Full-text search                                             |
 | `ENABLE_SEMANTIC_SEARCH`    | Semantic search                                              |

@@ -564,11 +564,13 @@ class TestContextRepositoryUpdate:
             text_content='Exists',
         )
 
-        exists = await repos.context.check_entry_exists(ctx_id)
+        exists, source = await repos.context.check_entry_exists(ctx_id)
         assert exists is True
+        assert source == 'user'
 
-        not_exists = await repos.context.check_entry_exists(999999)
+        not_exists, no_source = await repos.context.check_entry_exists(999999)
         assert not_exists is False
+        assert no_source is None
 
     @pytest.mark.asyncio
     async def test_get_content_type(

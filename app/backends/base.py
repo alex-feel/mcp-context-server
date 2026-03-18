@@ -151,7 +151,7 @@ class StorageBackend(Protocol):
 
         For PostgreSQL:
             - Creates asyncpg connection pool
-            - Verifies schema exists
+            - Detects Pgpool-II for connection pooler compatibility
             - Configures statement cache
 
         Raises:

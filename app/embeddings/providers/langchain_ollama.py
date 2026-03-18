@@ -28,15 +28,15 @@ class OllamaEmbeddingProvider:
         OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
         EMBEDDING_MODEL: Model name (default: qwen3-embedding:0.6b)
         EMBEDDING_DIM: Vector dimensions (default: 1024)
-        OLLAMA_NUM_CTX: Context length in tokens (default: 4096)
-        OLLAMA_TRUNCATE: Control truncation behavior (default: false = error on exceed)
+        EMBEDDING_OLLAMA_NUM_CTX: Context length in tokens (default: 4096)
+        EMBEDDING_OLLAMA_TRUNCATE: Control truncation behavior (default: false = error on exceed)
     """
 
     def __init__(self) -> None:
         """Initialize provider configuration from settings."""
         settings = get_settings()
         self._model = settings.embedding.model
-        self._base_url = settings.embedding.ollama_host
+        self._base_url = settings.ollama.host
         self._dimension = settings.embedding.dim
         self._truncate = settings.embedding.ollama_truncate
         self._num_ctx = settings.embedding.ollama_num_ctx
@@ -96,7 +96,7 @@ class OllamaEmbeddingProvider:
         )
         if not self._truncate:
             logger.info(
-                'OLLAMA_TRUNCATE=false. Text length validation enabled. '
+                'EMBEDDING_OLLAMA_TRUNCATE=false. Text length validation enabled. '
                 'Texts exceeding context limit will raise error before embedding.',
             )
 
@@ -223,7 +223,7 @@ class OllamaEmbeddingProvider:
     def _validate_text_length(self, text: str) -> None:
         """Validate text length against estimated context window.
 
-        When OLLAMA_TRUNCATE=false, this provides fail-fast behavior by checking
+        When EMBEDDING_OLLAMA_TRUNCATE=false, this provides fail-fast behavior by checking
         if text is likely to exceed the context window BEFORE calling the embedding API.
 
         Args:
@@ -235,14 +235,14 @@ class OllamaEmbeddingProvider:
         # Import here to avoid circular imports
         from app.embeddings.context_limits import get_model_spec
 
-        # Get model-specific max_tokens if known, else use OLLAMA_NUM_CTX setting
+        # Get model-specific max_tokens if known, else use EMBEDDING_OLLAMA_NUM_CTX setting
         spec = get_model_spec(self._model)
         if spec:
             max_tokens = min(spec.max_tokens, self._num_ctx)
-            source = f'model spec ({spec.max_tokens}) capped by OLLAMA_NUM_CTX ({self._num_ctx})'
+            source = f'model spec ({spec.max_tokens}) capped by EMBEDDING_OLLAMA_NUM_CTX ({self._num_ctx})'
         else:
             max_tokens = self._num_ctx
-            source = f'OLLAMA_NUM_CTX ({self._num_ctx})'
+            source = f'EMBEDDING_OLLAMA_NUM_CTX ({self._num_ctx})'
 
         # Heuristic: 1 token ~ 3-4 characters for English
         # Use conservative estimate (3 chars/token) to avoid false negatives
@@ -253,7 +253,7 @@ class OllamaEmbeddingProvider:
                 f'Text length ({len(text)} chars, ~{int(estimated_tokens)} estimated tokens) '
                 f'may exceed context window ({max_tokens} tokens from {source}) for model {self._model}. '
                 f'Options: 1) Enable chunking (ENABLE_CHUNKING=true, default), '
-                f'2) Increase OLLAMA_NUM_CTX, 3) Set OLLAMA_TRUNCATE=true to allow silent truncation.',
+                f'2) Increase EMBEDDING_OLLAMA_NUM_CTX, 3) Set EMBEDDING_OLLAMA_TRUNCATE=true to allow silent truncation.',
             )
 
     @staticmethod

@@ -356,7 +356,7 @@ class TestSearchContext:
     async def test_search_text_truncation_short(self) -> None:
         """Test that short text is not truncated."""
         short_text = 'This is a short text that should not be truncated.'
-        assert len(short_text) < 150  # Ensure it's actually short
+        assert len(short_text) < 300  # Ensure it's actually short
 
         await store_context(
             thread_id='truncation_test',
@@ -373,14 +373,16 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_text_truncation_long(self) -> None:
         """Test that long text is truncated with ellipsis."""
-        # Create a text longer than 150 characters
+        # Create a text longer than 300 characters
         long_text = (
             'This is a very long text that exceeds the truncation limit. '
-            'It contains multiple sentences to ensure it goes over 150 characters. '
+            'It contains multiple sentences to ensure it goes over 300 characters. '
             'This additional content will be truncated when returned from search_context. '
-            'More content here to make it even longer and ensure truncation occurs.'
+            'More content here to make it even longer and ensure truncation occurs. '
+            'We need even more content to exceed the 300 character threshold for truncation. '
+            'Adding extra sentences to guarantee this text is long enough for the test.'
         )
-        assert len(long_text) > 150  # Ensure it's actually long
+        assert len(long_text) > 300  # Ensure it's actually long
 
         await store_context(
             thread_id='truncation_long_test',
@@ -395,7 +397,7 @@ class TestSearchContext:
         # Check truncation occurred
         assert results['results'][0]['is_text_content_truncated'] is True
         assert results['results'][0]['text_content'].endswith('...')
-        assert len(results['results'][0]['text_content']) <= 153  # 150 + '...'
+        assert len(results['results'][0]['text_content']) <= 303  # 300 + '...'
         assert results['results'][0]['text_content'] != long_text
 
         # Verify truncation preserves beginning of text
@@ -404,11 +406,13 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_text_truncation_word_boundary(self) -> None:
         """Test that truncation happens at word boundaries when possible."""
-        # Test case 1: Text with good word boundary near position 150
+        # Test case 1: Text with good word boundary near position 300
         text_with_good_boundary = (
             'This text has exactly the right length to test word boundary truncation behavior. '
-            'When the 150th character falls within a word, the truncation algorithm should '
-            'ideally find the nearest word boundary to avoid splitting words.'
+            'When the 300th character falls within a word, the truncation algorithm should '
+            'ideally find the nearest word boundary to avoid splitting words. '
+            'We need additional content to push this text well past the 300 character truncation limit. '
+            'Adding more sentences here ensures we have enough length for the truncation test to work properly.'
         )
 
         await store_context(
@@ -424,9 +428,18 @@ class TestSearchContext:
         assert results['results'][0]['text_content'].endswith('...')
 
         # Test case 2: Text where truncation will happen mid-word due to no good boundary
-        # Create a text with a very long word starting before position 105
-        long_word = 'verylongwordthatcannotbesplitproperlybecauseitexceedstheboundarythresholdandcontinuesforquiteawhilelonger'
-        text_with_bad_boundary = 'Short start then ' + long_word + ' and more text after to ensure truncation happens.'
+        # Create a text with a very long word starting before position 210
+        long_word = (
+            'verylongwordthatcannotbesplitproperlybecauseitexceedsthe'
+            'boundarythresholdandcontinuesforquiteawhilelongerandlonger'
+            'andlongerandlongerandlongerandlongerandlongerandlongerand'
+            'longerandlongerandlongerandlonger'
+        )
+        text_with_bad_boundary = (
+            'Short start then ' + long_word
+            + ' and more text after to ensure truncation happens'
+            ' at the right place in the output.'
+        )
 
         await store_context(
             thread_id='boundary_test_bad',
@@ -439,7 +452,7 @@ class TestSearchContext:
         assert len(results_bad['results']) == 1
         assert results_bad['results'][0]['is_text_content_truncated'] is True
         assert results_bad['results'][0]['text_content'].endswith('...')
-        # In this case, truncation happens at exactly 150 chars since no good word boundary exists
+        # In this case, truncation happens at exactly 300 chars since no good word boundary exists
 
     @pytest.mark.asyncio
     async def test_search_vs_get_by_id_truncation(self) -> None:
@@ -451,7 +464,7 @@ class TestSearchContext:
             'a preview and get_by_ids provides complete content for detailed viewing. '
             'Additional content here to ensure the text is sufficiently long.'
         )
-        assert len(long_text) > 150
+        assert len(long_text) > 300
 
         store_result = await store_context(
             thread_id='comparison_test',

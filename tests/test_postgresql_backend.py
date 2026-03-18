@@ -6,6 +6,10 @@ configuration, connection string handling, advisory locks, and
 connection reset behavior.
 """
 
+import unittest.mock
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
 
@@ -191,90 +195,30 @@ class TestResetConnectionRollback:
 class TestAdvisoryLockDDL:
     """Test advisory lock serialization for DDL operations.
 
-    Verifies that PostgreSQL DDL operations (schema initialization, migrations)
-    use advisory locks to prevent 'tuple concurrently updated' errors in
-    multi-pod Kubernetes deployments.
+    Verifies that PostgreSQL DDL operations (schema initialization via
+    init_database(), migrations) use advisory locks to prevent
+    'tuple concurrently updated' errors in multi-pod Kubernetes deployments.
     """
 
-    def test_initialize_schema_uses_advisory_lock(self) -> None:
-        """Verify _initialize_schema acquires and releases advisory lock.
-
-        The advisory lock should:
-        1. Be acquired before DDL statements
-        2. Be released in finally block (even on error)
-        3. Use consistent lock key: hashtext('mcp_context_schema_init')
-        """
-        # Verify a backend can be created (configuration validation)
-        backend = PostgreSQLBackend(
-            connection_string='postgresql://postgres:password@localhost:5432/test',
-        )
-        assert backend.backend_type == 'postgresql'
-
-        # Verify lock key is the expected value
-        expected_lock_key = "hashtext('mcp_context_schema_init')"
-
-        # Verify the lock is acquired and released correctly by inspecting the code
-        # The implementation uses: SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))
-        # and: SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))
-        assert expected_lock_key == "hashtext('mcp_context_schema_init')"
-
-    def test_advisory_lock_released_on_error(self) -> None:
-        """Verify advisory lock is released even if DDL fails.
-
-        The lock release must be in a finally block to ensure cleanup
-        even when schema statements raise exceptions.
-        """
-        import asyncio
-        import contextlib
-        from unittest.mock import AsyncMock
-
-        mock_conn = AsyncMock()
-
-        # Simulate DDL failure after lock acquisition
-        execute_count = 0
-
-        async def execute_side_effect(sql):
-            nonlocal execute_count
-            execute_count += 1
-            if 'pg_advisory_lock' in sql:
-                return  # Lock acquired
-            if execute_count == 2:  # First DDL statement
-                raise RuntimeError('Simulated DDL failure')
-            if 'pg_advisory_unlock' in sql:
-                return  # Lock released
-
-        mock_conn.execute = AsyncMock(side_effect=execute_side_effect)
-
-        async def simulate_with_error():
-            """Simulate _initialize_schema behavior with error."""
-            await mock_conn.execute("SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))")
-            try:
-                await mock_conn.execute('CREATE TABLE test (id INT)')  # This will fail
-            finally:
-                await mock_conn.execute("SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))")
-
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_event_loop().run_until_complete(simulate_with_error())
-
-        # Verify lock was acquired and released despite error
-        calls = mock_conn.execute.call_args_list
-        assert any('pg_advisory_lock' in str(c) for c in calls), 'Lock should be acquired'
-        assert any('pg_advisory_unlock' in str(c) for c in calls), 'Lock should be released'
-
     def test_migration_uses_same_lock_key(self) -> None:
-        """Verify all migrations use the same advisory lock key.
+        """Verify all DDL operations use the same advisory lock key.
 
-        All DDL operations must use the same lock key to serialize against
-        each other in multi-pod deployments.
+        All DDL operations (schema init, migrations) must use the same lock
+        key to serialize against each other in multi-pod deployments.
         """
-        # The consistent lock key ensures all DDL operations serialize correctly
-        # Using different keys would allow concurrent DDL on different tables
-        expected_lock_sql = "SELECT pg_advisory_lock(hashtext('mcp_context_schema_init'))"
-        expected_unlock_sql = "SELECT pg_advisory_unlock(hashtext('mcp_context_schema_init'))"
+        import inspect
 
-        # This test documents the requirement - actual verification happens in code review
-        assert 'mcp_context_schema_init' in expected_lock_sql
-        assert 'mcp_context_schema_init' in expected_unlock_sql
+        from app.startup import init_database
+
+        source = inspect.getsource(init_database)
+
+        # init_database() must use transaction-level advisory lock
+        assert 'pg_advisory_xact_lock' in source, (
+            'init_database() must use pg_advisory_xact_lock for multi-pod safety'
+        )
+        assert "hashtext('mcp_context_schema_init')" in source, (
+            'init_database() must use the standard lock key'
+        )
 
 
 class TestTcpKeepaliveSettings:
@@ -426,3 +370,176 @@ class TestTransactionRetry:
         """
         # Document the idempotency requirement
         assert True  # Idempotency is guaranteed by store_with_deduplication SQL
+
+
+class TestInitializeErrorClassification:
+    """Test error classification in PostgreSQLBackend.initialize().
+
+    When initialize() fails, errors must be classified as either
+    DependencyError (exit code 69, retryable) or ConfigurationError
+    (exit code 78, non-retryable) to enable proper Docker/Kubernetes
+    restart policy behavior.
+    """
+
+    @pytest.mark.asyncio
+    async def test_connection_refused_raises_dependency_error(self) -> None:
+        """ConnectionRefusedError during pool creation raises DependencyError."""
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=ConnectionRefusedError('Connection refused'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_os_error_raises_dependency_error(self) -> None:
+        """OSError (network unreachable, timeout) during pool creation raises DependencyError."""
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=OSError('Network is unreachable'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_too_many_connections_raises_dependency_error(self) -> None:
+        """TooManyConnectionsError during pool creation raises DependencyError."""
+        import asyncpg
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=asyncpg.exceptions.TooManyConnectionsError('too many connections'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_invalid_password_raises_configuration_error(self) -> None:
+        """InvalidPasswordError during pool creation raises ConfigurationError."""
+        import asyncpg
+
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:wrong@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=asyncpg.exceptions.InvalidPasswordError('password authentication failed'),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL authentication failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_invalid_catalog_name_raises_configuration_error(self) -> None:
+        """InvalidCatalogNameError during pool creation raises ConfigurationError."""
+        import asyncpg
+
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/nonexistent',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=asyncpg.exceptions.InvalidCatalogNameError('database "nonexistent" does not exist'),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL database does not exist'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_unknown_exception_raises_dependency_error(self) -> None:
+        """Unknown exceptions during pool creation default to DependencyError."""
+
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=RuntimeError('unexpected internal error'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL initialization failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_configuration_error_from_init_connection_reraised(self) -> None:
+        """ConfigurationError from _init_connection is re-raised without wrapping."""
+
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=ConfigurationError('pgvector codec registration failed'),
+            ),
+            pytest.raises(ConfigurationError, match='pgvector codec registration failed'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_dependency_error_from_ensure_pgvector_reraised(self) -> None:
+        """DependencyError from _ensure_pgvector_extension is re-raised without wrapping."""
+        from app.errors import DependencyError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(
+                backend,
+                '_ensure_pgvector_extension',
+                new_callable=AsyncMock,
+                side_effect=DependencyError('PostgreSQL connection failed: Connection refused'),
+            ),
+            pytest.raises(DependencyError, match='PostgreSQL connection failed'),
+        ):
+            await backend.initialize()

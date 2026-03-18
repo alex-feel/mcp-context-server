@@ -121,6 +121,14 @@ class TestDefaultInstructions:
         assert '{field_names}' not in DEFAULT_INSTRUCTIONS
         assert '{0}' not in DEFAULT_INSTRUCTIONS
 
+    def test_default_instructions_mentions_skill_integration(self) -> None:
+        """DEFAULT_INSTRUCTIONS must mention Skill integration for context server usage."""
+        from app.instructions import DEFAULT_INSTRUCTIONS
+
+        lower = DEFAULT_INSTRUCTIONS.lower()
+        assert 'skill' in lower
+        assert 'context server' in lower or 'context storage' in lower
+
 
 class TestInstructionsResolution:
     """Tests for instructions resolution logic (env var override vs default)."""

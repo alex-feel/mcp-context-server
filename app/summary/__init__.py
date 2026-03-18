@@ -16,7 +16,7 @@ Example Usage:
     provider = create_summary_provider()  # Uses SUMMARY_PROVIDER setting
     await provider.initialize()
 
-    summary = await provider.summarize("Long text content here...")
+    summary = await provider.summarize("Long text content here...", "agent")
 
     await provider.shutdown()
 """

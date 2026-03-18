@@ -20,10 +20,11 @@ Usage:
     )
 
     # Initialize
-    set_backend(create_backend(backend_type=None, db_path=DB_PATH))
-    await _backend.initialize()
-    await init_database(backend=_backend)
-    set_repositories(RepositoryContainer(_backend))
+    backend = create_backend(backend_type=None, db_path=DB_PATH)
+    await backend.initialize()  # Connection pool + Pgpool-II detection (no schema)
+    set_backend(backend)
+    await init_database(backend=backend)  # Schema initialization (single source of truth)
+    set_repositories(RepositoryContainer(backend))
 
     # In MCP tools (app/tools/*.py):
     from app.startup import ensure_repositories, get_reranking_provider
@@ -207,6 +208,11 @@ async def init_database(backend: StorageBackend | None = None) -> None:
             else:  # postgresql
 
                 async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
+                    # Acquire transaction-level advisory lock for multi-pod safety.
+                    # Serializes DDL execution across concurrent Kubernetes pods.
+                    # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+
                     # PostgreSQL: parse and execute statements individually
                     statements: list[str] = []
                     current_stmt: list[str] = []
@@ -232,10 +238,16 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                         statements.append('\n'.join(current_stmt))
 
                     # Execute each statement
-                    for stmt in statements:
+                    for i, stmt in enumerate(statements):
                         stmt = stmt.strip()
                         if stmt and not stmt.startswith('--'):
-                            await conn.execute(stmt)
+                            try:
+                                await conn.execute(stmt)
+                                logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
+                            except Exception as e:
+                                logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
+                                logger.error('Statement: %s...', stmt[:200])
+                                raise
 
                 await backend.execute_write(cast(Any, _init_schema_postgresql))
             logger.info(f'Database schema initialized successfully ({backend.backend_type})')
@@ -253,6 +265,11 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                 else:  # postgresql
 
                     async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
+                        # Acquire transaction-level advisory lock for multi-pod safety.
+                        # Serializes DDL execution across concurrent Kubernetes pods.
+                        # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
+                        await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+
                         # PostgreSQL: parse and execute statements individually
                         statements: list[str] = []
                         current_stmt: list[str] = []
@@ -273,10 +290,16 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                         if current_stmt:
                             statements.append('\n'.join(current_stmt))
 
-                        for stmt in statements:
+                        for i, stmt in enumerate(statements):
                             stmt = stmt.strip()
                             if stmt and not stmt.startswith('--'):
-                                await conn.execute(stmt)
+                                try:
+                                    await conn.execute(stmt)
+                                    logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
+                                except Exception as e:
+                                    logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
+                                    logger.error('Statement: %s...', stmt[:200])
+                                    raise
 
                     await temp_manager.execute_write(cast(Any, _init_schema_postgresql))
                 logger.info(f'Database schema initialized successfully ({temp_manager.backend_type})')
@@ -294,8 +317,13 @@ async def ensure_backend() -> StorageBackend:
     In tests, FastMCP lifespan isn't running, so tools need a lazy
     initializer to operate directly.
 
+    Note:
+        This initializes the connection pool only (no schema).
+        For full database setup including schema, call init_database()
+        after ensure_backend().
+
     Returns:
-        Initialized `StorageBackend` singleton to use for DB ops.
+        Initialized ``StorageBackend`` singleton to use for DB ops.
     """
     global _backend
     if _backend is None:
@@ -354,6 +382,74 @@ def propagate_langsmith_settings() -> None:
     )
 
 
+async def prewarm_ollama_models() -> None:
+    """Pre-warm Ollama models by triggering model loading into memory.
+
+    Sends lightweight requests to Ollama to force model loading from disk
+    into RAM/VRAM. Combined with OLLAMA_KEEP_ALIVE=-1 on the Ollama server,
+    models remain loaded indefinitely after warming.
+
+    Checks which providers are configured as 'ollama' and sends appropriate
+    warm-up requests:
+    - Embedding models: POST /api/embed with minimal input
+    - Summary models: POST /api/chat with empty messages and matching num_ctx
+
+    Deduplicates when the same model is used for both embedding and summary.
+
+    Failures are logged as warnings -- the server continues startup normally,
+    and models will load on the first real request instead.
+    """
+    import httpx
+
+    ollama_host = settings.ollama.host
+
+    models_to_warm: list[tuple[str, str]] = []  # (model_name, warm_type)
+
+    if settings.embedding.generation_enabled and settings.embedding.provider == 'ollama':
+        models_to_warm.append((settings.embedding.model, 'embedding'))
+
+    if settings.summary.generation_enabled and settings.summary.provider == 'ollama':
+        models_to_warm.append((settings.summary.model, 'summary'))
+
+    if not models_to_warm:
+        return
+
+    # Deduplicate if embedding and summary use the same model
+    seen: set[str] = set()
+    unique_models: list[tuple[str, str]] = []
+    for model_name, warm_type in models_to_warm:
+        if model_name not in seen:
+            seen.add(model_name)
+            unique_models.append((model_name, warm_type))
+
+    async with httpx.AsyncClient(base_url=ollama_host, timeout=120.0) as client:
+        for model_name, warm_type in unique_models:
+            try:
+                logger.info(f'Pre-warming {warm_type} model: {model_name}')
+                if warm_type == 'embedding':
+                    response = await client.post(
+                        '/api/embed',
+                        json={'model': model_name, 'input': 'warmup'},
+                    )
+                else:
+                    response = await client.post(
+                        '/api/chat',
+                        json={
+                            'model': model_name,
+                            'messages': [],
+                            'stream': False,
+                            'options': {'num_ctx': settings.summary.ollama_num_ctx},
+                        },
+                    )
+                response.raise_for_status()
+                logger.info(f'Model {model_name} pre-warmed successfully')
+            except Exception as e:
+                logger.warning(
+                    f'Failed to pre-warm model {model_name}: {e}. '
+                    'Model will load on first request instead.',
+                )
+
+
 __all__ = [
     # Configuration constants
     'DB_PATH',
@@ -385,6 +481,7 @@ __all__ = [
     'ensure_backend',
     'ensure_repositories',
     'propagate_langsmith_settings',
+    'prewarm_ollama_models',
     # Re-exported types
     'RerankingProvider',
     'ChunkingService',

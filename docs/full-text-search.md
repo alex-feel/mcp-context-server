@@ -297,7 +297,7 @@ When reranking is enabled (default), FTS results are refined using a cross-encod
 |--------------------------|---------------------------|------------------------------------------------|
 | `ENABLE_RERANKING`       | `true`                    | Enable cross-encoder reranking                 |
 | `RERANKING_PROVIDER`     | `flashrank`               | Reranking provider                             |
-| `RERANKING_MODEL`        | `ms-marco-MiniLM-L-12-v2` | Model (~34MB, downloads on first use)          |
+| `RERANKING_MODEL`        | `ms-marco-MiniLM-L-12-v2` | Model (~34MB, downloads on startup)            |
 | `RERANKING_OVERFETCH`    | `4`                       | Multiplier for over-fetching before reranking  |
 | `FTS_RERANK_WINDOW_SIZE` | `750`                     | Characters around match for passage extraction |
 | `FTS_RERANK_GAP_MERGE`   | `100`                     | Gap threshold for merging adjacent highlights  |

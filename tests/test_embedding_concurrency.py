@@ -29,37 +29,37 @@ def mock_retry_settings():
 
 
 def test_compute_timeout_default_settings(mock_retry_settings: MagicMock) -> None:
-    """Test timeout computation with default settings (30s, 3 attempts, 1.0s delay)."""
-    mock_retry_settings.return_value.embedding.timeout_s = 30.0
-    mock_retry_settings.return_value.embedding.retry_max_attempts = 3
+    """Test timeout computation with default settings (240s, 5 attempts, 1.0s delay)."""
+    mock_retry_settings.return_value.embedding.timeout_s = 240.0
+    mock_retry_settings.return_value.embedding.retry_max_attempts = 5
     mock_retry_settings.return_value.embedding.retry_base_delay_s = 1.0
 
     from app.embeddings.retry import compute_embedding_total_timeout
 
     result = compute_embedding_total_timeout()
 
-    # (3 * 30 + (min(1*1+1, 60) + min(1*2+1, 60))) * 1.1
-    # = (90 + (2 + 3)) * 1.1 = 95 * 1.1 = 104.5
-    assert result == pytest.approx(104.5, abs=0.1)
+    # (5 * 240 + (min(1*1+1, 60) + min(1*2+1, 60) + min(1*4+1, 60) + min(1*8+1, 60))) * 1.1
+    # = (1200 + (2 + 3 + 5 + 9)) * 1.1 = 1219 * 1.1 = 1340.9
+    assert result == pytest.approx(1340.9, abs=0.1)
 
 
 def test_compute_timeout_user_deployed_settings(mock_retry_settings: MagicMock) -> None:
-    """Test timeout computation with user deployed settings (60s, 3 attempts, 1.0s delay)."""
-    mock_retry_settings.return_value.embedding.timeout_s = 60.0
-    mock_retry_settings.return_value.embedding.retry_max_attempts = 3
+    """Test timeout computation with user deployed settings (90s, 5 attempts, 1.0s delay)."""
+    mock_retry_settings.return_value.embedding.timeout_s = 90.0
+    mock_retry_settings.return_value.embedding.retry_max_attempts = 5
     mock_retry_settings.return_value.embedding.retry_base_delay_s = 1.0
 
     from app.embeddings.retry import compute_embedding_total_timeout
 
     result = compute_embedding_total_timeout()
 
-    # (3 * 60 + (2 + 3)) * 1.1 = 185 * 1.1 = 203.5
-    assert result == pytest.approx(203.5, abs=0.1)
+    # (5 * 90 + (2 + 3 + 5 + 9)) * 1.1 = 469 * 1.1 = 515.9
+    assert result == pytest.approx(515.9, abs=0.1)
 
 
 def test_compute_timeout_single_attempt(mock_retry_settings: MagicMock) -> None:
     """Test timeout computation with single attempt (no backoff intervals)."""
-    mock_retry_settings.return_value.embedding.timeout_s = 30.0
+    mock_retry_settings.return_value.embedding.timeout_s = 240.0
     mock_retry_settings.return_value.embedding.retry_max_attempts = 1
     mock_retry_settings.return_value.embedding.retry_base_delay_s = 1.0
 
@@ -67,8 +67,8 @@ def test_compute_timeout_single_attempt(mock_retry_settings: MagicMock) -> None:
 
     result = compute_embedding_total_timeout()
 
-    # (1 * 30 + 0) * 1.1 = 33.0 (no backoff with single attempt)
-    assert result == pytest.approx(33.0, abs=0.1)
+    # (1 * 240 + 0) * 1.1 = 264.0 (no backoff with single attempt)
+    assert result == pytest.approx(264.0, abs=0.1)
 
 
 def test_compute_timeout_high_config(mock_retry_settings: MagicMock) -> None:
@@ -403,21 +403,21 @@ def test_embedding_max_concurrent_setting_bounds() -> None:
     assert settings_max.max_concurrent == 20
 
 
-# --- Tests for _generate_embeddings_with_timeout helper ---
+# --- Tests for generate_embeddings_with_timeout helper ---
 
 
 @pytest.mark.asyncio
-async def test_generate_embeddings_with_timeout_returns_none_when_no_provider() -> None:
+async def testgenerate_embeddings_with_timeout_returns_none_when_no_provider() -> None:
     """Verify helper returns None when embedding provider is not configured."""
     with patch('app.tools.context.get_embedding_provider', return_value=None):
-        from app.tools.context import _generate_embeddings_with_timeout
+        from app.tools.context import generate_embeddings_with_timeout
 
-        result = await _generate_embeddings_with_timeout('test text')
+        result = await generate_embeddings_with_timeout('test text')
         assert result is None
 
 
 @pytest.mark.asyncio
-async def test_generate_embeddings_with_timeout_success() -> None:
+async def testgenerate_embeddings_with_timeout_success() -> None:
     """Verify helper returns embeddings on success."""
     mock_embeddings = [MagicMock()]
 
@@ -435,16 +435,16 @@ async def test_generate_embeddings_with_timeout_success() -> None:
         ctx_module._embedding_semaphore = None
 
         try:
-            from app.tools.context import _generate_embeddings_with_timeout
+            from app.tools.context import generate_embeddings_with_timeout
 
-            result = await _generate_embeddings_with_timeout('test text')
+            result = await generate_embeddings_with_timeout('test text')
             assert result == mock_embeddings
         finally:
             ctx_module._embedding_semaphore = original_semaphore
 
 
 @pytest.mark.asyncio
-async def test_generate_embeddings_with_timeout_raises_on_timeout() -> None:
+async def testgenerate_embeddings_with_timeout_raises_on_timeout() -> None:
     """Verify helper raises ToolError when embedding generation times out."""
     from fastmcp.exceptions import ToolError
 
@@ -466,9 +466,9 @@ async def test_generate_embeddings_with_timeout_raises_on_timeout() -> None:
         ctx_module._embedding_semaphore = None
 
         try:
-            from app.tools.context import _generate_embeddings_with_timeout
+            from app.tools.context import generate_embeddings_with_timeout
 
             with pytest.raises(ToolError, match='total timeout'):
-                await _generate_embeddings_with_timeout('test text')
+                await generate_embeddings_with_timeout('test text')
         finally:
             ctx_module._embedding_semaphore = original_semaphore

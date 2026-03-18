@@ -7,6 +7,7 @@ including CRUD operations and deduplication logic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -31,6 +32,22 @@ logger = logging.getLogger(__name__)
 # only the expected columns are returned, preventing internal PostgreSQL columns from
 # leaking into API responses.
 CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at'
+
+
+def compute_content_hash(text: str) -> str:
+    """Compute SHA-256 hash of text content for deduplication.
+
+    Used to avoid transferring full text_content over the network when
+    checking for duplicates. The hash is stored alongside text_content
+    and compared instead of the full text.
+
+    Args:
+        text: The text content to hash.
+
+    Returns:
+        SHA-256 hex digest string (64 characters).
+    """
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
 class ContextRepository(BaseRepository):
@@ -86,15 +103,21 @@ class ContextRepository(BaseRepository):
         if summary is not None and not summary.strip():
             summary = None
 
+        # Compute content hash for deduplication optimization.
+        # Avoids transferring full text_content over the network for duplicate checks.
+        content_hash = compute_content_hash(text_content)
+
         if backend_type == 'sqlite':
 
             def _store_sqlite(conn: sqlite3.Connection) -> tuple[int, bool]:
                 cursor = conn.cursor()
 
-                # Check if the LATEST entry (by id) for this thread_id and source has the same text_content
+                # Check if the LATEST entry (by id) for this thread_id and source is a duplicate.
+                # Fetches content_hash instead of full text_content to reduce data transfer.
+                # Falls back to text comparison when content_hash is NULL (pre-migration rows).
                 cursor.execute(
                     f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -104,7 +127,17 @@ class ContextRepository(BaseRepository):
 
                 latest_row = cursor.fetchone()
 
-                if latest_row and latest_row['text_content'] == text_content:
+                is_duplicate = False
+                if latest_row:
+                    existing_hash = latest_row['content_hash']
+                    if existing_hash is not None:
+                        # Hash-based comparison (fast path)
+                        is_duplicate = existing_hash == content_hash
+                    else:
+                        # Fallback for pre-migration rows without content_hash
+                        is_duplicate = latest_row['text_content'] == text_content
+
+                if is_duplicate and latest_row:
                     # The latest entry has identical text - update metadata, content_type, and timestamp
                     existing_id = latest_row['id']
                     cursor.execute(
@@ -113,10 +146,11 @@ class ContextRepository(BaseRepository):
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
                             content_type = {self._placeholder(2)},
                             summary = COALESCE({self._placeholder(3)}, summary),
+                            content_hash = {self._placeholder(4)},
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(4)}
+                        WHERE id = {self._placeholder(5)}
                         ''',
-                        (metadata, content_type, summary, existing_id),
+                        (metadata, content_type, summary, content_hash, existing_id),
                     )
                     rows_affected = cursor.rowcount
                     if rows_affected == 0:
@@ -131,10 +165,10 @@ class ContextRepository(BaseRepository):
                 cursor.execute(
                     f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary)
-                    VALUES ({self._placeholders(6)})
+                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(7)})
                     ''',
-                    (thread_id, source, content_type, text_content, metadata, summary),
+                    (thread_id, source, content_type, text_content, metadata, summary, content_hash),
                 )
                 new_id: int = cursor.lastrowid if cursor.lastrowid is not None else 0
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
@@ -147,10 +181,11 @@ class ContextRepository(BaseRepository):
         # PostgreSQL
         # Note: TYPE_CHECKING ensures asyncpg.Connection type is only used during type checking
         async def _store_postgresql(conn: asyncpg.Connection) -> tuple[int, bool]:
-            # Check latest entry
+            # Check latest entry - fetches content_hash instead of full text_content.
+            # Falls back to text comparison when content_hash is NULL (pre-migration rows).
             latest_row = await conn.fetchrow(
                 f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -159,7 +194,15 @@ class ContextRepository(BaseRepository):
                 source,
             )
 
-            if latest_row and latest_row['text_content'] == text_content:
+            is_duplicate = False
+            if latest_row:
+                existing_hash = latest_row['content_hash']
+                if existing_hash is not None:
+                    is_duplicate = existing_hash == content_hash
+                else:
+                    is_duplicate = latest_row['text_content'] == text_content
+
+            if is_duplicate and latest_row:
                 # Update metadata, content_type, and timestamp
                 existing_id = latest_row['id']
                 result = await conn.execute(
@@ -168,12 +211,14 @@ class ContextRepository(BaseRepository):
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
                             content_type = {self._placeholder(2)},
                             summary = COALESCE({self._placeholder(3)}, summary),
+                            content_hash = {self._placeholder(4)},
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE id = {self._placeholder(4)}
+                        WHERE id = {self._placeholder(5)}
                         ''',
                     metadata,
                     content_type,
                     summary,
+                    content_hash,
                     existing_id,
                 )
                 rows_affected = int(result.split()[-1]) if result else 0
@@ -189,8 +234,8 @@ class ContextRepository(BaseRepository):
             new_id_result = await conn.fetchval(
                 f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary)
-                    VALUES ({self._placeholders(6)})
+                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(7)})
                     RETURNING id
                     ''',
                 thread_id,
@@ -199,6 +244,7 @@ class ContextRepository(BaseRepository):
                 text_content,
                 metadata,
                 summary,
+                content_hash,
             )
             new_id = cast(int, new_id_result)
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
@@ -229,13 +275,15 @@ class ContextRepository(BaseRepository):
         Returns:
             The context_id of the matching entry if duplicate found, None otherwise.
         """
+        content_hash = compute_content_hash(text_content)
+
         if self.backend.backend_type == 'sqlite':
 
             def _check_sqlite(conn: sqlite3.Connection) -> int | None:
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -243,7 +291,14 @@ class ContextRepository(BaseRepository):
                     (thread_id, source),
                 )
                 row = cursor.fetchone()
-                if row and row['text_content'] == text_content:
+                if not row:
+                    return None
+                # Hash-based comparison; fall back to text for pre-migration rows (NULL hash)
+                existing_hash = row['content_hash']
+                if existing_hash is not None:
+                    if existing_hash == content_hash:
+                        return cast(int, row['id'])
+                elif row['text_content'] == text_content:
                     return cast(int, row['id'])
                 return None
 
@@ -253,7 +308,7 @@ class ContextRepository(BaseRepository):
         async def _check_postgresql(conn: asyncpg.Connection) -> int | None:
             row = await conn.fetchrow(
                 f'''
-                    SELECT id, text_content FROM context_entries
+                    SELECT id, content_hash, text_content FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -261,7 +316,14 @@ class ContextRepository(BaseRepository):
                 thread_id,
                 source,
             )
-            if row and row['text_content'] == text_content:
+            if not row:
+                return None
+            # Hash-based comparison; fall back to text for pre-migration rows (NULL hash)
+            existing_hash = row['content_hash']
+            if existing_hash is not None:
+                if existing_hash == content_hash:
+                    return cast(int, row['id'])
+            elif row['text_content'] == text_content:
                 return cast(int, row['id'])
             return None
 
@@ -796,8 +858,11 @@ class ContextRepository(BaseRepository):
                 params: list[Any] = []
 
                 if text_content is not None:
-                    update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
-                    params.append(text_content)
+                    update_parts.extend([
+                        f'text_content = {self._placeholder(len(params) + 1)}',
+                        f'content_hash = {self._placeholder(len(params) + 2)}',
+                    ])
+                    params.extend([text_content, compute_content_hash(text_content)])
                     updated_fields.append('text_content')
 
                 if metadata is not None:
@@ -853,8 +918,11 @@ class ContextRepository(BaseRepository):
             params: list[Any] = []
 
             if text_content is not None:
-                update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
-                params.append(text_content)
+                update_parts.extend([
+                    f'text_content = {self._placeholder(len(params) + 1)}',
+                    f'content_hash = {self._placeholder(len(params) + 2)}',
+                ])
+                params.extend([text_content, compute_content_hash(text_content)])
                 updated_fields.append('text_content')
 
             if metadata is not None:
@@ -894,34 +962,40 @@ class ContextRepository(BaseRepository):
             return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_entry_postgresql)
 
-    async def check_entry_exists(self, context_id: int) -> bool:
-        """Check if a context entry exists.
+    async def check_entry_exists(self, context_id: int) -> tuple[bool, str | None]:
+        """Check if a context entry exists and return its source.
 
         Args:
             context_id: ID of the context entry
 
         Returns:
-            True if the entry exists, False otherwise
+            Tuple of (exists, source). Source is None when entry does not exist.
+            When exists=True, source is always 'user' or 'agent'.
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _check_exists_sqlite(conn: sqlite3.Connection) -> bool:
+            def _check_exists_sqlite(conn: sqlite3.Connection) -> tuple[bool, str | None]:
                 cursor = conn.cursor()
                 cursor.execute(
-                    f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                    f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                     (context_id,),
                 )
-                return cursor.fetchone() is not None
+                row = cursor.fetchone()
+                if row is None:
+                    return False, None
+                return True, cast(str, row['source'])
 
             return await self.backend.execute_read(_check_exists_sqlite)
 
         # PostgreSQL
-        async def _check_exists_postgresql(conn: asyncpg.Connection) -> bool:
+        async def _check_exists_postgresql(conn: asyncpg.Connection) -> tuple[bool, str | None]:
             row = await conn.fetchrow(
-                f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                 context_id,
             )
-            return row is not None
+            if row is None:
+                return False, None
+            return True, cast(str, row['source'])
 
         return await self.backend.execute_read(_check_exists_postgresql)
 
@@ -1170,314 +1244,6 @@ class ContextRepository(BaseRepository):
                 entry['metadata'] = None
 
         return entry
-
-    async def store_contexts_batch(
-        self,
-        entries: list[dict[str, Any]],
-    ) -> list[tuple[int, int | None, str | None]]:
-        """Store multiple context entries in a single transaction.
-
-        Each entry is processed with deduplication logic: if an entry with
-        identical thread_id, source, and text_content exists, it is updated
-        rather than creating a duplicate.
-
-        Args:
-            entries: List of entry dictionaries with keys:
-                - thread_id: str
-                - source: str
-                - text_content: str
-                - metadata: str | None (JSON string)
-                - content_type: str ('text' or 'multimodal')
-
-        Returns:
-            List of tuples: (index, context_id or None, error or None)
-            On success: (0, 123, None)
-            On failure: (0, None, 'Error message')
-        """
-        if self.backend.backend_type == 'sqlite':
-
-            def _store_batch_sqlite(conn: sqlite3.Connection) -> list[tuple[int, int | None, str | None]]:
-                cursor = conn.cursor()
-                results: list[tuple[int, int | None, str | None]] = []
-
-                for idx, entry in enumerate(entries):
-                    try:
-                        thread_id = entry['thread_id']
-                        source = entry['source']
-                        text_content = entry['text_content']
-                        metadata = entry.get('metadata')
-                        content_type = entry.get('content_type', 'text')
-
-                        # Check for deduplication - find latest entry with same thread_id, source, text_content
-                        cursor.execute(
-                            f'''
-                            SELECT id FROM context_entries
-                            WHERE thread_id = {self._placeholder(1)}
-                            AND source = {self._placeholder(2)}
-                            AND text_content = {self._placeholder(3)}
-                            ORDER BY id DESC
-                            LIMIT 1
-                            ''',
-                            (thread_id, source, text_content),
-                        )
-                        existing = cursor.fetchone()
-
-                        if existing:
-                            # Update existing entry
-                            existing_id = existing['id']
-                            cursor.execute(
-                                f'''
-                                UPDATE context_entries
-                                SET metadata = {self._placeholder(1)},
-                                    content_type = {self._placeholder(2)},
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = {self._placeholder(3)}
-                                ''',
-                                (metadata, content_type, existing_id),
-                            )
-                            results.append((idx, existing_id, None))
-                            logger.debug(f'Batch: updated existing context entry {existing_id}')
-                        else:
-                            # Insert new entry
-                            cursor.execute(
-                                f'''
-                                INSERT INTO context_entries
-                                (thread_id, source, content_type, text_content, metadata)
-                                VALUES ({self._placeholders(5)})
-                                ''',
-                                (thread_id, source, content_type, text_content, metadata),
-                            )
-                            new_id = cursor.lastrowid or 0
-                            results.append((idx, new_id, None))
-                            logger.debug(f'Batch: inserted new context entry {new_id}')
-
-                    except Exception as e:
-                        results.append((idx, None, str(e)))
-                        logger.warning(f'Batch store failed for entry {idx}: {e}')
-
-                return results
-
-            return await self.backend.execute_write(_store_batch_sqlite)
-
-        # PostgreSQL
-        async def _store_batch_postgresql(conn: asyncpg.Connection) -> list[tuple[int, int | None, str | None]]:
-            results: list[tuple[int, int | None, str | None]] = []
-
-            for idx, entry in enumerate(entries):
-                try:
-                    thread_id = entry['thread_id']
-                    source = entry['source']
-                    text_content = entry['text_content']
-                    metadata = entry.get('metadata')
-                    content_type = entry.get('content_type', 'text')
-
-                    # Check for deduplication
-                    existing = await conn.fetchrow(
-                        f'''
-                        SELECT id FROM context_entries
-                        WHERE thread_id = {self._placeholder(1)}
-                        AND source = {self._placeholder(2)}
-                        AND text_content = {self._placeholder(3)}
-                        ORDER BY id DESC
-                        LIMIT 1
-                        ''',
-                        thread_id,
-                        source,
-                        text_content,
-                    )
-
-                    if existing:
-                        # Update existing entry
-                        existing_id = existing['id']
-                        await conn.execute(
-                            f'''
-                            UPDATE context_entries
-                            SET metadata = {self._placeholder(1)},
-                                content_type = {self._placeholder(2)},
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = {self._placeholder(3)}
-                            ''',
-                            metadata,
-                            content_type,
-                            existing_id,
-                        )
-                        results.append((idx, existing_id, None))
-                        logger.debug(f'Batch: updated existing context entry {existing_id}')
-                    else:
-                        # Insert new entry
-                        new_id_result = await conn.fetchval(
-                            f'''
-                            INSERT INTO context_entries
-                            (thread_id, source, content_type, text_content, metadata)
-                            VALUES ({self._placeholders(5)})
-                            RETURNING id
-                            ''',
-                            thread_id,
-                            source,
-                            content_type,
-                            text_content,
-                            metadata,
-                        )
-                        new_id = cast(int, new_id_result)
-                        results.append((idx, new_id, None))
-                        logger.debug(f'Batch: inserted new context entry {new_id}')
-
-                except Exception as e:
-                    results.append((idx, None, str(e)))
-                    logger.warning(f'Batch store failed for entry {idx}: {e}')
-
-            return results
-
-        return await self.backend.execute_write(_store_batch_postgresql, validate_connection=True)
-
-    async def update_contexts_batch(
-        self,
-        updates: list[dict[str, Any]],
-    ) -> list[tuple[int, int, list[str] | None, str | None]]:
-        """Update multiple context entries in a single transaction.
-
-        Args:
-            updates: List of update dictionaries with keys:
-                - context_id: int (required)
-                - text_content: str | None (optional)
-                - metadata: str | None (JSON string, full replacement)
-                - content_type: str | None (optional)
-
-        Returns:
-            List of tuples: (index, context_id, updated_fields or None, error or None)
-        """
-        if self.backend.backend_type == 'sqlite':
-
-            def _update_batch_sqlite(conn: sqlite3.Connection) -> list[tuple[int, int, list[str] | None, str | None]]:
-                cursor = conn.cursor()
-                results: list[tuple[int, int, list[str] | None, str | None]] = []
-
-                for idx, update in enumerate(updates):
-                    try:
-                        context_id = update['context_id']
-
-                        # Check if entry exists
-                        cursor.execute(
-                            f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
-                            (context_id,),
-                        )
-                        if not cursor.fetchone():
-                            results.append((idx, context_id, None, f'Context entry {context_id} not found'))
-                            continue
-
-                        # Build dynamic update
-                        update_parts: list[str] = []
-                        params: list[Any] = []
-                        updated_fields: list[str] = []
-
-                        if 'text_content' in update and update['text_content'] is not None:
-                            update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
-                            params.append(update['text_content'])
-                            updated_fields.append('text_content')
-
-                        if 'metadata' in update:
-                            update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
-                            params.append(update['metadata'])
-                            updated_fields.append('metadata')
-
-                        if 'content_type' in update and update['content_type'] is not None:
-                            update_parts.append(f'content_type = {self._placeholder(len(params) + 1)}')
-                            params.append(update['content_type'])
-                            updated_fields.append('content_type')
-
-                        if not update_parts:
-                            results.append((idx, context_id, None, 'No fields to update'))
-                            continue
-
-                        # Always update timestamp
-                        update_parts.append('updated_at = CURRENT_TIMESTAMP')
-
-                        id_placeholder = self._placeholder(len(params) + 1)
-                        query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {id_placeholder}"
-                        params.append(context_id)
-                        cursor.execute(query, tuple(params))
-
-                        if cursor.rowcount > 0:
-                            results.append((idx, context_id, updated_fields, None))
-                            logger.debug(f'Batch: updated context entry {context_id}, fields: {updated_fields}')
-                        else:
-                            results.append((idx, context_id, None, 'Update had no effect'))
-
-                    except Exception as e:
-                        results.append((idx, update.get('context_id', 0), None, str(e)))
-                        logger.warning(f'Batch update failed for entry {idx}: {e}')
-
-                return results
-
-            return await self.backend.execute_write(_update_batch_sqlite)
-
-        # PostgreSQL
-        async def _update_batch_postgresql(
-            conn: asyncpg.Connection,
-        ) -> list[tuple[int, int, list[str] | None, str | None]]:
-            results: list[tuple[int, int, list[str] | None, str | None]] = []
-
-            for idx, update in enumerate(updates):
-                try:
-                    context_id = update['context_id']
-
-                    # Check if entry exists
-                    row = await conn.fetchrow(
-                        f'SELECT id FROM context_entries WHERE id = {self._placeholder(1)}',
-                        context_id,
-                    )
-                    if not row:
-                        results.append((idx, context_id, None, f'Context entry {context_id} not found'))
-                        continue
-
-                    # Build dynamic update
-                    update_parts: list[str] = []
-                    params: list[Any] = []
-                    updated_fields: list[str] = []
-
-                    if 'text_content' in update and update['text_content'] is not None:
-                        update_parts.append(f'text_content = {self._placeholder(len(params) + 1)}')
-                        params.append(update['text_content'])
-                        updated_fields.append('text_content')
-
-                    if 'metadata' in update:
-                        update_parts.append(f'metadata = {self._placeholder(len(params) + 1)}')
-                        params.append(update['metadata'])
-                        updated_fields.append('metadata')
-
-                    if 'content_type' in update and update['content_type'] is not None:
-                        update_parts.append(f'content_type = {self._placeholder(len(params) + 1)}')
-                        params.append(update['content_type'])
-                        updated_fields.append('content_type')
-
-                    if not update_parts:
-                        results.append((idx, context_id, None, 'No fields to update'))
-                        continue
-
-                    # Always update timestamp
-                    update_parts.append('updated_at = CURRENT_TIMESTAMP')
-
-                    id_placeholder = self._placeholder(len(params) + 1)
-                    set_clause = ', '.join(update_parts)
-                    query = f'UPDATE context_entries SET {set_clause} WHERE id = {id_placeholder}'
-                    params.append(context_id)
-                    result = await conn.execute(query, *params)
-
-                    # asyncpg returns "UPDATE N" where N is the count
-                    rows_affected = int(result.split()[-1]) if result else 0
-                    if rows_affected > 0:
-                        results.append((idx, context_id, updated_fields, None))
-                        logger.debug(f'Batch: updated context entry {context_id}, fields: {updated_fields}')
-                    else:
-                        results.append((idx, context_id, None, 'Update had no effect'))
-
-                except Exception as e:
-                    results.append((idx, update.get('context_id', 0), None, str(e)))
-                    logger.warning(f'Batch update failed for entry {idx}: {e}')
-
-            return results
-
-        return await self.backend.execute_write(_update_batch_postgresql, validate_connection=True)
 
     async def delete_contexts_batch(
         self,

@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING
 
 import httpx
 from tenacity import AsyncRetrying
+from tenacity import RetryCallState
 from tenacity import RetryError
-from tenacity import before_sleep_log
 from tenacity import retry_if_exception
 from tenacity import stop_after_attempt
 from tenacity import wait_exponential_jitter
@@ -120,6 +120,41 @@ if TYPE_CHECKING:
     )
 
 
+def _make_before_sleep_log(
+    log: logging.Logger,
+    log_level: int,
+    operation_name: str,
+) -> Callable[[RetryCallState], None]:
+    """Create a before_sleep callback that logs the operation name.
+
+    Tenacity's built-in ``before_sleep_log`` uses ``retry_state.fn`` to determine
+    the function name, but ``fn`` is always ``None`` when using the
+    ``AsyncRetrying`` iteration pattern (``async for attempt in retrying``).
+    This custom callback uses the explicitly provided *operation_name* instead.
+
+    Returns:
+        Callback suitable for tenacity's ``before_sleep`` parameter.
+    """
+    def _log_retry(retry_state: RetryCallState) -> None:
+        if retry_state.outcome is None or retry_state.next_action is None:
+            return
+        if retry_state.outcome.failed:
+            ex = retry_state.outcome.exception()
+            verb, value = 'raised', f'{ex.__class__.__name__}: {ex}'
+        else:
+            verb, value = 'returned', retry_state.outcome.result()
+        log.log(
+            log_level,
+            'Retrying %s in %s seconds as it %s %s.',
+            operation_name,
+            retry_state.next_action.sleep,
+            verb,
+            value,
+        )
+
+    return _log_retry
+
+
 async def with_summary_retry_and_timeout[T](
     func: Callable[[], Awaitable[T]],
     operation_name: str = 'summary',
@@ -153,13 +188,6 @@ async def with_summary_retry_and_timeout[T](
     max_attempts = settings.summary.retry_max_attempts
     base_delay_s = settings.summary.retry_base_delay_s
 
-    # Set __qualname__ on the callable for meaningful tenacity retry logging.
-    # Without this, before_sleep_log shows generic closure names like
-    # "summarize.<locals>._summarize" instead of the descriptive operation_name.
-    qualname = getattr(func, '__qualname__', '')
-    if qualname and '.<locals>.' in qualname:
-        func.__qualname__ = operation_name
-
     retrying = AsyncRetrying(
         retry=retry_if_exception(_is_retryable_exception),
         wait=wait_exponential_jitter(
@@ -168,7 +196,7 @@ async def with_summary_retry_and_timeout[T](
             jitter=base_delay_s,  # Jitter up to base_delay
         ),
         stop=stop_after_attempt(max_attempts),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=_make_before_sleep_log(logger, logging.WARNING, operation_name),
         reraise=False,  # Wrap in RetryError so we can convert to our custom exception
     )
 

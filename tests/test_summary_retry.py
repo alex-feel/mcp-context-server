@@ -30,7 +30,7 @@ def mock_summary_settings():
     """Mock summary settings for fast tests."""
     with patch('app.summary.retry.get_settings') as mock:
         mock.return_value.summary.timeout_s = 1.0
-        mock.return_value.summary.retry_max_attempts = 3
+        mock.return_value.summary.retry_max_attempts = 5
         mock.return_value.summary.retry_base_delay_s = 0.01  # Fast retries for testing
         yield mock
 
@@ -99,8 +99,8 @@ async def test_exhausted_retries_raises_error() -> None:
     with pytest.raises(SummaryRetryExhaustedError) as exc_info:
         await with_summary_retry_and_timeout(mock_func, 'test_operation')
 
-    assert 'failed after 3 attempts' in str(exc_info.value)
-    assert mock_func.call_count == 3
+    assert 'failed after 5 attempts' in str(exc_info.value)
+    assert mock_func.call_count == 5
 
 
 @pytest.mark.asyncio
@@ -179,16 +179,41 @@ async def test_multiple_failures_then_success() -> None:
 def test_compute_summary_total_timeout() -> None:
     """Test compute_summary_total_timeout() returns a positive value."""
     with patch('app.summary.retry.get_settings') as mock:
-        mock.return_value.summary.timeout_s = 30.0
-        mock.return_value.summary.retry_max_attempts = 3
+        mock.return_value.summary.timeout_s = 240.0
+        mock.return_value.summary.retry_max_attempts = 5
         mock.return_value.summary.retry_base_delay_s = 1.0
 
         total = compute_summary_total_timeout()
 
         # Formula: (max_attempts * timeout_s + total_backoff) * 1.1
-        # = (3 * 30 + (min(1*1+1, 60) + min(1*2+1, 60))) * 1.1
-        # = (90 + (2 + 3)) * 1.1
-        # = 95 * 1.1
-        # = 104.5
+        # = (5 * 240 + (min(1*1+1, 60) + min(1*2+1, 60) + min(1*4+1, 60) + min(1*8+1, 60))) * 1.1
+        # = (1200 + (2 + 3 + 5 + 9)) * 1.1
+        # = 1219 * 1.1
+        # = 1340.9
         assert total > 0
-        assert total == pytest.approx(104.5)
+        assert total == pytest.approx(1340.9)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('mock_summary_settings')
+async def test_retry_log_shows_operation_name(caplog: pytest.LogCaptureFixture) -> None:
+    """Verify retry log message shows operation name, not <unknown>."""
+    call_count = 0
+
+    async def flaky_func() -> str:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ConnectionError('transient failure')
+        return 'summary result'
+
+    with caplog.at_level('WARNING'):
+        result = await with_summary_retry_and_timeout(flaky_func, 'test_summarize_operation')
+
+    assert result == 'summary result'
+    assert call_count == 2
+
+    retry_messages = [r.message for r in caplog.records if 'Retrying' in r.message]
+    assert len(retry_messages) >= 1
+    assert 'test_summarize_operation' in retry_messages[0]
+    assert '<unknown>' not in retry_messages[0]

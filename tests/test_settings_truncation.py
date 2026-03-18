@@ -2,8 +2,8 @@
 Tests for embedding truncation settings validation.
 
 Tests verify:
-1. OLLAMA_TRUNCATE default is false
-2. OLLAMA_NUM_CTX default is 4096
+1. EMBEDDING_OLLAMA_TRUNCATE default is false
+2. EMBEDDING_OLLAMA_NUM_CTX default is 4096
 3. VOYAGE_TRUNCATION default is false
 4. Settings validation warnings for chunk size vs context
 """
@@ -40,46 +40,90 @@ def env_vars(**kwargs: str | None) -> Generator[None, None, None]:
 
 
 class TestOllamaTruncateSettings:
-    """Test OLLAMA_TRUNCATE and OLLAMA_NUM_CTX settings."""
+    """Test EMBEDDING_OLLAMA_TRUNCATE and EMBEDDING_OLLAMA_NUM_CTX settings."""
 
     def test_ollama_truncate_default_is_false(self) -> None:
-        """Verify OLLAMA_TRUNCATE defaults to false (prevent silent truncation)."""
-        with env_vars(OLLAMA_TRUNCATE=None, OLLAMA_NUM_CTX=None):
+        """Verify EMBEDDING_OLLAMA_TRUNCATE defaults to false (prevent silent truncation)."""
+        with env_vars(EMBEDDING_OLLAMA_TRUNCATE=None, EMBEDDING_OLLAMA_NUM_CTX=None):
             settings = AppSettings()
             assert settings.embedding.ollama_truncate is False
 
     def test_ollama_truncate_can_be_set_true(self) -> None:
-        """Verify OLLAMA_TRUNCATE can be explicitly set to true."""
-        with env_vars(OLLAMA_TRUNCATE='true'):
+        """Verify EMBEDDING_OLLAMA_TRUNCATE can be explicitly set to true."""
+        with env_vars(EMBEDDING_OLLAMA_TRUNCATE='true'):
             settings = AppSettings()
             assert settings.embedding.ollama_truncate is True
 
     def test_ollama_truncate_can_be_set_false(self) -> None:
-        """Verify OLLAMA_TRUNCATE can be explicitly set to false."""
-        with env_vars(OLLAMA_TRUNCATE='false'):
+        """Verify EMBEDDING_OLLAMA_TRUNCATE can be explicitly set to false."""
+        with env_vars(EMBEDDING_OLLAMA_TRUNCATE='false'):
             settings = AppSettings()
             assert settings.embedding.ollama_truncate is False
 
     def test_ollama_num_ctx_default_is_4096(self) -> None:
-        """Verify OLLAMA_NUM_CTX defaults to 4096."""
-        with env_vars(OLLAMA_NUM_CTX=None):
+        """Verify EMBEDDING_OLLAMA_NUM_CTX defaults to 4096."""
+        with env_vars(EMBEDDING_OLLAMA_NUM_CTX=None):
             settings = AppSettings()
             assert settings.embedding.ollama_num_ctx == 4096
 
     def test_ollama_num_ctx_can_be_customized(self) -> None:
-        """Verify OLLAMA_NUM_CTX can be set to custom value."""
-        with env_vars(OLLAMA_NUM_CTX='8192'):
+        """Verify EMBEDDING_OLLAMA_NUM_CTX can be set to custom value."""
+        with env_vars(EMBEDDING_OLLAMA_NUM_CTX='8192'):
             settings = AppSettings()
             assert settings.embedding.ollama_num_ctx == 8192
 
     def test_ollama_num_ctx_minimum_validation(self) -> None:
-        """Verify OLLAMA_NUM_CTX validates minimum value (512)."""
-        with env_vars(OLLAMA_NUM_CTX='100'), pytest.raises(ValidationError):
+        """Verify EMBEDDING_OLLAMA_NUM_CTX validates minimum value (512)."""
+        with env_vars(EMBEDDING_OLLAMA_NUM_CTX='100'), pytest.raises(ValidationError):
             AppSettings()
 
     def test_ollama_num_ctx_maximum_validation(self) -> None:
-        """Verify OLLAMA_NUM_CTX validates maximum value (131072)."""
-        with env_vars(OLLAMA_NUM_CTX='200000'), pytest.raises(ValidationError):
+        """Verify EMBEDDING_OLLAMA_NUM_CTX validates maximum value (2097152)."""
+        with env_vars(EMBEDDING_OLLAMA_NUM_CTX='3000000'), pytest.raises(ValidationError):
+            AppSettings()
+
+
+class TestSummaryOllamaSettings:
+    """Test SUMMARY_OLLAMA_TRUNCATE and SUMMARY_OLLAMA_NUM_CTX settings."""
+
+    def test_summary_ollama_truncate_default_is_false(self) -> None:
+        """Verify SUMMARY_OLLAMA_TRUNCATE defaults to false."""
+        with env_vars(SUMMARY_OLLAMA_TRUNCATE=None):
+            settings = AppSettings()
+            assert settings.summary.ollama_truncate is False
+
+    def test_summary_ollama_truncate_can_be_set_true(self) -> None:
+        """Verify SUMMARY_OLLAMA_TRUNCATE can be explicitly set to true."""
+        with env_vars(SUMMARY_OLLAMA_TRUNCATE='true'):
+            settings = AppSettings()
+            assert settings.summary.ollama_truncate is True
+
+    def test_summary_ollama_truncate_can_be_set_false(self) -> None:
+        """Verify SUMMARY_OLLAMA_TRUNCATE can be explicitly set to false."""
+        with env_vars(SUMMARY_OLLAMA_TRUNCATE='false'):
+            settings = AppSettings()
+            assert settings.summary.ollama_truncate is False
+
+    def test_summary_ollama_num_ctx_default_is_32768(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX defaults to 32768."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX=None):
+            settings = AppSettings()
+            assert settings.summary.ollama_num_ctx == 32768
+
+    def test_summary_ollama_num_ctx_can_be_customized(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX can be set to custom value."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX='8192'):
+            settings = AppSettings()
+            assert settings.summary.ollama_num_ctx == 8192
+
+    def test_summary_ollama_num_ctx_minimum_validation(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX validates minimum value (512)."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX='100'), pytest.raises(ValidationError):
+            AppSettings()
+
+    def test_summary_ollama_num_ctx_maximum_validation(self) -> None:
+        """Verify SUMMARY_OLLAMA_NUM_CTX validates maximum value (2097152)."""
+        with env_vars(SUMMARY_OLLAMA_NUM_CTX='3000000'), pytest.raises(ValidationError):
             AppSettings()
 
 
@@ -144,7 +188,7 @@ class TestChunkSizeVsContextValidation:
             EMBEDDING_PROVIDER='ollama',
             EMBEDDING_MODEL='qwen3-embedding:0.6b',
             ENABLE_CHUNKING='false',
-            OLLAMA_TRUNCATE='false',  # Truncation disabled
+            EMBEDDING_OLLAMA_TRUNCATE='false',  # Truncation disabled
         ):
             AppSettings()
             assert 'ENABLE_CHUNKING=false' in caplog.text

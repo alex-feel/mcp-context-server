@@ -9,6 +9,7 @@ This package contains migration orchestration and all migration implementations:
 - metadata.py: Metadata field index management
 - chunking.py: 1:N embedding relationship migration
 - summary.py: Summary column migration
+- content_hash.py: Content hash column migration for deduplication optimization
 
 SQL Files (resources):
 - add_semantic_search_*.sql: Vector table schemas
@@ -19,6 +20,7 @@ SQL Files (resources):
 """
 
 from app.migrations.chunking import apply_chunking_migration
+from app.migrations.content_hash import apply_content_hash_migration
 from app.migrations.dependencies import ProviderCheckResult
 from app.migrations.dependencies import check_provider_dependencies
 from app.migrations.dependencies import check_summary_provider_dependencies
@@ -58,5 +60,8 @@ __all__ = [
     # Chunking
     'apply_chunking_migration',
     # Summary
-    'apply_summary_migration', 'check_summary_provider_dependencies',
+    'apply_summary_migration',
+    'check_summary_provider_dependencies',
+    # Content hash
+    'apply_content_hash_migration',
 ]

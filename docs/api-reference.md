@@ -389,7 +389,7 @@ All search tools (except `search_context`) return a unified `scores` object with
 
 **Notes:**
 - `stats` is only included when `explain_query=True` for all search tools
-- All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 150 chars) with `summary` and `is_text_content_truncated` flag; use `get_context_by_ids` for full content
+- All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 chars) with `summary` and `is_text_content_truncated` flag; use `get_context_by_ids` for full content
 - For standalone FTS and semantic searches, rank fields are always `null` (no cross-method ranking)
 
 ## Batch Operations
