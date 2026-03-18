@@ -30,21 +30,21 @@ services:
       - FASTMCP_PORT=8000
       # Disable Rich log formatting and ASCII banner for clean single-line container logs
       - FASTMCP_ENABLE_RICH_LOGGING=false
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # PostgreSQL backend (connection details from .env file)
       - STORAGE_BACKEND=postgresql
       # Semantic search configuration
       - ENABLE_SEMANTIC_SEARCH=true
       # OpenAI embeddings configuration
-      - EMBEDDING_PROVIDER=openai
-      - EMBEDDING_MODEL=text-embedding-3-small
-      - EMBEDDING_DIM=1536
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - EMBEDDING_DIM=${EMBEDDING_DIM:-1536}
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
       # Summary generation (uses OpenAI -- same API key as embeddings)
-      - SUMMARY_PROVIDER=openai
-      - SUMMARY_MODEL=gpt-5-mini
+      - SUMMARY_PROVIDER=${SUMMARY_PROVIDER:-openai}
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-gpt-5-mini}
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
     volumes:

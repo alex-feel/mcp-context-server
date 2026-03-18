@@ -26,26 +26,27 @@ services:
       - FASTMCP_PORT=8000
       # Disable Rich log formatting and ASCII banner for clean single-line container logs
       - FASTMCP_ENABLE_RICH_LOGGING=false
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # PostgreSQL backend configuration
       - STORAGE_BACKEND=postgresql
       - POSTGRESQL_HOST=postgres
       - POSTGRESQL_PORT=5432
-      - POSTGRESQL_USER=postgres
-      - POSTGRESQL_PASSWORD=postgres
-      - POSTGRESQL_DATABASE=mcp_context
+      - POSTGRESQL_USER=${POSTGRESQL_USER:-postgres}
+      - POSTGRESQL_PASSWORD=${POSTGRESQL_PASSWORD:-postgres}
+      - POSTGRESQL_DATABASE=${POSTGRESQL_DATABASE:-mcp_context}
       # Semantic search configuration
       - ENABLE_SEMANTIC_SEARCH=true
       # Embedding provider selection (default: ollama)
-      - EMBEDDING_PROVIDER=ollama
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
       - OLLAMA_HOST=http://ollama:11434
-      - EMBEDDING_MODEL=qwen3-embedding:0.6b
-      - EMBEDDING_DIM=1024
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
       # Summary generation
-      - SUMMARY_MODEL=qwen3:0.6b
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
+      - SUMMARY_PROVIDER=${SUMMARY_PROVIDER:-ollama}
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
       # LangSmith tracing (optional, disabled by default)
@@ -69,8 +70,8 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_KEEP_ALIVE=-1
-      - EMBEDDING_MODEL=qwen3-embedding:0.6b
-      - SUMMARY_MODEL=qwen3:0.6b
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
     volumes:
       - ollama-data:/root/.ollama
     # Uncomment to enable NVIDIA GPU acceleration (requires NVIDIA Container Toolkit)
@@ -92,13 +93,13 @@ services:
   postgres:
     image: pgvector/pgvector:pg18-trixie
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: mcp_context
+      POSTGRES_USER: ${POSTGRESQL_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRESQL_DATABASE:-mcp_context}
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d mcp_context"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10

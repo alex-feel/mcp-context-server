@@ -217,7 +217,11 @@ Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in 
 
 **CRITICAL:** Compose files MUST contain ONLY variables REQUIRED for the deployment to function. All other settings use defaults from `app/settings.py`. This prevents drift between code defaults and hardcoded compose values.
 
-**Required**: Transport (`MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`), `FASTMCP_ENABLE_RICH_LOGGING=false`, `LOG_LEVEL=INFO`, storage backend selection, `OLLAMA_HOST` (sidecar), feature toggles, non-default providers/dimensions, `RERANKING_CACHE_DIR`. Model names on Ollama sidecar (`EMBEDDING_MODEL`, `SUMMARY_MODEL`) are required for auto-pull.
+**Configurable variables** use `${VAR:-default}` interpolation so users can override them from `.env` without editing compose files. The default in `${VAR:-default}` MUST match the value that was previously hardcoded.
+
+**Required (configurable via `${VAR:-default}`)**: `LOG_LEVEL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PROVIDER`, `SUMMARY_MODEL`, `SUMMARY_PROVIDER`. For internal PostgreSQL variants: `POSTGRESQL_USER`, `POSTGRESQL_PASSWORD`, `POSTGRESQL_DATABASE`. Model names on Ollama sidecar (`EMBEDDING_MODEL`, `SUMMARY_MODEL`) use the same interpolation to stay in sync.
+
+**Required (hardcoded, NOT configurable)**: Transport (`MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`), `FASTMCP_ENABLE_RICH_LOGGING=false`, storage backend selection, `OLLAMA_HOST` (sidecar bind + client URL), `OLLAMA_KEEP_ALIVE=-1`, feature toggles (`ENABLE_*`), container paths (`DB_PATH`, `RERANKING_CACHE_DIR`), Docker networking (`POSTGRESQL_HOST`, `POSTGRESQL_PORT`).
 
 **Do NOT add**: Tuning parameters with sensible defaults, feature-specific settings with correct defaults.
 
