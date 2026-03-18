@@ -99,7 +99,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 | `SUMMARY_RETRY_BASE_DELAY_S`   | `1.0`        | Base delay in seconds between retries (exponential backoff)                                          |
 | `SUMMARY_MAX_CONCURRENT`       | `3`          | Maximum concurrent summary generation operations (1-20)                                              |
 | `SUMMARY_MIN_CONTENT_LENGTH`   | `500`        | Minimum text length (characters) to trigger summary generation. 0 = always generate                  |
-| `SUMMARY_PROMPT`               | (built-in)   | Custom system prompt. Overrides the default prompt. See [Custom Prompt](#custom-prompt)              |
+| `SUMMARY_PROMPT`               | (built-in)   | Custom system prompt. Overrides both source-specific defaults. See [Custom Prompt](#custom-prompt)   |
 | `SUMMARY_OLLAMA_NUM_CTX`       | `32768`      | Ollama context window in tokens (512-2097152). Must accommodate input text + prompt + output budget  |
 | `SUMMARY_OLLAMA_TRUNCATE`      | `false`      | Truncation mode: false (default) returns error when context exceeded, true enables silent truncation |
 
