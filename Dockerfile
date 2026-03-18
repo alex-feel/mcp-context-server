@@ -30,7 +30,7 @@ COPY pyproject.toml uv.lock README.md ./
 
 # Install project
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --extra ${EMBEDDING_EXTRA} --extra ${SUMMARY_EXTRA} --extra reranking --no-dev
+    uv sync --locked --no-editable --extra ${EMBEDDING_EXTRA} --extra ${SUMMARY_EXTRA} --extra reranking --no-dev
 
 # ============================================
 # RUNTIME STAGE
@@ -45,9 +45,6 @@ WORKDIR /app
 
 # Copy virtual environment from builder
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
-
-# Copy application code
-COPY --chown=appuser:appuser app/ ./app/
 
 # Runtime environment variables
 ENV PATH="/app/.venv/bin:$PATH" \

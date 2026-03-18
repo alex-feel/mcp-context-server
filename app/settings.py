@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -16,10 +15,6 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
 logger = logging.getLogger(__name__)
-
-# Constants
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class CommonSettings(BaseSettings):
