@@ -34,7 +34,6 @@ class AnthropicSummaryProvider:
         settings = get_settings()
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
-        self._prompt = resolve_summary_prompt(settings.summary)
         self._chat_model: Any = None
 
     async def initialize(self) -> None:
@@ -69,11 +68,12 @@ class AnthropicSummaryProvider:
         self._chat_model = None
         logger.info('Anthropic summary provider shut down')
 
-    async def summarize(self, text: str) -> str:
+    async def summarize(self, text: str, source: str) -> str:
         """Generate summary for the given text.
 
         Args:
             text: Text content to summarize
+            source: Source type ('user' or 'agent')
 
         Returns:
             Summary string
@@ -87,8 +87,9 @@ class AnthropicSummaryProvider:
         from langchain_core.messages import HumanMessage
         from langchain_core.messages import SystemMessage
 
+        prompt = resolve_summary_prompt(source)
         messages = [
-            SystemMessage(content=self._prompt),
+            SystemMessage(content=prompt),
             HumanMessage(content=text),
         ]
 

@@ -93,7 +93,7 @@ class TestGenerateSummaryWithTimeout:
         ):
             from app.tools.context import generate_summary_with_timeout
 
-            result = await generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
         assert result is None
 
@@ -109,7 +109,7 @@ class TestGenerateSummaryWithTimeout:
         ):
             from app.tools.context import generate_summary_with_timeout
 
-            result = await generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
         assert result is None
 
@@ -126,7 +126,7 @@ class TestGenerateSummaryWithTimeout:
         ):
             from app.tools.context import generate_summary_with_timeout
 
-            result = await generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
         assert result == expected
 
@@ -136,7 +136,7 @@ class TestGenerateSummaryWithTimeout:
         with patch('app.tools.context.get_summary_provider', return_value=None):
             from app.tools.context import generate_summary_with_timeout
 
-            result = await generate_summary_with_timeout('Some text to summarize')
+            result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
         assert result is None
 

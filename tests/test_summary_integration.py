@@ -48,7 +48,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(123, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -104,16 +104,16 @@ class TestGenerateSummaryWithTimeout:
         ):
             mock_settings.summary.max_concurrent = 2
 
-            result = await context_tools.generate_summary_with_timeout('Long text')
+            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result == 'Generated summary'
-        mock_provider.summarize.assert_awaited_once_with('Long text')
+        mock_provider.summarize.assert_awaited_once_with('Long text', 'agent')
 
     @pytest.mark.asyncio
     async def test_timeout_raises_tool_error(self) -> None:
         """Raise ToolError when total timeout is exceeded."""
 
-        async def slow_summary(_text: str) -> str:
+        async def slow_summary(_text: str, _source: str) -> str:
             await asyncio.sleep(0.2)
             return 'Too late'
 
@@ -128,13 +128,13 @@ class TestGenerateSummaryWithTimeout:
             mock_settings.summary.max_concurrent = 2
 
             with pytest.raises(ToolError, match='Summary generation exceeded total timeout'):
-                await context_tools.generate_summary_with_timeout('Long text')
+                await context_tools.generate_summary_with_timeout('Long text', 'agent')
 
     @pytest.mark.asyncio
     async def test_provider_none_skips_generation(self) -> None:
         """Return None when no summary provider is configured."""
         with patch('app.tools.context.get_summary_provider', return_value=None):
-            result = await context_tools.generate_summary_with_timeout('Long text')
+            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result is None
 
@@ -155,7 +155,7 @@ class TestSummaryStoreWithMocks:
             await asyncio.wait_for(summary_started.wait(), timeout=0.2)
             return [ChunkEmbedding(embedding=[0.1, 0.2], start_index=0, end_index=len(text))]
 
-        async def fake_summary(_text: str) -> str:
+        async def fake_summary(_text: str, _source: str) -> str:
             summary_started.set()
             await asyncio.wait_for(embedding_started.wait(), timeout=0.2)
             return 'Generated summary'
@@ -225,7 +225,7 @@ class TestSummaryIntegration:
         assert rows[0]['text_content'] == updated_text
         assert rows[0]['summary'] == 'Updated summary'
         assert '(summary regenerated)' in result['message']
-        mock_provider.summarize.assert_awaited_once_with(updated_text)
+        mock_provider.summarize.assert_awaited_once_with(updated_text, 'agent')
 
     @pytest.mark.asyncio
     async def test_update_context_preserves_summary_on_metadata_only_change(self) -> None:
@@ -382,7 +382,7 @@ class TestSummaryIntegration:
 
         assert second_result['context_id'] == context_id
         assert '(summary generated)' in second_result['message']
-        mock_provider2.summarize.assert_awaited_once_with(dedup_text)
+        mock_provider2.summarize.assert_awaited_once_with(dedup_text, 'agent')
 
         rows = await repos.context.get_by_ids([context_id])
         assert rows[0]['summary'] == 'Summary for missing case'

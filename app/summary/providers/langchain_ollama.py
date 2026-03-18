@@ -46,7 +46,6 @@ class OllamaSummaryProvider:
         self._max_tokens = settings.summary.max_tokens
         self._truncate = settings.summary.ollama_truncate
         self._num_ctx = settings.summary.ollama_num_ctx
-        self._prompt = resolve_summary_prompt(settings.summary)
         self._chat_model: Any = None
 
     async def initialize(self) -> None:
@@ -84,13 +83,15 @@ class OllamaSummaryProvider:
         self._chat_model = None
         logger.info('Ollama summary provider shut down')
 
-    async def summarize(self, text: str) -> str:
+    async def summarize(self, text: str, source: str) -> str:
         """Generate summary for the given text.
 
         Uses SystemMessage (prompt) + HumanMessage (text content) pattern.
+        The prompt is resolved dynamically per-call based on source type.
 
         Args:
             text: Text content to summarize
+            source: Source type ('user' or 'agent')
 
         Returns:
             Summary string
@@ -103,13 +104,14 @@ class OllamaSummaryProvider:
 
         # Pre-validate text length when truncation disabled
         if not self._truncate:
-            self._validate_text_length(text)
+            self._validate_text_length(text, source)
 
         from langchain_core.messages import HumanMessage
         from langchain_core.messages import SystemMessage
 
+        prompt = resolve_summary_prompt(source)
         messages = [
-            SystemMessage(content=self._prompt),
+            SystemMessage(content=prompt),
             HumanMessage(content=text),
         ]
 
@@ -132,7 +134,7 @@ class OllamaSummaryProvider:
             _summarize, f'{self.provider_name}_summarize',
         )
 
-    def _validate_text_length(self, text: str) -> None:
+    def _validate_text_length(self, text: str, source: str) -> None:
         """Validate text length against estimated context window.
 
         When SUMMARY_OLLAMA_TRUNCATE=false, provides fail-fast behavior by checking
@@ -144,6 +146,7 @@ class OllamaSummaryProvider:
 
         Args:
             text: Text to validate
+            source: Source type ('user' or 'agent') for prompt resolution
 
         Raises:
             ValueError: If text likely exceeds context window and truncation disabled
@@ -153,20 +156,21 @@ class OllamaSummaryProvider:
         spec = get_summary_model_spec(self._model)
         if spec:
             max_tokens = min(spec.max_input_tokens, self._num_ctx)
-            source = f'model spec ({spec.max_input_tokens}) capped by SUMMARY_OLLAMA_NUM_CTX ({self._num_ctx})'
+            source_label = f'model spec ({spec.max_input_tokens}) capped by SUMMARY_OLLAMA_NUM_CTX ({self._num_ctx})'
         else:
             max_tokens = self._num_ctx
-            source = f'SUMMARY_OLLAMA_NUM_CTX ({self._num_ctx})'
+            source_label = f'SUMMARY_OLLAMA_NUM_CTX ({self._num_ctx})'
 
         # Reserve tokens for output and prompt overhead
         # SUMMARY_MAX_TOKENS is the output budget
         # Prompt overhead estimated at ~3 chars per token (conservative for English)
-        prompt_overhead = len(self._prompt) // 3
+        prompt = resolve_summary_prompt(source)
+        prompt_overhead = len(prompt) // 3
         available_input_tokens = max_tokens - self._max_tokens - prompt_overhead
 
         if available_input_tokens <= 0:
             raise ValueError(
-                f'Context window ({max_tokens} tokens from {source}) is too small '
+                f'Context window ({max_tokens} tokens from {source_label}) is too small '
                 f'for output budget ({self._max_tokens} tokens) + prompt overhead (~{prompt_overhead} tokens). '
                 f'Increase SUMMARY_OLLAMA_NUM_CTX or decrease SUMMARY_MAX_TOKENS.',
             )
@@ -177,7 +181,7 @@ class OllamaSummaryProvider:
         if estimated_tokens > available_input_tokens:
             raise ValueError(
                 f'Text length ({len(text)} chars, ~{int(estimated_tokens)} estimated tokens) '
-                f'may exceed available input budget ({available_input_tokens} tokens from {source}, '
+                f'may exceed available input budget ({available_input_tokens} tokens from {source_label}, '
                 f'after reserving {self._max_tokens} output + ~{prompt_overhead} prompt tokens) '
                 f'for model {self._model}. '
                 f'Options: 1) Increase SUMMARY_OLLAMA_NUM_CTX, '

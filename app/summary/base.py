@@ -32,7 +32,7 @@ class SummaryProvider(Protocol):
                 # Cleanup resources
                 pass
 
-            async def summarize(self, text: str) -> str:
+            async def summarize(self, text: str, source: str) -> str:
                 # Generate summary for input text
                 return summary_text
 
@@ -65,11 +65,13 @@ class SummaryProvider(Protocol):
         """
         ...
 
-    async def summarize(self, text: str) -> str:
+    async def summarize(self, text: str, source: str) -> str:
         """Generate a summary for the given text.
 
         Args:
             text: Text content to summarize
+            source: Source type ('user' or 'agent'). Controls which
+                system prompt is used for summarization.
 
         Returns:
             Summary string (single paragraph, no labels/prefixes)

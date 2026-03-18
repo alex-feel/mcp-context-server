@@ -12,6 +12,7 @@ Tests verify:
 from __future__ import annotations
 
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -280,7 +281,7 @@ class TestSummarySettingsFieldAliases:
 
 
 class TestSummaryPrompt:
-    """Tests for DEFAULT_SUMMARY_PROMPT and resolve_summary_prompt()."""
+    """Tests for DEFAULT_SUMMARY_PROMPT and resolve_summary_prompt(source)."""
 
     def test_default_prompt_exists_and_non_empty(self) -> None:
         """Verify DEFAULT_SUMMARY_PROMPT is defined and non-empty."""
@@ -298,34 +299,38 @@ class TestSummaryPrompt:
         assert 'do not add' in DEFAULT_SUMMARY_PROMPT.lower()
         assert 'Output ONLY' in DEFAULT_SUMMARY_PROMPT
 
-    def test_resolve_returns_default_when_none(self) -> None:
-        """Verify resolve_summary_prompt returns default when prompt is None."""
-        settings = MagicMock()
-        settings.prompt = None
-        assert resolve_summary_prompt(settings) == DEFAULT_SUMMARY_PROMPT
+    def test_resolve_returns_agent_prompt_when_none(self) -> None:
+        """Verify resolve_summary_prompt('agent') returns AGENT_SUMMARY_PROMPT when no custom."""
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = None
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == DEFAULT_SUMMARY_PROMPT
 
-    def test_resolve_returns_default_when_empty(self) -> None:
-        """Verify resolve_summary_prompt returns default when prompt is empty string."""
-        settings = MagicMock()
-        settings.prompt = ''
-        assert resolve_summary_prompt(settings) == DEFAULT_SUMMARY_PROMPT
+    def test_resolve_returns_user_prompt_when_empty(self) -> None:
+        """Verify resolve_summary_prompt('user') returns USER_SUMMARY_PROMPT when empty."""
+        from app.summary.instructions import USER_SUMMARY_PROMPT
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = ''
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('user') == USER_SUMMARY_PROMPT
 
-    def test_resolve_returns_default_when_whitespace(self) -> None:
-        """Verify resolve_summary_prompt returns default when prompt is whitespace."""
-        settings = MagicMock()
-        settings.prompt = '   '
-        assert resolve_summary_prompt(settings) == DEFAULT_SUMMARY_PROMPT
+    def test_resolve_returns_agent_prompt_when_whitespace(self) -> None:
+        """Verify resolve_summary_prompt returns source-specific prompt for whitespace."""
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = '   '
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == DEFAULT_SUMMARY_PROMPT
 
     def test_resolve_returns_custom_when_set(self) -> None:
         """Verify resolve_summary_prompt returns custom prompt when set."""
-        settings = MagicMock()
-        settings.prompt = 'Custom prompt for testing'
-        assert resolve_summary_prompt(settings) == 'Custom prompt for testing'
+        mock_settings = MagicMock()
+        mock_settings.summary.prompt = 'Custom prompt for testing'
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            assert resolve_summary_prompt('agent') == 'Custom prompt for testing'
 
     def test_resolve_with_real_settings(self) -> None:
-        """Verify resolve_summary_prompt works with real SummarySettings."""
-        settings = SummarySettings()
-        result = resolve_summary_prompt(settings)
+        """Verify resolve_summary_prompt works with real settings (no custom prompt)."""
+        result = resolve_summary_prompt('agent')
         assert result == DEFAULT_SUMMARY_PROMPT
 
 

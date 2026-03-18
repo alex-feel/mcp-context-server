@@ -181,7 +181,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model = AsyncMock()
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await provider.summarize('Some long text to summarize.')
+        result = await provider.summarize('Some long text to summarize.', 'agent')
 
         assert result == 'Summary text with whitespace'
 
@@ -194,7 +194,7 @@ class TestOllamaSummaryProviderSummarize:
         assert provider._chat_model is None
 
         with pytest.raises(RuntimeError, match='Provider not initialized'):
-            await provider.summarize('Some text')
+            await provider.summarize('Some text', 'agent')
 
     @pytest.mark.asyncio
     async def test_summarize_uses_system_and_human_messages(self) -> None:
@@ -207,7 +207,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model = AsyncMock()
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
-        await provider.summarize('Input text content')
+        await provider.summarize('Input text content', 'agent')
 
         # Verify ainvoke was called with a list of messages
         call_args = provider._chat_model.ainvoke.call_args
@@ -234,7 +234,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            result = await provider.summarize('Some long text')
+            result = await provider.summarize('Some long text', 'agent')
 
         assert result == 'Truncated summary text'
         assert 'truncated by token limit' in caplog.text
@@ -258,7 +258,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            result = await provider.summarize('Some text')
+            result = await provider.summarize('Some text', 'agent')
 
         assert result == 'Normal summary text'
         assert 'truncated by token limit' not in caplog.text
@@ -281,7 +281,7 @@ class TestOllamaSummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            await provider.summarize('Text')
+            await provider.summarize('Text', 'agent')
 
         # Must contain the runtime value
         assert '2000' in caplog.text
@@ -373,7 +373,7 @@ class TestOllamaSummaryProviderValidateTextLength:
         provider = OllamaSummaryProvider()
         # With num_ctx=32768, max_tokens=2000, prompt ~230 tokens
         # Available = 32768 - 2000 - 230 = 30538 tokens = ~91614 chars
-        provider._validate_text_length('short text')
+        provider._validate_text_length('short text', 'agent')
 
     def test_validate_raises_for_text_exceeding_context(self) -> None:
         """_validate_text_length raises ValueError when text exceeds available budget."""
@@ -386,7 +386,7 @@ class TestOllamaSummaryProviderValidateTextLength:
         long_text = 'x' * 300000
 
         with pytest.raises(ValueError, match='may exceed available input budget'):
-            provider._validate_text_length(long_text)
+            provider._validate_text_length(long_text, 'agent')
 
     def test_validate_raises_when_context_too_small_for_output(self) -> None:
         """_validate_text_length raises ValueError when context window too small for output budget."""
@@ -397,7 +397,7 @@ class TestOllamaSummaryProviderValidateTextLength:
         provider._num_ctx = 100  # Way too small for max_tokens=2000
 
         with pytest.raises(ValueError, match='too small for output budget'):
-            provider._validate_text_length('any text')
+            provider._validate_text_length('any text', 'agent')
 
     def test_validate_uses_model_spec_when_available(self) -> None:
         """_validate_text_length uses model spec max_input_tokens when model is known."""
@@ -410,7 +410,7 @@ class TestOllamaSummaryProviderValidateTextLength:
         provider._num_ctx = 4096
         long_text = 'x' * 20000
         with pytest.raises(ValueError, match='capped by SUMMARY_OLLAMA_NUM_CTX'):
-            provider._validate_text_length(long_text)
+            provider._validate_text_length(long_text, 'agent')
 
     def test_validate_uses_num_ctx_for_unknown_model(self) -> None:
         """_validate_text_length uses SUMMARY_OLLAMA_NUM_CTX for unknown models."""
@@ -421,7 +421,7 @@ class TestOllamaSummaryProviderValidateTextLength:
         provider._num_ctx = 4096
         long_text = 'x' * 20000
         with pytest.raises(ValueError, match='SUMMARY_OLLAMA_NUM_CTX'):
-            provider._validate_text_length(long_text)
+            provider._validate_text_length(long_text, 'agent')
 
     def test_validate_not_called_when_truncate_true(self) -> None:
         """_validate_text_length is not called when SUMMARY_OLLAMA_TRUNCATE=true."""
@@ -458,7 +458,7 @@ class TestOllamaSummaryProviderSummarizeValidation:
         long_text = 'x' * 300000
 
         with pytest.raises(ValueError, match='may exceed available input budget'):
-            await provider.summarize(long_text)
+            await provider.summarize(long_text, 'agent')
 
         # Verify the chat model was NOT called (fail-fast)
         provider._chat_model.ainvoke.assert_not_called()
@@ -487,5 +487,5 @@ class TestOllamaSummaryProviderSummarizeValidation:
             provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
             # Should NOT raise even for very long text
-            result = await provider.summarize('x' * 20000)
+            result = await provider.summarize('x' * 20000, 'agent')
             assert result == 'Summary of long text'

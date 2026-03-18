@@ -55,7 +55,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context = MagicMock()
     repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(100, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(
         return_value=(True, ['text_content', 'summary']),
     )
@@ -532,7 +532,7 @@ class TestStoreContextBatchGenerationFirst:
 
         call_count = 0
 
-        async def selective_summary(_text: str) -> str | None:
+        async def selective_summary(_text: str, _source: str) -> str | None:
             nonlocal call_count
             call_count += 1
             if call_count == 2:
@@ -654,7 +654,7 @@ class TestUpdateContextBatchGenerationFirst:
 
         call_count = 0
 
-        async def selective_summary(_text: str) -> str | None:
+        async def selective_summary(_text: str, _source: str) -> str | None:
             nonlocal call_count
             call_count += 1
             if call_count == 2:

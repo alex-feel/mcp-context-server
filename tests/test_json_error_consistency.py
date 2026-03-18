@@ -94,7 +94,7 @@ class TestJSONErrorConsistency:
         """
         # Set up mocks for successful database operations
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
-        mock_server_dependencies.context.check_entry_exists.return_value = True
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
 
         # Test cases that should raise ToolError for BUSINESS LOGIC
         test_cases = [
@@ -138,7 +138,7 @@ class TestJSONErrorConsistency:
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
 
         # Test update_context database error
-        mock_server_dependencies.context.check_entry_exists.return_value = True
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
         mock_server_dependencies.context.update_context_entry.side_effect = Exception('Update failed')
         with pytest.raises(ToolError, match='Failed to update context'):
             await update_context(context_id=1, text='new text')

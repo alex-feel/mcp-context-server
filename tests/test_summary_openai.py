@@ -136,7 +136,7 @@ class TestOpenAISummaryProviderSummarize:
         provider._chat_model = AsyncMock()
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
-        result = await provider.summarize('Some text to summarize.')
+        result = await provider.summarize('Some text to summarize.', 'agent')
 
         assert result == 'Summary with whitespace'
 
@@ -149,7 +149,7 @@ class TestOpenAISummaryProviderSummarize:
         assert provider._chat_model is None
 
         with pytest.raises(RuntimeError, match='Provider not initialized'):
-            await provider.summarize('Some text')
+            await provider.summarize('Some text', 'agent')
 
     @pytest.mark.asyncio
     async def test_summarize_logs_warning_on_truncation(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -166,7 +166,7 @@ class TestOpenAISummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            result = await provider.summarize('Some long text')
+            result = await provider.summarize('Some long text', 'agent')
 
         assert result == 'Truncated summary text'
         assert 'truncated by token limit' in caplog.text
@@ -190,7 +190,7 @@ class TestOpenAISummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            result = await provider.summarize('Some text')
+            result = await provider.summarize('Some text', 'agent')
 
         assert result == 'Normal summary text'
         assert 'truncated by token limit' not in caplog.text
@@ -213,7 +213,7 @@ class TestOpenAISummaryProviderSummarize:
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
         with caplog.at_level(logging.WARNING):
-            await provider.summarize('Text')
+            await provider.summarize('Text', 'agent')
 
         # Must contain the runtime value 1500, not the default 2000
         assert '1500' in caplog.text
@@ -230,7 +230,7 @@ class TestOpenAISummaryProviderSummarize:
         provider._chat_model = AsyncMock()
         provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
 
-        await provider.summarize('Input text content')
+        await provider.summarize('Input text content', 'agent')
 
         call_args = provider._chat_model.ainvoke.call_args
         messages = call_args[0][0]

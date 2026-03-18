@@ -107,7 +107,7 @@ def _make_mock_repos() -> MagicMock:
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
     repos.context.get_summary = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=True)
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -234,7 +234,7 @@ class TestStoreContextMinContentLength:
 
             assert result['success'] is True
             # generate_summary_with_timeout should have been called
-            mock_gen_summary.assert_called_once_with(boundary_text)
+            mock_gen_summary.assert_called_once_with(boundary_text, 'agent')
 
     @pytest.mark.asyncio
     async def test_one_char_below_threshold_skips(self) -> None:
@@ -290,7 +290,7 @@ class TestStoreContextMinContentLength:
             )
 
             assert result['success'] is True
-            mock_gen_summary.assert_called_once_with(above_text)
+            mock_gen_summary.assert_called_once_with(above_text, 'agent')
 
     @pytest.mark.asyncio
     async def test_zero_threshold_always_generates(
@@ -332,7 +332,7 @@ class TestStoreContextMinContentLength:
 
             assert result['success'] is True
             # With threshold=0, summary should be generated even for short text
-            mock_gen_summary.assert_called_once_with(short_text)
+            mock_gen_summary.assert_called_once_with(short_text, 'agent')
 
 
 class TestUpdateContextMinContentLength:

@@ -174,7 +174,7 @@ async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | 
         ) from None
 
 
-async def generate_summary_with_timeout(text: str) -> str | None:
+async def generate_summary_with_timeout(text: str, source: str) -> str | None:
     """Generate summary with concurrency limiting and total timeout.
 
     Wraps summary_provider.summarize() with:
@@ -187,6 +187,7 @@ async def generate_summary_with_timeout(text: str) -> str | None:
 
     Args:
         text: Text content to generate summary for.
+        source: Source type ('user' or 'agent').
 
     Returns:
         Summary string, or None if summary provider is not configured.
@@ -203,7 +204,7 @@ async def generate_summary_with_timeout(text: str) -> str | None:
         logger.info('Generating summary: text_len=%d', len(text))
         async with _get_summary_semaphore():
             result = await asyncio.wait_for(
-                summary_provider.summarize(text),
+                summary_provider.summarize(text, source),
                 timeout=total_timeout,
             )
         # Normalize empty/whitespace-only summaries to None
@@ -437,10 +438,10 @@ async def store_context(
                         likely_duplicate_id, thread_id,
                     )
                 else:
-                    tasks_to_run.append(generate_summary_with_timeout(text))
+                    tasks_to_run.append(generate_summary_with_timeout(text, source))
                     task_names.append('summary')
             else:
-                tasks_to_run.append(generate_summary_with_timeout(text))
+                tasks_to_run.append(generate_summary_with_timeout(text, source))
                 task_names.append('summary')
 
         # Execute all tasks in parallel
@@ -847,10 +848,11 @@ async def update_context(
         # Get repositories
         repos = await ensure_repositories()
 
-        # Check if entry exists (read-only, outside transaction)
-        exists = await repos.context.check_entry_exists(context_id)
+        # Check if entry exists and retrieve source (read-only, outside transaction)
+        exists, entry_source = await repos.context.check_entry_exists(context_id)
         if not exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
+        assert entry_source is not None  # guaranteed by exists=True
 
         # === PHASE 2: Generate Summary + Embedding FIRST (Outside Transaction) ===
         # CRITICAL: Both generation steps happen BEFORE any database modifications.
@@ -879,7 +881,7 @@ async def update_context(
                         len(text), min_content_length,
                     )
                 else:
-                    tasks.append(generate_summary_with_timeout(text))
+                    tasks.append(generate_summary_with_timeout(text, entry_source))
                     task_names.append('summary')
 
             results = await asyncio.gather(*tasks, return_exceptions=True)

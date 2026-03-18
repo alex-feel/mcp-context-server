@@ -243,7 +243,7 @@ async def store_context_batch(
                     )
                     entry_summaries[ve_idx] = None
                 else:
-                    tasks_to_run.append(generate_summary_with_timeout(text_content))
+                    tasks_to_run.append(generate_summary_with_timeout(text_content, entry['source']))
                     task_names.append('summary')
 
             if not tasks_to_run:
@@ -700,16 +700,20 @@ async def update_context_batch(
 
         # === PHASE 2: Check all entries exist (fail fast in atomic mode) ===
         existence_errors: list[tuple[int, int, str]] = []  # (index, context_id, error)
+        entry_sources: dict[int, str] = {}  # context_id -> source
 
         for update in validated_updates:
             original_idx = update['index']
             context_id = update['context_id']
 
-            exists = await repos.context.check_entry_exists(context_id)
+            exists, entry_source = await repos.context.check_entry_exists(context_id)
             if not exists:
                 if atomic:
                     raise ToolError(f'Context entry {context_id} not found at index {original_idx}')
                 existence_errors.append((original_idx, context_id, f'Context entry {context_id} not found'))
+            else:
+                assert entry_source is not None
+                entry_sources[context_id] = entry_source
 
         # In non-atomic mode, add existence errors to results
         if not atomic:
@@ -797,7 +801,7 @@ async def update_context_batch(
                         context_id, original_idx, len(text_content), min_content_length,
                     )
                 else:
-                    tasks_to_run.append(generate_summary_with_timeout(text_content))
+                    tasks_to_run.append(generate_summary_with_timeout(text_content, entry_sources[context_id]))
                     task_names.append('summary')
 
             if not tasks_to_run:

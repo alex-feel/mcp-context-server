@@ -962,34 +962,40 @@ class ContextRepository(BaseRepository):
             return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_entry_postgresql)
 
-    async def check_entry_exists(self, context_id: int) -> bool:
-        """Check if a context entry exists.
+    async def check_entry_exists(self, context_id: int) -> tuple[bool, str | None]:
+        """Check if a context entry exists and return its source.
 
         Args:
             context_id: ID of the context entry
 
         Returns:
-            True if the entry exists, False otherwise
+            Tuple of (exists, source). Source is None when entry does not exist.
+            When exists=True, source is always 'user' or 'agent'.
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _check_exists_sqlite(conn: sqlite3.Connection) -> bool:
+            def _check_exists_sqlite(conn: sqlite3.Connection) -> tuple[bool, str | None]:
                 cursor = conn.cursor()
                 cursor.execute(
-                    f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                    f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                     (context_id,),
                 )
-                return cursor.fetchone() is not None
+                row = cursor.fetchone()
+                if row is None:
+                    return False, None
+                return True, cast(str, row['source'])
 
             return await self.backend.execute_read(_check_exists_sqlite)
 
         # PostgreSQL
-        async def _check_exists_postgresql(conn: asyncpg.Connection) -> bool:
+        async def _check_exists_postgresql(conn: asyncpg.Connection) -> tuple[bool, str | None]:
             row = await conn.fetchrow(
-                f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                 context_id,
             )
-            return row is not None
+            if row is None:
+                return False, None
+            return True, cast(str, row['source'])
 
         return await self.backend.execute_read(_check_exists_postgresql)
 
