@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.1.0](https://github.com/alex-feel/mcp-context-server/compare/v2.0.0...v2.1.0) (2026-03-18)
+
+
+### Features
+
+* add automatic model pulling for Ollama providers on startup ([3196c2b](https://github.com/alex-feel/mcp-context-server/commit/3196c2bc2eb236908202ce44dffbdae7913f3ccc))
+* add context window validation for summary generation ([7ea909e](https://github.com/alex-feel/mcp-context-server/commit/7ea909ed68a2203022315754bc30aaac8b821fa7))
+* add eager model loading and concurrency protection for FlashRank reranking ([f260d27](https://github.com/alex-feel/mcp-context-server/commit/f260d272fb63392350abfb76f856eb771ae8a9ea))
+* add Ollama cold-start optimization with model pre-warming ([41e2776](https://github.com/alex-feel/mcp-context-server/commit/41e2776d8d40963d38e2cf339325da822655659d))
+* add SHA-256 content hash for deduplication optimization ([76ec45f](https://github.com/alex-feel/mcp-context-server/commit/76ec45f24d805c3055f4b191131528c013a966b8))
+* add Skill Integration section to DEFAULT_INSTRUCTIONS ([7b84ae0](https://github.com/alex-feel/mcp-context-server/commit/7b84ae07cac3c72c4c6200a0d79379b5a70bfd23))
+* change default summary model to qwen3:0.6b ([c5c7c0e](https://github.com/alex-feel/mcp-context-server/commit/c5c7c0e4ee63a58fd8aee1ead2c6f15f728cb44a))
+
+
+### Bug Fixes
+
+* classify PostgreSQL initialization errors and limit Docker restart retries ([ef6e58a](https://github.com/alex-feel/mcp-context-server/commit/ef6e58ad10327e8f4cd63318646f7d8542d48548))
+* eliminate redundant PostgreSQL schema execution ([976d625](https://github.com/alex-feel/mcp-context-server/commit/976d625d3274e88a13f6c5ed252710cbc5c4673b))
+* enforce uniform Generation-First Transactional Integrity across all tools ([a1bb652](https://github.com/alex-feel/mcp-context-server/commit/a1bb652795f76012893cfad8fb82d627868695d1))
+* replace per-call-site JSON string deserialization with schema-aware FastMCP middleware ([f706b5b](https://github.com/alex-feel/mcp-context-server/commit/f706b5bae9e9d6b1789276b1cb01682740cd0949))
+* replace provider-availability checks with actual generation counters in batch tool messages ([a473919](https://github.com/alex-feel/mcp-context-server/commit/a4739190f3d81662675f11383693d3ab1a20d625))
+* resolve &lt;unknown&gt; in tenacity retry log messages ([91e4bb4](https://github.com/alex-feel/mcp-context-server/commit/91e4bb4bbb4f9548053b96fc9f2121838fc604bb))
+* resolve Docker and Helm deployment issues with model pull and summary support ([1c893d1](https://github.com/alex-feel/mcp-context-server/commit/1c893d165c57c8c7467539051e852590fa5af9e8))
+* use source-aware dynamic prompts for summary generation ([5c80bea](https://github.com/alex-feel/mcp-context-server/commit/5c80bea54497d45c812b0a821ab01f40527089a2))
+
 ## [2.0.0](https://github.com/alex-feel/mcp-context-server/compare/v1.7.1...v2.0.0) (2026-03-13)
 
 
