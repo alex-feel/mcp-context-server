@@ -220,15 +220,16 @@ Replace `localhost` with your server's IP or hostname for remote connections:
 
 ### Volume Management
 
-| Volume                                 | Purpose                   | Used By                   |
-|----------------------------------------|---------------------------|---------------------------|
-| `mcp-context-sqlite-ollama-data`       | SQLite database           | SQLite + Ollama           |
-| `mcp-context-sqlite-openai-data`       | SQLite database           | SQLite + OpenAI           |
-| `mcp-context-postgresql-ollama-data`   | PostgreSQL data           | PostgreSQL + Ollama       |
-| `mcp-context-postgresql-openai-data`   | PostgreSQL data           | PostgreSQL + OpenAI       |
-| `ollama-models`                        | Embedding models (~600MB) | All Ollama configurations |
+| Volume                               | Purpose                           | Used By                   |
+|--------------------------------------|-----------------------------------|---------------------------|
+| `mcp-context-sqlite-ollama-data`     | SQLite database                   | SQLite + Ollama           |
+| `mcp-context-sqlite-openai-data`     | SQLite database                   | SQLite + OpenAI           |
+| `mcp-context-postgresql-ollama-data` | PostgreSQL data                   | PostgreSQL + Ollama       |
+| `mcp-context-postgresql-openai-data` | PostgreSQL data                   | PostgreSQL + OpenAI       |
+| `ollama-models`                      | Embedding models (~600MB)         | All Ollama configurations |
+| `flashrank-model-cache`              | FlashRank reranking model (~34MB) | All configurations        |
 
-The `ollama-models` volume is shared across all Ollama configurations, so switching between SQLite and PostgreSQL does not re-download the embedding model.
+The `ollama-models` volume is shared across all Ollama configurations, so switching between SQLite and PostgreSQL does not re-download the embedding model. The `flashrank-model-cache` volume persists the FlashRank reranking model across container restarts.
 
 ### Automatic Model Download (Ollama Only)
 
@@ -627,9 +628,15 @@ services:
       - EMBEDDING_DIM=3072  # Adjust for model
 ```
 
-### GPU Support (Linux, Ollama Only)
+### GPU Acceleration (Ollama Only)
 
-For GPU-accelerated embedding generation on Linux:
+GPU acceleration enables faster embedding generation and summary inference. Docker Compose files include commented GPU configuration sections for NVIDIA, AMD (ROCm), and Intel (Vulkan) GPUs.
+
+For complete setup instructions, troubleshooting, and vendor-specific details, see the [GPU Acceleration Guide](gpu-acceleration.md).
+
+**Quick start (NVIDIA example):**
+
+Uncomment the NVIDIA GPU section in your Docker Compose file:
 
 ```yaml
 services:
@@ -639,9 +646,19 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: all
               capabilities: [gpu]
 ```
+
+**AMD ROCm:**
+
+Build the Ollama image with the ROCm base image and uncomment the AMD GPU section:
+
+```bash
+docker compose -f <your-compose-file> build --build-arg OLLAMA_TAG=rocm
+```
+
+See the [GPU Acceleration Guide](gpu-acceleration.md) for AMD and Intel/Vulkan configuration.
 
 ### Building Images
 
@@ -1013,6 +1030,10 @@ If your container shows "Running" but the server is not responding:
 - **Metadata Filtering**: [Metadata Guide](../metadata-addition-updating-and-filtering.md) - metadata filtering with operators
 - **Authentication**: [Authentication Guide](../authentication.md) - bearer token authentication
 - **Main Documentation**: [README.md](../../README.md) - overview and quick start
+
+### GPU Acceleration
+
+- **GPU Setup**: [GPU Acceleration Guide](gpu-acceleration.md) - NVIDIA, AMD, and Intel GPU setup
 
 ### Kubernetes Deployment
 

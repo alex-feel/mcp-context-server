@@ -1,5 +1,5 @@
 # Docker Compose for MCP Context Server with PostgreSQL + Ollama Embeddings
-# Usage: docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml up -d
+# Usage: docker compose -f deploy/docker/docker-compose.postgresql.ollama.dev.yml up -d
 #
 # Optional: For additional configuration (LangSmith tracing, pool settings):
 #   1. Copy .env-postgresql.ollama.example to .env
@@ -66,15 +66,26 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/ollama/Dockerfile
+      # Uncomment for AMD ROCm GPU (uses ollama/ollama:rocm base image):
+      # args:
+      #   OLLAMA_TAG: rocm
     pull_policy: build
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_KEEP_ALIVE=-1
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
       - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
+      # Uncomment for Intel/Vulkan GPU (EXPERIMENTAL - may produce degraded output):
+      # - OLLAMA_VULKAN=1
+      # Uncomment if Intel Vulkan produces gibberish (disables integer dot product):
+      # - GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1
     volumes:
       - ollama-data:/root/.ollama
-    # Uncomment to enable NVIDIA GPU acceleration (requires NVIDIA Container Toolkit)
+    # === GPU Acceleration ===
+    # Uncomment ONE section based on your GPU vendor.
+    # Full guide: docs/deployment/gpu-acceleration.md
+    #
+    # --- NVIDIA GPU (requires NVIDIA Container Toolkit) ---
     # deploy:
     #   resources:
     #     reservations:
@@ -82,6 +93,22 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+    #
+    # --- AMD GPU (requires ROCm driver; also uncomment OLLAMA_TAG above) ---
+    # devices:
+    #   - /dev/kfd:/dev/kfd
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+    #
+    # --- Intel/Vulkan GPU (EXPERIMENTAL - see docs for known issues) ---
+    # Also uncomment OLLAMA_VULKAN=1 in the environment section above.
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
     healthcheck:
       test: ["CMD-SHELL", "ollama show \"$${EMBEDDING_MODEL}\" >/dev/null 2>&1 && ollama show \"$${SUMMARY_MODEL}\" >/dev/null 2>&1 || exit 1"]
       interval: 10s

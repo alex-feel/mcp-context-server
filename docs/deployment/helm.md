@@ -226,6 +226,38 @@ ollama:
     storageClassName: ""
 ```
 
+### GPU Acceleration
+
+The Ollama sidecar supports GPU acceleration for faster inference. Configure GPU resources in `values.yaml`:
+
+**NVIDIA GPU:**
+
+```yaml
+ollama:
+  enabled: true
+  resources:
+    limits:
+      nvidia.com/gpu: "1"
+```
+
+Requires the [NVIDIA device plugin for Kubernetes](https://github.com/NVIDIA/k8s-device-plugin).
+
+**AMD GPU:**
+
+```yaml
+ollama:
+  enabled: true
+  image:
+    tag: "rocm"
+  resources:
+    limits:
+      amd.com/gpu: "1"
+```
+
+Requires the [AMD GPU device plugin for Kubernetes](https://github.com/ROCm/k8s-device-plugin).
+
+For complete GPU setup instructions, troubleshooting, and Intel/Vulkan considerations, see the [GPU Acceleration Guide](gpu-acceleration.md).
+
 ### Ingress Configuration
 
 ```yaml
@@ -443,6 +475,7 @@ kubectl logs -l app.kubernetes.io/name=mcp-context-server
 
 ### Related Documentation
 
+- [GPU Acceleration Guide](gpu-acceleration.md) - NVIDIA, AMD, and Intel GPU setup for Docker and Kubernetes
 - [Kubernetes Deployment Guide](kubernetes.md) - General Kubernetes deployment
 - [Docker Deployment Guide](docker.md) - Alternative Docker Compose deployment
 - [Summary Generation Guide](../summary-generation.md) - LLM-based summary configuration
