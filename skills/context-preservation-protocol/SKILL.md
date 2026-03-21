@@ -14,15 +14,17 @@ Storing work documentation and context before stopping is recommended to ensure 
 
 </overview>
 
-<session_project>
+<session_id>
 
-# Session ID and Project Name
+# How to Obtain Session ID
 
-For obtaining session ID and project name, see `context-retrieval-protocol` skill which defines the canonical methods:
-- **Session ID**: Check session file (e.g., `.claude/.session_id`), or fall back to project directory name as thread ID
-- **Project Name**: Derive canonically from git remote URL (see Worktree Metadata Fields section for derivation chain)
+The session ID is used as `thread_id` for context server queries. Obtain it using the following search chain:
 
-</session_project>
+1. **Already available** -- If the session ID is provided via context or prompt, use it directly
+2. **Session file** -- Check `.context_server/.session_id` in the project working directory
+3. **Project directory name** -- If no session file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
+
+</session_id>
 
 <tools>
 
@@ -125,9 +127,9 @@ When using `metadata_patch`:
 
 **Example:**
 ```python
-# Original metadata: {"agent_name": "impl-guide", "status": "pending", "revision_count": 0}
+# Original metadata: {"agent_name": "implementation-guide", "status": "pending", "revision_count": 0}
 # Patch: {"status": "done", "revision_count": 1}
-# Result: {"agent_name": "impl-guide", "status": "done", "revision_count": 1}
+# Result: {"agent_name": "implementation-guide", "status": "done", "revision_count": 1}
 ```
 
 ### Important Notes
@@ -138,6 +140,43 @@ When using `metadata_patch`:
 - Embeddings are regenerated when text changes
 
 </update_strategy>
+
+<environment_integration>
+
+## Environment Integration Patterns
+
+Context preservation operations can interact with environment-level hooks, validation gates, and orchestration workflows. The patterns below describe how to structure stored context for optimal integration.
+
+### Hook-Aware Preservation
+
+In environments with event-driven hooks, context storage may trigger or be validated by environment logic:
+
+- **Post-storage validation:** Environment hooks may verify that stored context includes required metadata fields, correct tagging, and proper references
+- **Storage auditing:** Hooks may log storage operations for traceability, verifying that agents store work results before session completion
+- **Format enforcement:** Validation gates may reject context entries that lack required structure (e.g., missing `status`, `agent_name`, or `references`)
+
+When operating in such environments, follow the metadata schema and compliance checklist rigorously to avoid validation failures.
+
+### Metadata Patterns for Multi-Agent Coordination
+
+Structured metadata enables sophisticated workflows across multiple agents:
+
+- **Work chain linking:** Always populate `references.context_ids` with IDs of entries your work builds upon. This creates navigable chains that other agents and orchestrators can follow
+- **Agent identification:** Always set `agent_name` to enable filtering by agent role. This is critical for orchestrators that need to find specific agent outputs
+- **Status signaling:** Use `status: "pending"` to signal that work requires continuation, and `status: "done"` to signal completion. Orchestrators use this to determine workflow progression
+- **Report type classification:** Use `report_type` consistently to enable cross-agent discovery (e.g., finding all validation reports regardless of which validator produced them)
+
+### Preservation for Orchestrated Workflows
+
+When storing context in multi-agent orchestrated environments:
+
+- **Handoff readiness:** Structure reports so that another agent can understand the work without additional context. Include goals, work performed, results, and explicit next steps
+- **Reference completeness:** Include all `context_ids` that informed your work. Incomplete references break the traceability chain
+- **Tag consistency:** Use consistent tags across related entries to enable grouped retrieval (e.g., all entries tagged with a specific feature or task name)
+
+These patterns are generic and apply to any environment with multi-agent coordination capabilities.
+
+</environment_integration>
 
 <metadata_schema>
 
@@ -301,8 +340,21 @@ Open for extension following `{system}_{entity_type}s` convention (e.g., `github
 - Include relevant references when storing context
 - Use empty object `{}` if no external references exist
 - `context_ids`: Reference related entries in the same or other threads
-- `urls`: Store any external reference as a full URL (issues, PRs, documentation pages, etc.)
-- `git_commits`: Use FULL SHA only (40 characters for SHA-1, 64 characters for SHA-256)
+- `urls`: Store any external reference as a full URL (issues, PRs, documentation pages, commit URLs, etc.)
+- `git_commits`: Use FULL SHA only (40 characters for SHA-1, 64 characters for SHA-256). Within a single-project session where `project` metadata identifies the repository, bare SHAs are unambiguous and directly usable with `git show`
+
+**Cross-Repository Disambiguation:**
+
+When context spans multiple repositories (e.g., a task involving changes across a backend and frontend repo), bare SHAs in `git_commits` may be ambiguous because the same hash format provides no indication of which repository it belongs to. In such cases, supplement `git_commits` with platform URLs in `urls` to provide full context:
+
+```json
+"references": {
+  "git_commits": ["abc1234def5678901234567890abcdef12345678"],
+  "urls": ["https://github.com/org/backend-repo/commit/abc1234def5678901234567890abcdef12345678"]
+}
+```
+
+Both fields serve complementary purposes: `git_commits` provides typed, validated commit identifiers usable across any git platform (including local repos without hosting); `urls` provides human-readable, clickable links with full repository context.
 
 **Examples:**
 
@@ -386,6 +438,54 @@ Complete the following before stopping:
 This ensures your work is documented, preserved, and **retrievable by other agents** who need to access your detailed findings.
 
 </strategy>
+
+<context_continuity>
+
+## Context Continuity Patterns
+
+These patterns help agents preserve state across context window boundaries and long-running tasks. For retrieval-side continuity patterns, see the counterpart skill (`context-retrieval-protocol`).
+
+### Basic Continuity (Default)
+
+These patterns should be applied by default when storing context:
+
+- **Always set status:** Mark entries as `status: "done"` or `status: "pending"` to signal work state to future sessions and other agents
+- **Session handoff notes:** Before ending a session, store a summary entry describing: work completed, key decisions, unresolved issues, and recommended next steps. This serves as a briefing document for the next session
+- **Reference chain maintenance:** Always populate `references.context_ids` with the entries your work builds upon. This creates a navigable history that survives context window resets
+- **Pre-compaction preservation:** If approaching context window limits during extended work, proactively store current progress to the context server before compaction occurs. Critical details stored externally survive compaction intact
+
+### Advanced: Long-Running Task Continuity (Optional)
+
+For tasks spanning multiple context windows or extended multi-step execution:
+
+**Checkpoint Storage:**
+
+At defined milestones during multi-step tasks, store a checkpoint entry containing:
+
+- Summary of completed steps and remaining work
+- Key decisions and their rationale
+- Active blockers or dependencies
+- List of modified files and their purpose
+- Set `status: "pending"` and include `references.context_ids` linking to the task plan
+
+**Progressive Summarization:**
+
+For tasks generating large volumes of context, periodically store condensed summary entries:
+
+- Distill key findings, decisions, and progress into a structured summary
+- Reference the original detailed entries via `references.context_ids`
+- Tag summaries consistently (e.g., with task name) for easy retrieval
+
+**Multi-Agent Handoff Reports:**
+
+When completing work that another agent will continue:
+
+- Store a comprehensive handoff report with explicit next steps
+- Include all relevant `references.context_ids` so the receiving agent can trace the full work chain
+- Set `report_type` and `agent_name` accurately to enable precise filtering
+- Structure the report with clear sections (Summary, Work Performed, Results, Next Steps, and others) so the receiving agent can parse it efficiently
+
+</context_continuity>
 
 <compliance_checklist>
 

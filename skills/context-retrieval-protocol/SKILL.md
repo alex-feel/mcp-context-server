@@ -70,6 +70,10 @@ Some workflows (like consensus) have already identified the exact context needed
 
 Using scoped retrieval when context_scope is present is expected behavior. The standard retrieval sequence applies only when no scope is defined.
 
+### Sequential Retrieval Fallback
+
+When retrieving multiple context entries via `get_context_by_ids`, the response may be truncated or incomplete if the combined content exceeds MCP response token limits. If this occurs, or if the caller or user provides instructions to retrieve entries sequentially, follow those instructions: retrieve entries ONE AT A TIME using separate `get_context_by_ids` calls, processing each entry before requesting the next.
+
 ### Example
 
 If your prompt contains:
@@ -166,11 +170,11 @@ hybrid_search_context(query="implementation patterns", thread_id="session-id", l
 
 # How to Obtain Session ID
 
-The session ID is used as `thread_id` for context server queries. Obtain it using one of these approaches:
+The session ID is used as `thread_id` for context server queries. Obtain it using the following search chain:
 
 1. **Already available** -- If the session ID is provided via context or prompt, use it directly
-2. **Session file** -- Check for a session ID file in the project directory (e.g., `.claude/.session_id` in the working directory)
-3. **Project directory name** -- If no session ID is available through other means, use the current project directory basename as the thread identifier. This is the same value as described in the project name derivation chain (see below). Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination.
+2. **Session file** -- Check `.context_server/.session_id` in the project working directory
+3. **Project directory name** -- If no session file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
 
 </session_id>
 
@@ -261,6 +265,43 @@ When retrieving context from other worktrees, exercise caution:
 3. **Do not assume** implementation status applies to current branch
 
 </worktree_queries>
+
+<environment_integration>
+
+## Environment Integration Patterns
+
+Context retrieval operations can interact with environment-level hooks, validation gates, and orchestration workflows. The patterns below describe how to leverage these interactions for more robust context management.
+
+### Hook-Aware Retrieval
+
+In environments with event-driven hooks, context retrieval may trigger or be gated by validation logic:
+
+- **Pre-retrieval validation:** Environment hooks may verify that agents retrieve context before starting work, enforcing retrieval discipline
+- **Post-retrieval verification:** Orchestration workflows may compare retrieved context against task instructions to detect discrepancies
+- **Retrieval auditing:** Hooks may log which context entries were retrieved by which agent, supporting traceability
+
+When operating in such environments, ensure your retrieval follows the documented sequence (Quick Recall or Comprehensive Multi-Agent Pattern) to avoid triggering validation failures.
+
+### Metadata Patterns for Multi-Agent Coordination
+
+Environments that coordinate multiple specialized agents benefit from structured metadata queries:
+
+- **Agent-specific retrieval:** Filter by `agent_name` to find prior work from a specific agent role (e.g., find all research plans from an implementation planner)
+- **Status-aware retrieval:** Filter by `status: "done"` to find completed work, or `status: "pending"` to find work requiring continuation
+- **Cross-agent discovery:** Use `report_type` filtering to find all validation reports, all research reports, or all implementation reports regardless of which agent produced them
+- **Reference chain traversal:** Follow `references.context_ids` to reconstruct the full workflow chain (research -> plan -> implementation -> validation)
+
+### Integration with Orchestrated Workflows
+
+When an orchestrator coordinates multiple agents, context retrieval serves as the shared memory layer:
+
+- **Task handoff:** Agents retrieve prior agent reports to understand completed work before continuing
+- **Plan verification:** Agents retrieve implementation plans and compare against current task instructions
+- **Conflict detection:** Agents retrieve user messages to verify orchestrator instructions match user intent (see Orchestrator Verification section)
+
+These patterns are generic and apply to any environment with multi-agent coordination capabilities.
+
+</environment_integration>
 
 <tools>
 
@@ -443,6 +484,59 @@ When you retrieve context entries, check for `metadata.references.context_ids`. 
 | Comprehensive research     | Follow until pattern emerges            |
 
 </references_navigation>
+
+<context_continuity>
+
+## Context Continuity Patterns
+
+These patterns help agents maintain coherence across context window boundaries and long-running tasks.
+
+### Basic Continuity (Default)
+
+These patterns should be applied by default in all sessions:
+
+- **Status tracking:** Always set `status: "done"` or `status: "pending"` in metadata to indicate work completion state
+- **Session handoff notes:** Before stopping, store a brief summary of work performed, decisions made, and next steps. This enables the next session (or agent) to resume without re-discovering context
+- **Task completion markers:** Use `references.context_ids` to link new work to the prior entries it builds upon, creating a navigable chain of work history
+- **Re-retrieval after context loss:** After any context compaction or window reset, re-read key context entries from the server (plans, requirements, prior decisions) to restore working memory. Do not rely on compacted summaries alone for critical details
+
+### Advanced: Long-Running Task Continuity (Optional)
+
+For tasks spanning multiple context windows or requiring extended multi-step execution, consider these additional patterns:
+
+**Progressive Summarization:**
+
+Periodically condense accumulated context into structured summaries stored on the context server. This preserves critical information (architectural decisions, unresolved issues, implementation progress) while reducing context window pressure. Store summaries as new context entries with `references.context_ids` pointing to the original detailed entries.
+
+**Checkpoint Patterns:**
+
+At defined milestones during multi-step tasks, store intermediate state as a context entry:
+
+- Current progress (what is completed, what remains)
+- Key decisions made and their rationale
+- Active blockers or dependencies
+- Files modified and their purpose
+
+This enables recovery if a session is interrupted and provides a clear starting point for the next session.
+
+**Context Window Monitoring:**
+
+When working on extended tasks, be aware of context window limits:
+
+- If approaching limits, proactively store current progress before compaction occurs
+- After compaction, immediately retrieve critical context entries (plans, requirements) from the server
+- Treat the context server as persistent memory that survives compaction -- store anything that must not be lost
+
+**Multi-Agent Handoff Protocols:**
+
+For clean agent-to-agent transitions in orchestrated workflows:
+
+- The completing agent stores a comprehensive handoff report with clear next steps
+- The receiving agent retrieves the handoff report and referenced context before starting
+- Both agents use consistent metadata (`references.context_ids`) to maintain the work chain
+- Disagreements between orchestrator instructions and stored context should be resolved in favor of stored user messages (see Orchestrator Verification)
+
+</context_continuity>
 
 <strategy>
 
