@@ -44,7 +44,7 @@ services:
       - ENABLE_HYBRID_SEARCH=true
       # Summary generation (uses OpenAI -- same API key as embeddings)
       - SUMMARY_PROVIDER=${SUMMARY_PROVIDER:-openai}
-      - SUMMARY_MODEL=${SUMMARY_MODEL:-gpt-5-mini}
+      - SUMMARY_MODEL=${SUMMARY_MODEL:-gpt-5.4-nano}
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
     volumes:

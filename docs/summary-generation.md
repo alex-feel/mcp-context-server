@@ -15,7 +15,7 @@ The server supports three summary providers via LangChain integration:
 | Provider             | Default Model    | Cost            | Best For                     |
 |----------------------|------------------|-----------------|------------------------------|
 | **Ollama** (default) | qwen3:0.6b       | Free (local)    | Development, privacy-focused |
-| **OpenAI**           | gpt-5-nano       | Pay-per-use API | Production, high quality     |
+| **OpenAI**           | gpt-5.4-nano     | Pay-per-use API | Production, high quality     |
 | **Anthropic**        | claude-haiku-4-5 | Pay-per-use API | Production, high quality     |
 
 Select a provider via the `SUMMARY_PROVIDER` environment variable.
@@ -146,7 +146,7 @@ OpenAI provides high-quality summaries via API with no local hardware requiremen
       "env": {
         "ENABLE_SUMMARY_GENERATION": "true",
         "SUMMARY_PROVIDER": "openai",
-        "SUMMARY_MODEL": "gpt-5-nano",
+        "SUMMARY_MODEL": "gpt-5.4-nano",
         "OPENAI_API_KEY": "${OPENAI_API_KEY}"
       }
     }
@@ -156,11 +156,11 @@ OpenAI provides high-quality summaries via API with no local hardware requiremen
 
 #### Environment Variables
 
-| Variable                    | Default       | Description                          |
-|-----------------------------|---------------|--------------------------------------|
-| `SUMMARY_PROVIDER`          | -             | Set to `openai`                      |
-| `SUMMARY_MODEL`             | `gpt-5-nano`  | OpenAI model name                    |
-| `OPENAI_API_KEY`            | -             | **Required**: OpenAI API key         |
+| Variable                    | Default        | Description                          |
+|-----------------------------|----------------|--------------------------------------|
+| `SUMMARY_PROVIDER`          | -              | Set to `openai`                      |
+| `SUMMARY_MODEL`             | `gpt-5.4-nano` | OpenAI model name                    |
+| `OPENAI_API_KEY`            | -              | **Required**: OpenAI API key         |
 
 ### Anthropic
 
@@ -336,9 +336,9 @@ Options: 1) Increase SUMMARY_OLLAMA_NUM_CTX,
 | qwen3:8b           | Ollama      | 32,768           | Highest quality for Ollama                   |
 | qwen3:14b          | Ollama      | 32,768           | Large model, dedicated hardware required     |
 | qwen3:32b          | Ollama      | 32,768           | Largest Ollama model                         |
-| gpt-5-nano         | OpenAI      | 400,000          | Always returns error on exceed               |
-| gpt-5-mini         | OpenAI      | 400,000          | Always returns error on exceed               |
-| gpt-5              | OpenAI      | 400,000          | Always returns error on exceed               |
+| gpt-5.4-nano       | OpenAI      | 400,000          | Always returns error on exceed               |
+| gpt-5.4-mini       | OpenAI      | 400,000          | Always returns error on exceed               |
+| gpt-5.4            | OpenAI      | 400,000          | Always returns error on exceed               |
 | claude-haiku-4-5   | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
 | claude-sonnet-4    | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
 

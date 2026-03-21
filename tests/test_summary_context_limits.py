@@ -39,7 +39,7 @@ class TestSummaryModelSpec:
         """SummaryModelSpec notes defaults to empty string."""
         spec = SummaryModelSpec(
             provider='openai',
-            model='gpt-5',
+            model='gpt-5.4',
             max_input_tokens=400000,
             truncation_behavior='error',
         )
@@ -74,7 +74,7 @@ class TestGetSummaryModelSpec:
 
     def test_returns_openai_spec(self) -> None:
         """Returns correct spec for OpenAI models."""
-        spec = get_summary_model_spec('gpt-5-mini')
+        spec = get_summary_model_spec('gpt-5.4-mini')
         assert spec is not None
         assert spec.provider == 'openai'
         assert spec.max_input_tokens == 400000

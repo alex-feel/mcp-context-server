@@ -25,7 +25,7 @@ class OpenAISummaryProvider:
     Environment Variables:
         SUMMARY_PROVIDER: Must be 'openai'
         OPENAI_API_KEY: OpenAI API key (auto-detected by ChatOpenAI)
-        SUMMARY_MODEL: Model name (e.g., 'gpt-5-nano', 'gpt-5')
+        SUMMARY_MODEL: Model name (e.g., 'gpt-5.4-nano', 'gpt-5.4')
         SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
     """
 

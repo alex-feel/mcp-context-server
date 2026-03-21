@@ -29,7 +29,7 @@ def mock_settings_no_ollama():
     mock.embedding.model = 'text-embedding-3-small'
     mock.summary.generation_enabled = True
     mock.summary.provider = 'openai'
-    mock.summary.model = 'gpt-4o-mini'
+    mock.summary.model = 'gpt-5.4-nano'
     mock.ollama.host = 'http://localhost:11434'
     return mock
 
@@ -43,7 +43,7 @@ def mock_settings_embedding_ollama():
     mock.embedding.model = 'qwen3-embedding:0.6b'
     mock.summary.generation_enabled = True
     mock.summary.provider = 'openai'
-    mock.summary.model = 'gpt-4o-mini'
+    mock.summary.model = 'gpt-5.4-nano'
     mock.ollama.host = 'http://localhost:11434'
     return mock
 

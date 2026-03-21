@@ -165,7 +165,7 @@ class TestSummarySettings:
         """Verify all settings can be overridden via environment variables."""
         monkeypatch.setenv('ENABLE_SUMMARY_GENERATION', 'false')
         monkeypatch.setenv('SUMMARY_PROVIDER', 'openai')
-        monkeypatch.setenv('SUMMARY_MODEL', 'gpt-5-nano')
+        monkeypatch.setenv('SUMMARY_MODEL', 'gpt-5.4-nano')
         monkeypatch.setenv('SUMMARY_MAX_TOKENS', '500')
         monkeypatch.setenv('SUMMARY_TIMEOUT_S', '90')
         monkeypatch.setenv('SUMMARY_RETRY_MAX_ATTEMPTS', '7')
@@ -176,7 +176,7 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.generation_enabled is False
         assert settings.provider == 'openai'
-        assert settings.model == 'gpt-5-nano'
+        assert settings.model == 'gpt-5.4-nano'
         assert settings.max_tokens == 500
         assert settings.timeout_s == 90.0
         assert settings.retry_max_attempts == 7

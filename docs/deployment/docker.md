@@ -735,7 +735,7 @@ docker build \
 | Extra               | Provider          | Package               | Default Model     |
 |---------------------|-------------------|-----------------------|-------------------|
 | `summary-ollama`    | Ollama (default)  | langchain-ollama      | qwen3:0.6b        |
-| `summary-openai`    | OpenAI            | langchain-openai      | gpt-5-nano        |
+| `summary-openai`    | OpenAI            | langchain-openai      | gpt-5.4-nano      |
 | `summary-anthropic` | Anthropic         | langchain-anthropic   | claude-haiku-4-5  |
 
 To disable summary generation entirely (no `SUMMARY_EXTRA` needed):

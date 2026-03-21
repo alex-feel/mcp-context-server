@@ -27,7 +27,7 @@ import pytest
 def mock_openai_settings():
     """Mock settings for OpenAI summary provider tests."""
     with patch('app.summary.providers.langchain_openai.get_settings') as mock:
-        mock.return_value.summary.model = 'gpt-5-nano'
+        mock.return_value.summary.model = 'gpt-5.4-nano'
         mock.return_value.summary.max_tokens = 1500
         mock.return_value.summary.prompt = None
         mock.return_value.summary.timeout_s = 240.0
@@ -56,7 +56,7 @@ class TestOpenAISummaryProviderInit:
         from app.summary.providers.langchain_openai import OpenAISummaryProvider
 
         provider = OpenAISummaryProvider()
-        assert provider._model == 'gpt-5-nano'
+        assert provider._model == 'gpt-5.4-nano'
 
     def test_init_reads_max_tokens_from_settings(self) -> None:
         """__init__ reads max_tokens from settings."""
@@ -90,7 +90,7 @@ class TestOpenAISummaryProviderInitialize:
             await provider.initialize()
 
             mock_chat_cls.assert_called_once_with(
-                model='gpt-5-nano',
+                model='gpt-5.4-nano',
                 temperature=0,
                 max_tokens=1500,
             )
