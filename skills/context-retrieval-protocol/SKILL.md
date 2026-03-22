@@ -166,17 +166,17 @@ hybrid_search_context(query="implementation patterns", thread_id="session-id", l
 
 </mandatory_sequence>
 
-<session_id>
+<thread_id>
 
-# How to Obtain Session ID
+# How to Obtain Thread ID
 
-The session ID is used as `thread_id` for context server queries. Obtain it using the following search chain:
+The thread ID is used as `thread_id` for context server queries. Obtain it using the following search chain:
 
-1. **Already available** -- If the session ID is provided via context or prompt, use it directly
-2. **Session file** -- Check `.context_server/.session_id` in the project working directory
-3. **Project directory name** -- If no session file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
+1. **Already available** -- If the thread ID is provided via context or prompt, use it directly
+2. **Thread ID file** -- Check `.context_server/.thread_id` in the project working directory
+3. **Project directory name** -- If no thread ID file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
 
-</session_id>
+</thread_id>
 
 <project_name>
 
@@ -638,7 +638,7 @@ get_context_by_ids(context_ids=[3349, 3352])
 
 <example scenario="complete_mandatory_sequence">
 **Input:** Agent starts task, receives instructions from orchestrator
-**Correct Approach:** (1) Obtain session ID; (2) Step 1: Call `search_context(thread_id="session-id", source="user", limit=10)` to retrieve user messages; (3) Call `search_context(thread_id="session-id", source="agent", limit=30)` to retrieve agent reports; (4) Step 2: Call `get_context_by_ids(context_ids=[...])` to retrieve full content; (5) If in a multi-agent workflow, verify orchestrator task against retrieved user messages and agent reports; (6) Step 3: Call `hybrid_search_context` if additional context needed
+**Correct Approach:** (1) Obtain thread ID; (2) Step 1: Call `search_context(thread_id="session-id", source="user", limit=10)` to retrieve user messages; (3) Call `search_context(thread_id="session-id", source="agent", limit=30)` to retrieve agent reports; (4) Step 2: Call `get_context_by_ids(context_ids=[...])` to retrieve full content; (5) If in a multi-agent workflow, verify orchestrator task against retrieved user messages and agent reports; (6) Step 3: Call `hybrid_search_context` if additional context needed
 **Result:** Agent has full context of user requirements, verified orchestrator task, and implementation plans
 </example>
 

@@ -14,17 +14,17 @@ Storing work documentation and context before stopping is recommended to ensure 
 
 </overview>
 
-<session_id>
+<thread_id>
 
-# How to Obtain Session ID
+# How to Obtain Thread ID
 
-The session ID is used as `thread_id` for context server queries. Obtain it using the following search chain:
+The thread ID is used as `thread_id` for context server queries. Obtain it using the following search chain:
 
-1. **Already available** -- If the session ID is provided via context or prompt, use it directly
-2. **Session file** -- Check `.context_server/.session_id` in the project working directory
-3. **Project directory name** -- If no session file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
+1. **Already available** -- If the thread ID is provided via context or prompt, use it directly
+2. **Thread ID file** -- Check `.context_server/.thread_id` in the project working directory
+3. **Project directory name** -- If no thread ID file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
 
-</session_id>
+</thread_id>
 
 <tools>
 
@@ -405,7 +405,7 @@ Complete the following before stopping:
 2. **Always use English** to write the report, REGARDLESS of the language requested by the calling party.
 
 3. **Save the report** using `store_context` with these parameters:
-   - `thread_id`: Your session ID (REQUIRED)
+   - `thread_id`: Your thread ID (REQUIRED)
    - `source`: `agent` (REQUIRED)
    - `text`: Your complete Markdown report (REQUIRED)
    - `metadata`: **Recommended - include these fields for best discoverability:**
