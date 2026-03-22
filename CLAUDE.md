@@ -132,6 +132,10 @@ uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+.
 
 [Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker image (amd64/arm64).
 
+### SECURITY.md Maintenance
+
+When a commit triggers a major version bump (Conventional Commit `!` suffix or `BREAKING CHANGE:` in body/footer), update the Supported Versions table in `SECURITY.md` in the same PR: add the new major version as supported, mark the previous major version as unsupported.
+
 ## CI and Docker Lock File Discipline
 
 The `uv.lock` file is a UNIVERSAL resolution containing ALL dependencies across ALL optional groups and extras. At install time, `uv sync` with selective flags installs only the relevant subset.
@@ -247,6 +251,20 @@ uv run python -c "from app.startup import init_database; import asyncio; asyncio
 ## Code Quality Standards
 
 Ruff (127 chars, single quotes), mypy/pyright strict for `app/`. **Never** `from __future__ import annotations` in server.py.
+
+## GitHub Actions Security Policy
+
+All GitHub Actions workflows MUST follow these rules:
+
+1. **Never use mutable branch references** (`@main`, `@master`, `@develop`, `@release/vN`) for third-party actions. Mutable refs can resolve to arbitrary code at any time. The March 2026 `aquasecurity/trivy-action` incident demonstrated that a single compromised branch reference can exfiltrate CI secrets.
+
+2. **Version tag pinning is the project standard.** Pin all third-party actions to immutable version tags (e.g., `@v5`, `@v1.13.0`). SHA pinning is not required — version tags provide sufficient immutability while remaining human-readable and Dependabot-compatible.
+
+3. **Verify action runtimes before updating.** Before bumping an action version, check its runtime to avoid deprecated Node.js versions:
+   ```bash
+   # Check action runtime (note: some actions use action.yaml instead of action.yml)
+   gh api repos/OWNER/REPO/contents/action.yml --jq '.content' | base64 -d | grep -E 'using:.*node'
+   ```
 
 ## Critical Implementation Warnings
 
