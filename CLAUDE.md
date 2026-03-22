@@ -12,8 +12,8 @@ uvx mcp-context-server                     # Run from PyPI
 
 # Testing
 uv run pytest                              # Run all tests
-uv run pytest tests/test_server.py -v      # Run specific test file
-uv run pytest tests/test_server.py::TestStoreContext::test_store_text_context -v  # Single test
+uv run pytest tests/server/test_server.py -v      # Run specific test file
+uv run pytest tests/server/test_server.py::TestStoreContext::test_store_text_context -v  # Single test
 uv run pytest --cov=app --cov-report=html  # Run with coverage
 uv run pytest -m "not integration"         # Skip slow tests for quick feedback
 
@@ -22,13 +22,13 @@ uv run pre-commit run --all-files          # Lint + type check (Ruff, mypy, pyri
 uv run ruff check --fix .                  # Ruff linter with autofix
 ```
 
-Note: Integration tests use SQLite-only temporary databases. PostgreSQL is production-only.
+Note: Integration test infrastructure currently exists only for SQLite. PostgreSQL integration tests are planned for the future.
 
 ## High-Level Architecture
 
 ### MCP Protocol Integration
 
-[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server with JSON-RPC 2.0, automatic tool discovery, Pydantic validation, multi-transport (stdio/HTTP/streamable-http/SSE), and tool annotations (readOnlyHint, destructiveHint, idempotentHint). Compatible with Claude Desktop, Claude Code, LangGraph, and any MCP client.
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server with JSON-RPC 2.0, automatic tool discovery, Pydantic validation, multi-transport (default: stdio, HTTP, streamable-http, SSE), and tool annotations (readOnlyHint, destructiveHint, idempotentHint). Compatible with Claude Desktop, Claude Code, LangGraph, and any MCP client.
 
 ### MCP Server Architecture
 
@@ -38,19 +38,19 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
    - Entry point with FastMCP instance, lifespan management, and main() function (~680 lines)
    - Tool implementations in `app/tools/` organized by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic tool descriptions)
    - Dynamic tool registration via `register_tool()` from `app/tools/__init__.py`
-   - Supports multiple transports: stdio (default), HTTP, streamable-http, SSE
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
    - Global state and initialization in `app/startup/` package: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`
-   - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup. See "Known Upstream Bugs" section.
-   - **Middleware** (`app/middleware/`): Schema-aware `JsonStringDeserializerMiddleware` for MCP client compatibility. Uses FastMCP 3.1.x Middleware API. Registered via `mcp.add_middleware()` in lifespan() after all tool registrations. See "Known Upstream Bugs" section.
+   - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup.
+   - **Middleware** (`app/middleware/`): Schema-aware `JsonStringDeserializerMiddleware` for MCP client compatibility (FastMCP 3.1.x Middleware API). Registered via `mcp.add_middleware()` in lifespan() after all tool registrations.
+   - Both are documented in "Known Upstream Bugs and Temporary Patches" with upstream tracking and removal instructions.
 
 2. **Authentication Layer** (`app/auth/simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison. Configured via `MCP_AUTH_PROVIDER` and `MCP_AUTH_TOKEN`.
 
 3. **Storage Backend Layer** (`app/backends/`):
    - **StorageBackend Protocol** (`base.py`): Database-agnostic interface (8 methods including `begin_transaction()`)
    - **TransactionContext Protocol** (`base.py`): Provides `connection` and `backend_type` for multi-operation atomic transactions
-   - **SQLiteBackend**: Connection pooling, write queue, circuit breaker
-   - **PostgreSQLBackend**: Async via asyncpg, connection pooling, MVCC, JSONB, Pgpool-II detection, classified error handling
+   - **SQLiteBackend**: Zero-config, connection pooling, write queue, circuit breaker, single-user
+   - **PostgreSQLBackend**: Async via asyncpg, connection pooling, MVCC, JSONB/GIN indexes, pgvector, Pgpool-II auto-detection (disables prepared statements)
    - **Backend Factory** (`factory.py`): Creates backend based on `STORAGE_BACKEND` env var
 
 4. **Repository Pattern** (`app/repositories/`):
@@ -61,17 +61,16 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 5. **Data Models** (`app/models.py`): Pydantic V2 with `StrEnum` for Python 3.12+. Main models: `ContextEntry`, `ImageAttachment`, `StoreContextRequest`. Base64 image encoding with configurable size limits.
 
-6. **Embeddings Layer** (`app/embeddings/`): `EmbeddingProvider` Protocol, factory with dynamic imports (`PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts). Providers: Ollama, OpenAI, Azure, HuggingFace, Voyage. Retry via tenacity (`retry.py`). Context limits registry (`context_limits.py`). LangSmith tracing integration (`tracing.py`).
+6. **Provider Layers** — All use `<Name>Provider` Protocol + factory with dynamic imports (`PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts):
+   - **Embeddings** (`app/embeddings/`): Ollama, OpenAI, Azure, HuggingFace, Voyage. Retry via tenacity (`retry.py`). Context limits (`context_limits.py`). LangSmith tracing (`tracing.py`).
+   - **Reranking** (`app/reranking/`): FlashRank (default, 34MB model, ONNX inference offloaded to thread pool).
+   - **Summary** (`app/summary/`): Ollama, OpenAI, Anthropic. Retry via tenacity. Context limits (`context_limits.py`). Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
 
-7. **Reranking Layer** (`app/reranking/`): `RerankingProvider` Protocol, same factory pattern. Provider: FlashRank (default, 34MB model, ONNX inference offloaded to thread pool).
+7. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain's `RecursiveCharacterTextSplitter`). `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
 
-8. **Summary Generation Layer** (`app/summary/`): `SummaryProvider` Protocol, same factory pattern. Providers: Ollama, OpenAI, Anthropic. Retry via tenacity. Context limits registry (`context_limits.py`). Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
+8. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`): `MetadataFilter` with 16 operators. `QueryBuilder`: backend-aware SQL with nested JSON paths. Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) operators.
 
-9. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain's `RecursiveCharacterTextSplitter`). `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
-
-10. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`): `MetadataFilter` with 16 operators. `QueryBuilder`: backend-aware SQL with nested JSON paths. Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) operators.
-
-11. **Other modules**: `app/fusion.py` (RRF algorithm), `app/errors.py` (ConfigurationError exit 78, DependencyError exit 69), `app/instructions.py` (server instructions), `app/types.py` (40+ TypedDicts for API responses), `app/logger_config.py` (logging configuration), `app/schemas/` (SQL schema files).
+9. **Other modules**: `app/fusion.py` (RRF algorithm), `app/errors.py` (error classification, see Key Implementation Details #5), `app/instructions.py` (server instructions), `app/types.py` (40+ TypedDicts for API responses), `app/logger_config.py` (logging configuration), `app/schemas/` (SQL schema files).
 
 ### Thread-Based Context Management
 
@@ -81,7 +80,7 @@ Agents share context via `thread_id`. Entries tagged with `source`: 'user' or 'a
 
 Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata, summary column), `tags` (many-to-many, lowercase), `image_attachments` (binary, cascade delete).
 
-**Performance**: WAL mode, 256MB mmap, compound index (thread_id, source). Indexed metadata: `status`, `agent_name`, `task_name`, `project`, `report_type`. Array/object fields use PostgreSQL GIN (not indexed in SQLite).
+**Performance**: WAL mode, 256MB mmap, compound index (thread_id, source). Indexed metadata: `status`, `agent_name`, `task_name`, `project`, `report_type`. See "Metadata Field Indexing by Backend" for per-backend details.
 
 ### Search Tools
 
@@ -99,13 +98,27 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 
 ### Testing Strategy
 
-**Philosophy**: Tests use SQLite-only temp databases (no PostgreSQL required). Production supports both backends. Always add real server integration tests in `tests/test_real_server.py` for new tools.
+**Philosophy**: Tests use SQLite-only temp databases (no PostgreSQL required). Production supports both backends. Always add real server integration tests in `tests/integration/sqlite/test_real_server.py` for new tools.
+
+**Key Files**: `conftest.py` (fixtures, markers), `helpers.py` (shared test utilities -- uses `get_settings()` for configuration), `run_server.py` (subprocess server wrapper for integration tests).
 
 **Key Fixtures** (`conftest.py`): `test_db` (direct SQLite), `mock_server_dependencies` (mocked settings), `initialized_server` (full integration), `async_db_initialized` (async backend), `async_db_with_embeddings` (semantic search).
 
 **Skip Markers**: `@requires_ollama`, `@requires_sqlite_vec`, `@requires_numpy`, `@requires_semantic_search`
 
 `prevent_default_db_pollution` (autouse) prevents accidental production DB access.
+
+### Test Directory Structure
+
+Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `app/<name>.py` (module).
+
+**Non-trivial mappings**:
+- `tests/core/` → `app/*.py` root modules (models, errors, fusion, etc.)
+- `tests/integration/sqlite/` → real running server integration tests (no app mirror)
+
+**Shared infrastructure** stays at `tests/` root: `conftest.py`, `helpers.py`, `run_server.py`, `__init__.py`.
+
+**Placement rule**: Follow the PRIMARY source code module under test. Use import analysis as the arbiter when ambiguous.
 
 ### Key Implementation Details
 
@@ -119,7 +132,6 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
    - **Protocol** (`@runtime_checkable`): `StorageBackend`, `TransactionContext`, `EmbeddingProvider`, `SummaryProvider`, `RerankingProvider`
    - **Repository**: All SQL in `app/repositories/`, never in server.py or tools
    - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_summary_provider()`, `create_reranking_provider()` — dynamic imports via `PROVIDER_MODULES` dicts
-   - **Middleware**: `JsonStringDeserializerMiddleware` extends FastMCP `Middleware` base class, registered via `mcp.add_middleware()`
    - **DI**: `RepositoryContainer` injects all repositories
 
 5. **Error Classification** (`app/errors.py`): `ConfigurationError` (exit 78, supervisor never retries), `DependencyError` (exit 69, may retry with backoff). `classify_provider_error()` classifies embedding/summary provider failures. BSD sysexits.h exit codes for Docker/Kubernetes restart policies.
@@ -197,7 +209,7 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 ## Storage Backend Configuration
 
 ### SQLite (Default)
-Zero-config local storage with connection pooling, write queue, circuit breaker. Single-user deployments.
+Zero-config local storage. See SQLiteBackend in Architecture for features.
 
 ### PostgreSQL
 ```bash
@@ -206,7 +218,6 @@ docker run --name pgvector18 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=post
 export STORAGE_BACKEND=postgresql
 uv run mcp-context-server  # Auto-initializes schema, enables pgvector
 ```
-MVCC, asyncpg pooling, JSONB/GIN indexes, pgvector. Pgpool-II auto-detected (disables prepared statements). Classified error handling: ConfigurationError (exit 78) vs DependencyError (exit 69).
 
 ### Supabase
 `STORAGE_BACKEND=postgresql` + `POSTGRESQL_CONNECTION_STRING`. Session Pooler for IPv4. "getaddrinfo failed" = switch from Direct to Session Pooler.
@@ -223,9 +234,7 @@ Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in 
 
 **CRITICAL:** Compose files MUST contain ONLY variables REQUIRED for the deployment to function. All other settings use defaults from `app/settings.py`. This prevents drift between code defaults and hardcoded compose values.
 
-**Configurable variables** use `${VAR:-default}` interpolation so users can override them from `.env` without editing compose files. The default in `${VAR:-default}` MUST match the value that was previously hardcoded.
-
-**Required (configurable via `${VAR:-default}`)**: `LOG_LEVEL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PROVIDER`, `SUMMARY_MODEL`, `SUMMARY_PROVIDER`. For internal PostgreSQL variants: `POSTGRESQL_USER`, `POSTGRESQL_PASSWORD`, `POSTGRESQL_DATABASE`. Model names on Ollama sidecar (`EMBEDDING_MODEL`, `SUMMARY_MODEL`) use the same interpolation to stay in sync.
+**Configurable variables** use `${VAR:-default}` interpolation (default MUST match previously hardcoded value): `LOG_LEVEL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PROVIDER`, `SUMMARY_MODEL`, `SUMMARY_PROVIDER`. PostgreSQL variants add: `POSTGRESQL_USER`, `POSTGRESQL_PASSWORD`, `POSTGRESQL_DATABASE`. Ollama sidecar model names use the same interpolation to stay in sync.
 
 **Required (hardcoded, NOT configurable)**: Transport (`MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`), `FASTMCP_ENABLE_RICH_LOGGING=false`, storage backend selection, `OLLAMA_HOST` (sidecar bind + client URL), `OLLAMA_KEEP_ALIVE=-1`, feature toggles (`ENABLE_*`), container paths (`DB_PATH`, `RERANKING_CACHE_DIR`), Docker networking (`POSTGRESQL_HOST`, `POSTGRESQL_PORT`).
 
@@ -250,15 +259,15 @@ uv run python -c "from app.startup import init_database; import asyncio; asyncio
 
 ## Code Quality Standards
 
-Ruff (127 chars, single quotes), mypy/pyright strict for `app/`. **Never** `from __future__ import annotations` in server.py.
+Ruff (127 chars, single quotes), mypy/pyright strict for `app/`.
 
 ## GitHub Actions Security Policy
 
 All GitHub Actions workflows MUST follow these rules:
 
-1. **Never use mutable branch references** (`@main`, `@master`, `@develop`, `@release/vN`) for third-party actions. Mutable refs can resolve to arbitrary code at any time. The March 2026 `aquasecurity/trivy-action` incident demonstrated that a single compromised branch reference can exfiltrate CI secrets.
+1. **Never use mutable branch references** (`@main`, `@master`, `@develop`, `@release/vN`) for third-party actions. Mutable refs can be compromised (e.g., March 2026 `aquasecurity/trivy-action` incident — exfiltrated CI secrets).
 
-2. **Version tag pinning is the project standard.** Pin all third-party actions to immutable version tags (e.g., `@v5`, `@v1.13.0`). SHA pinning is not required — version tags provide sufficient immutability while remaining human-readable and Dependabot-compatible.
+2. **Version tag pinning is the project standard.** Pin third-party actions to immutable version tags (e.g., `@v5`, `@v1.13.0`). SHA pinning not required — version tags are immutable enough and Dependabot-compatible.
 
 3. **Verify action runtimes before updating.** Before bumping an action version, check its runtime to avoid deprecated Node.js versions:
    ```bash
@@ -277,7 +286,29 @@ All GitHub Actions workflows MUST follow these rules:
 # CORRECT: get_settings().storage.db_path
 ```
 
-Use `Field(alias='ENV_VAR_NAME')`. Update `server.json` and `docs/environment-variables.md` for new env vars.
+Use `Field(alias='ENV_VAR_NAME')`.
+
+### Settings Singleton Caching (`@lru_cache`)
+
+`get_settings()` is `@lru_cache`-decorated — a process-lifetime singleton. Once called, env var changes are ignored.
+
+**In tests**, use `get_settings.cache_clear()` to invalidate the cache when environment variables change between operations:
+
+```python
+from app.settings import get_settings
+monkeypatch.setenv('SOME_SETTING', 'new-value')
+get_settings.cache_clear()  # Next call creates fresh AppSettings
+```
+
+For test modules that modify settings across multiple tests, use an autouse fixture (established pattern from `tests/reranking/conftest.py`):
+
+```python
+@pytest.fixture(autouse=True)
+def clear_settings_cache() -> None:
+    get_settings.cache_clear()
+```
+
+**Anti-pattern: Premature `get_settings()` in subprocess scripts.** `tests/run_server.py` configures environment via `os.environ` (intentional — it's an env configurator, not a settings consumer). Call `get_settings.cache_clear()` after all `os.environ` modifications before launching the server, or utility functions like `is_ollama_model_available()` will cache stale defaults.
 
 ### Settings Class Architecture
 
@@ -304,7 +335,7 @@ Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `Transpo
 
 ### FASTMCP_* Env Var Governance
 
-A `FASTMCP_*` env var belongs in `app/settings.py` (and `server.json`) ONLY when the project can take **programmatic action** with its value: passed to `mcp.run()`, used in application logic, or sets a different default. Env vars consumed by FastMCP at import time with no `mcp.run()` parameter should NOT be in `settings.py`.
+`FASTMCP_*` env vars belong in `app/settings.py` (and `server.json`) ONLY when the project takes **programmatic action** with them (passed to `mcp.run()`, used in logic). Import-time-only vars should NOT be in `settings.py`.
 
 | Env Var                       | In settings.py | Reason                                                        |
 |-------------------------------|----------------|---------------------------------------------------------------|
@@ -326,7 +357,7 @@ async def my_tool(
     return {'success': True}
 ```
 
-**Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `test_real_server.py` 7) Update `server.json` if new env vars 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py`
+**Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `tests/integration/sqlite/test_real_server.py` 7) Update `server.json` if new env vars 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py`
 
 **Annotation categories**: READ_ONLY (readOnlyHint=True), ADDITIVE (destructiveHint=False), UPDATE (destructiveHint=True, idempotentHint=False), DELETE (destructiveHint=True, idempotentHint=True)
 
@@ -340,7 +371,7 @@ All three layers use identical patterns:
 
 ### Generation-First Transactional Integrity
 
-**CRITICAL**: When `ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_SUMMARY_GENERATION=true` and generation fails, NO data is saved — transaction rolls back completely. Embeddings and summaries are generated OUTSIDE the transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops (context + tags + images + embeddings + summary) in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext` parameter. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` are the single sources of truth for the timeout/semaphore pattern, used by all four tools: `store_context`, `update_context`, `store_context_batch`, and `update_context_batch`. Each `gather` result is independently inspected for exceptions — if any generation task fails, the error is raised (or collected in non-atomic batch mode) without cancelling the other task.
+**CRITICAL**: When generation is enabled and fails, NO data is saved — transaction rolls back. Flow: generate embeddings/summaries OUTSIDE transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext`. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` are the single sources of truth for timeout/semaphore, used by `store_context`, `update_context`, `store_context_batch`, `update_context_batch`. Each `gather` result is independently inspected — failed generation raises (or collected in non-atomic batch mode) without cancelling the other task.
 
 **NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embedding generation fails, or `ENABLE_SUMMARY_GENERATION=true` and summary generation fails, the entry MUST NOT be saved. There is no "store without embeddings" or "store without summary" fallback when generation is enabled. This is non-negotiable mandatory behavior. The only way to skip generation is to explicitly disable it via `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`. Only the user can make this decision.
 
@@ -367,14 +398,14 @@ The `store_context_batch` tool uses the same dedup logic (calls `store_with_dedu
 
 **MCP SDK Session Crash on Client Disconnect** (`app/patches/session_crash.py`):
 
-Temporary monkey-patch for MCP Python SDK where `BaseSession._send_response()` and `send_notification()` don't handle `ClosedResourceError`/`BrokenResourceError` on client disconnect during long-running tool execution. Applied in `app/server.py` lifespan (step 0).
+Monkey-patch for `BaseSession._send_response()`/`send_notification()` not handling `ClosedResourceError`/`BrokenResourceError` on client disconnect. Applied in `app/server.py` lifespan (step 0).
 
 - **Upstream tracking**: [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), PRs [#2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [#2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
-- **Removal**: When upstream MCP SDK fixes this, update `mcp` dependency, delete `app/patches/`, remove patch import/call from `app/server.py`, delete `tests/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/test_real_server.py`, remove this section.
+- **Removal**: When upstream MCP SDK fixes this, update `mcp` dependency, delete `app/patches/`, remove patch import/call from `app/server.py`, delete `tests/patches/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/integration/sqlite/test_real_server.py`, remove this section.
 
 **Client JSON String Serialization** (`app/middleware/json_string_deserializer.py`):
 
-Schema-aware FastMCP middleware that fixes MCP clients (including Claude Code) intermittently serializing list/dict parameters as JSON strings instead of native types. Uses the FastMCP 3.1.x Middleware API (`Middleware` base class, `on_call_tool` override). The `build_schema_map()` helper inspects each tool's JSON Schema at startup to identify parameters with type `array` or `object` (including `Optional` variants via `anyOf` and `$ref` definitions). At runtime, only those parameters are candidates for deserialization — string parameters are never touched. Handles double-encoding. Registered in `app/server.py` lifespan (step 22) via `mcp.add_middleware()`, after all `register_tool()` calls.
+Schema-aware FastMCP middleware fixing MCP clients (including Claude Code) intermittently serializing list/dict parameters as JSON strings. Uses `Middleware` base class with `on_call_tool` override. `build_schema_map()` inspects each tool's JSON Schema at startup for `array`/`object` parameters (including `Optional` via `anyOf`/`$ref`). Only those parameters are deserialization candidates — strings are never touched. Handles double-encoding. Registered in `app/server.py` lifespan (step 22) via `mcp.add_middleware()`, after all `register_tool()` calls.
 
 - **Upstream tracking**: [Claude Code #22394](https://github.com/anthropics/claude-code/issues/22394) (closed NOT_PLANNED), [Claude Code #26094](https://github.com/anthropics/claude-code/issues/26094), [FastMCP #932](https://github.com/jlowin/fastmcp/issues/932), Claude Code #5504, #4192, #3084
-- **Removal**: When upstream clients fix their serialization, delete `app/middleware/`, remove middleware import and registration block (step 22) from `app/server.py` lifespan(), delete `tests/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/test_real_server.py`, remove this section.
+- **Removal**: When upstream clients fix their serialization, delete `app/middleware/`, remove middleware import and registration block (step 22) from `app/server.py` lifespan(), delete `tests/middleware/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/integration/sqlite/test_real_server.py`, remove this section.
