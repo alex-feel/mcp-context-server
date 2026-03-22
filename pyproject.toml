@@ -157,7 +157,9 @@ extend-include = ["tests/**/*.py"]
 #   where long lines and indented blank lines are intentional content formatting.
 # - app/summary/instructions.py: E501, W293 required - DEFAULT_SUMMARY_PROMPT uses concatenated strings
 #   where long lines are intentional prompt formatting.
-extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "app/instructions.py" = ["E501", "W293"], "app/summary/instructions.py" = ["E501", "W293"] }
+# - tests/run_server.py: E402 required - sys.path setup MUST precede project imports
+#   (from tests.helpers) since run_server.py is executed as a subprocess.
+extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "tests/run_server.py" = ["E402"], "app/instructions.py" = ["E501", "W293"], "app/summary/instructions.py" = ["E501", "W293"] }
 
 [tool.ruff.lint]
 # Ignore specific rules

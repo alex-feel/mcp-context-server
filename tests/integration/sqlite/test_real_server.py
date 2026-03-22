@@ -62,7 +62,7 @@ class MCPServerIntegrationTest:
         """
         try:
             # Use the wrapper script that sets up Python path correctly
-            wrapper_script = Path(__file__).parent / 'run_server.py'
+            wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
             print(f'[INFO] Connecting to server via wrapper: {wrapper_script}')
 
             # Environment variables MUST be set BEFORE creating Client
@@ -7159,7 +7159,7 @@ class MCPServerIntegrationTest:
 
         Verifies the server is operational with patches applied by exercising
         multiple tool calls. The patch mechanism itself is tested in detail
-        by tests/test_session_crash_patch.py; this integration test verifies
+        by tests/patches/test_session_crash_patch.py; this integration test verifies
         the server functions correctly end-to-end.
 
         Returns:
@@ -8375,7 +8375,7 @@ async def test_store_context_max_size_image(tmp_path: Path) -> None:
     os.environ['ENABLE_HYBRID_SEARCH'] = 'false'  # Disable for speed
 
     # Use the wrapper script that sets up Python path correctly
-    wrapper_script = Path(__file__).parent / 'run_server.py'
+    wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
 
     # Initialize the database schema before creating client
     from app.schemas import load_schema

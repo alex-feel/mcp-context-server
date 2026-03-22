@@ -288,7 +288,7 @@ class TestIndexDetection:
         await backend.initialize()
 
         # Apply base schema
-        schema_path = Path(__file__).parent.parent / 'app' / 'schemas' / 'sqlite_schema.sql'
+        schema_path = Path(__file__).parent.parent.parent / 'app' / 'schemas' / 'sqlite_schema.sql'
         schema_sql = schema_path.read_text()
 
         def apply_schema(conn: sqlite3.Connection) -> None:

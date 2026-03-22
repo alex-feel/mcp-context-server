@@ -1,9 +1,8 @@
 """Tests for tool registration and DISABLED_TOOLS configuration.
 
-This module tests the tool registration machinery in app/server.py,
+This module tests the tool registration machinery in app/tools/__init__.py,
 including DISABLED_TOOLS environment variable handling and tool annotations.
 
-P1 Priority: Tool registration is core server functionality with no tests.
 """
 
 from __future__ import annotations
@@ -293,7 +292,7 @@ class TestDisabledToolsConfiguration:
 
         # Use subprocess mode via wrapper script for complete process isolation
         # This prevents module state corruption that breaks other tests
-        wrapper_script = Path(__file__).parent / 'run_server.py'
+        wrapper_script = Path(__file__).parent.parent / 'run_server.py'
 
         # Explicitly pass environment to subprocess - don't rely on inheritance
         subprocess_env = {

@@ -28,7 +28,7 @@ def fts_enabled_db(tmp_path: Path) -> Path:
 
     # Load FTS migration template and apply tokenizer replacement
     # Use 'unicode61' (no stemming) to test multilingual support behavior
-    migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
+    migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
     fts_sql = migration_path.read_text()
     fts_sql = fts_sql.replace('{TOKENIZER}', 'unicode61')
 
@@ -531,7 +531,7 @@ class TestFtsMultilingualUnicode61:
         schema_sql = load_schema('sqlite')
         # Load FTS migration template and apply tokenizer replacement
         # Use 'unicode61' (no stemming) for multilingual support testing
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
         fts_sql = migration_path.read_text()
         fts_sql = fts_sql.replace('{TOKENIZER}', 'unicode61')
 
@@ -1295,7 +1295,7 @@ class TestFtsHyphenatedQueries:
         from app.schemas import load_schema
 
         schema_sql = load_schema('sqlite')
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
         fts_sql = migration_path.read_text()
         fts_sql = fts_sql.replace('{TOKENIZER}', 'unicode61')
 

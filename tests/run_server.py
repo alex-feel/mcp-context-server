@@ -10,45 +10,7 @@ from pathlib import Path
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-
-
-def is_ollama_model_available(model: str, host: str = 'http://localhost:11434') -> bool:
-    """Check if a specific Ollama model is available.
-
-    Performs two checks:
-    1. Ollama service is running at the specified host
-    2. The specified model is installed and available
-
-    Args:
-        model: Model name (e.g., 'qwen3-embedding:0.6b', 'all-minilm')
-        host: Ollama host URL (default: http://localhost:11434)
-
-    Returns:
-        True if model is available, False otherwise
-    """
-    try:
-        import httpx
-
-        # Check 1: Service is running (short timeout to not slow down tests)
-        with httpx.Client(timeout=2.0) as client:
-            response = client.get(host)
-            if response.status_code != 200:
-                return False
-
-        # Check 2: Model is available
-        import ollama
-
-        ollama_client = ollama.Client(host=host, timeout=5.0)
-        ollama_client.show(model)
-        return True
-
-    except ImportError:
-        # ollama or httpx package not installed
-        return False
-    except Exception:
-        # Service not running or model not available
-        return False
-
+from tests.helpers import is_ollama_model_available
 
 # Force test mode for all test runs
 # Check if we're being run from pytest or in a test context
@@ -170,6 +132,12 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
         raise RuntimeError(
             f'CRITICAL: Test server attempting to use default database!\nDefault: {default_db}\nDB_PATH: {test_db}',
         )
+
+    # Clear cached settings so the server reads the configured environment.
+    # is_ollama_model_available() may have cached settings before env setup completed.
+    from app.settings import get_settings
+
+    get_settings.cache_clear()
 else:
     # Normal mode - check environment
     if os.environ.get('MCP_TEST_MODE') == '1':

@@ -469,7 +469,7 @@ class TestApplyFtsMigration:
         from app.schemas import load_schema
 
         schema_sql = load_schema('sqlite')
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_fts_sqlite.sql'
         fts_sql = migration_path.read_text()
         fts_sql = fts_sql.replace('{TOKENIZER}', 'unicode61')
 
@@ -832,7 +832,7 @@ class TestAdvisoryLockFix:
         """
         from pathlib import Path
 
-        migrations_dir = Path(__file__).parent.parent / 'app' / 'migrations'
+        migrations_dir = Path(__file__).parent.parent.parent / 'app' / 'migrations'
         migration_files = ['fts.py', 'semantic.py', 'chunking.py', 'metadata.py']
 
         for filename in migration_files:

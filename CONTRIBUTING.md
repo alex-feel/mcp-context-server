@@ -46,17 +46,17 @@ uv run pytest
 uv run pytest --cov=app --cov-report=html
 
 # Run specific test file
-uv run pytest tests/test_server.py
+uv run pytest tests/server/test_server.py
 
 # Run metadata filtering tests
-uv run pytest tests/test_metadata_filtering.py -v
-uv run pytest tests/test_metadata_error_handling.py -v
+uv run pytest tests/core/test_metadata_filtering.py -v
+uv run pytest tests/tools/test_metadata_error_handling.py -v
 
 # Run semantic search tests
-uv run pytest tests/test_semantic_search_filters.py -v
+uv run pytest tests/tools/test_semantic_search_filters.py -v
 
 # Run date filtering tests
-uv run pytest tests/test_date_filtering.py -v
+uv run pytest tests/tools/test_date_filtering.py -v
 
 # Run integration tests only
 uv run pytest -m integration
@@ -348,7 +348,7 @@ To add a new metadata operator:
 1. Add the operator to `MetadataOperator` enum in `app/metadata_types.py`
 2. Implement the operator logic in `MetadataQueryBuilder` (`app/query_builder.py`)
 3. Add validation logic in `MetadataFilter.validate_value_for_operator()`
-4. Write tests in `tests/test_metadata_filtering.py`
+4. Write tests in `tests/core/test_metadata_filtering.py`
 5. Update the documentation in README.md
 
 #### Adding Metadata Indexes

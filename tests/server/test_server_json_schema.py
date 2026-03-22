@@ -22,7 +22,7 @@ from jsonschema import Draft7Validator
 from jsonschema.exceptions import ValidationError
 
 # Path to local server.json file (relative to repository root)
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 SERVER_JSON_PATH = PROJECT_ROOT / 'server.json'
 
 

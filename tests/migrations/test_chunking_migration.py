@@ -599,7 +599,7 @@ class TestApplyChunkingMigrationPostgreSQL:
     @pytest.mark.asyncio
     async def test_no_chunk_index_column_postgresql_sql(self) -> None:
         """CRITICAL: Verify PostgreSQL SQL has NO chunk_index column (user decision)."""
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
 
         assert migration_path.exists(), 'PostgreSQL migration file should exist'
 
@@ -622,17 +622,17 @@ class TestChunkingMigrationSQLFiles:
 
     def test_sqlite_sql_file_exists(self) -> None:
         """Verify SQLite migration SQL file exists."""
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
         assert migration_path.exists(), 'SQLite migration file should exist'
 
     def test_postgresql_sql_file_exists(self) -> None:
         """Verify PostgreSQL migration SQL file exists."""
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
         assert migration_path.exists(), 'PostgreSQL migration file should exist'
 
     def test_sqlite_sql_creates_embedding_chunks_table(self) -> None:
         """Verify SQLite SQL creates embedding_chunks table."""
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
         sql_content = migration_path.read_text(encoding='utf-8')
 
         assert 'CREATE TABLE IF NOT EXISTS embedding_chunks' in sql_content
@@ -641,7 +641,7 @@ class TestChunkingMigrationSQLFiles:
 
     def test_sqlite_sql_no_forbidden_columns(self) -> None:
         """CRITICAL: Verify SQLite SQL has NO forbidden columns (user decision)."""
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
         sql_content = migration_path.read_text(encoding='utf-8')
 
         assert 'chunk_index' not in sql_content.lower(), 'chunk_index should NOT be in SQLite migration'
@@ -650,15 +650,15 @@ class TestChunkingMigrationSQLFiles:
 
     def test_postgresql_sql_schema_templating(self) -> None:
         """Verify PostgreSQL SQL uses {SCHEMA} templating."""
-        migration_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
         sql_content = migration_path.read_text(encoding='utf-8')
 
         assert '{SCHEMA}' in sql_content, 'PostgreSQL migration should use {SCHEMA} templating'
 
     def test_both_sql_files_are_idempotent(self) -> None:
         """Verify both SQL files use IF NOT EXISTS / IF EXISTS patterns."""
-        sqlite_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
-        postgresql_path = Path(__file__).parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+        sqlite_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_sqlite.sql'
+        postgresql_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
 
         sqlite_sql = sqlite_path.read_text(encoding='utf-8')
         postgresql_sql = postgresql_path.read_text(encoding='utf-8')
