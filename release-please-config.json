@@ -26,6 +26,10 @@
         {
           "type": "generic",
           "path": "deploy/helm/mcp-context-server/Chart.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "CITATION.cff"
         }
       ],
       "bump-minor-pre-major": false,

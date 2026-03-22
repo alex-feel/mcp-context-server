@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "MCP Context Server"
+abstract: "A FastMCP-based MCP server providing persistent multimodal context storage for LLM agents."
+authors:
+  - family-names: Filippov
+    given-names: Aleksandr
+    email: alexfeel@protonmail.com
+    orcid: "https://orcid.org/0009-0001-1120-6114"
+version: 2.1.0 # x-release-please-version
+license: MIT
+url: "https://github.com/alex-feel/mcp-context-server"
+repository-code: "https://github.com/alex-feel/mcp-context-server"
+keywords:
+  - mcp
+  - model-context-protocol
+  - context-storage
+  - llm
+  - fastmcp
+  - sqlite
+  - postgresql
+  - semantic-search
+  - embeddings
+  - memory
+  - agents
+  - scratchpad
+  - working-memory
+  - memory-engine
+  - scratch-space
+  - scratchpad-memory
+  - memory-retrieval
+  - short-term-memory
+  - ai-memory
+  - mcp-server
+  - agent-memory
+  - agentic-memory
+  - subagents
+  - context-engineering
