@@ -22,8 +22,8 @@ else
   echo "Model '$EMBEDDING_MODEL' already exists, skipping pull."
 fi
 
-# Pull summary model if configured and different from embedding model
-if [ -n "$SUMMARY_MODEL" ] && [ "$SUMMARY_MODEL" != "$EMBEDDING_MODEL" ]; then
+# Pull summary model only when summary provider is ollama and model differs from embedding model
+if [ "${SUMMARY_PROVIDER:-ollama}" = "ollama" ] && [ -n "$SUMMARY_MODEL" ] && [ "$SUMMARY_MODEL" != "$EMBEDDING_MODEL" ]; then
   echo "Checking if summary model '$SUMMARY_MODEL' exists..."
   if ! OLLAMA_HOST=127.0.0.1:11155 ollama show "$SUMMARY_MODEL" >/dev/null 2>&1; then
     echo "Pulling summary model: $SUMMARY_MODEL..."
@@ -31,6 +31,10 @@ if [ -n "$SUMMARY_MODEL" ] && [ "$SUMMARY_MODEL" != "$EMBEDDING_MODEL" ]; then
     echo "Summary model pulled successfully!"
   else
     echo "Summary model '$SUMMARY_MODEL' already exists, skipping pull."
+  fi
+else
+  if [ "${SUMMARY_PROVIDER:-ollama}" != "ollama" ]; then
+    echo "Summary provider is '${SUMMARY_PROVIDER}' (not ollama), skipping summary model pull."
   fi
 fi
 

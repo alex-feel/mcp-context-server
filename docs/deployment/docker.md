@@ -6,8 +6,8 @@ This guide covers deploying the MCP Context Server using Docker and Docker Compo
 
 **Key Features:**
 - HTTP transport mode for remote access (vs. stdio for local)
-- Six pre-configured deployment options (3 database backends x 2 embedding providers)
-- Support for both Ollama (local) and OpenAI (cloud) embeddings
+- Nine pre-configured deployment options (3 database backends x 3 provider combinations)
+- Support for Ollama (local), OpenAI (cloud), and mixed-provider (Ollama embeddings + OpenAI summary) configurations
 - Health checks and container orchestration support
 - Shared Ollama model volume across Ollama configurations
 
@@ -21,7 +21,7 @@ This guide covers deploying the MCP Context Server using Docker and Docker Compo
 
 ## Deployment Options
 
-Six Docker Compose configurations are provided, organized by embedding provider:
+Nine Docker Compose configurations are provided, organized by provider combination:
 
 ### Ollama Embeddings (Local, Self-Hosted)
 
@@ -38,6 +38,14 @@ Six Docker Compose configurations are provided, organized by embedding provider:
 | SQLite + OpenAI              | `docker-compose.sqlite.openai.yml`              | Local SQLite           | Single-user, cloud embeddings    |
 | PostgreSQL + OpenAI          | `docker-compose.postgresql.openai.yml`          | Internal PostgreSQL    | Multi-user, cloud embeddings     |
 | External PostgreSQL + OpenAI | `docker-compose.postgresql-external.openai.yml` | Supabase, corporate DB | Enterprise with cloud embeddings |
+
+### Mixed Providers (Ollama Embeddings + OpenAI Summary)
+
+| Configuration                       | File                                                   | Database               | Use Case                                    |
+|-------------------------------------|--------------------------------------------------------|------------------------|---------------------------------------------|
+| SQLite + Ollama/OpenAI              | `docker-compose.sqlite.ollama-openai.yml`              | Local SQLite           | Local embeddings, cloud summaries           |
+| PostgreSQL + Ollama/OpenAI          | `docker-compose.postgresql.ollama-openai.yml`          | Internal PostgreSQL    | Production with local embeddings            |
+| External PostgreSQL + Ollama/OpenAI | `docker-compose.postgresql-external.ollama-openai.yml` | Supabase, corporate DB | Enterprise with local embeddings            |
 
 **Choosing Between Ollama and OpenAI:**
 
@@ -142,6 +150,64 @@ cp deploy/docker/.env-postgresql-external.openai.example deploy/docker/.env
 
 # 3. Build and start
 docker compose -f deploy/docker/docker-compose.postgresql-external.openai.yml up -d
+
+# Verify server is ready
+curl http://localhost:8000/health
+```
+
+### Mixed Provider Deployments (Ollama Embeddings + OpenAI Summary)
+
+Mixed provider configurations use Ollama for local embedding generation and OpenAI for cloud-based summary generation. All configurations **require** an `.env` file with your OpenAI API key.
+
+#### SQLite + Ollama Embeddings + OpenAI Summary
+
+```bash
+# 1. Copy and configure environment file
+cp deploy/docker/.env-sqlite.ollama-openai.example deploy/docker/.env
+
+# 2. Edit .env and add your OPENAI_API_KEY
+# OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# 3. Build and start
+docker compose -f deploy/docker/docker-compose.sqlite.ollama-openai.yml up -d
+
+# Wait for embedding model download (first run only, ~2-3 minutes)
+docker compose -f deploy/docker/docker-compose.sqlite.ollama-openai.yml logs -f ollama
+
+# Verify server is ready
+curl http://localhost:8000/health
+```
+
+#### PostgreSQL + Ollama Embeddings + OpenAI Summary
+
+```bash
+# 1. Copy and configure environment file
+cp deploy/docker/.env-postgresql.ollama-openai.example deploy/docker/.env
+
+# 2. Edit .env and add your OPENAI_API_KEY
+# OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# 3. Build and start
+docker compose -f deploy/docker/docker-compose.postgresql.ollama-openai.yml up -d
+
+# Wait for all services to be healthy
+docker compose -f deploy/docker/docker-compose.postgresql.ollama-openai.yml ps
+
+# Verify server is ready
+curl http://localhost:8000/health
+```
+
+#### External PostgreSQL + Ollama Embeddings + OpenAI Summary
+
+```bash
+# 1. Copy and configure environment file
+cp deploy/docker/.env-postgresql-external.ollama-openai.example deploy/docker/.env
+
+# 2. Edit .env with your OpenAI API key AND PostgreSQL connection details
+# See "External PostgreSQL Configuration" section below
+
+# 3. Build and start
+docker compose -f deploy/docker/docker-compose.postgresql-external.ollama-openai.yml up -d
 
 # Verify server is ready
 curl http://localhost:8000/health
@@ -580,6 +646,27 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs mcp-contex
 
 **Note:** Summaries are generated before the database transaction during `store_context` and `update_context` operations (in parallel with embedding generation). The summary is available immediately in the response and in subsequent search results.
 
+### Issue 8: Mixed Provider (Ollama Embeddings + OpenAI Summary) Infinite Restart
+
+**Symptom:** Ollama container enters infinite restart loop when using `SUMMARY_PROVIDER=openai` with an Ollama compose file
+
+**Cause:** Existing Ollama compose files (e.g., `docker-compose.sqlite.ollama.yml`) pass `SUMMARY_MODEL` to the Ollama sidecar. When the summary model is an OpenAI model name (e.g., `gpt-5.4-nano`), the entrypoint fails trying to pull it from Ollama. Additionally, the healthcheck requires both embedding and summary models to be present in Ollama.
+
+**Solution:** Use the dedicated mixed-provider compose files instead:
+
+```bash
+# SQLite + Ollama Embeddings + OpenAI Summary
+docker compose -f deploy/docker/docker-compose.sqlite.ollama-openai.yml up -d
+
+# PostgreSQL + Ollama Embeddings + OpenAI Summary
+docker compose -f deploy/docker/docker-compose.postgresql.ollama-openai.yml up -d
+
+# External PostgreSQL + Ollama Embeddings + OpenAI Summary
+docker compose -f deploy/docker/docker-compose.postgresql-external.ollama-openai.yml up -d
+```
+
+These files are specifically designed for mixed providers: the Ollama sidecar only handles embedding models, and the OpenAI summary provider is configured on the MCP server service.
+
 ### Common Error Messages
 
 | Error                                  | Cause                          | Solution                                                    |
@@ -707,7 +794,7 @@ docker build --build-arg EMBEDDING_EXTRA=embeddings-all -t mcp-context-server-al
 | `embeddings-voyage`      | Voyage AI        | langchain-voyageai    |
 | `embeddings-all`         | All providers    | All packages          |
 
-**Note:** The OpenAI Docker Compose configurations automatically pass the correct build argument. If using Ollama configurations, no build argument is needed (default is `embeddings-ollama`).
+**Note:** The OpenAI and mixed-provider Docker Compose configurations automatically pass the correct build arguments. If using Ollama configurations, no build argument is needed (default is `embeddings-ollama`).
 
 ### Building with Different Summary Providers
 
@@ -728,6 +815,12 @@ docker build \
   --build-arg EMBEDDING_EXTRA=embeddings-openai \
   --build-arg SUMMARY_EXTRA=summary-openai \
   -t mcp-context-server-openai .
+
+# Mixed provider: Ollama embeddings + OpenAI summaries
+docker build \
+  --build-arg EMBEDDING_EXTRA=embeddings-ollama \
+  --build-arg SUMMARY_EXTRA=summary-openai \
+  -t mcp-context-server-ollama-openai .
 ```
 
 **Available Summary Extras:**
@@ -988,25 +1081,31 @@ If your container shows "Running" but the server is not responding:
 
 ### Docker Compose Files
 
-| File                                            | Description                             |
-|-------------------------------------------------|-----------------------------------------|
-| `docker-compose.sqlite.ollama.yml`              | SQLite + Ollama embeddings              |
-| `docker-compose.postgresql.ollama.yml`          | PostgreSQL + Ollama embeddings          |
-| `docker-compose.postgresql-external.ollama.yml` | External PostgreSQL + Ollama embeddings |
-| `docker-compose.sqlite.openai.yml`              | SQLite + OpenAI embeddings              |
-| `docker-compose.postgresql.openai.yml`          | PostgreSQL + OpenAI embeddings          |
-| `docker-compose.postgresql-external.openai.yml` | External PostgreSQL + OpenAI embeddings |
+| File                                                   | Description                                              |
+|--------------------------------------------------------|----------------------------------------------------------|
+| `docker-compose.sqlite.ollama.yml`                     | SQLite + Ollama embeddings                               |
+| `docker-compose.postgresql.ollama.yml`                 | PostgreSQL + Ollama embeddings                           |
+| `docker-compose.postgresql-external.ollama.yml`        | External PostgreSQL + Ollama embeddings                  |
+| `docker-compose.sqlite.openai.yml`                     | SQLite + OpenAI embeddings                               |
+| `docker-compose.postgresql.openai.yml`                 | PostgreSQL + OpenAI embeddings                           |
+| `docker-compose.postgresql-external.openai.yml`        | External PostgreSQL + OpenAI embeddings                  |
+| `docker-compose.sqlite.ollama-openai.yml`              | SQLite + Ollama embeddings + OpenAI summary              |
+| `docker-compose.postgresql.ollama-openai.yml`          | PostgreSQL + Ollama embeddings + OpenAI summary          |
+| `docker-compose.postgresql-external.ollama-openai.yml` | External PostgreSQL + Ollama embeddings + OpenAI summary |
 
 ### Environment Templates
 
-| File                                      | Description                                    | Required |
-|-------------------------------------------|------------------------------------------------|----------|
-| `.env-sqlite.ollama.example`              | Optional config for SQLite + Ollama            | No       |
-| `.env-postgresql.ollama.example`          | Optional config for PostgreSQL + Ollama        | No       |
-| `.env-postgresql-external.ollama.example` | PostgreSQL connection for external DB + Ollama | Yes      |
-| `.env-sqlite.openai.example`              | OpenAI API key for SQLite + OpenAI             | Yes      |
-| `.env-postgresql.openai.example`          | OpenAI API key for PostgreSQL + OpenAI         | Yes      |
-| `.env-postgresql-external.openai.example` | OpenAI + PostgreSQL for external DB            | Yes      |
+| File                                             | Description                                         | Required |
+|--------------------------------------------------|-----------------------------------------------------|----------|
+| `.env-sqlite.ollama.example`                     | Optional config for SQLite + Ollama                 | No       |
+| `.env-postgresql.ollama.example`                 | Optional config for PostgreSQL + Ollama             | No       |
+| `.env-postgresql-external.ollama.example`        | PostgreSQL connection for external DB + Ollama      | Yes      |
+| `.env-sqlite.openai.example`                     | OpenAI API key for SQLite + OpenAI                  | Yes      |
+| `.env-postgresql.openai.example`                 | OpenAI API key for PostgreSQL + OpenAI              | Yes      |
+| `.env-postgresql-external.openai.example`        | OpenAI + PostgreSQL for external DB                 | Yes      |
+| `.env-sqlite.ollama-openai.example`              | OpenAI API key for SQLite + Ollama/OpenAI           | Yes      |
+| `.env-postgresql.ollama-openai.example`          | OpenAI API key for PostgreSQL + Ollama/OpenAI       | Yes      |
+| `.env-postgresql-external.ollama-openai.example` | OpenAI + PostgreSQL for external DB + Ollama/OpenAI | Yes      |
 
 ### Other Files
 
