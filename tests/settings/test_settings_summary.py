@@ -82,8 +82,8 @@ class TestSummarySettings:
             SummarySettings()
 
     def test_summary_timeout_exceeds_maximum_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify SUMMARY_TIMEOUT_S rejects values above 300."""
-        monkeypatch.setenv('SUMMARY_TIMEOUT_S', '301')
+        """Verify SUMMARY_TIMEOUT_S rejects values above 600."""
+        monkeypatch.setenv('SUMMARY_TIMEOUT_S', '601')
         with pytest.raises(ValidationError):
             SummarySettings()
 
@@ -110,10 +110,10 @@ class TestSummarySettings:
         with pytest.raises(ValidationError):
             SummarySettings()
 
-    def test_summary_retry_base_delay_default_1(self) -> None:
-        """Verify SUMMARY_RETRY_BASE_DELAY_S defaults to 1.0."""
+    def test_summary_retry_base_delay_default_3(self) -> None:
+        """Verify SUMMARY_RETRY_BASE_DELAY_S defaults to 3.0."""
         settings = SummarySettings()
-        assert settings.retry_base_delay_s == 1.0
+        assert settings.retry_base_delay_s == 3.0
 
     def test_summary_retry_base_delay_zero_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_RETRY_BASE_DELAY_S rejects zero."""
@@ -127,10 +127,10 @@ class TestSummarySettings:
         with pytest.raises(ValidationError):
             SummarySettings()
 
-    def test_summary_max_concurrent_default_3(self) -> None:
-        """Verify SUMMARY_MAX_CONCURRENT defaults to 3."""
+    def test_summary_max_concurrent_default_2(self) -> None:
+        """Verify SUMMARY_MAX_CONCURRENT defaults to 2."""
         settings = SummarySettings()
-        assert settings.max_concurrent == 3
+        assert settings.max_concurrent == 2
 
     def test_summary_max_concurrent_minimum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_MAX_CONCURRENT accepts minimum value of 1."""
@@ -351,8 +351,8 @@ class TestAppSettingsSummaryIntegration:
         assert settings.summary.max_tokens == 2000
         assert settings.summary.timeout_s == 240.0
         assert settings.summary.retry_max_attempts == 5
-        assert settings.summary.retry_base_delay_s == 1.0
-        assert settings.summary.max_concurrent == 3
+        assert settings.summary.retry_base_delay_s == 3.0
+        assert settings.summary.max_concurrent == 2
         assert settings.summary.prompt is None
 
     def test_summary_env_override_via_app_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:

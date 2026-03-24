@@ -569,7 +569,7 @@ class SummarySettings(CommonSettings):
         default=240.0,
         alias='SUMMARY_TIMEOUT_S',
         gt=0,
-        le=300,
+        le=600,
         description='Timeout in seconds for summary generation API calls',
     )
 
@@ -582,7 +582,7 @@ class SummarySettings(CommonSettings):
     )
 
     retry_base_delay_s: float = Field(
-        default=1.0,
+        default=3.0,
         alias='SUMMARY_RETRY_BASE_DELAY_S',
         gt=0,
         le=30,
@@ -590,7 +590,7 @@ class SummarySettings(CommonSettings):
     )
 
     max_concurrent: int = Field(
-        default=3,
+        default=2,
         alias='SUMMARY_MAX_CONCURRENT',
         ge=1,
         le=20,
