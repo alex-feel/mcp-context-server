@@ -386,7 +386,7 @@ Complete the following before stopping:
 
    ```markdown
    ## Summary
-   - Brief overview of work done
+   - Brief overview including key decisions, recommendations, and conclusions
 
    ## Goals
    - What goals you were tasked to achieve
@@ -401,6 +401,8 @@ Complete the following before stopping:
    - References (version numbers, filenames, entity names, line numbers)
    - Any other relevant information
    ```
+
+   **Front-load critical information:** Place key findings, decisions, recommendations, and conclusions in the opening section (Summary) of your stored entries. Search tools return truncated previews from the beginning of stored text -- information buried deep in an entry may be invisible during search-based discovery, causing other agents to misjudge relevance and skip retrieval of entries that contain important content.
 
 2. **Always use English** to write the report, REGARDLESS of the language requested by the calling party.
 

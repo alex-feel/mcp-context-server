@@ -330,6 +330,7 @@ For context storage and update tools, see the counterpart skill (`context-preser
 - `get_context_by_ids` is recommended for retrieving full content
 - `hybrid_search_context` is recommended for conceptual discovery -- use when in doubt
 - Specify `thread_id` to search within the current session
+- **Truncated text, summaries, and metadata are for RELEVANCE ASSESSMENT only -- not for understanding substance.** Summaries are AI-generated approximations that may omit critical conditions, caveats, or nuances present in the full text. Do not draw definitive conclusions about what an entry says, recommends, or decides from search results alone -- always retrieve full content via `get_context_by_ids` before reasoning about an entry's actual content.
 
 ## Score Fields Reference
 
@@ -498,7 +499,7 @@ These patterns should be applied by default in all sessions:
 - **Status tracking:** Always set `status: "done"` or `status: "pending"` in metadata to indicate work completion state
 - **Session handoff notes:** Before stopping, store a brief summary of work performed, decisions made, and next steps. This enables the next session (or agent) to resume without re-discovering context
 - **Task completion markers:** Use `references.context_ids` to link new work to the prior entries it builds upon, creating a navigable chain of work history
-- **Re-retrieval after context loss:** After any context compaction or window reset, re-read key context entries from the server (plans, requirements, prior decisions) to restore working memory. Do not rely on compacted summaries alone for critical details
+- **Re-retrieval after context loss:** After any context compaction or window reset, re-read key context entries from the server (plans, requirements, prior decisions) to restore working memory. Do not rely on compacted summaries or search-truncated previews for critical details -- always retrieve full content via `get_context_by_ids` (see Key Notes in tools section)
 
 ### Advanced: Long-Running Task Continuity (Optional)
 
@@ -630,6 +631,20 @@ get_context_by_ids(context_ids=[3349, 3352])
 - Validation reports reference implementations you need to verify
 - You see a chain of work and need the full picture
 
+## Pattern 6 - User Request Resolution (Reference Mode)
+
+Use when your task prompt contains a context-server reference instead of the full user message text (e.g., "USER REQUEST (large message -- retrieve from context-server): context_id=12345"):
+
+1. **Identify reference-mode prompt:** Look for context_id and retrieval instructions in your task
+2. **Retrieve full content immediately:**
+   ```text
+   get_context_by_ids(context_ids=[<context_id>])
+   ```
+3. **Verify completeness:** Ensure the retrieved text is the complete, untruncated user message
+4. **Proceed with full content:** Begin your assigned task only after reading the complete user message
+
+**CRITICAL:** Never work from the reference metadata alone (size, format descriptors). The reference block is a POINTER, not a summary. Always resolve the pointer to full content before analysis.
+
 </patterns>
 
 <examples>
@@ -656,8 +671,8 @@ get_context_by_ids(context_ids=[3349, 3352])
 
 <example scenario="truncation_aware_retrieval">
 **Input:** Agent needs to find prior implementation decisions about database schema design
-**Correct Approach:** (1) Search broadly: `hybrid_search_context(query="database schema design decisions", thread_id="session-id", limit=15)`; (2) Review truncated text + summary + metadata of each result to assess relevance; (3) Identify 3-4 entries that appear most relevant based on previews; (4) Retrieve full content: `get_context_by_ids(context_ids=[id1, id2, id3, id4])`; (5) If insufficient, search again with refined query: `hybrid_search_context(query="SQL migration table structure", thread_id="session-id", limit=15)`
-**Result:** Agent efficiently discovers relevant context through iterative search without overwhelming the context window, then retrieves full content only for the most promising entries
+**Correct Approach:** (1) Search broadly: `hybrid_search_context(query="database schema design decisions", thread_id="session-id", limit=15)`; (2) Review truncated text + summary + metadata of each result to assess POTENTIAL RELEVANCE only -- do not conclude what an entry recommends or decides based on truncated previews; (3) Identify 3-4 entries that appear potentially relevant based on previews; (4) Retrieve full content: `get_context_by_ids(context_ids=[id1, id2, id3, id4])`; (5) Only AFTER reading full content, reason about what the entries actually say; (6) If insufficient, search again with refined query
+**Result:** Agent efficiently discovers relevant context through iterative search, retrieves full content before drawing any conclusions about substance, and avoids the silent failure mode of acting on truncated approximations
 </example>
 
 <example scenario="protocol_violation">
