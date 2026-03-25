@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.0](https://github.com/alex-feel/mcp-context-server/compare/v2.1.0...v2.2.0) (2026-03-25)
+
+
+### Features
+
+* add site-packages path trimming to universal logger ([b5088ff](https://github.com/alex-feel/mcp-context-server/commit/b5088ff958ddc112507c42c940e49574326ac40e))
+* update default OpenAI summary model to GPT-5.4 Nano ([1dfa0cd](https://github.com/alex-feel/mcp-context-server/commit/1dfa0cdd447ad7067817c188db1282f7d4a47c02))
+
+
+### Bug Fixes
+
+* prevent reasoning models from exhausting summary output token budget ([347cfc0](https://github.com/alex-feel/mcp-context-server/commit/347cfc02757dacb288be36d3a336821487d587e5))
+
 ## [2.1.0](https://github.com/alex-feel/mcp-context-server/compare/v2.0.0...v2.1.0) (2026-03-18)
 
 
