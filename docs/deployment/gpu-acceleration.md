@@ -8,24 +8,39 @@ GPU acceleration primarily benefits larger models. For the default 0.6B paramete
 
 ## GPU Support Matrix
 
-| GPU Vendor     | Docker Compose | Kubernetes (Helm) | Native (Host) | Status       |
-|----------------|----------------|-------------------|---------------|--------------|
-| NVIDIA (CUDA)  | Supported      | Supported         | Supported     | Stable       |
-| AMD (ROCm)     | Supported      | Supported         | Supported     | Stable       |
-| Intel (Vulkan) | Supported      | Not recommended   | Supported     | Experimental |
+| GPU Vendor     | Docker (Linux host) | Docker Desktop (Windows) | Kubernetes (Helm) | Native (Host) | Status       |
+|----------------|---------------------|--------------------------|-------------------|---------------|--------------|
+| NVIDIA (CUDA)  | Supported           | Supported (GPU-PV)       | Supported         | Supported     | Stable       |
+| AMD (ROCm)     | Supported           | Not supported            | Supported         | Supported     | Stable       |
+| Intel (Vulkan) | Experimental        | Not supported            | Not recommended   | Experimental  | Experimental |
+
+## Windows Docker Desktop Limitations
+
+Docker Desktop on Windows uses the WSL2 backend for GPU access. GPU passthrough in this environment is **NVIDIA-only** via the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) and GPU Paravirtualization (GPU-PV).
+
+**Key limitations:**
+
+- **Intel and AMD GPUs are NOT supported** in Docker Desktop on Windows. The AMD/ROCm and Intel/Vulkan GPU sections in Docker Compose files require `/dev/dri` device nodes, which are Linux-native DRM (Direct Rendering Manager) devices. WSL2 exposes GPU via `/dev/dxg` (DirectX), not `/dev/dri`.
+- **Intel/Vulkan acceleration requires native Ollama on Windows.** See [Hybrid Deployment Pattern (Windows)](#hybrid-deployment-pattern-windows) below for running Ollama natively while keeping the MCP Context Server in Docker.
+- GPU acceleration in Docker containers **primarily benefits models larger than approximately 3B parameters**. For the default 0.6B models, CPU-only performance is adequate.
+
+If you need Intel or AMD GPU acceleration with Docker, use a native Linux host where `/dev/dri` is available.
 
 ## Docker Compose
 
 All Ollama-based Docker Compose files include commented GPU configuration sections for each vendor. Uncomment the section that matches your GPU.
 
-The six Ollama Compose files follow the same pattern:
+All nine Ollama-based Compose files follow the same pattern:
 
 - `docker-compose.sqlite.ollama.yml`
 - `docker-compose.sqlite.ollama.dev.yml`
+- `docker-compose.sqlite.ollama-openai.yml`
 - `docker-compose.postgresql.ollama.yml`
 - `docker-compose.postgresql.ollama.dev.yml`
+- `docker-compose.postgresql.ollama-openai.yml`
 - `docker-compose.postgresql-external.ollama.yml`
 - `docker-compose.postgresql-external.ollama.dev.yml`
+- `docker-compose.postgresql-external.ollama-openai.yml`
 
 ### NVIDIA GPU
 
@@ -105,13 +120,15 @@ docker compose -f deploy/docker/<your-compose-file> exec ollama rocm-smi
 
 ### Intel/Vulkan GPU (Experimental)
 
-> **Warning:** Intel Vulkan GPU support in Ollama is experimental. Known issues include gibberish or degraded output on Intel integrated GPUs, particularly on Alder Lake, Arrow Lake, and Meteor Lake architectures. **Test with Ollama outside Docker first** before deploying in containers.
+> **Warning:** Intel Vulkan GPU support in Ollama is experimental. Known issues include gibberish or degraded output on Intel integrated GPUs, particularly on Alder Lake, Raptor Lake, Arrow Lake, and Meteor Lake architectures. **Test with Ollama outside Docker first** before deploying in containers. The AMD and Intel/Vulkan GPU sections require `/dev/dri` device nodes and are **Linux host only** -- they do not work on Docker Desktop for Windows (WSL2). See [Windows Docker Desktop Limitations](#windows-docker-desktop-limitations).
 
 **Known issues:**
 - Gibberish/degraded output on Intel iGPUs ([ollama#13086](https://github.com/ollama/ollama/issues/13086), [ollama#13108](https://github.com/ollama/ollama/issues/13108))
 - Model quality degradation with larger models ([ollama#13964](https://github.com/ollama/ollama/issues/13964))
 - Vulkan cannot be reliably disabled once enabled ([ollama#13212](https://github.com/ollama/ollama/issues/13212))
 - Integer dot product issues on Intel GPUs ([llama.cpp#17106](https://github.com/ggml-org/llama.cpp/issues/17106))
+- Integrated GPUs (Intel and AMD) with 0 bytes dedicated VRAM fail Vulkan device enumeration ([ollama#13023](https://github.com/ollama/ollama/issues/13023), [ollama#13103](https://github.com/ollama/ollama/issues/13103))
+- AMD iGPUs (Radeon 760M, 860M) with shared VRAM also fail Vulkan detection ([ollama#14527](https://github.com/ollama/ollama/issues/14527), [ollama#14562](https://github.com/ollama/ollama/issues/14562))
 
 **Steps:**
 
@@ -220,6 +237,43 @@ Set `OLLAMA_VULKAN=1` before starting Ollama. The same quality warnings apply.
 OLLAMA_VULKAN=1 ollama serve
 ```
 
+### Hybrid Deployment Pattern (Windows)
+
+On Windows, run Ollama natively to access GPU acceleration while keeping MCP Context Server in Docker:
+
+1. **Install Ollama on Windows** from [ollama.com](https://ollama.com/download)
+
+2. **Start Ollama with Vulkan** (if Intel/AMD GPU):
+
+```powershell
+$env:OLLAMA_VULKAN = "1"
+$env:OLLAMA_HOST = "0.0.0.0"
+ollama serve
+```
+
+3. **Update Docker Compose** -- point to host Ollama instead of sidecar:
+
+```yaml
+services:
+  mcp-context-server:
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    # Remove or comment out: depends_on: ollama
+
+  # Comment out or remove the ollama service entirely
+  # ollama:
+  #   ...
+```
+
+4. **Pull required models** on the host:
+
+```bash
+ollama pull qwen3-embedding:0.6b
+ollama pull qwen3:0.6b
+```
+
+> **Note:** `host.docker.internal` resolves to the host machine from within Docker Desktop containers on Windows and macOS.
+
 ## Intel iGPU Considerations
 
 Integrated GPUs share system RAM and have no dedicated VRAM. Key considerations:
@@ -287,6 +341,46 @@ docker compose exec ollama ls -la /dev/kfd /dev/dri/
 # General: check Ollama logs for GPU detection
 docker compose -f deploy/docker/<your-compose-file> logs ollama | grep -i gpu
 ```
+
+### GPU Discovery Diagnostics
+
+To diagnose GPU detection issues, run Ollama with debug logging:
+
+```bash
+# Linux/macOS
+OLLAMA_VULKAN=1 OLLAMA_DEBUG=1 ollama serve
+
+# Windows (PowerShell)
+$env:OLLAMA_VULKAN = "1"
+$env:OLLAMA_DEBUG = "1"
+ollama serve
+```
+
+**What to look for in logs:**
+
+- `runner enumerated devices` -- GPU discovery completed
+- `total_vram=0 B` -- No GPU VRAM detected (CPU fallback)
+- `devices=[]` -- No Vulkan-compatible devices found
+- `offloaded N/M layers` -- N of M model layers are on GPU
+
+**Common diagnostic outcomes:**
+
+- `devices=[]` + `total_vram=0 B`: Vulkan device enumeration failed. Common with integrated GPUs that report 0 bytes dedicated VRAM.
+- `offloaded 0/N layers`: GPU detected but model not offloaded. Try increasing available VRAM or use a smaller model.
+- No GPU-related log lines: Ollama did not attempt GPU discovery. Verify `OLLAMA_VULKAN=1` is set.
+
+For deeper investigation, use `OLLAMA_DEBUG=2` for trace-level logging.
+
+### Intel/AMD iGPU Not Detected
+
+Integrated GPUs sharing system RAM (no dedicated VRAM) commonly fail Ollama's Vulkan device enumeration. This affects:
+
+- Intel UHD (Alder Lake, Raptor Lake, Arrow Lake, Meteor Lake)
+- AMD Radeon integrated (760M, 860M, and similar RDNA 3 iGPUs)
+
+**Expected behavior:** `devices=[]`, `total_vram=0 B`, CPU-only fallback. This is a known upstream Ollama limitation, not a configuration error.
+
+**Workaround:** For 0.6B parameter models, CPU-only inference is adequate. For larger models requiring GPU acceleration, use a discrete NVIDIA GPU.
 
 ## Performance Expectations
 

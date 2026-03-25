@@ -72,7 +72,10 @@ services:
       - OLLAMA_KEEP_ALIVE=-1
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
       - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
-      # Uncomment for Intel/Vulkan GPU (EXPERIMENTAL - may produce degraded output):
+      # Uncomment for Intel/Vulkan GPU (EXPERIMENTAL - may produce degraded output).
+      # Linux host only -- NOT available on Docker Desktop for Windows (WSL2).
+      # For Windows, run Ollama natively with OLLAMA_VULKAN=1 instead.
+      # See docs/deployment/gpu-acceleration.md for details.
       # - OLLAMA_VULKAN=1
       # Uncomment if Intel Vulkan produces gibberish (disables integer dot product):
       # - GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1
@@ -91,7 +94,8 @@ services:
     #           count: all
     #           capabilities: [gpu]
     #
-    # --- AMD GPU (requires ROCm driver; also uncomment OLLAMA_TAG above) ---
+    # --- AMD GPU (requires ROCm driver on Linux host; also uncomment OLLAMA_TAG above) ---
+    # Requires /dev/dri and /dev/kfd device nodes (Linux only). NOT available on Docker Desktop for Windows.
     # devices:
     #   - /dev/kfd:/dev/kfd
     #   - /dev/dri:/dev/dri
@@ -99,7 +103,8 @@ services:
     #   - video
     #   - render
     #
-    # --- Intel/Vulkan GPU (EXPERIMENTAL - see docs for known issues) ---
+    # --- Intel/Vulkan GPU (EXPERIMENTAL - Linux host only, see docs for known issues) ---
+    # Requires /dev/dri device nodes (Linux DRM). NOT available on Docker Desktop for Windows.
     # Also uncomment OLLAMA_VULKAN=1 in the environment section above.
     # devices:
     #   - /dev/dri:/dev/dri
