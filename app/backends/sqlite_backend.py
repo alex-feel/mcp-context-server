@@ -788,24 +788,27 @@ class SQLiteBackend:
 
     async def _execute_write_with_retry(self, request: WriteRequest) -> object:
         """Execute a write request with retry logic."""
+        assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
+
         loop = asyncio.get_event_loop()
         last_error = None
 
         for attempt in range(self.retry_config.max_retries):
             try:
-                # Ensure writer connection exists
-                writer = await self._ensure_writer_connection()
+                # Acquire writer lock to ensure mutual exclusion with begin_transaction
+                async with self._writer_lock:
+                    writer = await self._ensure_writer_connection()
 
-                # Execute operation
-                def _execute(conn: sqlite3.Connection) -> object:
-                    # Cast to sync callable since SQLiteBackend only uses sync operations
-                    sync_operation = cast(Callable[..., object], request.operation)
-                    result = sync_operation(conn, *request.args, **request.kwargs)
-                    conn.commit()
-                    self.metrics.total_queries += 1
-                    return result
+                    # Execute operation
+                    def _execute(conn: sqlite3.Connection) -> object:
+                        # Cast to sync callable since SQLiteBackend only uses sync operations
+                        sync_operation = cast(Callable[..., object], request.operation)
+                        result = sync_operation(conn, *request.args, **request.kwargs)
+                        conn.commit()
+                        self.metrics.total_queries += 1
+                        return result
 
-                return await loop.run_in_executor(None, _execute, writer)
+                    return await loop.run_in_executor(None, _execute, writer)
 
             except sqlite3.OperationalError as e:
                 last_error = e

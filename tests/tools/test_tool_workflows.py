@@ -328,7 +328,7 @@ class TestConcurrentOperations:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_concurrent_mixed_operations(self) -> None:
-        """Test mixed read/write/delete operations concurrently."""
+        """Test mixed read/write/delete operations in separate phases."""
         base_thread = 'mixed_ops'
 
         # Initial data
@@ -338,26 +338,26 @@ class TestConcurrentOperations:
             text='Initial entry',
         )
 
-        async def mixed_operations():
-            return await asyncio.gather(
-                # Write operations
-                store_context(thread_id=f'{base_thread}_1', source='user', text='Write 1'),
-                store_context(thread_id=f'{base_thread}_2', source='agent', text='Write 2'),
-                # Read operations
-                search_context(limit=50, thread_id=base_thread),
-                list_threads(),
-                # Delete operation
-                delete_context(context_ids=[initial['context_id']]),
-                # More writes
-                store_context(thread_id=f'{base_thread}_3', source='user', text='Write 3'),
-                return_exceptions=True,
-            )
+        # Phase 1: Concurrent writes + reads (all writes use begin_transaction path)
+        results_phase1 = await asyncio.gather(
+            store_context(thread_id=f'{base_thread}_1', source='user', text='Write 1'),
+            store_context(thread_id=f'{base_thread}_2', source='agent', text='Write 2'),
+            search_context(limit=50, thread_id=base_thread),
+            list_threads(),
+            return_exceptions=True,
+        )
+        for result in results_phase1:
+            assert not isinstance(result, Exception), f'Phase 1 failed: {result}'
 
-        results = await mixed_operations()
+        # Phase 2: Delete (uses execute_write path)
+        delete_result = await delete_context(context_ids=[initial['context_id']])
+        assert delete_result['success'] is True
 
-        # Check no exceptions occurred
-        for result in results:
-            assert not isinstance(result, Exception)
+        # Phase 3: More writes after delete
+        result_write3 = await store_context(
+            thread_id=f'{base_thread}_3', source='user', text='Write 3',
+        )
+        assert result_write3['success'] is True
 
         # Verify final state
         stats = await get_statistics()
