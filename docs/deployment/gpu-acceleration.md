@@ -33,13 +33,13 @@ All Ollama-based Docker Compose files include commented GPU configuration sectio
 All nine Ollama-based Compose files follow the same pattern:
 
 - `docker-compose.sqlite.ollama.yml`
-- `docker-compose.sqlite.ollama.dev.yml`
+- `docker-compose.sqlite.ollama.local.yml`
 - `docker-compose.sqlite.ollama-openai.yml`
 - `docker-compose.postgresql.ollama.yml`
-- `docker-compose.postgresql.ollama.dev.yml`
+- `docker-compose.postgresql.ollama.local.yml`
 - `docker-compose.postgresql.ollama-openai.yml`
 - `docker-compose.postgresql-external.ollama.yml`
-- `docker-compose.postgresql-external.ollama.dev.yml`
+- `docker-compose.postgresql-external.ollama.local.yml`
 - `docker-compose.postgresql-external.ollama-openai.yml`
 
 ### NVIDIA GPU
