@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.errors import ConfigurationError
+from app.errors import is_client_error
 from app.settings import get_settings
 from app.summary.instructions import resolve_summary_prompt
 from app.summary.retry import with_summary_retry_and_timeout
@@ -34,6 +36,7 @@ class AnthropicSummaryProvider:
         settings = get_settings()
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
+        self._effort = settings.summary.anthropic_effort
         self._chat_model: Any = None
 
     async def initialize(self) -> None:
@@ -57,10 +60,12 @@ class AnthropicSummaryProvider:
             'temperature': 0,
             'max_tokens': self._max_tokens,
         }
+        if self._effort is not None:
+            kwargs['effort'] = self._effort
         self._chat_model = ChatAnthropic(**kwargs)
         logger.info(
             f'Initialized Anthropic summary provider: {self._model}, '
-            f'max_tokens={self._max_tokens}',
+            f'max_tokens={self._max_tokens}, effort={self._effort}',
         )
 
     async def shutdown(self) -> None:
@@ -79,7 +84,8 @@ class AnthropicSummaryProvider:
             Summary string
 
         Raises:
-            RuntimeError: If provider not initialized
+            RuntimeError: If provider not initialized, or if output is empty
+                due to the entire max_tokens budget being consumed
         """
         if self._chat_model is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
@@ -99,6 +105,17 @@ class AnthropicSummaryProvider:
             # Detect token-limit truncation
             stop_reason = response.response_metadata.get('stop_reason')
             if stop_reason == 'max_tokens':
+                if not result:
+                    raise RuntimeError(
+                        'Anthropic summary generation produced empty output '
+                        '(stop_reason=max_tokens). '
+                        f'The entire max_tokens budget ({self._max_tokens}) was consumed '
+                        'without producing visible output. '
+                        'Fix: increase SUMMARY_MAX_TOKENS'
+                        + (f' or adjust SUMMARY_ANTHROPIC_EFFORT (current: {self._effort!r})'
+                           if self._effort else '')
+                        + '.',
+                    )
                 logger.warning(
                     'Summary was truncated by token limit (stop_reason=max_tokens). '
                     'Consider increasing SUMMARY_MAX_TOKENS (current: %d)',
@@ -115,6 +132,10 @@ class AnthropicSummaryProvider:
 
         Returns:
             True if provider is ready to generate summaries
+
+        Raises:
+            ConfigurationError: If the API returns a client error (4xx) indicating
+                a permanent configuration problem (e.g., invalid effort value)
         """
         if self._chat_model is None:
             return False
@@ -124,6 +145,13 @@ class AnthropicSummaryProvider:
 
             await self._chat_model.ainvoke([HumanMessage(content='test')])
         except Exception as e:
+            if is_client_error(e):
+                raise ConfigurationError(
+                    f'Anthropic API returned a client error during availability check: {e}. '
+                    'This indicates a permanent configuration problem (e.g., invalid '
+                    'SUMMARY_ANTHROPIC_EFFORT or SUMMARY_MODEL). '
+                    'Fix: Check the error message above and correct the configuration.',
+                ) from e
             logger.warning(f'Anthropic summary provider not available: {e}')
             return False
         else:

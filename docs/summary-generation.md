@@ -93,7 +93,7 @@ Ollama runs summary models locally with no API costs. The default model `qwen3:0
 | `ENABLE_SUMMARY_GENERATION`    | `true`       | Enable/disable summary generation                                                                    |
 | `SUMMARY_PROVIDER`             | `ollama`     | Set to `ollama`                                                                                      |
 | `SUMMARY_MODEL`                | `qwen3:0.6b` | Ollama model name (see model table below)                                                            |
-| `SUMMARY_MAX_TOKENS`           | `2000`       | Maximum output tokens for summary generation (50-5000)                                               |
+| `SUMMARY_MAX_TOKENS`           | `4000`       | Maximum output tokens for summary generation (50-16384)                                              |
 | `SUMMARY_TIMEOUT_S`            | `240.0`      | Timeout in seconds for summary generation API calls                                                  |
 | `SUMMARY_RETRY_MAX_ATTEMPTS`   | `5`          | Maximum retry attempts on transient errors                                                           |
 | `SUMMARY_RETRY_BASE_DELAY_S`   | `1.0`        | Base delay in seconds between retries (exponential backoff)                                          |
@@ -156,11 +156,12 @@ OpenAI provides high-quality summaries via API with no local hardware requiremen
 
 #### Environment Variables
 
-| Variable                    | Default        | Description                          |
-|-----------------------------|----------------|--------------------------------------|
-| `SUMMARY_PROVIDER`          | -              | Set to `openai`                      |
-| `SUMMARY_MODEL`             | `gpt-5.4-nano` | OpenAI model name                    |
-| `OPENAI_API_KEY`            | -              | **Required**: OpenAI API key         |
+| Variable                          | Default        | Description                                                                                                                                          |
+|-----------------------------------|----------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `SUMMARY_PROVIDER`                | -              | Set to `openai`                                                                                                                                      |
+| `SUMMARY_MODEL`                   | `gpt-5.4-nano` | OpenAI model name                                                                                                                                    |
+| `OPENAI_API_KEY`                  | -              | **Required**: OpenAI API key                                                                                                                         |
+| `SUMMARY_OPENAI_REASONING_EFFORT` | `low`          | Reasoning effort for reasoning models. Valid: gpt-5: low/medium/high; gpt-5.1+: none/low/medium/high/xhigh. Default `low` is universally valid       |
 
 ### Anthropic
 
@@ -197,11 +198,12 @@ Anthropic's Claude models offer high-quality summaries with strong instruction-f
 
 #### Environment Variables
 
-| Variable            | Default                     | Description                     |
-|---------------------|-----------------------------|---------------------------------|
-| `SUMMARY_PROVIDER`  | -                           | Set to `anthropic`              |
-| `SUMMARY_MODEL`     | `claude-haiku-4-5-20251001` | Anthropic model name            |
-| `ANTHROPIC_API_KEY` | -                           | **Required**: Anthropic API key |
+| Variable                   | Default                     | Description                                                                                                                       |
+|----------------------------|-----------------------------|-----------------------------------------------------------------------------------------------------------------------------------|
+| `SUMMARY_PROVIDER`         | -                           | Set to `anthropic`                                                                                                                |
+| `SUMMARY_MODEL`            | `claude-haiku-4-5-20251001` | Anthropic model name                                                                                                              |
+| `ANTHROPIC_API_KEY`        | -                           | **Required**: Anthropic API key                                                                                                   |
+| `SUMMARY_ANTHROPIC_EFFORT` | _(none)_                    | Effort level for Claude models. Valid: `max`, `high`, `medium`, `low`. Not sent by default (required for Haiku 4.5 compatibility) |
 
 ## Source-Aware Summarization
 
@@ -262,6 +264,24 @@ Set `SUMMARY_PROMPT` to your custom system message:
 - When `SUMMARY_PROMPT` is set, it overrides BOTH source-specific prompts (user and agent get the same custom prompt).
 - An empty string or whitespace-only value falls back to the source-specific default prompts (unlike `MCP_SERVER_INSTRUCTIONS` where empty string disables the feature).
 - For Qwen3 models, include `/no_think` at the start of your prompt to disable the model's reasoning mode and save tokens.
+
+## Cross-Provider Reasoning Limitations
+
+When using reasoning models for summary generation, each provider has specific limitations and controls:
+
+| Provider      | Control Mechanism                 | Limitation                                                                           |
+|---------------|-----------------------------------|--------------------------------------------------------------------------------------|
+| **Ollama**    | `/no_think` prompt prefix         | Qwen3-specific. Other reasoning models require model-specific approaches             |
+| **OpenAI**    | `SUMMARY_OPENAI_REASONING_EFFORT` | Controls reasoning token budget. Default `low` (valid across all model generations)  |
+| **Anthropic** | `SUMMARY_ANTHROPIC_EFFORT`        | Controls adaptive thinking. Not supported on all models (e.g., Haiku 4.5)            |
+
+### Known Constraints
+
+- **`/no_think` is Qwen3-specific (Ollama):** The `/no_think` prefix in the default prompt disables reasoning mode only for Qwen3 models. Non-Qwen3 reasoning models running on Ollama ignore this prefix and require model-specific approaches to control reasoning behavior.
+- **`effort` is not supported on Haiku 4.5 (Anthropic):** The `SUMMARY_ANTHROPIC_EFFORT` setting defaults to `None` (parameter omitted) because Claude Haiku 4.5 does not support the `effort` parameter. Set this only when using models that support adaptive thinking (e.g., Claude Sonnet 4, Claude Opus 4).
+- **`temperature=0` is incompatible with extended thinking (Anthropic):** All summary providers use `temperature=0` for deterministic output. Anthropic's extended thinking feature requires `temperature=1`, making it incompatible with the current summary generation architecture. The `effort` parameter controls adaptive thinking (a different mechanism) and works with `temperature=0`.
+- **`reasoning=False` bug (LangChain):** LangChain has a known bug ([#33993](https://github.com/langchain-ai/langchain/issues/33993)) where setting `reasoning=False` on certain models may not work as expected. The server avoids this parameter entirely, relying instead on provider-specific effort controls.
+- **Non-Qwen3 reasoning models require model-specific approaches:** There is no universal mechanism to disable or control reasoning across all model families. When using a new reasoning model, consult its documentation for the appropriate control mechanism.
 
 ## How It Works
 
@@ -341,6 +361,9 @@ Options: 1) Increase SUMMARY_OLLAMA_NUM_CTX,
 | gpt-5.4            | OpenAI      | 400,000          | Always returns error on exceed               |
 | claude-haiku-4-5   | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
 | claude-sonnet-4    | Anthropic   | 200,000          | Standard tier; 1M available with beta header |
+| gpt-5-nano         | OpenAI      | 400,000          | Always returns error on exceed               |
+| claude-opus-4-6    | Anthropic   | 200,000          | Always returns error on exceed               |
+| claude-sonnet-4-6  | Anthropic   | 200,000          | Always returns error on exceed               |
 
 ### Summary in Search Results
 
@@ -363,7 +386,7 @@ The `summary` field appears in all search tool results when available:
 }
 ```
 
-All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 2000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated. Use `get_context_by_ids` to retrieve the full, untruncated text content.
+All search tools always return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 characters) with `is_text_content_truncated` flag. The `summary` field provides a dense LLM-generated summary (controlled by `SUMMARY_MAX_TOKENS`, default 4000 tokens) when summary generation is enabled, or an empty string when disabled or not yet generated. Use `get_context_by_ids` to retrieve the full, untruncated text content.
 
 ## Disabling Summary Generation
 

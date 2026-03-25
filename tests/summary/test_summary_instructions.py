@@ -131,6 +131,10 @@ class TestUserSummaryPrompt:
         """USER_SUMMARY_PROMPT requires English output."""
         assert 'Always write the summary in English' in USER_SUMMARY_PROMPT
 
+    def test_contains_word_count_guidance(self) -> None:
+        """USER_SUMMARY_PROMPT contains word count guidance."""
+        assert '100-250 words' in USER_SUMMARY_PROMPT
+
 
 class TestAgentSummaryPrompt:
     """Tests for AGENT_SUMMARY_PROMPT constant."""
@@ -156,6 +160,10 @@ class TestAgentSummaryPrompt:
     def test_contains_english_language_requirement(self) -> None:
         """AGENT_SUMMARY_PROMPT requires English output."""
         assert 'Always write the summary in English' in AGENT_SUMMARY_PROMPT
+
+    def test_contains_word_count_guidance(self) -> None:
+        """AGENT_SUMMARY_PROMPT contains word count guidance."""
+        assert '100-250 words' in AGENT_SUMMARY_PROMPT
 
 
 class TestDefaultSummaryPromptAlias:

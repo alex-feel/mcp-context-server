@@ -555,14 +555,16 @@ class SummarySettings(CommonSettings):
     )
 
     max_tokens: int = Field(
-        default=2000,
+        default=4000,
         alias='SUMMARY_MAX_TOKENS',
         ge=50,
-        le=5000,
+        le=16384,
         description='Maximum output tokens for summary generation. '
                     'Acts as a safety ceiling passed to the LLM API '
                     '(max_tokens for OpenAI/Anthropic, num_predict for Ollama). '
-                    'The LLM typically generates far fewer tokens than this limit.',
+                    'The LLM typically generates far fewer tokens than this limit. '
+                    'Reasoning models may consume a portion of this budget on '
+                    'internal reasoning tokens -- increase if summaries are truncated.',
     )
 
     timeout_s: float = Field(
@@ -633,6 +635,29 @@ class SummarySettings(CommonSettings):
         description='Control text truncation when exceeding summary context length. '
                     'False (default): Returns error on exceeded context. '
                     'True: Silently truncates input (summary generated from incomplete text).',
+    )
+
+    # Cross-provider reasoning/effort control
+    openai_reasoning_effort: str | None = Field(
+        default='low',
+        alias='SUMMARY_OPENAI_REASONING_EFFORT',
+        description='Reasoning effort level for OpenAI reasoning models (e.g., gpt-5.4-nano). '
+                    'Controls how many tokens the model spends on internal reasoning. '
+                    'Valid values vary by model generation: '
+                    'gpt-5 (original): low, medium, high. '
+                    'gpt-5.1/5.2/5.4 (including nano/mini): none, low, medium, high, xhigh. '
+                    'Default: low (universally valid across all generations). '
+                    'Set to None to omit the parameter entirely.',
+    )
+    anthropic_effort: Literal['max', 'high', 'medium', 'low'] | None = Field(
+        default=None,
+        alias='SUMMARY_ANTHROPIC_EFFORT',
+        description='Effort level for Anthropic Claude models. '
+                    'Controls inference effort (adaptive thinking). '
+                    'Valid values: max, high, medium, low. '
+                    'Default: None (do not send -- required for models that do not '
+                    'support the effort parameter, such as Haiku 4.5). '
+                    'When set, passed directly as effort= to ChatAnthropic constructor.',
     )
 
 

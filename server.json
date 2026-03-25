@@ -501,7 +501,7 @@
           "name": "SUMMARY_MODEL"
         },
         {
-          "description": "Maximum output tokens for summary generation (default: 2000, range: 50-5000)",
+          "description": "Maximum output tokens for summary generation (default: 4000, range: 50-16384). Increase if summaries are truncated by reasoning models",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -562,6 +562,20 @@
           "format": "boolean",
           "isSecret": false,
           "name": "SUMMARY_OLLAMA_TRUNCATE"
+        },
+        {
+          "description": "Reasoning effort level for OpenAI reasoning models (default: low). Valid values vary by generation: gpt-5: low, medium, high; gpt-5.1+: none, low, medium, high, xhigh. Default low is universally valid across all generations",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_OPENAI_REASONING_EFFORT"
+        },
+        {
+          "description": "Effort level for Anthropic Claude models (default: none). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_ANTHROPIC_EFFORT"
         },
         {
           "description": "Enable full-text search functionality",
@@ -1422,7 +1436,7 @@
           "name": "SUMMARY_MODEL"
         },
         {
-          "description": "Maximum output tokens for summary generation (default: 2000, range: 50-5000)",
+          "description": "Maximum output tokens for summary generation (default: 4000, range: 50-16384). Increase if summaries are truncated by reasoning models",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1483,6 +1497,20 @@
           "format": "boolean",
           "isSecret": false,
           "name": "SUMMARY_OLLAMA_TRUNCATE"
+        },
+        {
+          "description": "Reasoning effort level for OpenAI reasoning models (default: low). Valid values vary by generation: gpt-5: low, medium, high; gpt-5.1+: none, low, medium, high, xhigh. Default low is universally valid across all generations",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_OPENAI_REASONING_EFFORT"
+        },
+        {
+          "description": "Effort level for Anthropic Claude models (default: none). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "SUMMARY_ANTHROPIC_EFFORT"
         },
         {
           "description": "Enable full-text search functionality",

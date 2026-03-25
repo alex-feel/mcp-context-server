@@ -29,6 +29,7 @@ def mock_openai_settings():
     with patch('app.summary.providers.langchain_openai.get_settings') as mock:
         mock.return_value.summary.model = 'gpt-5.4-nano'
         mock.return_value.summary.max_tokens = 1500
+        mock.return_value.summary.openai_reasoning_effort = 'low'
         mock.return_value.summary.prompt = None
         mock.return_value.summary.timeout_s = 240.0
         mock.return_value.summary.retry_max_attempts = 5
@@ -65,6 +66,13 @@ class TestOpenAISummaryProviderInit:
         provider = OpenAISummaryProvider()
         assert provider._max_tokens == 1500
 
+    def test_init_reads_reasoning_effort_from_settings(self) -> None:
+        """__init__ reads reasoning_effort from settings."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        provider = OpenAISummaryProvider()
+        assert provider._reasoning_effort == 'low'
+
     def test_init_chat_model_is_none(self) -> None:
         """__init__ does not create ChatOpenAI instance."""
         from app.summary.providers.langchain_openai import OpenAISummaryProvider
@@ -93,8 +101,41 @@ class TestOpenAISummaryProviderInitialize:
                 model='gpt-5.4-nano',
                 temperature=0,
                 max_tokens=1500,
+                reasoning_effort='low',
             )
             assert provider._chat_model is not None
+
+    @pytest.mark.asyncio
+    async def test_initialize_omits_reasoning_effort_when_none(self) -> None:
+        """initialize() does not pass reasoning_effort when setting is None."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        mock_chat_cls = MagicMock()
+        mock_module = MagicMock()
+        mock_module.ChatOpenAI = mock_chat_cls
+        with (
+            patch('app.summary.providers.langchain_openai.get_settings') as mock_settings,
+            patch.dict('sys.modules', {'langchain_openai': mock_module}),
+        ):
+            mock_settings.return_value.summary.model = 'gpt-5.4-nano'
+            mock_settings.return_value.summary.max_tokens = 1500
+            mock_settings.return_value.summary.openai_reasoning_effort = None
+            mock_settings.return_value.summary.prompt = None
+            mock_settings.return_value.summary.timeout_s = 240.0
+            mock_settings.return_value.summary.retry_max_attempts = 5
+            mock_settings.return_value.summary.retry_base_delay_s = 0.01
+
+            provider = OpenAISummaryProvider()
+            await provider.initialize()
+
+            mock_chat_cls.assert_called_once_with(
+                model='gpt-5.4-nano',
+                temperature=0,
+                max_tokens=1500,
+            )
+            # reasoning_effort should NOT be in the kwargs
+            call_kwargs = mock_chat_cls.call_args[1]
+            assert 'reasoning_effort' not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_initialize_raises_import_error(self) -> None:
@@ -219,6 +260,21 @@ class TestOpenAISummaryProviderSummarize:
         assert '1500' in caplog.text
 
     @pytest.mark.asyncio
+    async def test_summarize_raises_runtime_error_on_empty_truncated(self) -> None:
+        """summarize() raises RuntimeError when finish_reason=length AND content is empty."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        provider = OpenAISummaryProvider()
+        mock_response = MagicMock()
+        mock_response.content = '   '
+        mock_response.response_metadata = {'finish_reason': 'length'}
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match='empty output'):
+            await provider.summarize('Some text', 'agent')
+
+    @pytest.mark.asyncio
     async def test_summarize_uses_system_and_human_messages(self) -> None:
         """summarize() sends SystemMessage + HumanMessage to the chat model."""
         from app.summary.providers.langchain_openai import OpenAISummaryProvider
@@ -290,7 +346,7 @@ class TestOpenAISummaryProviderIsAvailable:
 
     @pytest.mark.asyncio
     async def test_is_available_returns_false_on_exception(self) -> None:
-        """is_available() returns False when chat model raises an exception."""
+        """is_available() returns False when chat model raises a transient exception."""
         from app.summary.providers.langchain_openai import OpenAISummaryProvider
 
         provider = OpenAISummaryProvider()
@@ -299,6 +355,40 @@ class TestOpenAISummaryProviderIsAvailable:
 
         result = await provider.is_available()
 
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(self) -> None:
+        """is_available() raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating openai.BadRequestError."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        provider = OpenAISummaryProvider()
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(
+            side_effect=FakeClientError('unsupported value', status_code=400),
+        )
+
+        with pytest.raises(ConfigurationError, match='client error'):
+            await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(self) -> None:
+        """is_available() returns False for transient errors (no status_code or 5xx)."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        provider = OpenAISummaryProvider()
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(side_effect=TimeoutError('Connection timed out'))
+
+        result = await provider.is_available()
         assert result is False
 
 

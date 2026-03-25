@@ -106,6 +106,12 @@ class TestClassifyProviderError:
             # Case-insensitive matching tests
             ('Model NOT FOUND', ConfigurationError),
             ('UNKNOWN PROVIDER: test', ConfigurationError),
+            # HTTP 400 Bad Request indicators -> ConfigurationError
+            ('unsupported value: reasoning_effort does not support minimal', ConfigurationError),
+            ('Error: unsupported_value', ConfigurationError),
+            ('invalid_request_error: parameter not supported', ConfigurationError),
+            ('HTTP 400 Bad Request', ConfigurationError),
+            ('bad request: invalid parameter', ConfigurationError),
         ],
     )
     def test_configuration_error_classification(
@@ -271,3 +277,84 @@ class TestPostgreSQLBackendErrorClassification:
         )
         assert 'PostgreSQL connection failed' in str(error)
         assert DependencyError.EXIT_CODE == 69
+
+
+class TestIsClientError:
+    """Tests for is_client_error helper function."""
+
+    def test_detects_400_status_code(self) -> None:
+        """is_client_error() detects exceptions with status_code 400."""
+        from app.errors import is_client_error
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        assert is_client_error(FakeClientError('bad request', status_code=400)) is True
+
+    def test_detects_401_status_code(self) -> None:
+        """is_client_error() detects exceptions with status_code 401."""
+        from app.errors import is_client_error
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        assert is_client_error(FakeClientError('unauthorized', status_code=401)) is True
+
+    def test_ignores_500_status_code(self) -> None:
+        """is_client_error() returns False for 5xx server errors."""
+        from app.errors import is_client_error
+
+        class FakeServerError(Exception):
+            """Exception with 5xx status_code."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        assert is_client_error(FakeServerError('server error', status_code=500)) is False
+
+    def test_ignores_no_status_code(self) -> None:
+        """is_client_error() returns False for exceptions without status_code."""
+        from app.errors import is_client_error
+
+        assert is_client_error(ConnectionError('refused')) is False
+
+    def test_checks_cause_chain(self) -> None:
+        """is_client_error() detects status_code in exception __cause__."""
+        from app.errors import is_client_error
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        cause = FakeClientError('original', status_code=400)
+        wrapper = RuntimeError('wrapped')
+        wrapper.__cause__ = cause
+        assert is_client_error(wrapper) is True
+
+    def test_checks_context_chain(self) -> None:
+        """is_client_error() detects status_code in exception __context__."""
+        from app.errors import is_client_error
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        context = FakeClientError('original', status_code=400)
+        wrapper = RuntimeError('implicitly chained')
+        wrapper.__context__ = context
+        assert is_client_error(wrapper) is True

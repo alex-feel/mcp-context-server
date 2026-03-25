@@ -136,3 +136,27 @@ class TestSummaryModelSpecsRegistry:
     def test_default_model_exists_in_registry(self) -> None:
         """Default summary model (qwen3:0.6b) exists in registry."""
         assert 'qwen3:0.6b' in SUMMARY_MODEL_SPECS
+
+    def test_gpt5_nano_exists_in_registry(self) -> None:
+        """gpt-5-nano model exists with correct attributes."""
+        spec = get_summary_model_spec('gpt-5-nano')
+        assert spec is not None
+        assert spec.provider == 'openai'
+        assert spec.max_input_tokens == 400000
+        assert spec.truncation_behavior == 'error'
+
+    def test_claude_opus_4_6_exists_in_registry(self) -> None:
+        """claude-opus-4-6 model exists with correct attributes."""
+        spec = get_summary_model_spec('claude-opus-4-6')
+        assert spec is not None
+        assert spec.provider == 'anthropic'
+        assert spec.max_input_tokens == 200000
+        assert spec.truncation_behavior == 'error'
+
+    def test_claude_sonnet_4_6_exists_in_registry(self) -> None:
+        """claude-sonnet-4-6 model exists with correct attributes."""
+        spec = get_summary_model_spec('claude-sonnet-4-6')
+        assert spec is not None
+        assert spec.provider == 'anthropic'
+        assert spec.max_input_tokens == 200000
+        assert spec.truncation_behavior == 'error'

@@ -244,6 +244,21 @@ class TestOllamaSummaryProviderSummarize:
         assert str(provider._max_tokens) in caplog.text
 
     @pytest.mark.asyncio
+    async def test_summarize_raises_runtime_error_on_empty_truncated(self) -> None:
+        """summarize() raises RuntimeError when done_reason=length AND content is empty."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        mock_response = MagicMock()
+        mock_response.content = '   '
+        mock_response.response_metadata = {'done_reason': 'length'}
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match='empty output'):
+            await provider.summarize('Some text', 'agent')
+
+    @pytest.mark.asyncio
     async def test_summarize_no_warning_on_normal_completion(self, caplog: pytest.LogCaptureFixture) -> None:
         """summarize() does NOT log truncation warning on normal completion."""
         import logging
@@ -347,6 +362,40 @@ class TestOllamaSummaryProviderIsAvailable:
 
         result = await provider.is_available()
 
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(self) -> None:
+        """is_available() raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating an HTTP client error."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        provider = OllamaSummaryProvider()
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(
+            side_effect=FakeClientError('invalid model', status_code=400),
+        )
+
+        with pytest.raises(ConfigurationError, match='client error'):
+            await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(self) -> None:
+        """is_available() returns False for transient errors (no status_code or 5xx)."""
+        from app.summary.providers.langchain_ollama import OllamaSummaryProvider
+
+        provider = OllamaSummaryProvider()
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(side_effect=TimeoutError('Connection timed out'))
+
+        result = await provider.is_available()
         assert result is False
 
 

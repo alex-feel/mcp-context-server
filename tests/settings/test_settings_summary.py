@@ -41,10 +41,10 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.model == 'qwen3:0.6b'
 
-    def test_summary_max_tokens_default_is_2000(self) -> None:
-        """Verify SUMMARY_MAX_TOKENS defaults to 2000."""
+    def test_summary_max_tokens_default_is_4000(self) -> None:
+        """Verify SUMMARY_MAX_TOKENS defaults to 4000."""
         settings = SummarySettings()
-        assert settings.max_tokens == 2000
+        assert settings.max_tokens == 4000
 
     def test_summary_max_tokens_minimum_50(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify SUMMARY_MAX_TOKENS rejects values below 50."""
@@ -58,17 +58,17 @@ class TestSummarySettings:
         settings = SummarySettings()
         assert settings.max_tokens == 50
 
-    def test_summary_max_tokens_maximum_5000(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify SUMMARY_MAX_TOKENS rejects values above 5000."""
-        monkeypatch.setenv('SUMMARY_MAX_TOKENS', '5001')
+    def test_summary_max_tokens_maximum_16384(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify SUMMARY_MAX_TOKENS rejects values above 16384."""
+        monkeypatch.setenv('SUMMARY_MAX_TOKENS', '16385')
         with pytest.raises(ValidationError):
             SummarySettings()
 
     def test_summary_max_tokens_maximum_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify SUMMARY_MAX_TOKENS accepts maximum value of 5000."""
-        monkeypatch.setenv('SUMMARY_MAX_TOKENS', '5000')
+        """Verify SUMMARY_MAX_TOKENS accepts maximum value of 16384."""
+        monkeypatch.setenv('SUMMARY_MAX_TOKENS', '16384')
         settings = SummarySettings()
-        assert settings.max_tokens == 5000
+        assert settings.max_tokens == 16384
 
     def test_summary_timeout_default_240(self) -> None:
         """Verify SUMMARY_TIMEOUT_S defaults to 240.0."""
@@ -156,6 +156,35 @@ class TestSummarySettings:
         with pytest.raises(ValidationError):
             SummarySettings()
 
+    def test_openai_reasoning_effort_default_low(self) -> None:
+        """Verify SUMMARY_OPENAI_REASONING_EFFORT defaults to 'low'."""
+        settings = SummarySettings()
+        assert settings.openai_reasoning_effort == 'low'
+
+    def test_anthropic_effort_default_none(self) -> None:
+        """Verify SUMMARY_ANTHROPIC_EFFORT defaults to None."""
+        settings = SummarySettings()
+        assert settings.anthropic_effort is None
+
+    def test_anthropic_effort_accepts_valid_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify SUMMARY_ANTHROPIC_EFFORT accepts valid Literal values."""
+        for value in ('max', 'high', 'medium', 'low'):
+            monkeypatch.setenv('SUMMARY_ANTHROPIC_EFFORT', value)
+            settings = SummarySettings()
+            assert settings.anthropic_effort == value
+
+    def test_anthropic_effort_rejects_invalid_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify SUMMARY_ANTHROPIC_EFFORT rejects invalid values."""
+        monkeypatch.setenv('SUMMARY_ANTHROPIC_EFFORT', 'invalid')
+        with pytest.raises(ValidationError):
+            SummarySettings()
+
+    def test_openai_reasoning_effort_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify SUMMARY_OPENAI_REASONING_EFFORT can be overridden via env."""
+        monkeypatch.setenv('SUMMARY_OPENAI_REASONING_EFFORT', 'high')
+        settings = SummarySettings()
+        assert settings.openai_reasoning_effort == 'high'
+
     def test_summary_prompt_default_none(self) -> None:
         """Verify SUMMARY_PROMPT defaults to None."""
         settings = SummarySettings()
@@ -235,14 +264,24 @@ class TestSummarySettingsFieldAliases:
         assert field_info.alias == 'SUMMARY_MAX_TOKENS'
 
     def test_max_tokens_field_constraints(self) -> None:
-        """Verify max_tokens field has default=2000, ge=50, le=5000."""
+        """Verify max_tokens field has default=4000, ge=50, le=16384."""
         field_info = SummarySettings.model_fields['max_tokens']
-        assert field_info.default == 2000
+        assert field_info.default == 4000
         metadata = field_info.metadata
         ge_values = [m.ge for m in metadata if hasattr(m, 'ge')]
         le_values = [m.le for m in metadata if hasattr(m, 'le')]
         assert 50 in ge_values
-        assert 5000 in le_values
+        assert 16384 in le_values
+
+    def test_openai_reasoning_effort_field_alias(self) -> None:
+        """Verify openai_reasoning_effort field has alias 'SUMMARY_OPENAI_REASONING_EFFORT'."""
+        field_info = SummarySettings.model_fields['openai_reasoning_effort']
+        assert field_info.alias == 'SUMMARY_OPENAI_REASONING_EFFORT'
+
+    def test_anthropic_effort_field_alias(self) -> None:
+        """Verify anthropic_effort field has alias 'SUMMARY_ANTHROPIC_EFFORT'."""
+        field_info = SummarySettings.model_fields['anthropic_effort']
+        assert field_info.alias == 'SUMMARY_ANTHROPIC_EFFORT'
 
     def test_min_content_length_field_alias(self) -> None:
         """Verify min_content_length field has alias 'SUMMARY_MIN_CONTENT_LENGTH'."""
@@ -348,7 +387,7 @@ class TestAppSettingsSummaryIntegration:
         assert settings.summary.generation_enabled is True
         assert settings.summary.provider == 'ollama'
         assert settings.summary.model == 'qwen3:0.6b'
-        assert settings.summary.max_tokens == 2000
+        assert settings.summary.max_tokens == 4000
         assert settings.summary.timeout_s == 240.0
         assert settings.summary.retry_max_attempts == 5
         assert settings.summary.retry_base_delay_s == 3.0

@@ -29,6 +29,7 @@ def mock_anthropic_settings():
     with patch('app.summary.providers.langchain_anthropic.get_settings') as mock:
         mock.return_value.summary.model = 'claude-haiku-4-5-20251001'
         mock.return_value.summary.max_tokens = 1800
+        mock.return_value.summary.anthropic_effort = None
         mock.return_value.summary.prompt = None
         mock.return_value.summary.timeout_s = 240.0
         mock.return_value.summary.retry_max_attempts = 5
@@ -65,6 +66,13 @@ class TestAnthropicSummaryProviderInit:
         provider = AnthropicSummaryProvider()
         assert provider._max_tokens == 1800
 
+    def test_init_reads_effort_from_settings(self) -> None:
+        """__init__ reads effort from settings."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        provider = AnthropicSummaryProvider()
+        assert provider._effort is None
+
     def test_init_chat_model_is_none(self) -> None:
         """__init__ does not create ChatAnthropic instance."""
         from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
@@ -95,6 +103,36 @@ class TestAnthropicSummaryProviderInitialize:
                 max_tokens=1800,
             )
             assert provider._chat_model is not None
+
+    @pytest.mark.asyncio
+    async def test_initialize_passes_effort_when_set(self) -> None:
+        """initialize() passes effort= to ChatAnthropic when setting is not None."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_chat_cls = MagicMock()
+        mock_module = MagicMock()
+        mock_module.ChatAnthropic = mock_chat_cls
+        with (
+            patch('app.summary.providers.langchain_anthropic.get_settings') as mock_settings,
+            patch.dict('sys.modules', {'langchain_anthropic': mock_module}),
+        ):
+            mock_settings.return_value.summary.model = 'claude-haiku-4-5-20251001'
+            mock_settings.return_value.summary.max_tokens = 1800
+            mock_settings.return_value.summary.anthropic_effort = 'low'
+            mock_settings.return_value.summary.prompt = None
+            mock_settings.return_value.summary.timeout_s = 240.0
+            mock_settings.return_value.summary.retry_max_attempts = 5
+            mock_settings.return_value.summary.retry_base_delay_s = 0.01
+
+            provider = AnthropicSummaryProvider()
+            await provider.initialize()
+
+            mock_chat_cls.assert_called_once_with(
+                model='claude-haiku-4-5-20251001',
+                temperature=0,
+                max_tokens=1800,
+                effort='low',
+            )
 
     @pytest.mark.asyncio
     async def test_initialize_raises_import_error(self) -> None:
@@ -219,6 +257,21 @@ class TestAnthropicSummaryProviderSummarize:
         assert '1800' in caplog.text
 
     @pytest.mark.asyncio
+    async def test_summarize_raises_runtime_error_on_empty_truncated(self) -> None:
+        """summarize() raises RuntimeError when stop_reason=max_tokens AND content is empty."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        provider = AnthropicSummaryProvider()
+        mock_response = MagicMock()
+        mock_response.content = '   '
+        mock_response.response_metadata = {'stop_reason': 'max_tokens'}
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match='empty output'):
+            await provider.summarize('Some text', 'agent')
+
+    @pytest.mark.asyncio
     async def test_summarize_uses_system_and_human_messages(self) -> None:
         """summarize() sends SystemMessage + HumanMessage to the chat model."""
         from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
@@ -290,7 +343,7 @@ class TestAnthropicSummaryProviderIsAvailable:
 
     @pytest.mark.asyncio
     async def test_is_available_returns_false_on_exception(self) -> None:
-        """is_available() returns False when chat model raises an exception."""
+        """is_available() returns False when chat model raises a transient exception."""
         from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
 
         provider = AnthropicSummaryProvider()
@@ -299,6 +352,40 @@ class TestAnthropicSummaryProviderIsAvailable:
 
         result = await provider.is_available()
 
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(self) -> None:
+        """is_available() raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating anthropic.BadRequestError."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        provider = AnthropicSummaryProvider()
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(
+            side_effect=FakeClientError('invalid request', status_code=400),
+        )
+
+        with pytest.raises(ConfigurationError, match='client error'):
+            await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(self) -> None:
+        """is_available() returns False for transient errors (no status_code or 5xx)."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        provider = AnthropicSummaryProvider()
+        provider._chat_model = AsyncMock()
+        provider._chat_model.ainvoke = AsyncMock(side_effect=TimeoutError('Connection timed out'))
+
+        result = await provider.is_available()
         assert result is False
 
 
