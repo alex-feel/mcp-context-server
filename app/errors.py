@@ -55,6 +55,28 @@ class DependencyError(Exception):
     EXIT_CODE = 69  # BSD sysexits.h EX_UNAVAILABLE
 
 
+def is_client_error(exc: Exception) -> bool:
+    """Detect HTTP 4xx client errors from API provider exceptions.
+
+    Checks for status_code attribute (openai.APIStatusError, anthropic.APIStatusError)
+    in the exception or its cause chain. Client errors (400-499) indicate permanent
+    configuration problems that will not resolve with retries.
+
+    Args:
+        exc: The exception to inspect.
+
+    Returns:
+        True if the exception or its cause has an HTTP 4xx status_code.
+    """
+    for candidate in (exc, exc.__cause__, exc.__context__):
+        if candidate is None:
+            continue
+        status_code = getattr(candidate, 'status_code', None)
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            return True
+    return False
+
+
 def classify_provider_error(reason: str) -> type[ConfigurationError] | type[DependencyError]:
     """Classify a provider check failure into the appropriate error type.
 
@@ -95,6 +117,12 @@ def classify_provider_error(reason: str) -> type[ConfigurationError] | type[Depe
         # HTTP 404 errors indicate resource doesn't exist (won't auto-appear)
         '404',
         'status code: 404',
+        # HTTP 400 Bad Request -- invalid API parameters (e.g., unsupported reasoning_effort value)
+        'unsupported value',
+        'unsupported_value',
+        'invalid_request_error',
+        '400',
+        'bad request',
     ]
 
     for indicator in config_indicators:

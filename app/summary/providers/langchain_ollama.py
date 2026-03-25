@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.errors import ConfigurationError
+from app.errors import is_client_error
 from app.settings import get_settings
 from app.summary.instructions import resolve_summary_prompt
 from app.summary.retry import with_summary_retry_and_timeout
@@ -97,7 +99,8 @@ class OllamaSummaryProvider:
             Summary string
 
         Raises:
-            RuntimeError: If provider not initialized
+            RuntimeError: If provider not initialized, or if output is empty
+                due to the entire num_predict budget being consumed
         """
         if self._chat_model is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
@@ -118,16 +121,24 @@ class OllamaSummaryProvider:
         async def _summarize() -> str:
             response = await self._chat_model.ainvoke(messages)
             result = str(response.content).strip()
-            if not result:
-                logger.warning('Ollama summary model returned empty response')
             # Detect token-limit truncation
             done_reason = response.response_metadata.get('done_reason')
             if done_reason == 'length':
+                if not result:
+                    raise RuntimeError(
+                        'Ollama summary generation produced empty output '
+                        '(done_reason=length). '
+                        f'The entire num_predict budget ({self._max_tokens}) was consumed '
+                        'without producing visible output. '
+                        'Fix: increase SUMMARY_MAX_TOKENS.',
+                    )
                 logger.warning(
                     'Summary was truncated by token limit (done_reason=length). '
                     'Consider increasing SUMMARY_MAX_TOKENS (current: %d)',
                     self._max_tokens,
                 )
+            elif not result:
+                logger.warning('Ollama summary model returned empty response')
             return result
 
         return await with_summary_retry_and_timeout(
@@ -194,6 +205,10 @@ class OllamaSummaryProvider:
 
         Returns:
             True if provider is ready to generate summaries
+
+        Raises:
+            ConfigurationError: If the API returns a client error (4xx) indicating
+                a permanent configuration problem (e.g., invalid model name)
         """
         if self._chat_model is None:
             return False
@@ -203,6 +218,13 @@ class OllamaSummaryProvider:
 
             await self._chat_model.ainvoke([HumanMessage(content='test')])
         except Exception as e:
+            if is_client_error(e):
+                raise ConfigurationError(
+                    f'Ollama API returned a client error during availability check: {e}. '
+                    'This indicates a permanent configuration problem (e.g., invalid '
+                    'SUMMARY_MODEL). '
+                    'Fix: Check the error message above and correct the configuration.',
+                ) from e
             logger.warning(f'Ollama summary provider not available: {e}')
             return False
         else:

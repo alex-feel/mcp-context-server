@@ -410,8 +410,8 @@ async def store_context(
                     )
                 else:
                     logger.debug(
-                        'Pre-check: duplicate detected but no embeddings exist for context %d, '
-                        'generating embeddings',
+                        'Pre-check: duplicate detected but no embeddings exist for context %d '
+                        'in thread %s, generating embeddings',
                         likely_duplicate_id, thread_id,
                     )
                     tasks_to_run.append(generate_embeddings_with_timeout(text))

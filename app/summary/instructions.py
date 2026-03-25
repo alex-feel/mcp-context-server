@@ -34,6 +34,7 @@ _SUMMARY_BASE_REQUIREMENTS: str = '''Requirements:
 - Use specific terms from the original text (do not generalize or abstract away details)
 - Always write the summary in English regardless of the input language
 - Write exactly one paragraph with no line breaks
+- Target approximately 100-250 words
 - Do not add any labels, prefixes, headers, or explanations
 - Do not start with "This text" or "The author" or similar meta-references
 - Output ONLY the summary text, nothing else'''

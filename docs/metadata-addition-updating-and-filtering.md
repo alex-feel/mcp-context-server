@@ -1677,8 +1677,8 @@ METADATA_INDEX_SYNC_MODE=auto
 
 ### Test Examples
 
-- [`tests/test_metadata_filtering.py`](../tests/test_metadata_filtering.py) - Comprehensive operator tests and integration examples
-- [`tests/test_metadata_error_handling.py`](../tests/test_metadata_error_handling.py) - Error handling and validation tests
+- [`tests/core/test_metadata_filtering.py`](../tests/core/test_metadata_filtering.py) - Comprehensive operator tests and integration examples
+- [`tests/tools/test_metadata_error_handling.py`](../tests/tools/test_metadata_error_handling.py) - Error handling and validation tests
 
 ### Performance Tuning
 

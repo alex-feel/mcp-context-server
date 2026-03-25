@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.errors import ConfigurationError
+from app.errors import is_client_error
 from app.settings import get_settings
 from app.summary.instructions import resolve_summary_prompt
 from app.summary.retry import with_summary_retry_and_timeout
@@ -25,7 +27,7 @@ class OpenAISummaryProvider:
     Environment Variables:
         SUMMARY_PROVIDER: Must be 'openai'
         OPENAI_API_KEY: OpenAI API key (auto-detected by ChatOpenAI)
-        SUMMARY_MODEL: Model name (e.g., 'gpt-5-nano', 'gpt-5')
+        SUMMARY_MODEL: Model name (e.g., 'gpt-5.4-nano', 'gpt-5.4')
         SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
     """
 
@@ -34,6 +36,7 @@ class OpenAISummaryProvider:
         settings = get_settings()
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
+        self._reasoning_effort = settings.summary.openai_reasoning_effort
         self._chat_model: Any = None
 
     async def initialize(self) -> None:
@@ -57,10 +60,12 @@ class OpenAISummaryProvider:
             'temperature': 0,
             'max_tokens': self._max_tokens,
         }
+        if self._reasoning_effort is not None:
+            kwargs['reasoning_effort'] = self._reasoning_effort
         self._chat_model = ChatOpenAI(**kwargs)
         logger.info(
             f'Initialized OpenAI summary provider: {self._model}, '
-            f'max_tokens={self._max_tokens}',
+            f'max_tokens={self._max_tokens}, reasoning_effort={self._reasoning_effort}',
         )
 
     async def shutdown(self) -> None:
@@ -79,7 +84,8 @@ class OpenAISummaryProvider:
             Summary string
 
         Raises:
-            RuntimeError: If provider not initialized
+            RuntimeError: If provider not initialized, or if output is empty
+                due to reasoning tokens consuming the entire budget
         """
         if self._chat_model is None:
             raise RuntimeError('Provider not initialized. Call initialize() first.')
@@ -99,6 +105,14 @@ class OpenAISummaryProvider:
             # Detect token-limit truncation
             finish_reason = response.response_metadata.get('finish_reason')
             if finish_reason == 'length':
+                if not result:
+                    raise RuntimeError(
+                        'OpenAI summary generation produced empty output '
+                        '(finish_reason=length). Reasoning tokens likely consumed '
+                        f'the entire max_tokens budget ({self._max_tokens}). '
+                        'Fix: reduce SUMMARY_OPENAI_REASONING_EFFORT (current: '
+                        f'{self._reasoning_effort!r}) or increase SUMMARY_MAX_TOKENS.',
+                    )
                 logger.warning(
                     'Summary was truncated by token limit (finish_reason=length). '
                     'Consider increasing SUMMARY_MAX_TOKENS (current: %d)',
@@ -115,6 +129,10 @@ class OpenAISummaryProvider:
 
         Returns:
             True if provider is ready to generate summaries
+
+        Raises:
+            ConfigurationError: If the API returns a client error (4xx) indicating
+                a permanent configuration problem (e.g., invalid reasoning_effort value)
         """
         if self._chat_model is None:
             return False
@@ -124,6 +142,13 @@ class OpenAISummaryProvider:
 
             await self._chat_model.ainvoke([HumanMessage(content='test')])
         except Exception as e:
+            if is_client_error(e):
+                raise ConfigurationError(
+                    f'OpenAI API returned a client error during availability check: {e}. '
+                    'This indicates a permanent configuration problem (e.g., invalid '
+                    'SUMMARY_OPENAI_REASONING_EFFORT or SUMMARY_MODEL). '
+                    'Fix: Check the error message above and correct the configuration.',
+                ) from e
             logger.warning(f'OpenAI summary provider not available: {e}')
             return False
         else:
