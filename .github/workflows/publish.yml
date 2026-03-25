@@ -135,19 +135,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: '1.22'
-          cache: false
-
-      - name: Build mcp-publisher from source
+      - name: Install mcp-publisher
         run: |
-          set -eux
-          git clone https://github.com/modelcontextprotocol/registry mcp-registry
-          cd mcp-registry
-          go build -o ../mcp-publisher ./cmd/publisher
-          cd ..
+          set -euo pipefail
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          chmod +x mcp-publisher
           ./mcp-publisher --help
 
       - name: Wait for PyPI to serve this release
