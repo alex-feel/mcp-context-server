@@ -78,7 +78,9 @@ async def store_context_batch(
     - atomic=False: Each entry processed independently with per-item error reporting.
 
     Deduplication: if an entry with identical thread_id, source, and text already exists,
-    the existing entry is updated.
+    the existing entry is updated. Deduplication is suppressed when opposite-source
+    entries exist after the candidate, preserving chronological ordering.
+    Pre-check optimization skips embedding/summary generation for likely duplicates.
 
     Size limits:
     - Maximum 100 entries per batch
@@ -228,12 +230,33 @@ async def store_context_batch(
             tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
             task_names: list[str] = []
 
-            # Embedding task
-            if embedding_provider is not None:
-                tasks_to_run.append(generate_embeddings_with_timeout(text_content))
-                task_names.append('embedding')
+            # Performance optimization: pre-check for likely duplicates (read-only)
+            likely_duplicate_id: int | None = None
+            if embedding_provider is not None or summary_provider is not None:
+                likely_duplicate_id = await repos.context.check_latest_is_duplicate(
+                    thread_id=entry['thread_id'],
+                    source=entry['source'],
+                    text_content=text_content,
+                )
 
-            # Summary task (min_content_length pre-check OUTSIDE wrapper)
+            # Embedding task (with pre-check optimization)
+            if embedding_provider is not None:
+                if likely_duplicate_id is not None:
+                    has_embeddings = await repos.embeddings.exists(likely_duplicate_id)
+                    if has_embeddings:
+                        logger.debug(
+                            'Pre-check: skipping embedding generation for likely duplicate '
+                            'of context %d at index %d',
+                            likely_duplicate_id, original_idx,
+                        )
+                    else:
+                        tasks_to_run.append(generate_embeddings_with_timeout(text_content))
+                        task_names.append('embedding')
+                else:
+                    tasks_to_run.append(generate_embeddings_with_timeout(text_content))
+                    task_names.append('embedding')
+
+            # Summary task (with pre-check optimization)
             if summary_provider is not None:
                 if min_content_length > 0 and len(text_content) < min_content_length:
                     logger.info(
@@ -242,6 +265,18 @@ async def store_context_batch(
                         original_idx, len(text_content), min_content_length,
                     )
                     entry_summaries[ve_idx] = None
+                elif likely_duplicate_id is not None:
+                    existing_summary = await repos.context.get_summary(likely_duplicate_id)
+                    if existing_summary is not None:
+                        entry_summaries[ve_idx] = existing_summary
+                        logger.debug(
+                            'Pre-check: reusing existing summary for likely duplicate '
+                            'of context %d at index %d',
+                            likely_duplicate_id, original_idx,
+                        )
+                    else:
+                        tasks_to_run.append(generate_summary_with_timeout(text_content, entry['source']))
+                        task_names.append('summary')
                 else:
                     tasks_to_run.append(generate_summary_with_timeout(text_content, entry['source']))
                     task_names.append('summary')

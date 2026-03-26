@@ -403,16 +403,20 @@ All three layers use identical patterns:
 
 ### Deduplication Behavior (store_context)
 
-When `store_context` detects a duplicate (same `thread_id + source + text_content` as the latest entry):
+Deduplication serves as **retry protection**: when an MCP client retransmits the same message (network glitch, timeout retry), the server updates the existing entry instead of creating duplicates. This is distinct from a **new conversational turn**, where a user intentionally sends identical text after an agent has responded -- in that case, a new entry must be created to preserve chronological ordering.
+
+**Interleaving check**: Before deduplicating, the server verifies that no opposite-source entries (agent entries for user source, user entries for agent source) were created after the candidate duplicate. If such entries exist, the message represents a new conversational turn and is inserted as a new entry. This uses `id > candidate_id` comparison (immune to clock skew) with the existing `idx_thread_source` index.
+
+When deduplication proceeds (same `thread_id + source + text_content` as the latest entry, with no interleaving):
 
 - **Metadata**: Updated via `COALESCE(new, existing)`. `None` preserves existing; explicit value replaces.
 - **Tags/Images**: REPLACED (not accumulated) when provided. Preserved when `None`.
 - **content_type/updated_at**: Auto-updated.
 - **Embeddings**: Storage skipped if already exist; generated if missing.
 - **Summary**: Regeneration skipped if already exists. `COALESCE(NULL, existing_summary)` preserves pre-existing summary when generation is skipped.
-- **Pre-check optimization**: Read-only check before embedding/summary generation to skip LLM API calls for duplicates.
+- **Pre-check optimization**: Read-only check before embedding/summary generation to skip LLM API calls for duplicates. Applied in both `store_context` and `store_context_batch`.
 
-The `store_context_batch` tool uses the same dedup logic (calls `store_with_deduplication` per entry).
+The `store_context_batch` tool uses the same dedup logic (calls `store_with_deduplication` per entry) with the same pre-check optimization and interleaving check.
 
 ### Update Context and Batch Operations
 

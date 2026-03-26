@@ -138,6 +138,27 @@ class ContextRepository(BaseRepository):
                         is_duplicate = latest_row['text_content'] == text_content
 
                 if is_duplicate and latest_row:
+                    # Interleaving check: suppress dedup if opposite-source entries exist
+                    # after the candidate. This preserves chronological ordering when identical
+                    # text is sent as a new conversational turn rather than a retry.
+                    # Intentionally duplicated across 4 blocks (SQLite/PostgreSQL x store/check)
+                    # because sync/async closure patterns prevent clean extraction without
+                    # losing type safety.
+                    existing_id = latest_row['id']
+                    opposite_source = 'agent' if source == 'user' else 'user'
+                    cursor.execute(
+                        f'''
+                        SELECT 1 FROM context_entries
+                        WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                        AND id > {self._placeholder(3)}
+                        LIMIT 1
+                        ''',
+                        (thread_id, opposite_source, existing_id),
+                    )
+                    if cursor.fetchone() is not None:
+                        is_duplicate = False
+
+                if is_duplicate and latest_row:
                     # The latest entry has identical text - update metadata, content_type, and timestamp
                     existing_id = latest_row['id']
                     cursor.execute(
@@ -201,6 +222,29 @@ class ContextRepository(BaseRepository):
                     is_duplicate = existing_hash == content_hash
                 else:
                     is_duplicate = latest_row['text_content'] == text_content
+
+            if is_duplicate and latest_row:
+                # Interleaving check: suppress dedup if opposite-source entries exist
+                # after the candidate. This preserves chronological ordering when identical
+                # text is sent as a new conversational turn rather than a retry.
+                # Intentionally duplicated across 4 blocks (SQLite/PostgreSQL x store/check)
+                # because sync/async closure patterns prevent clean extraction without
+                # losing type safety.
+                existing_id = latest_row['id']
+                opposite_source = 'agent' if source == 'user' else 'user'
+                interleaving_row = await conn.fetchrow(
+                    f'''
+                        SELECT 1 FROM context_entries
+                        WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                        AND id > {self._placeholder(3)}
+                        LIMIT 1
+                        ''',
+                    thread_id,
+                    opposite_source,
+                    existing_id,
+                )
+                if interleaving_row is not None:
+                    is_duplicate = False
 
             if is_duplicate and latest_row:
                 # Update metadata, content_type, and timestamp
@@ -267,13 +311,20 @@ class ContextRepository(BaseRepository):
         is identical to the latest entry. The in-transaction deduplication
         in store_with_deduplication remains as the authoritative safety net.
 
+        Includes an interleaving check: if opposite-source entries (agent for
+        user source, user for agent source) exist after the candidate duplicate,
+        returns None to suppress deduplication. This preserves chronological
+        ordering when identical text is sent as a new conversational turn
+        rather than a retry.
+
         Args:
             thread_id: Thread identifier
             source: 'user' or 'agent'
             text_content: Text content to check for duplicates
 
         Returns:
-            The context_id of the matching entry if duplicate found, None otherwise.
+            The context_id of the matching entry if duplicate found, None if no
+            match or if interleaving entries suppress deduplication.
         """
         content_hash = compute_content_hash(text_content)
 
@@ -295,12 +346,33 @@ class ContextRepository(BaseRepository):
                     return None
                 # Hash-based comparison; fall back to text for pre-migration rows (NULL hash)
                 existing_hash = row['content_hash']
-                if existing_hash is not None:
-                    if existing_hash == content_hash:
-                        return cast(int, row['id'])
-                elif row['text_content'] == text_content:
-                    return cast(int, row['id'])
-                return None
+                is_match = (
+                    existing_hash == content_hash
+                    if existing_hash is not None
+                    else row['text_content'] == text_content
+                )
+                if not is_match:
+                    return None
+                candidate_id = row['id']
+                # Interleaving check: suppress dedup if opposite-source entries exist
+                # after the candidate. This preserves chronological ordering when identical
+                # text is sent as a new conversational turn rather than a retry.
+                # Intentionally duplicated across 4 blocks (SQLite/PostgreSQL x store/check)
+                # because sync/async closure patterns prevent clean extraction without
+                # losing type safety.
+                opposite_source = 'agent' if source == 'user' else 'user'
+                cursor.execute(
+                    f'''
+                    SELECT 1 FROM context_entries
+                    WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                    AND id > {self._placeholder(3)}
+                    LIMIT 1
+                    ''',
+                    (thread_id, opposite_source, candidate_id),
+                )
+                if cursor.fetchone() is not None:
+                    return None
+                return cast(int, candidate_id)
 
             return await self.backend.execute_read(_check_sqlite)
 
@@ -320,12 +392,35 @@ class ContextRepository(BaseRepository):
                 return None
             # Hash-based comparison; fall back to text for pre-migration rows (NULL hash)
             existing_hash = row['content_hash']
-            if existing_hash is not None:
-                if existing_hash == content_hash:
-                    return cast(int, row['id'])
-            elif row['text_content'] == text_content:
-                return cast(int, row['id'])
-            return None
+            is_match = (
+                existing_hash == content_hash
+                if existing_hash is not None
+                else row['text_content'] == text_content
+            )
+            if not is_match:
+                return None
+            candidate_id = row['id']
+            # Interleaving check: suppress dedup if opposite-source entries exist
+            # after the candidate. This preserves chronological ordering when identical
+            # text is sent as a new conversational turn rather than a retry.
+            # Intentionally duplicated across 4 blocks (SQLite/PostgreSQL x store/check)
+            # because sync/async closure patterns prevent clean extraction without
+            # losing type safety.
+            opposite_source = 'agent' if source == 'user' else 'user'
+            interleaving_row = await conn.fetchrow(
+                f'''
+                    SELECT 1 FROM context_entries
+                    WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
+                    AND id > {self._placeholder(3)}
+                    LIMIT 1
+                    ''',
+                thread_id,
+                opposite_source,
+                candidate_id,
+            )
+            if interleaving_row is not None:
+                return None
+            return cast(int, candidate_id)
 
         return await self.backend.execute_read(_check_postgresql)
 
