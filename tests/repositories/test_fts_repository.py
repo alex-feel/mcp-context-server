@@ -162,6 +162,25 @@ class TestFtsRepositoryPostgreSQLQueryTransform:
         result = repo._transform_query_postgresql('  hello  ', 'prefix')
         assert result == 'hello:*'
 
+    def test_transform_query_match_empty_string(self, repo: FtsRepository) -> None:
+        """Test that empty/whitespace query returns empty string in match mode."""
+        result = repo._transform_query_postgresql('   ', 'match')
+        assert result == ''
+
+    def test_transform_query_boolean_with_special_characters(self, repo: FtsRepository) -> None:
+        """Test that boolean mode passes through special characters unchanged."""
+        result = repo._transform_query_postgresql(
+            'error OR "stack trace" -timeout', 'boolean',
+        )
+        assert result == 'error OR "stack trace" -timeout'
+
+    def test_transform_query_phrase_with_internal_quotes(self, repo: FtsRepository) -> None:
+        """Test that phrase mode preserves queries with internal quotes."""
+        result = repo._transform_query_postgresql(
+            'error "handling"', 'phrase',
+        )
+        assert result == 'error "handling"'
+
 
 class TestFtsRepositoryPostgreSQLFunctions:
     """Test PostgreSQL tsquery function selection."""

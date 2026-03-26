@@ -123,6 +123,93 @@ class TestTracedEmbeddingDecorator:
             assert decorated is original_func
 
 
+class TestTracedEmbeddingWrapperBehavior:
+    """Tests for the traced_embedding decorator's wrapper function behavior.
+
+    These tests verify that when langsmith IS installed and tracing IS enabled,
+    the decorator wraps the function and correctly extracts provider metadata.
+    """
+
+    def test_tracing_enabled_with_langsmith_wraps_function(self) -> None:
+        """Verify decorator returns a wrapper (not the original) when langsmith is available."""
+        import importlib
+        import sys
+
+        mock_langsmith = MagicMock()
+        mock_langsmith.traceable = MagicMock(return_value=lambda f: f)
+
+        with patch.dict(sys.modules, {'langsmith': mock_langsmith}):
+            import app.embeddings.tracing as tracing_module
+
+            tracing_module._warned_missing_package = False
+            tracing_module = importlib.reload(tracing_module)
+
+            # Patch get_settings AFTER reload so the module-level reference is replaced
+            mock_settings_obj = MagicMock()
+            mock_settings_obj.langsmith.tracing = True
+
+            with patch.object(tracing_module, 'get_settings', return_value=mock_settings_obj):
+                async def original_func(_self: object, _text: str) -> list[float]:
+                    return [0.1, 0.2]
+
+                decorated = tracing_module.traced_embedding(original_func)
+
+                # When tracing enabled + langsmith available, decorator returns a wrapper
+                assert decorated is not original_func
+
+    def test_wrapper_extracts_provider_metadata(self) -> None:
+        """Verify wrapper extracts ls_provider and ls_model_name from provider instance."""
+        import asyncio
+        import importlib
+        import sys
+
+        captured_kwargs: dict[str, object] = {}
+
+        def capture_traceable(**kwargs: object) -> object:
+            """Capture traceable() call kwargs and return a passthrough decorator."""
+            captured_kwargs.update(kwargs)
+
+            def decorator(f: object) -> object:
+                return f
+            return decorator
+
+        mock_langsmith = MagicMock()
+        mock_langsmith.traceable = capture_traceable
+
+        with patch.dict(sys.modules, {'langsmith': mock_langsmith}):
+            import app.embeddings.tracing as tracing_module
+
+            tracing_module._warned_missing_package = False
+            tracing_module = importlib.reload(tracing_module)
+
+            # Patch get_settings AFTER reload
+            mock_settings_obj = MagicMock()
+            mock_settings_obj.langsmith.tracing = True
+
+            with patch.object(tracing_module, 'get_settings', return_value=mock_settings_obj):
+                async def embed_query(_self: object, _text: str) -> list[float]:
+                    return [0.1, 0.2]
+
+                decorated = tracing_module.traced_embedding(embed_query)
+
+                # Create a mock provider instance with model and provider_name
+                mock_provider = MagicMock()
+                mock_provider.provider_name = 'openai'
+                mock_provider._model = 'text-embedding-3-small'
+
+                # Call the wrapper to trigger traceable() invocation with metadata
+                asyncio.get_event_loop().run_until_complete(
+                    decorated(mock_provider, 'test text'),
+                )
+
+        # Verify traceable was called with correct metadata
+        assert captured_kwargs.get('run_type') == 'embedding'
+        metadata = captured_kwargs.get('metadata')
+        assert isinstance(metadata, dict)
+        assert metadata['ls_provider'] == 'openai'
+        assert metadata['ls_model_name'] == 'text-embedding-3-small'
+
+
 class TestPropagateLangsmithSettings:
     """Tests for propagate_langsmith_settings() function."""
 

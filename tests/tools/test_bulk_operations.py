@@ -582,3 +582,108 @@ class TestBulkOperationsEdgeCases:
         # Verify results are in order
         indices = [r['index'] for r in result['results']]
         assert indices == list(range(10))
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestUpdateContextBatchContentType:
+    """Tests for content_type auto-correction in update_context_batch."""
+
+    @pytest.mark.asyncio
+    async def test_batch_update_text_only_corrects_content_type_atomic(self) -> None:
+        """Atomic: text-only update on entry with no images keeps content_type as text."""
+        store_result = await store_context(
+            thread_id='b6-atomic-thread',
+            source='user',
+            text='Original text entry',
+        )
+        context_id = store_result['context_id']
+
+        result = await update_context_batch(
+            updates=[{'context_id': context_id, 'text': 'Updated text content'}],
+            atomic=True,
+        )
+
+        assert result['success'] is True
+        assert result['succeeded'] == 1
+
+    @pytest.mark.asyncio
+    async def test_batch_update_text_only_corrects_content_type_non_atomic(self) -> None:
+        """Non-atomic: text-only update recalculates content_type correctly."""
+        store_result = await store_context(
+            thread_id='b6-nonatomic-thread',
+            source='user',
+            text='Original text entry for non-atomic',
+        )
+        context_id = store_result['context_id']
+
+        result = await update_context_batch(
+            updates=[{'context_id': context_id, 'text': 'Updated non-atomic text'}],
+            atomic=False,
+        )
+
+        assert result['success'] is True
+        assert result['succeeded'] == 1
+
+    @pytest.mark.asyncio
+    async def test_batch_update_images_explicit_empty_sets_text_type(self) -> None:
+        """Explicitly setting images=[] updates content_type to text."""
+        import base64
+
+        img_data = base64.b64encode(b'test image').decode('utf-8')
+
+        store_result = await store_context(
+            thread_id='b6-empty-img-thread',
+            source='user',
+            text='Entry with image',
+            images=[{'data': img_data, 'mime_type': 'image/png'}],
+        )
+        context_id = store_result['context_id']
+
+        result = await update_context_batch(
+            updates=[{'context_id': context_id, 'images': []}],
+            atomic=True,
+        )
+
+        assert result['success'] is True
+        item = result['results'][0]
+        assert item['updated_fields'] is not None
+        assert 'content_type' in item['updated_fields']
+
+    @pytest.mark.asyncio
+    async def test_batch_update_metadata_only_triggers_content_type_check(self) -> None:
+        """Metadata-only update with images=None triggers content_type auto-correction check."""
+        store_result = await store_context(
+            thread_id='b6-meta-only-thread',
+            source='user',
+            text='Entry for metadata-only update',
+        )
+        context_id = store_result['context_id']
+
+        result = await update_context_batch(
+            updates=[{'context_id': context_id, 'metadata': {'key': 'value'}}],
+            atomic=True,
+        )
+
+        assert result['success'] is True
+        assert result['succeeded'] == 1
+
+    @pytest.mark.asyncio
+    async def test_batch_update_non_atomic_partial_failure_continues(self) -> None:
+        """Non-atomic mode: one invalid entry fails, valid entries succeed."""
+        store_result = await store_context(
+            thread_id='b6-partial-thread',
+            source='user',
+            text='Valid entry for partial test',
+        )
+        valid_id = store_result['context_id']
+
+        result = await update_context_batch(
+            updates=[
+                {'context_id': valid_id, 'text': 'Updated valid entry'},
+                {'context_id': 999999, 'text': 'This entry does not exist'},
+            ],
+            atomic=False,
+        )
+
+        assert result['succeeded'] >= 1
+        assert result['failed'] >= 1

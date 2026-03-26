@@ -725,3 +725,70 @@ class TestMaintenanceOperations:
         stats = await get_statistics()
         # Should only have 2 unique tags after normalization
         assert stats['unique_tags'] == 2
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestDiscoveryToolEdgeCases:
+    """Edge case tests for list_threads and get_statistics discovery tools."""
+
+    @pytest.mark.asyncio
+    async def test_list_threads_structure(self) -> None:
+        """list_threads returns expected structure with threads list."""
+        result = await list_threads()
+        assert 'threads' in result
+        assert isinstance(result['threads'], list)
+
+    @pytest.mark.asyncio
+    async def test_get_statistics_structure(self) -> None:
+        """get_statistics returns expected structure with all required fields."""
+        result = await get_statistics()
+        assert 'total_entries' in result
+        assert 'total_threads' in result
+        assert isinstance(result['total_entries'], int)
+        assert isinstance(result['total_threads'], int)
+
+    @pytest.mark.asyncio
+    async def test_list_threads_after_store(self) -> None:
+        """list_threads includes thread after storing entry."""
+        unique_thread = 'discovery-edge-case-thread'
+        await store_context(
+            thread_id=unique_thread,
+            source='user',
+            text='Entry for discovery test',
+        )
+
+        result = await list_threads()
+        thread_ids = [t['thread_id'] for t in result['threads']]
+        assert unique_thread in thread_ids
+
+    @pytest.mark.asyncio
+    async def test_get_statistics_after_store_and_delete(self) -> None:
+        """Statistics counts update correctly after store and delete."""
+        store_result = await store_context(
+            thread_id='stats-edge-thread',
+            source='agent',
+            text='Entry for statistics edge case test',
+        )
+        context_id = store_result['context_id']
+
+        stats_before = await get_statistics()
+        before_count = stats_before['total_entries']
+
+        await delete_context(context_ids=[context_id])
+
+        stats_after = await get_statistics()
+        assert stats_after['total_entries'] == before_count - 1
+
+    @pytest.mark.asyncio
+    async def test_list_threads_reports_source_types(self) -> None:
+        """Thread list reports source_types count per thread."""
+        thread_id = 'source-types-edge-thread'
+        await store_context(thread_id=thread_id, source='user', text='User message')
+        await store_context(thread_id=thread_id, source='agent', text='Agent response')
+
+        result = await list_threads()
+        thread_data = next(
+            (t for t in result['threads'] if t['thread_id'] == thread_id), None,
+        )
+        assert thread_data is not None
+        assert thread_data['source_types'] == 2

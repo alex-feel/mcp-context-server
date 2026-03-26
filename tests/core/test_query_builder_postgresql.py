@@ -456,6 +456,79 @@ class TestMetadataQueryBuilderPostgresql:
         assert '>=' in where_clause
         assert params == [3.5]
 
+    def test_operator_array_contains_string_case_insensitive_postgresql(self) -> None:
+        """Test array_contains with string value, case-insensitive (default)."""
+
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='python',
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata->'technologies') = 'array'" in where_clause
+        assert "jsonb_array_elements_text(metadata->'technologies')" in where_clause
+        assert 'LOWER(elem) = LOWER($1)' in where_clause
+        assert 'CASE WHEN' in where_clause
+        assert 'ELSE FALSE END' in where_clause
+        assert params == ['python']
+
+    def test_operator_array_contains_string_case_sensitive_postgresql(self) -> None:
+        """Test array_contains with string value, case-sensitive."""
+        import json
+
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='technologies',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='python',
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata->'technologies') = 'array'" in where_clause
+        assert '@> $1::jsonb' in where_clause
+        assert 'CASE WHEN' in where_clause
+        assert 'ELSE FALSE END' in where_clause
+        assert params == [json.dumps('python')]
+
+    def test_operator_array_contains_nested_path_postgresql(self) -> None:
+        """Test array_contains with nested JSON path using #> and array notation."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='user.preferences.tags',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value='favorite',
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata#>'{user,preferences,tags}') = 'array'" in where_clause
+        assert "jsonb_array_elements_text(metadata#>'{user,preferences,tags}')" in where_clause
+        assert 'LOWER(elem) = LOWER($1)' in where_clause
+        assert params == ['favorite']
+
+    def test_operator_array_contains_integer_postgresql(self) -> None:
+        """Test array_contains with integer value uses @> operator with json.dumps."""
+        import json
+
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        filter_spec = MetadataFilter(
+            key='scores',
+            operator=MetadataOperator.ARRAY_CONTAINS,
+            value=42,
+            case_sensitive=True,
+        )
+        builder.add_advanced_filter(filter_spec)
+
+        where_clause, params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata->'scores') = 'array'" in where_clause
+        assert '@> $1::jsonb' in where_clause
+        assert params == [json.dumps(42)]
+
 
 class TestQueryBuilderBackendDetection:
     """Test backend type detection in query builder."""
