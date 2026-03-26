@@ -412,6 +412,58 @@ class TestStatisticsRepository:
         assert result['summary_count'] == 1
         assert result['coverage_percentage'] == pytest.approx(33.33, rel=0.01)
 
+    @pytest.mark.asyncio
+    async def test_get_database_statistics_content_type_counts(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Statistics correctly count text vs multimodal content types."""
+        def _insert_data(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('ct-thread', 'user', 'text', 'Text entry')",
+            )
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('ct-thread', 'user', 'multimodal', 'Multimodal entry')",
+            )
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('ct-thread', 'agent', 'text', 'Another text entry')",
+            )
+
+        await stats_test_db.execute_write(_insert_data)
+
+        result = await stats_repo.get_database_statistics()
+        assert result['total_entries'] == 3
+
+    @pytest.mark.asyncio
+    async def test_get_database_statistics_after_deletion(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Statistics update correctly after deleting entries."""
+        repos = RepositoryContainer(stats_test_db)
+
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='del-stats-thread',
+            source='user',
+            content_type='text',
+            text_content='Entry to be deleted',
+        )
+        await repos.tags.store_tags(ctx_id, ['deleteme'])
+
+        stats_before = await stats_repo.get_database_statistics()
+        assert stats_before['total_entries'] >= 1
+
+        await repos.context.delete_by_ids([ctx_id])
+
+        stats_after = await stats_repo.get_database_statistics()
+        assert stats_after['total_entries'] == stats_before['total_entries'] - 1
+
 
 class TestRepositoryContainerStatistics:
     """Test statistics through the RepositoryContainer."""
@@ -471,6 +523,36 @@ class TestRepositoryContainerStatistics:
 
         assert tag_stats['unique_tags'] == 3
         assert tag_stats['total_tag_uses'] == 4
+
+
+class TestThreadListDetails:
+    """Test detailed thread list information."""
+
+    @pytest.mark.asyncio
+    async def test_get_thread_list_multimodal_count(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Thread list reports multimodal entry count per thread."""
+        def _insert_data(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('mm-thread', 'user', 'text', 'Text only')",
+            )
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('mm-thread', 'user', 'multimodal', 'With images')",
+            )
+
+        await stats_test_db.execute_write(_insert_data)
+
+        threads = await stats_repo.get_thread_list()
+        assert len(threads) == 1
+        thread = threads[0]
+        assert thread['multimodal_count'] == 1
+        assert thread['entry_count'] == 2
 
 
 class TestStatisticsBackendField:
@@ -577,6 +659,32 @@ class TestStatisticsBackendField:
         for tag_entry in result['top_tags']:
             assert 'tag' in tag_entry
             assert 'count' in tag_entry
+
+    @pytest.mark.asyncio
+    async def test_get_database_statistics_multiple_threads_ordering(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """most_active_threads ordered by count descending."""
+        def _insert_data(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            for i in range(3):
+                cursor.execute(
+                    "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                    f"VALUES ('busy-thread', 'user', 'text', 'Entry {i}')",
+                )
+            cursor.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('quiet-thread', 'user', 'text', 'Single entry')",
+            )
+
+        await stats_test_db.execute_write(_insert_data)
+
+        result = await stats_repo.get_database_statistics()
+        active = result['most_active_threads']
+        assert len(active) >= 2
+        assert active[0]['count'] >= active[1]['count']
 
 
 class TestThreadStatisticsDetails:

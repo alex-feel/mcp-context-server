@@ -387,6 +387,141 @@ class TestContextRepositoryDeduplication:
 
         assert ctx_id1 != ctx_id2  # Different thread = different entry
 
+    @pytest.mark.asyncio
+    async def test_deduplication_updates_metadata_coalesce(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Deduplication COALESCE: new metadata replaces existing."""
+        ctx_id1, was_updated1 = await repos.context.store_with_deduplication(
+            thread_id='coalesce-thread',
+            source='user',
+            content_type='text',
+            text_content='Coalesce test content',
+            metadata=json.dumps({'key': 'original'}),
+        )
+        assert was_updated1 is False
+
+        ctx_id2, was_updated2 = await repos.context.store_with_deduplication(
+            thread_id='coalesce-thread',
+            source='user',
+            content_type='text',
+            text_content='Coalesce test content',
+            metadata=json.dumps({'key': 'updated'}),
+        )
+        assert was_updated2 is True
+        assert ctx_id2 == ctx_id1
+
+        rows, _ = await context_repo.search_contexts(thread_id='coalesce-thread')
+        meta = json.loads(rows[0]['metadata'])
+        assert meta['key'] == 'updated'
+
+    @pytest.mark.asyncio
+    async def test_deduplication_preserves_metadata_on_none(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Deduplication COALESCE(NULL, existing) preserves existing metadata."""
+        ctx_id1, _ = await repos.context.store_with_deduplication(
+            thread_id='preserve-meta-thread',
+            source='user',
+            content_type='text',
+            text_content='Preserve meta content',
+            metadata=json.dumps({'preserved': 'yes'}),
+        )
+
+        ctx_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='preserve-meta-thread',
+            source='user',
+            content_type='text',
+            text_content='Preserve meta content',
+            metadata=None,
+        )
+        assert was_updated is True
+        assert ctx_id2 == ctx_id1
+
+        rows, _ = await context_repo.search_contexts(thread_id='preserve-meta-thread')
+        meta = json.loads(rows[0]['metadata'])
+        assert meta['preserved'] == 'yes'
+
+    @pytest.mark.asyncio
+    async def test_deduplication_summary_coalesce(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Deduplication COALESCE preserves existing summary when new is None."""
+        ctx_id1, _ = await repos.context.store_with_deduplication(
+            thread_id='summary-coalesce-thread',
+            source='user',
+            content_type='text',
+            text_content='Summary coalesce test',
+            summary='Existing summary',
+        )
+
+        ctx_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='summary-coalesce-thread',
+            source='user',
+            content_type='text',
+            text_content='Summary coalesce test',
+            summary=None,
+        )
+        assert was_updated is True
+        assert ctx_id2 == ctx_id1
+
+        result = await context_repo.get_summary(ctx_id1)
+        assert result == 'Existing summary'
+
+    @pytest.mark.asyncio
+    async def test_deduplication_content_hash_path(
+        self, repos: RepositoryContainer,
+    ) -> None:
+        """Deduplication uses content_hash for fast comparison."""
+        from app.repositories.context_repository import compute_content_hash
+
+        text = 'Hash-based dedup test content'
+        expected_hash = compute_content_hash(text)
+        assert expected_hash is not None
+
+        ctx_id1, _ = await repos.context.store_with_deduplication(
+            thread_id='hash-dedup-thread',
+            source='user',
+            content_type='text',
+            text_content=text,
+        )
+
+        ctx_id2, was_updated = await repos.context.store_with_deduplication(
+            thread_id='hash-dedup-thread',
+            source='user',
+            content_type='text',
+            text_content=text,
+        )
+        assert was_updated is True
+        assert ctx_id2 == ctx_id1
+
+    @pytest.mark.asyncio
+    async def test_deduplication_empty_summary_normalized(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Deduplication normalizes empty/whitespace summary to None."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='norm-summary-thread',
+            source='user',
+            content_type='text',
+            text_content='Normalized summary test',
+            summary='   ',
+        )
+        result = await context_repo.get_summary(ctx_id)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_deduplication_check_empty_database(
+        self, context_repo: ContextRepository,
+    ) -> None:
+        """check_latest_is_duplicate on empty DB returns None."""
+        result = await context_repo.check_latest_is_duplicate(
+            thread_id='empty-thread',
+            source='user',
+            text_content='Some content',
+        )
+        assert result is None
+
 
 class TestContextRepositoryDelete:
     """Test delete operations in ContextRepository."""
@@ -616,3 +751,272 @@ class TestContextRepositoryUpdate:
 
         new_type = await repos.context.get_content_type(ctx_id)
         assert new_type == 'multimodal'
+
+
+class TestContextRepositoryGetSummary:
+    """Test get_summary method of ContextRepository."""
+
+    @pytest.mark.asyncio
+    async def test_get_summary_existing_entry(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """get_summary returns summary string for entry with summary."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='summary-thread',
+            source='user',
+            content_type='text',
+            text_content='Entry with summary',
+            summary='This is a test summary.',
+        )
+        result = await context_repo.get_summary(ctx_id)
+        assert result == 'This is a test summary.'
+
+    @pytest.mark.asyncio
+    async def test_get_summary_no_summary(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """get_summary returns None for entry without summary."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='no-summary-thread',
+            source='user',
+            content_type='text',
+            text_content='Entry without summary',
+        )
+        result = await context_repo.get_summary(ctx_id)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_summary_empty_string_normalized_to_none(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """get_summary normalizes empty/whitespace-only summary to None."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='empty-summary-thread',
+            source='user',
+            content_type='text',
+            text_content='Entry with empty summary',
+            summary='   ',
+        )
+        result = await context_repo.get_summary(ctx_id)
+        assert result is None
+
+
+class TestContextRepositoryCheckDuplicate:
+    """Test check_latest_is_duplicate method of ContextRepository."""
+
+    @pytest.mark.asyncio
+    async def test_check_latest_is_duplicate_match(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Returns context_id when latest entry has identical content."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='dup-check-thread',
+            source='user',
+            content_type='text',
+            text_content='Duplicate content check',
+        )
+        result = await context_repo.check_latest_is_duplicate(
+            thread_id='dup-check-thread',
+            source='user',
+            text_content='Duplicate content check',
+        )
+        assert result == ctx_id
+
+    @pytest.mark.asyncio
+    async def test_check_latest_is_duplicate_no_match(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Returns None when latest entry has different content."""
+        await repos.context.store_with_deduplication(
+            thread_id='no-dup-thread',
+            source='user',
+            content_type='text',
+            text_content='Original content',
+        )
+        result = await context_repo.check_latest_is_duplicate(
+            thread_id='no-dup-thread',
+            source='user',
+            text_content='Different content',
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_check_latest_is_duplicate_different_thread(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Returns None when content matches but thread_id differs."""
+        await repos.context.store_with_deduplication(
+            thread_id='thread-a',
+            source='user',
+            content_type='text',
+            text_content='Same content different thread',
+        )
+        result = await context_repo.check_latest_is_duplicate(
+            thread_id='thread-b',
+            source='user',
+            text_content='Same content different thread',
+        )
+        assert result is None
+
+
+class TestContextRepositoryPatchMetadata:
+    """Test patch_metadata method of ContextRepository (RFC 7396)."""
+
+    @pytest.mark.asyncio
+    async def test_patch_metadata_adds_new_key(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Patching adds a new key to existing metadata."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='patch-add-thread',
+            source='user',
+            content_type='text',
+            text_content='Patch test entry',
+            metadata=json.dumps({'existing': 'value'}),
+        )
+        success, fields = await context_repo.patch_metadata(ctx_id, {'new_key': 'new_value'})
+        assert success is True
+        assert 'metadata' in fields
+
+        rows, _ = await context_repo.search_contexts(thread_id='patch-add-thread')
+        assert len(rows) == 1
+        meta = json.loads(rows[0]['metadata'])
+        assert meta['existing'] == 'value'
+        assert meta['new_key'] == 'new_value'
+
+    @pytest.mark.asyncio
+    async def test_patch_metadata_updates_existing_key(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Patching updates an existing key's value."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='patch-update-thread',
+            source='user',
+            content_type='text',
+            text_content='Patch update test',
+            metadata=json.dumps({'status': 'pending'}),
+        )
+        success, fields = await context_repo.patch_metadata(ctx_id, {'status': 'done'})
+        assert success is True
+
+        rows, _ = await context_repo.search_contexts(thread_id='patch-update-thread')
+        meta = json.loads(rows[0]['metadata'])
+        assert meta['status'] == 'done'
+
+    @pytest.mark.asyncio
+    async def test_patch_metadata_deletes_key_with_null(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Patching with null value deletes the key (RFC 7396)."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='patch-delete-thread',
+            source='user',
+            content_type='text',
+            text_content='Patch delete test',
+            metadata=json.dumps({'keep': 'yes', 'remove': 'me'}),
+        )
+        success, _ = await context_repo.patch_metadata(ctx_id, {'remove': None})
+        assert success is True
+
+        rows, _ = await context_repo.search_contexts(thread_id='patch-delete-thread')
+        meta = json.loads(rows[0]['metadata'])
+        assert 'keep' in meta
+        assert 'remove' not in meta
+
+    @pytest.mark.asyncio
+    async def test_patch_metadata_nonexistent_entry(
+        self, context_repo: ContextRepository,
+    ) -> None:
+        """Patching nonexistent entry returns (False, [])."""
+        success, fields = await context_repo.patch_metadata(999999, {'key': 'value'})
+        assert success is False
+        assert fields == []
+
+    @pytest.mark.asyncio
+    async def test_patch_metadata_empty_patch(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Empty patch is a no-op for data but updates timestamp."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='patch-empty-thread',
+            source='user',
+            content_type='text',
+            text_content='Patch empty test',
+            metadata=json.dumps({'unchanged': 'value'}),
+        )
+        success, fields = await context_repo.patch_metadata(ctx_id, {})
+        assert success is True
+        assert 'metadata' in fields
+
+        rows, _ = await context_repo.search_contexts(thread_id='patch-empty-thread')
+        meta = json.loads(rows[0]['metadata'])
+        assert meta['unchanged'] == 'value'
+
+
+class TestContextRepositoryBatchDelete:
+    """Test delete_contexts_batch method of ContextRepository."""
+
+    @pytest.mark.asyncio
+    async def test_delete_contexts_batch(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Batch delete removes multiple entries."""
+        ids = []
+        for i in range(3):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='batch-del-thread',
+                source='user',
+                content_type='text',
+                text_content=f'Batch delete entry {i}',
+            )
+            ids.append(ctx_id)
+
+        deleted_count, criteria = await context_repo.delete_contexts_batch(context_ids=ids)
+        assert deleted_count == 3
+
+        rows = await context_repo.get_by_ids(ids)
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_delete_contexts_batch_partial_ids(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Batch delete with mix of existing and nonexistent IDs."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='partial-del-thread',
+            source='user',
+            content_type='text',
+            text_content='Entry to delete partially',
+        )
+        deleted_count, _ = await context_repo.delete_contexts_batch(
+            context_ids=[ctx_id, 999998, 999999],
+        )
+        assert deleted_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_contexts_batch_empty_list(
+        self, context_repo: ContextRepository,
+    ) -> None:
+        """Batch delete with empty list returns 0."""
+        deleted_count, _ = await context_repo.delete_contexts_batch(context_ids=[])
+        assert deleted_count == 0
+
+
+class TestComputeContentHash:
+    """Test the compute_content_hash utility function."""
+
+    def test_compute_content_hash_consistency(self) -> None:
+        """Same content produces same hash."""
+        from app.repositories.context_repository import compute_content_hash
+
+        hash1 = compute_content_hash('test content')
+        hash2 = compute_content_hash('test content')
+        assert hash1 == hash2
+
+    def test_compute_content_hash_different_content(self) -> None:
+        """Different content produces different hashes."""
+        from app.repositories.context_repository import compute_content_hash
+
+        hash1 = compute_content_hash('content A')
+        hash2 = compute_content_hash('content B')
+        assert hash1 != hash2

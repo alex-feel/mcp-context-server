@@ -306,12 +306,12 @@ class TestUpdateContext:
             assert 'invalid base64' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
-    async def test_missing_image_fields(self, mock_context, mock_repositories):
-        """Test error when image is missing required fields."""
+    async def test_missing_image_data_field(self, mock_context, mock_repositories):
+        """Test error when image is missing required data field."""
         images = [
             {
-                'data': 'aGVsbG8=',
-                # Missing mime_type
+                'mime_type': 'image/png',
+                # Missing data field
             },
         ]
 
@@ -325,7 +325,7 @@ class TestUpdateContext:
                     images=images,
                     ctx=mock_context,
                 )
-            assert 'must have "data" and "mime_type"' in str(exc_info.value)
+            assert 'must have "data" field' in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_image_size_limit_exceeded(self, mock_context, mock_repositories):
@@ -545,6 +545,142 @@ class TestUpdateContext:
             assert result['success'] is True
             assert result['context_id'] == 789
             assert 'text_content' in result['updated_fields']
+
+    @pytest.mark.asyncio
+    async def test_update_context_image_without_mime_type_defaults_png(
+        self, mock_context, mock_repositories,
+    ):
+        """Image without mime_type defaults to 'image/png' in update_context."""
+        import base64
+
+        img_data = base64.b64encode(b'test image data').decode('utf-8')
+        images = [{'data': img_data}]  # No mime_type key
+
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+        ):
+            result = await update_context(
+                context_id=123,
+                text=None,
+                metadata=None,
+                tags=None,
+                images=images,
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        # Verify images were stored (replace_images_for_context was called)
+        mock_repositories.images.replace_images_for_context.assert_called_once()
+        stored_images = mock_repositories.images.replace_images_for_context.call_args[0][1]
+        assert stored_images[0]['mime_type'] == 'image/png'
+
+    @pytest.mark.asyncio
+    async def test_update_context_image_with_explicit_mime_type(
+        self, mock_context, mock_repositories,
+    ):
+        """Image with explicit mime_type preserves the provided value."""
+        import base64
+
+        img_data = base64.b64encode(b'test jpeg data').decode('utf-8')
+        images = [{'data': img_data, 'mime_type': 'image/jpeg'}]
+
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+        ):
+            result = await update_context(
+                context_id=123,
+                text=None,
+                metadata=None,
+                tags=None,
+                images=images,
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        stored_images = mock_repositories.images.replace_images_for_context.call_args[0][1]
+        assert stored_images[0]['mime_type'] == 'image/jpeg'
+
+    @pytest.mark.asyncio
+    async def test_update_context_no_embedding_task_when_provider_none(
+        self, mock_context, mock_repositories,
+    ):
+        """No embedding generation when embedding provider is None."""
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.generate_embeddings_with_timeout') as mock_embed,
+        ):
+            result = await update_context(
+                context_id=123,
+                text='Updated text',
+                metadata=None,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        mock_embed.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_context_embedding_task_when_provider_exists(
+        self, mock_context, mock_repositories,
+    ):
+        """Embedding task IS appended when embedding provider exists."""
+        mock_provider = AsyncMock()
+        mock_embeddings_result = [{'chunk_index': 0, 'text': 'Updated text', 'embedding': [0.1] * 1024}]
+
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch(
+                'app.tools.context.generate_embeddings_with_timeout',
+                new_callable=AsyncMock,
+                return_value=mock_embeddings_result,
+            ),
+        ):
+            result = await update_context(
+                context_id=123,
+                text='Updated text',
+                metadata=None,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        assert 'embedding' in result['updated_fields']
+
+    @pytest.mark.asyncio
+    async def test_update_context_text_change_no_provider_skips_generation(
+        self, mock_context, mock_repositories,
+    ):
+        """Text change with no providers skips both embedding and summary generation."""
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.generate_embeddings_with_timeout') as mock_embed,
+            patch('app.tools.context.generate_summary_with_timeout') as mock_summary,
+        ):
+            result = await update_context(
+                context_id=123,
+                text='New text without providers',
+                metadata=None,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        mock_embed.assert_not_called()
+        mock_summary.assert_not_called()
 
 
 class TestMetadataPatchIntegration:

@@ -53,6 +53,9 @@ def _create_mock_repositories() -> MagicMock:
     repos.images = MagicMock()
     repos.images.store_images = AsyncMock()
     repos.images.replace_images_for_context = AsyncMock()
+    repos.images.count_images_for_context = AsyncMock(return_value=0)
+
+    repos.context.get_content_type = AsyncMock(return_value='text')
 
     repos.embeddings = MagicMock()
     repos.embeddings.exists = AsyncMock(return_value=False)

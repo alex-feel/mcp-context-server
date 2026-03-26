@@ -11,6 +11,7 @@ This module contains all search-related tools:
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Coroutine
 from datetime import UTC
 from datetime import datetime
@@ -1000,6 +1001,9 @@ def _prepare_hybrid_fts_query(
     Long queries (at or above threshold) use 'boolean' mode with
     OR keywords inserted between terms, enabling partial-match recall.
 
+    Quoted phrases (e.g., "error handling") are preserved as single
+    tokens to maintain phrase semantics in boolean mode.
+
     Args:
         query: Original search query.
         or_threshold: Minimum significant terms to switch to OR mode.
@@ -1009,18 +1013,22 @@ def _prepare_hybrid_fts_query(
         Tuple of (transformed_query, fts_mode) where fts_mode is
         either 'match' or 'boolean'.
     """
-    words = query.strip().split()
-    significant = [w for w in words if len(w) > 1]
+    tokens = re.findall(r'"[^"]*"|\S+', query.strip())
+    significant = [t for t in tokens if len(t.strip('"')) > 1]
 
     if len(significant) < or_threshold:
         return query, 'match'
 
     # Sanitize: replace hyphens to prevent websearch_to_tsquery NOT interpretation
+    # Preserve quoted phrases intact
     sanitized: list[str] = []
-    for word in significant:
-        clean = word.replace('-', ' ').strip()
-        if clean:
-            sanitized.append(clean)
+    for token in significant:
+        if token.startswith('"') and token.endswith('"'):
+            sanitized.append(token)
+        else:
+            clean = token.replace('-', ' ').strip()
+            if clean:
+                sanitized.append(clean)
 
     if not sanitized:
         return query, 'match'

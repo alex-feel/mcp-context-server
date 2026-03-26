@@ -456,3 +456,88 @@ class TestImageRepository:
             img_metadata = img.get('metadata')
             assert img_metadata is not None
             assert img_metadata.get('order') == str(i)
+
+    async def test_image_cascade_delete_on_context_removal(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """Images are cascade-deleted when their parent context entry is deleted."""
+        from app.repositories import RepositoryContainer
+
+        backend = async_db_initialized
+        repos = RepositoryContainer(backend)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='cascade-thread',
+            source='user',
+            content_type='multimodal',
+            text_content='Test cascade delete',
+        )
+
+        image_data = base64.b64encode(b'cascade test image').decode('utf-8')
+        await repos.images.store_images(context_id, [
+            {'data': image_data, 'mime_type': 'image/png'},
+        ])
+
+        count_before = await repos.images.count_images_for_context(context_id)
+        assert count_before == 1
+
+        deleted = await repos.context.delete_by_ids([context_id])
+        assert deleted == 1
+
+        count_after = await repos.images.count_images_for_context(context_id)
+        assert count_after == 0
+
+    async def test_store_images_large_binary_data(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """Store and retrieve a large image (1MB) without data loss."""
+        from app.repositories import RepositoryContainer
+
+        backend = async_db_initialized
+        repos = RepositoryContainer(backend)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='large-img-thread',
+            source='user',
+            content_type='multimodal',
+            text_content='Test large image',
+        )
+
+        large_data = bytes(range(256)) * 4096
+        large_b64 = base64.b64encode(large_data).decode('utf-8')
+
+        await repos.images.store_images(context_id, [
+            {'data': large_b64, 'mime_type': 'image/jpeg'},
+        ])
+
+        images = await repos.images.get_images_for_context(context_id)
+        assert len(images) == 1
+        img_data = images[0].get('data')
+        assert img_data is not None
+        retrieved_data = base64.b64decode(img_data)
+        assert retrieved_data == large_data
+
+    async def test_store_images_default_mime_type(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """Image stored without mime_type gets default 'image/png'."""
+        from app.repositories import RepositoryContainer
+
+        backend = async_db_initialized
+        repos = RepositoryContainer(backend)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='default-mime-thread',
+            source='user',
+            content_type='multimodal',
+            text_content='Test default mime type',
+        )
+
+        image_data = base64.b64encode(b'no mime type image').decode('utf-8')
+        await repos.images.store_images(context_id, [
+            {'data': image_data},
+        ])
+
+        images = await repos.images.get_images_for_context(context_id)
+        assert len(images) == 1
+        assert images[0].get('mime_type') == 'image/png'

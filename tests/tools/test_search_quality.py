@@ -137,3 +137,110 @@ class TestMaxSearchLimit:
         from app.tools.search import MAX_SEARCH_LIMIT
 
         assert MAX_SEARCH_LIMIT == 100
+
+
+# ============================================================
+# 3.5: _apply_reranking Edge Cases
+# ============================================================
+
+
+class TestApplyReranking:
+    """Tests for _apply_reranking function edge cases and exception fallback."""
+
+    @pytest.mark.asyncio
+    async def test_apply_reranking_provider_unavailable_returns_original(self) -> None:
+        """When reranking provider is None, original results returned."""
+        from unittest.mock import patch
+
+        from app.tools.search import _apply_reranking
+
+        results = [{'id': 1, 'text_content': 'test', 'scores': {}}]
+
+        with patch('app.tools.search.get_reranking_provider', return_value=None):
+            output = await _apply_reranking('query', results)
+
+        assert output == results
+
+    @pytest.mark.asyncio
+    async def test_apply_reranking_disabled_returns_original(self) -> None:
+        """When reranking is disabled in settings, original results returned."""
+        from unittest.mock import Mock
+        from unittest.mock import patch
+
+        from app.tools.search import _apply_reranking
+
+        mock_provider = Mock()
+        results = [{'id': 1, 'text_content': 'test', 'scores': {}}]
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=mock_provider),
+            patch('app.tools.search.settings') as mock_settings,
+        ):
+            mock_settings.reranking.enabled = False
+            output = await _apply_reranking('query', results)
+
+        assert output == results
+
+    @pytest.mark.asyncio
+    async def test_apply_reranking_exception_returns_original(self) -> None:
+        """When rerank() raises exception, original results returned gracefully."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import patch
+
+        from app.tools.search import _apply_reranking
+
+        mock_provider = AsyncMock()
+        mock_provider.rerank.side_effect = RuntimeError('Provider crashed')
+
+        results = [
+            {'id': 1, 'text_content': 'result one', 'scores': {'fts_score': 1.0}},
+            {'id': 2, 'text_content': 'result two', 'scores': {'fts_score': 0.5}},
+        ]
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=mock_provider),
+            patch('app.tools.search.settings') as mock_settings,
+        ):
+            mock_settings.reranking.enabled = True
+            output = await _apply_reranking('test query', results)
+
+        # Should return original results unchanged (fallback behavior)
+        assert len(output) == 2
+        assert output[0]['id'] == 1
+        assert output[1]['id'] == 2
+
+    @pytest.mark.asyncio
+    async def test_apply_reranking_empty_results(self) -> None:
+        """Empty results list returns empty list without calling provider."""
+        from unittest.mock import Mock
+        from unittest.mock import patch
+
+        from app.tools.search import _apply_reranking
+
+        mock_provider = Mock()
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=mock_provider),
+            patch('app.tools.search.settings') as mock_settings,
+        ):
+            mock_settings.reranking.enabled = True
+            output = await _apply_reranking('query', [])
+
+        assert output == []
+
+    @pytest.mark.asyncio
+    async def test_apply_reranking_with_limit_no_provider(self) -> None:
+        """When provider is None, limit is applied to original results."""
+        from unittest.mock import patch
+
+        from app.tools.search import _apply_reranking
+
+        results = [
+            {'id': i, 'text_content': f'result {i}', 'scores': {}}
+            for i in range(5)
+        ]
+
+        with patch('app.tools.search.get_reranking_provider', return_value=None):
+            output = await _apply_reranking('query', results, limit=3)
+
+        assert len(output) == 3

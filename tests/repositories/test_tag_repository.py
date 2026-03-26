@@ -342,3 +342,85 @@ class TestTagRepository:
         assert len(tags) == 4
         for tag in unicode_tags:
             assert tag.lower() in tags
+
+    async def test_store_tags_idempotent_duplicate_tags(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """Storing same tags twice appends duplicates (INSERT-only semantics)."""
+        from app.repositories import RepositoryContainer
+
+        backend = async_db_initialized
+        repos = RepositoryContainer(backend)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='dup-tag-thread',
+            source='user',
+            content_type='text',
+            text_content='Test entry for duplicate tags',
+        )
+
+        await repos.tags.store_tags(context_id, ['python', 'testing'])
+        await repos.tags.store_tags(context_id, ['python', 'testing'])
+
+        tags = await repos.tags.get_tags_for_context(context_id)
+        assert len(tags) == 4
+
+    async def test_tags_shared_across_multiple_contexts(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """Same tag can be associated with multiple context entries."""
+        from app.repositories import RepositoryContainer
+
+        backend = async_db_initialized
+        repos = RepositoryContainer(backend)
+
+        ctx_id1, _ = await repos.context.store_with_deduplication(
+            thread_id='m2m-thread',
+            source='user',
+            content_type='text',
+            text_content='First entry',
+        )
+        ctx_id2, _ = await repos.context.store_with_deduplication(
+            thread_id='m2m-thread',
+            source='agent',
+            content_type='text',
+            text_content='Second entry',
+        )
+
+        await repos.tags.store_tags(ctx_id1, ['shared-tag', 'unique-a'])
+        await repos.tags.store_tags(ctx_id2, ['shared-tag', 'unique-b'])
+
+        tags1 = await repos.tags.get_tags_for_context(ctx_id1)
+        tags2 = await repos.tags.get_tags_for_context(ctx_id2)
+
+        assert 'shared-tag' in tags1
+        assert 'shared-tag' in tags2
+        assert 'unique-a' in tags1
+        assert 'unique-a' not in tags2
+        assert 'unique-b' in tags2
+        assert 'unique-b' not in tags1
+
+    async def test_replace_tags_normalizes_to_lowercase(
+        self, async_db_initialized: StorageBackend,
+    ) -> None:
+        """replace_tags_for_context normalizes tags to lowercase."""
+        from app.repositories import RepositoryContainer
+
+        backend = async_db_initialized
+        repos = RepositoryContainer(backend)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='replace-norm-thread',
+            source='user',
+            content_type='text',
+            text_content='Test entry for replace normalization',
+        )
+
+        await repos.tags.store_tags(context_id, ['original'])
+        await repos.tags.replace_tags_for_context(context_id, ['UPPER', 'MiXeD', '  spaced  '])
+
+        tags = await repos.tags.get_tags_for_context(context_id)
+        assert 'original' not in tags
+        assert 'upper' in tags
+        assert 'mixed' in tags
+        assert 'spaced' in tags

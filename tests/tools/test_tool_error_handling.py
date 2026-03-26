@@ -249,13 +249,13 @@ class TestUpdateContextErrors:
 
     @pytest.mark.asyncio
     async def test_invalid_image_format(self, mock_server_dependencies):
-        """Test that invalid image format raises ToolError."""
+        """Test that invalid image data raises ToolError."""
         mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
 
-        with pytest.raises(ToolError, match='Each image must have "data" and "mime_type" fields'):
+        with pytest.raises(ToolError, match='Invalid base64 image data'):
             await update_context(
                 context_id=1,
-                images=[{'data': 'base64data'}],  # Missing mime_type
+                images=[{'data': 'not-valid-base64!!!'}],  # Invalid base64, mime_type defaults to 'image/png'
             )
 
     @pytest.mark.asyncio

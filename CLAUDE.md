@@ -35,7 +35,7 @@ Note: Integration test infrastructure currently exists only for SQLite. PostgreS
 FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
-   - Entry point with FastMCP instance, lifespan management, and main() function (~680 lines)
+   - Entry point with FastMCP instance, lifespan management, and main() function
    - Tool implementations in `app/tools/` organized by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic tool descriptions)
    - Dynamic tool registration via `register_tool()` from `app/tools/__init__.py`
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
@@ -113,7 +113,9 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `app/<name>.py` (module).
 
 **Non-trivial mappings**:
-- `tests/core/` → `app/*.py` root modules (models, errors, fusion, etc.)
+- `tests/core/` → `app/*.py` small utility root modules (models, errors, fusion, instructions, etc.)
+- `tests/server/` → `app/server.py` (dedicated directory; large/complex root modules get their own)
+- `tests/settings/` → `app/settings.py` (same reason)
 - `tests/integration/sqlite/` → real running server integration tests (no app mirror)
 
 **Shared infrastructure** stays at `tests/` root: `conftest.py`, `helpers.py`, `run_server.py`, `__init__.py`.
@@ -229,6 +231,26 @@ SQLite: B-tree via `json_extract` for scalar fields only. PostgreSQL: B-tree for
 ## Docker Deployment
 
 Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in `deploy/docker/`: SQLite, PostgreSQL, Supabase. Ollama sidecar in `deploy/docker/ollama/`. Both embedding and summary models are auto-pulled on first startup.
+
+### Docker Compose File Naming Convention
+
+**Naming formula:** `docker-compose.{storage}.{providers}[.local].yml`
+
+| Segment             | Values                                        | Description                                                                                                                                                               |
+|---------------------|-----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `{storage}`         | `sqlite`, `postgresql`, `postgresql-external` | Database backend                                                                                                                                                          |
+| `{providers}`       | `ollama`, `openai`, `ollama-openai`           | Embedding + summary provider combination. Single name when both use same provider; hyphenated `<embedding>-<summary>` when they differ.                                   |
+| `.local` (optional) | Present or absent                             | Present ONLY for provider combinations that have a published GHCR image, indicating the file builds that same configuration locally instead of pulling from the registry. |
+
+**Three image source categories:**
+
+| Category                        | Files                                 | `image:`                                      | `pull_policy` | `build:` block                                  |
+|---------------------------------|---------------------------------------|-----------------------------------------------|---------------|-------------------------------------------------|
+| GHCR pull                       | `*.ollama.yml`                        | `ghcr.io/alex-feel/mcp-context-server:latest` | `always`      | None                                            |
+| Local build (GHCR equivalent)   | `*.ollama.local.yml`                  | `mcp-context-server`                          | `build`       | Yes (no custom args, uses Dockerfile defaults)  |
+| Local build (provider-specific) | `*.openai.yml`, `*.ollama-openai.yml` | `mcp-context-server`                          | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
+
+**Extensibility rule:** When adding new provider combinations -- if a GHCR image is published for the combination, create both `*.{providers}.yml` (GHCR pull) and `*.{providers}.local.yml` (local build). If no GHCR image exists, create only `*.{providers}.yml` (local build, no `.local` variant needed).
 
 ### Docker-Compose Environment Variable Policy
 

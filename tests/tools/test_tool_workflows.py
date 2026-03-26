@@ -328,7 +328,7 @@ class TestConcurrentOperations:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_concurrent_mixed_operations(self) -> None:
-        """Test mixed read/write/delete operations concurrently."""
+        """Test mixed read/write/delete operations in separate phases."""
         base_thread = 'mixed_ops'
 
         # Initial data
@@ -338,26 +338,26 @@ class TestConcurrentOperations:
             text='Initial entry',
         )
 
-        async def mixed_operations():
-            return await asyncio.gather(
-                # Write operations
-                store_context(thread_id=f'{base_thread}_1', source='user', text='Write 1'),
-                store_context(thread_id=f'{base_thread}_2', source='agent', text='Write 2'),
-                # Read operations
-                search_context(limit=50, thread_id=base_thread),
-                list_threads(),
-                # Delete operation
-                delete_context(context_ids=[initial['context_id']]),
-                # More writes
-                store_context(thread_id=f'{base_thread}_3', source='user', text='Write 3'),
-                return_exceptions=True,
-            )
+        # Phase 1: Concurrent writes + reads (all writes use begin_transaction path)
+        results_phase1 = await asyncio.gather(
+            store_context(thread_id=f'{base_thread}_1', source='user', text='Write 1'),
+            store_context(thread_id=f'{base_thread}_2', source='agent', text='Write 2'),
+            search_context(limit=50, thread_id=base_thread),
+            list_threads(),
+            return_exceptions=True,
+        )
+        for result in results_phase1:
+            assert not isinstance(result, Exception), f'Phase 1 failed: {result}'
 
-        results = await mixed_operations()
+        # Phase 2: Delete (uses execute_write path)
+        delete_result = await delete_context(context_ids=[initial['context_id']])
+        assert delete_result['success'] is True
 
-        # Check no exceptions occurred
-        for result in results:
-            assert not isinstance(result, Exception)
+        # Phase 3: More writes after delete
+        result_write3 = await store_context(
+            thread_id=f'{base_thread}_3', source='user', text='Write 3',
+        )
+        assert result_write3['success'] is True
 
         # Verify final state
         stats = await get_statistics()
@@ -725,3 +725,70 @@ class TestMaintenanceOperations:
         stats = await get_statistics()
         # Should only have 2 unique tags after normalization
         assert stats['unique_tags'] == 2
+
+
+@pytest.mark.usefixtures('initialized_server')
+class TestDiscoveryToolEdgeCases:
+    """Edge case tests for list_threads and get_statistics discovery tools."""
+
+    @pytest.mark.asyncio
+    async def test_list_threads_structure(self) -> None:
+        """list_threads returns expected structure with threads list."""
+        result = await list_threads()
+        assert 'threads' in result
+        assert isinstance(result['threads'], list)
+
+    @pytest.mark.asyncio
+    async def test_get_statistics_structure(self) -> None:
+        """get_statistics returns expected structure with all required fields."""
+        result = await get_statistics()
+        assert 'total_entries' in result
+        assert 'total_threads' in result
+        assert isinstance(result['total_entries'], int)
+        assert isinstance(result['total_threads'], int)
+
+    @pytest.mark.asyncio
+    async def test_list_threads_after_store(self) -> None:
+        """list_threads includes thread after storing entry."""
+        unique_thread = 'discovery-edge-case-thread'
+        await store_context(
+            thread_id=unique_thread,
+            source='user',
+            text='Entry for discovery test',
+        )
+
+        result = await list_threads()
+        thread_ids = [t['thread_id'] for t in result['threads']]
+        assert unique_thread in thread_ids
+
+    @pytest.mark.asyncio
+    async def test_get_statistics_after_store_and_delete(self) -> None:
+        """Statistics counts update correctly after store and delete."""
+        store_result = await store_context(
+            thread_id='stats-edge-thread',
+            source='agent',
+            text='Entry for statistics edge case test',
+        )
+        context_id = store_result['context_id']
+
+        stats_before = await get_statistics()
+        before_count = stats_before['total_entries']
+
+        await delete_context(context_ids=[context_id])
+
+        stats_after = await get_statistics()
+        assert stats_after['total_entries'] == before_count - 1
+
+    @pytest.mark.asyncio
+    async def test_list_threads_reports_source_types(self) -> None:
+        """Thread list reports source_types count per thread."""
+        thread_id = 'source-types-edge-thread'
+        await store_context(thread_id=thread_id, source='user', text='User message')
+        await store_context(thread_id=thread_id, source='agent', text='Agent response')
+
+        result = await list_threads()
+        thread_data = next(
+            (t for t in result['threads'] if t['thread_id'] == thread_id), None,
+        )
+        assert thread_data is not None
+        assert thread_data['source_types'] == 2

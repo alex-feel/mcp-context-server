@@ -52,6 +52,7 @@ services:
     restart: on-failure:5
 
   ollama:
+    # Ollama sidecar always builds locally (no published image)
     build:
       context: ../..
       dockerfile: deploy/docker/ollama/Dockerfile

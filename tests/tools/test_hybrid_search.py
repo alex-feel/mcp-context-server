@@ -693,3 +693,40 @@ class TestAdaptiveFtsMode:
         )
         assert mode == 'boolean'
         assert ' or ' in query
+
+    def test_quoted_phrase_preserved_in_boolean_mode(self) -> None:
+        """Quoted phrases are preserved as single tokens in OR mode."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='"error handling" timeout async patterns',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert '"error handling"' in query
+
+    def test_multiple_quoted_phrases_preserved(self) -> None:
+        """Multiple quoted phrases are each preserved intact."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='"error handling" "async await" timeout patterns',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert '"error handling"' in query
+        assert '"async await"' in query
+
+    def test_quoted_phrase_not_hyphen_sanitized(self) -> None:
+        """Quoted phrases containing hyphens are NOT sanitized."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='"error-handling" timeout async patterns',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        assert '"error-handling"' in query

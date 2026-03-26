@@ -824,8 +824,10 @@ async def update_context(
         if images is not None and len(images) > 0:
             total_size = 0.0
             for img in images:
-                if 'data' not in img or 'mime_type' not in img:
-                    raise ToolError('Each image must have "data" and "mime_type" fields')
+                if 'data' not in img:
+                    raise ToolError('Each image must have "data" field')
+                if 'mime_type' not in img:
+                    img['mime_type'] = 'image/png'
 
                 # Check individual image size
                 try:
@@ -868,8 +870,9 @@ async def update_context(
             tasks: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
             task_names: list[str] = []
 
-            tasks.append(generate_embeddings_with_timeout(text))
-            task_names.append('embedding')
+            if get_embedding_provider() is not None:
+                tasks.append(generate_embeddings_with_timeout(text))
+                task_names.append('embedding')
 
             if get_summary_provider() is not None:
                 min_content_length = settings.summary.min_content_length
