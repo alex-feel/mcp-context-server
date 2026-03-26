@@ -25,13 +25,18 @@ def _make_summary_settings(
     openai_api_key: str | None = None,
     anthropic_api_key: str | None = None,
 ) -> SummarySettings:
-    """Create SummarySettings with defaults for testing.
+    """Create SummarySettings with controlled defaults for testing.
+
+    Constructs a SummarySettings instance in an isolated environment.
+    API keys from the real environment are excluded unless explicitly
+    provided, ensuring tests are deterministic regardless of the host
+    environment.
 
     Args:
-        openai_api_key: If provided, sets OPENAI_API_KEY in the environment
-            so SummarySettings picks it up as a SecretStr field.
-        anthropic_api_key: If provided, sets ANTHROPIC_API_KEY in the environment
-            so SummarySettings picks it up as a SecretStr field.
+        openai_api_key: OpenAI API key value for SummarySettings.
+            When None, OPENAI_API_KEY is removed from the test environment.
+        anthropic_api_key: Anthropic API key value for SummarySettings.
+            When None, ANTHROPIC_API_KEY is removed from the test environment.
 
     Returns:
         SummarySettings instance with test defaults.
@@ -44,7 +49,18 @@ def _make_summary_settings(
         env['OPENAI_API_KEY'] = openai_api_key
     if anthropic_api_key is not None:
         env['ANTHROPIC_API_KEY'] = anthropic_api_key
-    with patch.dict(os.environ, env, clear=False):
+
+    # Build a clean environment: start from real env, overlay test values,
+    # then remove API keys that were not explicitly provided.
+    # This prevents real API keys from leaking into SummarySettings
+    # via Pydantic's BaseSettings env var resolution.
+    clean_env = {**os.environ, **env}
+    if openai_api_key is None:
+        clean_env.pop('OPENAI_API_KEY', None)
+    if anthropic_api_key is None:
+        clean_env.pop('ANTHROPIC_API_KEY', None)
+
+    with patch.dict(os.environ, clean_env, clear=True):
         return SummarySettings()
 
 

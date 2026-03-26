@@ -8902,6 +8902,103 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_store_context_dedup_interleaving_check(self) -> bool:
+        """Verify dedup is suppressed when opposite-source entries interleave.
+
+        Stores user "Proceed", then agent "Working...", then user "Proceed" again.
+        The second user "Proceed" must create a NEW entry (not update the first one)
+        to preserve chronological ordering.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_context_dedup_interleaving_check'
+        assert self.client is not None
+        try:
+            interleave_thread = f'{self.test_thread_id}_interleave'
+
+            # 1. Store user "Proceed"
+            result1 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': interleave_thread,
+                    'source': 'user',
+                    'text': 'Proceed',
+                },
+            )
+            data1 = self._extract_content(result1)
+            if not data1.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'First store failed: {data1}'),
+                )
+                return False
+            first_user_id = data1['context_id']
+
+            # 2. Store agent "Working..."
+            result2 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': interleave_thread,
+                    'source': 'agent',
+                    'text': 'Working...',
+                },
+            )
+            data2 = self._extract_content(result2)
+            if not data2.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Agent store failed: {data2}'),
+                )
+                return False
+
+            # 3. Store user "Proceed" again (should be NEW entry, not dedup)
+            result3 = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': interleave_thread,
+                    'source': 'user',
+                    'text': 'Proceed',
+                },
+            )
+            data3 = self._extract_content(result3)
+            if not data3.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Second user store failed: {data3}'),
+                )
+                return False
+            second_user_id = data3['context_id']
+
+            # 4. Verify the two user entries have different IDs
+            if second_user_id == first_user_id:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Interleaving check failed: both user entries have same ID {first_user_id}'),
+                )
+                return False
+
+            # 5. Verify 3 distinct entries exist in chronological order
+            search_result = await self.client.call_tool(
+                'search_context',
+                {
+                    'thread_id': interleave_thread,
+                    'limit': 100,
+                },
+            )
+            search_data = self._extract_content(search_result)
+            results = search_data.get('results', [])
+            if len(results) != 3:
+                self.test_results.append(
+                    (test_name, False,
+                     f'Expected 3 entries, got {len(results)}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True,
+                f'Interleaving check works: user IDs {first_user_id} != {second_user_id}'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_update_context_batch_non_atomic_generation_failure(self) -> bool:
         """Verify non-atomic batch update handles partial failures gracefully.
 
@@ -9164,6 +9261,7 @@ class MCPServerIntegrationTest:
             ('Hybrid RRF Score Ordering', self.test_hybrid_search_rrf_scores_ordering),
             ('Explain Query False No Stats', self.test_search_context_explain_query_false_no_stats),
             ('Dedup Preserves Tags', self.test_store_context_dedup_preserves_tags_when_none),
+            ('Dedup Interleaving Check', self.test_store_context_dedup_interleaving_check),
             ('Batch Non-Atomic Partial', self.test_update_context_batch_non_atomic_generation_failure),
             ('Health Endpoint B8', self.test_health_endpoint_returns_ok),
         ]

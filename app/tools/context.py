@@ -301,6 +301,10 @@ async def store_context(
     - tags: REPLACED with new list if provided; preserved if tags=None
     - images: REPLACED with new list if provided; preserved if images=None
 
+    Deduplication is suppressed when opposite-source entries (e.g., agent entries
+    for a user store) exist after the candidate duplicate. This preserves
+    chronological ordering for repeated identical messages in conversations.
+
     Notes:
         - Tags are normalized to lowercase
         - Use indexed metadata fields for faster filtering:
