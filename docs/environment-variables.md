@@ -123,6 +123,9 @@ For detailed embedding setup and provider selection, see the [Semantic Search Gu
 | `SUMMARY_OLLAMA_TRUNCATE`         | boolean | `false`              |             | Control text truncation when exceeding summary context length. `false`: returns error. `true`: silently truncates input (summary from incomplete text)                                           |
 | `SUMMARY_OPENAI_REASONING_EFFORT` | string  | `low`                |             | Reasoning effort for OpenAI reasoning models. Valid: gpt-5: low/medium/high; gpt-5.1+: none/low/medium/high/xhigh. Default `low` is universally valid. Set to empty to omit                      |
 | `SUMMARY_ANTHROPIC_EFFORT`        | string  | _(none)_             |             | Effort level for Anthropic Claude models. Valid: `max`, `high`, `medium`, `low`. Controls adaptive thinking. Default: not sent (required for models like Haiku 4.5 that do not support it)       |
+| `OPENAI_API_KEY`                  | secret  | _(none)_             |             | OpenAI API key (shared with embedding provider when both use OpenAI)                                                                                                                             |
+| `OPENAI_API_BASE`                 | string  | _(none)_             |             | Custom base URL for OpenAI-compatible APIs (shared with embedding provider when both use OpenAI)                                                                                                 |
+| `ANTHROPIC_API_KEY`               | secret  | _(none)_             |             | Anthropic API key for summary generation                                                                                                                                                         |
 
 For detailed summary setup and provider selection, see the [Summary Generation Guide](summary-generation.md).
 

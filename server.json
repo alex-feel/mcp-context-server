@@ -578,6 +578,13 @@
           "name": "SUMMARY_ANTHROPIC_EFFORT"
         },
         {
+          "description": "Anthropic API key for summary generation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "ANTHROPIC_API_KEY"
+        },
+        {
           "description": "Enable full-text search functionality",
           "isRequired": false,
           "format": "boolean",
@@ -1511,6 +1518,13 @@
           "format": "string",
           "isSecret": false,
           "name": "SUMMARY_ANTHROPIC_EFFORT"
+        },
+        {
+          "description": "Anthropic API key for summary generation",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": true,
+          "name": "ANTHROPIC_API_KEY"
         },
         {
           "description": "Enable full-text search functionality",

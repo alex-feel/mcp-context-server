@@ -2,7 +2,7 @@
 
 Uses ChatOpenAI for LLM-based abstractive summarization via OpenAI API.
 
-Requires OPENAI_API_KEY environment variable (auto-detected by ChatOpenAI).
+Requires OPENAI_API_KEY environment variable (read from SummarySettings, passed explicitly).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class OpenAISummaryProvider:
 
     Environment Variables:
         SUMMARY_PROVIDER: Must be 'openai'
-        OPENAI_API_KEY: OpenAI API key (auto-detected by ChatOpenAI)
+        OPENAI_API_KEY: OpenAI API key (read from SummarySettings, passed explicitly)
         SUMMARY_MODEL: Model name (e.g., 'gpt-5.4-nano', 'gpt-5.4')
         SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
     """
@@ -37,15 +37,19 @@ class OpenAISummaryProvider:
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
         self._reasoning_effort = settings.summary.openai_reasoning_effort
+        self._api_key = settings.summary.openai_api_key
+        self._api_base = settings.summary.openai_api_base
         self._chat_model: Any = None
 
     async def initialize(self) -> None:
         """Initialize LangChain ChatOpenAI client.
 
-        ChatOpenAI auto-reads OPENAI_API_KEY from environment.
+        Reads OPENAI_API_KEY from SummarySettings and passes it explicitly
+        to the ChatOpenAI constructor.
 
         Raises:
             ImportError: If langchain-openai is not installed
+            ValueError: If API key is not configured
         """
         try:
             from langchain_openai import ChatOpenAI
@@ -54,14 +58,23 @@ class OpenAISummaryProvider:
                 'langchain-openai package required for OpenAI summary provider',
             ) from e
 
+        if self._api_key is None:
+            raise ValueError(
+                'OPENAI_API_KEY is required for OpenAI summary provider. '
+                'Set the environment variable or use a different provider.',
+            )
+
         # Build kwargs to avoid pyright complaints about dynamically-loaded constructor
         kwargs: dict[str, Any] = {
             'model': self._model,
             'temperature': 0,
             'max_tokens': self._max_tokens,
+            'api_key': self._api_key.get_secret_value(),
         }
         if self._reasoning_effort is not None:
             kwargs['reasoning_effort'] = self._reasoning_effort
+        if self._api_base:
+            kwargs['base_url'] = self._api_base
         self._chat_model = ChatOpenAI(**kwargs)
         logger.info(
             f'Initialized OpenAI summary provider: {self._model}, '

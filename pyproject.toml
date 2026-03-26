@@ -293,11 +293,6 @@ check_untyped_defs = false
 warn_return_any = false
 disallow_any_explicit = false
 
-# Silence auto-generated migrations
-[[tool.mypy.overrides]]
-module = ['migrations.*']
-ignore_errors = true
-
 # Handle optional dependencies for semantic search, chunking, reranking, and tracing
 [[tool.mypy.overrides]]
 module = [

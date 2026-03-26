@@ -2,7 +2,7 @@
 
 Uses ChatAnthropic for LLM-based abstractive summarization via Anthropic API.
 
-Requires ANTHROPIC_API_KEY environment variable (auto-detected by ChatAnthropic).
+Requires ANTHROPIC_API_KEY environment variable (read from SummarySettings, passed explicitly).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class AnthropicSummaryProvider:
 
     Environment Variables:
         SUMMARY_PROVIDER: Must be 'anthropic'
-        ANTHROPIC_API_KEY: Anthropic API key (auto-detected by ChatAnthropic)
+        ANTHROPIC_API_KEY: Anthropic API key (read from SummarySettings, passed explicitly)
         SUMMARY_MODEL: Model name (e.g., 'claude-haiku-4-5-20251001')
         SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
     """
@@ -37,15 +37,18 @@ class AnthropicSummaryProvider:
         self._model = settings.summary.model
         self._max_tokens = settings.summary.max_tokens
         self._effort = settings.summary.anthropic_effort
+        self._api_key = settings.summary.anthropic_api_key
         self._chat_model: Any = None
 
     async def initialize(self) -> None:
         """Initialize LangChain ChatAnthropic client.
 
-        ChatAnthropic auto-reads ANTHROPIC_API_KEY from environment.
+        Reads ANTHROPIC_API_KEY from SummarySettings and passes it explicitly
+        to the ChatAnthropic constructor.
 
         Raises:
             ImportError: If langchain-anthropic is not installed
+            ValueError: If API key is not configured
         """
         try:
             from langchain_anthropic import ChatAnthropic
@@ -54,11 +57,18 @@ class AnthropicSummaryProvider:
                 'langchain-anthropic package required for Anthropic summary provider',
             ) from e
 
+        if self._api_key is None:
+            raise ValueError(
+                'ANTHROPIC_API_KEY is required for Anthropic summary provider. '
+                'Set the environment variable or use a different provider.',
+            )
+
         # Build kwargs to avoid pyright complaints about dynamically-loaded constructor
         kwargs: dict[str, Any] = {
             'model': self._model,
             'temperature': 0,
             'max_tokens': self._max_tokens,
+            'api_key': self._api_key.get_secret_value(),
         }
         if self._effort is not None:
             kwargs['effort'] = self._effort

@@ -16,7 +16,7 @@ We welcome contributions! Please follow these guidelines:
 # 1. Clone and setup
 git clone https://github.com/alex-feel/mcp-context-server.git
 cd mcp-context-server
-uv sync
+uv sync --all-extras --all-groups
 
 # 2. Run tests
 uv run pytest                         # Unit tests
@@ -29,6 +29,12 @@ uv run python -m app.server           # Should start without errors
 # 4. Test published version (optional)
 uvx --python 3.12 mcp-context-server  # Run from PyPI without cloning
 ```
+
+> **Important**: Development requires ALL dependencies installed. Always use
+> `uv sync --all-extras --all-groups` instead of bare `uv sync`. This ensures
+> all optional provider packages, type stubs, and development tools are available.
+> Both local development and CI use this command. Running bare `uv sync` may cause
+> type-checker errors due to missing optional dependencies.
 
 ### Making Changes
 
