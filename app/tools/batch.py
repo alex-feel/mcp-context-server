@@ -942,6 +942,19 @@ async def update_context_batch(
                                     await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
                                     updated_fields.extend(['images', 'content_type'])
 
+                            # Auto-correct content_type when images not explicitly changed
+                            if update.get('images') is None and (
+                                update.get('text') is not None or update.get('metadata') is not None
+                            ):
+                                image_count = await repos.images.count_images_for_context(context_id)
+                                current_content_type = 'multimodal' if image_count > 0 else 'text'
+                                stored_content_type = await repos.context.get_content_type(context_id)
+                                if stored_content_type != current_content_type:
+                                    await repos.context.update_content_type(
+                                        context_id, current_content_type, txn=txn,
+                                    )
+                                    updated_fields.append('content_type')
+
                             # Store embeddings (only if text was changed and embedding exists)
                             entry_chunk_embeddings = update_embeddings.get(vu_idx)
                             if entry_chunk_embeddings is not None:
@@ -1040,6 +1053,19 @@ async def update_context_batch(
                                 await repos.images.replace_images_for_context(context_id, update_images, txn=txn)
                                 await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
                                 updated_fields_list.extend(['images', 'content_type'])
+
+                        # Auto-correct content_type when images not explicitly changed
+                        if update.get('images') is None and (
+                            update.get('text') is not None or update.get('metadata') is not None
+                        ):
+                            image_count = await repos.images.count_images_for_context(context_id)
+                            current_content_type = 'multimodal' if image_count > 0 else 'text'
+                            stored_content_type = await repos.context.get_content_type(context_id)
+                            if stored_content_type != current_content_type:
+                                await repos.context.update_content_type(
+                                    context_id, current_content_type, txn=txn,
+                                )
+                                updated_fields_list.append('content_type')
 
                         # Store embeddings
                         entry_chunk_embeddings = update_embeddings.get(vu_idx)
