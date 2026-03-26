@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.1](https://github.com/alex-feel/mcp-context-server/compare/v2.2.0...v2.2.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* resolve hybrid search quoted phrase loss, embedding guard asymmetry, and batch content_type drift ([069599b](https://github.com/alex-feel/mcp-context-server/commit/069599bf046a42bdd149fcb6d954a898be3f4c5a))
+* serialize SQLite write queue operations through writer lock ([10db4cc](https://github.com/alex-feel/mcp-context-server/commit/10db4cc2422e8a2b11b6fcb95fb2c242f9da9297))
+
 ## [2.2.0](https://github.com/alex-feel/mcp-context-server/compare/v2.1.0...v2.2.0) (2026-03-25)
 
 
