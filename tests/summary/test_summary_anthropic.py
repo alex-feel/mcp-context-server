@@ -3,6 +3,7 @@
 Tests verify:
 - __init__ reads settings correctly
 - initialize() creates ChatAnthropic with correct params
+- initialize() raises ValueError when API key is missing
 - summarize() returns stripped content
 - summarize() raises RuntimeError when not initialized
 - summarize() logs WARNING on truncation (stop_reason=max_tokens)
@@ -21,6 +22,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from pydantic import SecretStr
 
 
 @pytest.fixture
@@ -30,6 +32,7 @@ def mock_anthropic_settings():
         mock.return_value.summary.model = 'claude-haiku-4-5-20251001'
         mock.return_value.summary.max_tokens = 1800
         mock.return_value.summary.anthropic_effort = None
+        mock.return_value.summary.anthropic_api_key = SecretStr('sk-ant-test')
         mock.return_value.summary.prompt = None
         mock.return_value.summary.timeout_s = 240.0
         mock.return_value.summary.retry_max_attempts = 5
@@ -101,6 +104,7 @@ class TestAnthropicSummaryProviderInitialize:
                 model='claude-haiku-4-5-20251001',
                 temperature=0,
                 max_tokens=1800,
+                api_key='sk-ant-test',
             )
             assert provider._chat_model is not None
 
@@ -119,6 +123,7 @@ class TestAnthropicSummaryProviderInitialize:
             mock_settings.return_value.summary.model = 'claude-haiku-4-5-20251001'
             mock_settings.return_value.summary.max_tokens = 1800
             mock_settings.return_value.summary.anthropic_effort = 'low'
+            mock_settings.return_value.summary.anthropic_api_key = SecretStr('sk-ant-test')
             mock_settings.return_value.summary.prompt = None
             mock_settings.return_value.summary.timeout_s = 240.0
             mock_settings.return_value.summary.retry_max_attempts = 5
@@ -131,6 +136,7 @@ class TestAnthropicSummaryProviderInitialize:
                 model='claude-haiku-4-5-20251001',
                 temperature=0,
                 max_tokens=1800,
+                api_key='sk-ant-test',
                 effort='low',
             )
 
@@ -156,6 +162,27 @@ class TestAnthropicSummaryProviderInitialize:
                 await provider.initialize()
         finally:
             sys.modules.update(saved_modules)
+
+    @pytest.mark.asyncio
+    async def test_initialize_raises_when_no_api_key(self) -> None:
+        """initialize() raises ValueError when API key is not configured."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_chat_cls = MagicMock()
+        mock_module = MagicMock()
+        mock_module.ChatAnthropic = mock_chat_cls
+        with (
+            patch('app.summary.providers.langchain_anthropic.get_settings') as mock_settings,
+            patch.dict('sys.modules', {'langchain_anthropic': mock_module}),
+        ):
+            mock_settings.return_value.summary.model = 'claude-haiku-4-5-20251001'
+            mock_settings.return_value.summary.max_tokens = 1800
+            mock_settings.return_value.summary.anthropic_effort = None
+            mock_settings.return_value.summary.anthropic_api_key = None
+
+            provider = AnthropicSummaryProvider()
+            with pytest.raises(ValueError, match='ANTHROPIC_API_KEY is required'):
+                await provider.initialize()
 
 
 @pytest.mark.usefixtures('mock_anthropic_settings', 'mock_anthropic_retry')

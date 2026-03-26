@@ -3,6 +3,8 @@
 Tests verify:
 - __init__ reads settings correctly
 - initialize() creates ChatOpenAI with correct params
+- initialize() raises ValueError when API key is missing
+- initialize() passes base_url when OPENAI_API_BASE is set
 - summarize() returns stripped content
 - summarize() raises RuntimeError when not initialized
 - summarize() logs WARNING on truncation (finish_reason=length)
@@ -21,6 +23,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from pydantic import SecretStr
 
 
 @pytest.fixture
@@ -30,6 +33,8 @@ def mock_openai_settings():
         mock.return_value.summary.model = 'gpt-5.4-nano'
         mock.return_value.summary.max_tokens = 1500
         mock.return_value.summary.openai_reasoning_effort = 'low'
+        mock.return_value.summary.openai_api_key = SecretStr('sk-test-key')
+        mock.return_value.summary.openai_api_base = None
         mock.return_value.summary.prompt = None
         mock.return_value.summary.timeout_s = 240.0
         mock.return_value.summary.retry_max_attempts = 5
@@ -101,6 +106,7 @@ class TestOpenAISummaryProviderInitialize:
                 model='gpt-5.4-nano',
                 temperature=0,
                 max_tokens=1500,
+                api_key='sk-test-key',
                 reasoning_effort='low',
             )
             assert provider._chat_model is not None
@@ -120,6 +126,8 @@ class TestOpenAISummaryProviderInitialize:
             mock_settings.return_value.summary.model = 'gpt-5.4-nano'
             mock_settings.return_value.summary.max_tokens = 1500
             mock_settings.return_value.summary.openai_reasoning_effort = None
+            mock_settings.return_value.summary.openai_api_key = SecretStr('sk-test-key')
+            mock_settings.return_value.summary.openai_api_base = None
             mock_settings.return_value.summary.prompt = None
             mock_settings.return_value.summary.timeout_s = 240.0
             mock_settings.return_value.summary.retry_max_attempts = 5
@@ -132,6 +140,7 @@ class TestOpenAISummaryProviderInitialize:
                 model='gpt-5.4-nano',
                 temperature=0,
                 max_tokens=1500,
+                api_key='sk-test-key',
             )
             # reasoning_effort should NOT be in the kwargs
             call_kwargs = mock_chat_cls.call_args[1]
@@ -159,6 +168,57 @@ class TestOpenAISummaryProviderInitialize:
                 await provider.initialize()
         finally:
             sys.modules.update(saved_modules)
+
+    @pytest.mark.asyncio
+    async def test_initialize_raises_when_no_api_key(self) -> None:
+        """initialize() raises ValueError when API key is not configured."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        mock_chat_cls = MagicMock()
+        mock_module = MagicMock()
+        mock_module.ChatOpenAI = mock_chat_cls
+        with (
+            patch('app.summary.providers.langchain_openai.get_settings') as mock_settings,
+            patch.dict('sys.modules', {'langchain_openai': mock_module}),
+        ):
+            mock_settings.return_value.summary.model = 'gpt-5.4-nano'
+            mock_settings.return_value.summary.max_tokens = 1500
+            mock_settings.return_value.summary.openai_reasoning_effort = None
+            mock_settings.return_value.summary.openai_api_key = None
+            mock_settings.return_value.summary.openai_api_base = None
+
+            provider = OpenAISummaryProvider()
+            with pytest.raises(ValueError, match='OPENAI_API_KEY is required'):
+                await provider.initialize()
+
+    @pytest.mark.asyncio
+    async def test_initialize_passes_base_url_when_set(self) -> None:
+        """initialize() passes base_url to ChatOpenAI when OPENAI_API_BASE is set."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        mock_chat_cls = MagicMock()
+        mock_module = MagicMock()
+        mock_module.ChatOpenAI = mock_chat_cls
+        with (
+            patch('app.summary.providers.langchain_openai.get_settings') as mock_settings,
+            patch.dict('sys.modules', {'langchain_openai': mock_module}),
+        ):
+            mock_settings.return_value.summary.model = 'gpt-5.4-nano'
+            mock_settings.return_value.summary.max_tokens = 1500
+            mock_settings.return_value.summary.openai_reasoning_effort = None
+            mock_settings.return_value.summary.openai_api_key = SecretStr('sk-test-key')
+            mock_settings.return_value.summary.openai_api_base = 'https://custom.api.com/v1'
+
+            provider = OpenAISummaryProvider()
+            await provider.initialize()
+
+            mock_chat_cls.assert_called_once_with(
+                model='gpt-5.4-nano',
+                temperature=0,
+                max_tokens=1500,
+                api_key='sk-test-key',
+                base_url='https://custom.api.com/v1',
+            )
 
 
 @pytest.mark.usefixtures('mock_openai_settings', 'mock_openai_retry')

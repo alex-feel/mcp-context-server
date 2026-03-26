@@ -7,7 +7,6 @@ are available before enabling semantic search and summary generation.
 
 import importlib.util
 import logging
-import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 from typing import Any
@@ -582,7 +581,7 @@ async def _check_ollama_summary_dependencies(
 
 
 async def _check_openai_summary_dependencies(
-    _summary_settings: 'SummarySettings',
+    summary_settings: 'SummarySettings',
     _ollama_host: str,
     **_kwargs: Any,
 ) -> ProviderCheckResult:
@@ -590,12 +589,12 @@ async def _check_openai_summary_dependencies(
 
     Checks:
     1. langchain-openai package is installed
-    2. OPENAI_API_KEY is set
+    2. OPENAI_API_KEY is configured in settings
 
     Args:
-        _summary_settings: SummarySettings instance (unused, accepted for uniform dispatch interface)
+        summary_settings: SummarySettings instance with openai_api_key
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
-        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
+        **_kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -618,8 +617,8 @@ async def _check_openai_summary_dependencies(
             install_instructions=install_cmd,
         )
 
-    # 2. Check API key is set
-    if not os.environ.get('OPENAI_API_KEY'):
+    # 2. Check API key is configured
+    if summary_settings.openai_api_key is None:
         return ProviderCheckResult(
             available=False,
             reason='OPENAI_API_KEY environment variable is not set',
@@ -632,7 +631,7 @@ async def _check_openai_summary_dependencies(
 
 
 async def _check_anthropic_summary_dependencies(
-    _summary_settings: 'SummarySettings',
+    summary_settings: 'SummarySettings',
     _ollama_host: str,
     **_kwargs: Any,
 ) -> ProviderCheckResult:
@@ -640,12 +639,12 @@ async def _check_anthropic_summary_dependencies(
 
     Checks:
     1. langchain-anthropic package is installed
-    2. ANTHROPIC_API_KEY is set
+    2. ANTHROPIC_API_KEY is configured in settings
 
     Args:
-        _summary_settings: SummarySettings instance (unused, accepted for uniform dispatch interface)
+        summary_settings: SummarySettings instance with anthropic_api_key
         _ollama_host: Ollama server URL (unused, accepted for uniform dispatch interface)
-        **kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
+        **_kwargs: Additional keyword arguments (unused, accepted for uniform dispatch interface)
 
     Returns:
         ProviderCheckResult
@@ -668,8 +667,8 @@ async def _check_anthropic_summary_dependencies(
             install_instructions=install_cmd,
         )
 
-    # 2. Check API key is set
-    if not os.environ.get('ANTHROPIC_API_KEY'):
+    # 2. Check API key is configured
+    if summary_settings.anthropic_api_key is None:
         return ProviderCheckResult(
             available=False,
             reason='ANTHROPIC_API_KEY environment variable is not set',

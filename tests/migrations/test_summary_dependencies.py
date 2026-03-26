@@ -20,12 +20,30 @@ from app.migrations.dependencies import check_summary_provider_dependencies
 from app.settings import SummarySettings
 
 
-def _make_summary_settings() -> SummarySettings:
-    """Create SummarySettings with defaults for testing."""
-    env = {
+def _make_summary_settings(
+    *,
+    openai_api_key: str | None = None,
+    anthropic_api_key: str | None = None,
+) -> SummarySettings:
+    """Create SummarySettings with defaults for testing.
+
+    Args:
+        openai_api_key: If provided, sets OPENAI_API_KEY in the environment
+            so SummarySettings picks it up as a SecretStr field.
+        anthropic_api_key: If provided, sets ANTHROPIC_API_KEY in the environment
+            so SummarySettings picks it up as a SecretStr field.
+
+    Returns:
+        SummarySettings instance with test defaults.
+    """
+    env: dict[str, str] = {
         'SUMMARY_PROVIDER': 'ollama',
         'SUMMARY_MODEL': 'qwen3:0.6b',
     }
+    if openai_api_key is not None:
+        env['OPENAI_API_KEY'] = openai_api_key
+    if anthropic_api_key is not None:
+        env['ANTHROPIC_API_KEY'] = anthropic_api_key
     with patch.dict(os.environ, env, clear=False):
         return SummarySettings()
 
@@ -210,12 +228,9 @@ class TestCheckSummaryOpenAI:
     @pytest.mark.asyncio
     async def test_all_available(self) -> None:
         """Test that checks pass when OpenAI deps are available."""
-        summary_settings = _make_summary_settings()
+        summary_settings = _make_summary_settings(openai_api_key='sk-test-key')
 
-        with (
-            patch('importlib.util.find_spec', return_value=MagicMock()),
-            patch.dict(os.environ, {'OPENAI_API_KEY': 'sk-test-key'}),
-        ):
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
             result = await check_summary_provider_dependencies(
                 'openai', summary_settings,
             )
@@ -228,11 +243,7 @@ class TestCheckSummaryOpenAI:
         """Test failure when OPENAI_API_KEY is not set."""
         summary_settings = _make_summary_settings()
 
-        env = {k: v for k, v in os.environ.items() if k != 'OPENAI_API_KEY'}
-        with (
-            patch('importlib.util.find_spec', return_value=MagicMock()),
-            patch.dict(os.environ, env, clear=True),
-        ):
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
             result = await check_summary_provider_dependencies(
                 'openai', summary_settings,
             )
@@ -263,11 +274,7 @@ class TestCheckSummaryAnthropic:
         """Test failure when ANTHROPIC_API_KEY is not set."""
         summary_settings = _make_summary_settings()
 
-        env = {k: v for k, v in os.environ.items() if k != 'ANTHROPIC_API_KEY'}
-        with (
-            patch('importlib.util.find_spec', return_value=MagicMock()),
-            patch.dict(os.environ, env, clear=True),
-        ):
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
             result = await check_summary_provider_dependencies(
                 'anthropic', summary_settings,
             )
@@ -278,12 +285,9 @@ class TestCheckSummaryAnthropic:
     @pytest.mark.asyncio
     async def test_all_available(self) -> None:
         """Test that checks pass when Anthropic deps are available."""
-        summary_settings = _make_summary_settings()
+        summary_settings = _make_summary_settings(anthropic_api_key='sk-ant-test-key')
 
-        with (
-            patch('importlib.util.find_spec', return_value=MagicMock()),
-            patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'sk-ant-test-key'}),
-        ):
+        with patch('importlib.util.find_spec', return_value=MagicMock()):
             result = await check_summary_provider_dependencies(
                 'anthropic', summary_settings,
             )

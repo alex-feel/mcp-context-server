@@ -5,8 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Reference
 
 ```bash
+# IMPORTANT: ALL development tasks (coding, testing, type-checking, pre-commit)
+# REQUIRE the full sync command below. Bare `uv sync` is insufficient and will
+# cause type-checker errors due to missing optional dependencies.
+
 # Build and run
-uv sync --all-extras --all-groups          # Install ALL dependencies (dev + all optional)
+uv sync --all-extras --all-groups          # Install ALL dependencies (REQUIRED for development)
 uv run mcp-context-server                  # Start server (aliases: mcp-context, python -m app.server)
 uvx mcp-context-server                     # Run from PyPI
 

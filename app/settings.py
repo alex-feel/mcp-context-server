@@ -637,6 +637,25 @@ class SummarySettings(CommonSettings):
                     'True: Silently truncates input (summary generated from incomplete text).',
     )
 
+    # OpenAI-specific authentication (shared env var with EmbeddingSettings)
+    openai_api_key: SecretStr | None = Field(
+        default=None,
+        alias='OPENAI_API_KEY',
+        description='OpenAI API key for summary generation',
+    )
+    openai_api_base: str | None = Field(
+        default=None,
+        alias='OPENAI_API_BASE',
+        description='Custom base URL for OpenAI-compatible APIs',
+    )
+
+    # Anthropic-specific authentication
+    anthropic_api_key: SecretStr | None = Field(
+        default=None,
+        alias='ANTHROPIC_API_KEY',
+        description='Anthropic API key for summary generation',
+    )
+
     # Cross-provider reasoning/effort control
     openai_reasoning_effort: str | None = Field(
         default='low',
