@@ -2,7 +2,6 @@
 Database migration functions for mcp-context-server.
 
 This package contains migration orchestration and all migration implementations:
-- utils.py: Shared utility functions (format_exception_message)
 - dependencies.py: Provider and vector storage dependency checking
 - semantic.py: Semantic search migrations (vector tables, jsonb_merge_patch)
 - fts.py: Full-text search migrations
@@ -35,11 +34,8 @@ from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
 from app.migrations.summary import apply_summary_migration
-from app.migrations.utils import format_exception_message
 
 __all__ = [
-    # Utilities
-    'format_exception_message',
     # Dependencies
     'ProviderCheckResult',
     'check_vector_storage_dependencies',

@@ -126,9 +126,11 @@ class TestStoreContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0),
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
             await store_context(
@@ -162,9 +164,11 @@ class TestStoreContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0),
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
             await store_context(
@@ -200,9 +204,11 @@ class TestStoreContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0), pytest.raises(ToolError) as exc_info,
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0), pytest.raises(ToolError) as exc_info,
         ):
             await store_context(
                 thread_id='gf-test-3', source='agent', text='z' * 500,
@@ -230,9 +236,11 @@ class TestStoreContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock()),
         ):
             result = await store_context(
@@ -264,8 +272,10 @@ class TestStoreContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools._shared.get_summary_provider', return_value=None),
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
             await store_context(
@@ -296,8 +306,11 @@ class TestStoreContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools.context.get_summary_provider', return_value=None), pytest.raises(ToolError) as exc_info,
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools._shared.get_summary_provider', return_value=None),
+            pytest.raises(ToolError) as exc_info,
         ):
             await store_context(
                 thread_id='gf-test-6', source='agent', text='Test',
@@ -360,9 +373,11 @@ class TestUpdateContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0),
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
             await update_context(context_id=entry_id, text='Updated text ' * 30)
@@ -393,9 +408,11 @@ class TestUpdateContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0),
             pytest.raises(ToolError, match='Generation failed after exhausting configured retries'),
         ):
             await update_context(context_id=entry_id, text='Updated text ' * 40)
@@ -424,9 +441,11 @@ class TestUpdateContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0), pytest.raises(ToolError) as exc_info,
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0), pytest.raises(ToolError) as exc_info,
         ):
             await update_context(context_id=entry_id, text='Updated text ' * 40)
         error_msg = str(exc_info.value)
@@ -451,9 +470,11 @@ class TestUpdateContextGenerationFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_emb),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_emb),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             patch('app.tools.context.get_summary_provider', return_value=mock_summary),
-            patch('app.tools.context.compute_summary_total_timeout', return_value=5.0),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=5.0),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock()),
             patch.object(repos.embeddings, 'delete_all_chunks', new=AsyncMock()),
         ):
@@ -488,9 +509,9 @@ class TestStoreContextBatchGenerationFirst:
                 'app.tools.batch.get_embedding_provider',
                 return_value=MagicMock(),  # non-None so embedding task is added
             ),
-            patch('app.startup.get_summary_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
             patch(
-                'app.tools.context.generate_embeddings_with_timeout',
+                'app.tools.batch.generate_embeddings_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Embedding generation timed out')),
             ),
             pytest.raises(ToolError, match='Generation failed at index 0'),
@@ -512,9 +533,10 @@ class TestStoreContextBatchGenerationFirst:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.startup.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools.batch.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Summary generation timed out')),
             ),
             pytest.raises(ToolError, match='Generation failed at index 0'),
@@ -546,9 +568,10 @@ class TestStoreContextBatchGenerationFirst:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.startup.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools.batch.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=selective_summary),
             ),
         ):
@@ -577,9 +600,10 @@ class TestStoreContextBatchGenerationFirst:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.startup.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools.batch.generate_summary_with_timeout',
                 new=AsyncMock(return_value='Batch summary'),
             ),
         ):
@@ -615,9 +639,9 @@ class TestUpdateContextBatchGenerationFirst:
                 'app.tools.batch.get_embedding_provider',
                 return_value=MagicMock(),
             ),
-            patch('app.startup.get_summary_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
             patch(
-                'app.tools.context.generate_embeddings_with_timeout',
+                'app.tools.batch.generate_embeddings_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Embedding generation timed out')),
             ),
             pytest.raises(ToolError, match='Generation failed for context 1'),
@@ -637,9 +661,10 @@ class TestUpdateContextBatchGenerationFirst:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.startup.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools.batch.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Summary timed out')),
             ),
             pytest.raises(ToolError, match='Generation failed for context 1'),
@@ -668,9 +693,10 @@ class TestUpdateContextBatchGenerationFirst:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.startup.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools.batch.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=selective_summary),
             ),
         ):
@@ -696,15 +722,10 @@ class TestUpdateContextBatchGenerationFirst:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
-            patch('app.startup.get_summary_provider', return_value=MagicMock()),
-            patch(
-                'app.tools.context.generate_embeddings_with_timeout',
-                new=mock_gen_emb,
-            ),
-            patch(
-                'app.tools.context.generate_summary_with_timeout',
-                new=mock_gen_sum,
-            ),
+            patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.batch.generate_embeddings_with_timeout', new=mock_gen_emb),
+            patch('app.tools.batch.generate_summary_with_timeout', new=mock_gen_sum),
         ):
             result = await app.server.update_context_batch(
                 updates=[{'context_id': 1, 'metadata': {'key': 'value'}}],
@@ -726,11 +747,9 @@ class TestUpdateContextBatchGenerationFirst:
         with (
             patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
-            patch('app.startup.get_summary_provider', return_value=MagicMock()),
-            patch(
-                'app.tools.context.generate_summary_with_timeout',
-                new=mock_gen_sum,
-            ),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.batch.generate_summary_with_timeout', new=mock_gen_sum),
         ):
             # Text is short (< default min_content_length of 500)
             result = await app.server.update_context_batch(

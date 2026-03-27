@@ -18,7 +18,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends import create_backend
-from app.migrations.utils import format_exception_message
+from app.errors import format_exception_message
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)

@@ -40,7 +40,7 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
    - Entry point with FastMCP instance, lifespan management, and main() function
-   - Tool implementations in `app/tools/` organized by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic tool descriptions)
+   - Tool implementations in `app/tools/` organized by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic tool descriptions), `_shared.py` (internal shared infrastructure: per-entry processing, image validation, generation with timeout, transaction execution, response message builders -- consumed by `context.py` and `batch.py`, not re-exported via `__init__.py`)
    - Dynamic tool registration via `register_tool()` from `app/tools/__init__.py`
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
    - Global state and initialization in `app/startup/` package: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`
@@ -74,7 +74,7 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 8. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`): `MetadataFilter` with 16 operators. `QueryBuilder`: backend-aware SQL with nested JSON paths. Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) operators.
 
-9. **Other modules**: `app/fusion.py` (RRF algorithm), `app/errors.py` (error classification, see Key Implementation Details #5), `app/instructions.py` (server instructions), `app/types.py` (40+ TypedDicts for API responses), `app/logger_config.py` (logging configuration), `app/schemas/` (SQL schema files).
+9. **Other modules**: `app/fusion.py` (RRF algorithm), `app/errors.py` (error classification + exception formatting, see Key Implementation Details #5), `app/instructions.py` (server instructions), `app/types.py` (40+ TypedDicts for API responses), `app/logger_config.py` (logging configuration), `app/schemas/` (SQL schema files).
 
 ### Thread-Based Context Management
 
@@ -383,7 +383,7 @@ async def my_tool(
     return {'success': True}
 ```
 
-**Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `tests/integration/sqlite/test_real_server.py` 7) Update `server.json` if new env vars 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py`
+**Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `tests/integration/sqlite/test_real_server.py` 7) Update `server.json` if new env vars 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py` 9) For store/update operations, use shared functions from `app/tools/_shared.py` (image validation, generation with timeout, transaction execution, response builders) to maintain behavioral parity with existing tools
 
 **Annotation categories**: READ_ONLY (readOnlyHint=True), ADDITIVE (destructiveHint=False), UPDATE (destructiveHint=True, idempotentHint=False), DELETE (destructiveHint=True, idempotentHint=True)
 
@@ -397,7 +397,7 @@ All three layers use identical patterns:
 
 ### Generation-First Transactional Integrity
 
-**CRITICAL**: When generation is enabled and fails, NO data is saved — transaction rolls back. Flow: generate embeddings/summaries OUTSIDE transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext`. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` are the single sources of truth for timeout/semaphore, used by `store_context`, `update_context`, `store_context_batch`, `update_context_batch`. Each `gather` result is independently inspected — failed generation raises (or collected in non-atomic batch mode) without cancelling the other task.
+**CRITICAL**: When generation is enabled and fails, NO data is saved — transaction rolls back. Flow: generate embeddings/summaries OUTSIDE transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext`. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` in `app/tools/_shared.py` are the single sources of truth for timeout/semaphore, used by `store_context`, `update_context`, `store_context_batch`, `update_context_batch`. Each `gather` result is independently inspected — failed generation raises (or collected in non-atomic batch mode) without cancelling the other task.
 
 **NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embedding generation fails, or `ENABLE_SUMMARY_GENERATION=true` and summary generation fails, the entry MUST NOT be saved. There is no "store without embeddings" or "store without summary" fallback when generation is enabled. This is non-negotiable mandatory behavior. The only way to skip generation is to explicitly disable it via `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`. Only the user can make this decision.
 
@@ -422,7 +422,7 @@ The `store_context_batch` tool uses the same dedup logic (calls `store_with_dedu
 
 **Update**: Partial updates (only provided fields). Immutable: `id`, `thread_id`, `source`, `created_at`. Auto-managed: `content_type`, `updated_at`. Tags/images: replacement (not merge). Transaction-wrapped.
 
-**Batch**: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries). `atomic=true` (default): all-or-nothing. `atomic=false`: independent processing with per-entry results.
+**Batch**: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries). `atomic=true` (default): all-or-nothing. `atomic=false`: independent processing with per-entry results. Batch and non-batch tools share per-entry processing logic (image validation, transaction execution, response message building) via `app/tools/_shared.py` to guarantee behavioral parity.
 
 ### Known Upstream Bugs and Temporary Patches
 

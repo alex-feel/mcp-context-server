@@ -70,7 +70,8 @@ class TestStoreContextEmbeddingFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
         ):
             from fastmcp.exceptions import ToolError
 
@@ -103,6 +104,7 @@ class TestStoreContextEmbeddingFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
         ):
             from app.tools.context import store_context
 
@@ -185,7 +187,8 @@ class TestUpdateContextEmbeddingFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
         ):
             from fastmcp.exceptions import ToolError
 
@@ -222,6 +225,7 @@ class TestUpdateContextEmbeddingFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
         ):
             from app.tools.context import update_context
 
@@ -254,6 +258,7 @@ class TestUpdateContextEmbeddingFirst:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
         ):
             from app.tools.context import update_context
 
@@ -333,9 +338,11 @@ class TestStoreContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
         ):
             from fastmcp.exceptions import ToolError
 
@@ -386,9 +393,11 @@ class TestStoreContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
             patch.object(repos.embeddings, 'store', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
@@ -427,6 +436,7 @@ class TestStoreContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
         ):
             from app.tools.batch import store_context_batch
 
@@ -537,9 +547,11 @@ class TestUpdateContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
         ):
             from fastmcp.exceptions import ToolError
 
@@ -592,9 +604,11 @@ class TestUpdateContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_provider),
             patch('app.startup.get_chunking_service', return_value=mock_chunking),
-            patch('app.tools.context.get_chunking_service', return_value=mock_chunking),
+            patch('app.tools._shared.get_chunking_service', return_value=mock_chunking),
             # Mock embedding repository to avoid vec_context_embeddings table issues
             patch.object(repos.embeddings, 'store', new=AsyncMock(return_value=None)),
             patch.object(repos.embeddings, 'store_chunked', new=AsyncMock(return_value=None)),
@@ -648,6 +662,7 @@ class TestUpdateContextBatchEmbeddingFirst:
         with (
             patch('app.tools.batch.ensure_repositories', return_value=repos),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
         ):
             from app.tools.batch import update_context_batch
 
@@ -724,6 +739,7 @@ class TestTransactionAtomicityIntegration:
         with (
             patch('app.tools.context.ensure_repositories', return_value=repos),
             patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
         ):
             from app.tools.context import store_context
 
