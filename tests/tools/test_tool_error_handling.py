@@ -252,7 +252,7 @@ class TestUpdateContextErrors:
         """Test that invalid image data raises ToolError."""
         mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
 
-        with pytest.raises(ToolError, match='Invalid base64 image data'):
+        with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
                 context_id=1,
                 images=[{'data': 'not-valid-base64!!!'}],  # Invalid base64, mime_type defaults to 'image/png'
@@ -263,7 +263,7 @@ class TestUpdateContextErrors:
         """Test that invalid base64 in update raises ToolError."""
         mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
 
-        with pytest.raises(ToolError, match='Invalid base64 image data'):
+        with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
                 context_id=1,
                 images=[{'data': 'not-base64!!!', 'mime_type': 'image/png'}],

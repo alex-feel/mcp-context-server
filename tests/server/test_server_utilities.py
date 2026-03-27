@@ -432,7 +432,7 @@ class TestUpdateContextEdgeCases:
         # Create oversized image data (6MB)
         large_data = base64.b64encode(b'x' * (6 * 1024 * 1024)).decode('utf-8')
 
-        with pytest.raises(ToolError, match='exceeds size limit'):
+        with pytest.raises(ToolError, match='exceeds.*limit'):
             await update_context(
                 context_id=context_id,
                 images=[{'data': large_data, 'mime_type': 'image/png'}],
@@ -478,73 +478,6 @@ class TestSemanticSearchNotAvailable:
         finally:
             # Restore original
             app.startup._embedding_provider = original_service
-
-
-class TestFormatExceptionMessage:
-    """Tests for format_exception_message()."""
-
-    def test_formats_exception_with_message(self) -> None:
-        """Test exception with non-empty str()."""
-        from app.migrations import format_exception_message
-
-        error = ValueError('Something went wrong')
-        result = format_exception_message(error)
-
-        assert result == 'Something went wrong'
-
-    def test_handles_empty_str_exception(self) -> None:
-        """Test exception with empty str() falls back to repr."""
-        from typing import override
-
-        from app.migrations import format_exception_message
-
-        # Create an exception subclass that returns empty string
-        class EmptyStrError(Exception):
-            @override
-            def __str__(self) -> str:
-                return ''
-
-        error = EmptyStrError()
-        result = format_exception_message(error)
-
-        # Should fall back to repr
-        assert 'EmptyStrError' in result
-
-    def test_handles_exception_with_repr(self) -> None:
-        """Test exception uses repr when str is empty."""
-        from typing import override
-
-        from app.migrations import format_exception_message
-
-        class CustomError(Exception):
-            @override
-            def __str__(self) -> str:
-                return ''
-
-            @override
-            def __repr__(self) -> str:
-                return 'CustomError(custom repr)'
-
-        error = CustomError()
-        result = format_exception_message(error)
-
-        assert result == 'CustomError(custom repr)'
-
-    def test_standard_exceptions(self) -> None:
-        """Test formatting of standard Python exceptions."""
-        from app.migrations import format_exception_message
-
-        # Test various standard exceptions
-        exceptions = [
-            (ValueError('value error'), 'value error'),
-            (TypeError('type error'), 'type error'),
-            (RuntimeError('runtime error'), 'runtime error'),
-            (KeyError('missing_key'), "'missing_key'"),
-        ]
-
-        for error, expected in exceptions:
-            result = format_exception_message(error)
-            assert expected in result
 
 
 class TestEstimateMigrationTime:

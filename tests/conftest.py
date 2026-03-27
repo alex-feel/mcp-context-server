@@ -544,9 +544,9 @@ def mock_server_dependencies(test_settings: AppSettings, temp_db_path: Path) -> 
             patch('app.server.DB_PATH', temp_db_path),
             # CRITICAL: Patch startup.DB_PATH - ensure_backend() uses this for lazy initialization
             patch('app.startup.DB_PATH', temp_db_path),
-            # Patch MAX_IMAGE_SIZE_MB and MAX_TOTAL_SIZE_MB where they are used (in app.tools.context)
-            patch('app.tools.context.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
-            patch('app.tools.context.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
+            # Patch MAX_IMAGE_SIZE_MB and MAX_TOTAL_SIZE_MB where they are used (in app.tools._shared)
+            patch('app.tools._shared.MAX_IMAGE_SIZE_MB', test_settings.storage.max_image_size_mb),
+            patch('app.tools._shared.MAX_TOTAL_SIZE_MB', test_settings.storage.max_total_size_mb),
         ):
             yield
     finally:

@@ -283,69 +283,6 @@ class TestTcpKeepaliveSocketConstants:
         assert hasattr(socket, 'TCP_KEEPCNT') or True
 
 
-class TestTransactionHeartbeat:
-    """Test in-transaction heartbeat helper."""
-
-    def test_heartbeat_executes_select_1(self) -> None:
-        """Verify transaction_heartbeat sends SELECT 1 for PostgreSQL transactions."""
-        import asyncio
-        from unittest.mock import AsyncMock
-        from unittest.mock import PropertyMock
-
-        from app.tools.context import transaction_heartbeat
-
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
-
-        mock_txn = AsyncMock()
-        type(mock_txn).backend_type = PropertyMock(return_value='postgresql')
-        type(mock_txn).connection = PropertyMock(return_value=mock_conn)
-
-        asyncio.get_event_loop().run_until_complete(transaction_heartbeat(mock_txn))
-
-        mock_conn.execute.assert_called_once_with('SELECT 1')
-
-    def test_heartbeat_noop_for_sqlite(self) -> None:
-        """Verify transaction_heartbeat is a no-op for SQLite transactions."""
-        import asyncio
-        from unittest.mock import MagicMock
-        from unittest.mock import PropertyMock
-
-        from app.tools.context import transaction_heartbeat
-
-        mock_conn = MagicMock()
-        mock_txn = MagicMock()
-        type(mock_txn).backend_type = PropertyMock(return_value='sqlite')
-        type(mock_txn).connection = PropertyMock(return_value=mock_conn)
-
-        asyncio.get_event_loop().run_until_complete(transaction_heartbeat(mock_txn))
-
-        mock_conn.execute.assert_not_called()
-
-
-class TestConnectionErrorClassification:
-    """Test connection error classification for retry logic."""
-
-    def test_connection_errors_classified_correctly(self) -> None:
-        """Verify is_connection_error identifies retryable connection errors."""
-        import asyncpg
-
-        from app.tools.context import is_connection_error
-
-        # These should be classified as connection errors (retryable)
-        assert is_connection_error(asyncpg.InterfaceError('connection closed'))
-        assert is_connection_error(ConnectionResetError('reset'))
-        assert is_connection_error(OSError('network unreachable'))
-
-    def test_non_connection_errors_not_retried(self) -> None:
-        """Verify non-connection errors are not classified as retryable."""
-        from app.tools.context import is_connection_error
-
-        assert not is_connection_error(ValueError('bad value'))
-        assert not is_connection_error(TypeError('wrong type'))
-        assert not is_connection_error(RuntimeError('logic error'))
-
-
 class TestTransactionRetry:
     """Test transaction retry behavior for connection errors."""
 

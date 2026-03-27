@@ -24,7 +24,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from app.migrations import format_exception_message
+from app.errors import format_exception_message
 from app.migrations import get_fts_migration_status
 from app.services.passage_extraction_service import extract_rerank_passage
 from app.settings import get_settings
@@ -220,7 +220,7 @@ async def _semantic_search_raw(
         query_embedding = await embedding_provider.embed_query(query)
     except Exception as e:
         logger.error(f'Failed to generate query embedding: {e}')
-        raise ToolError(f'Failed to generate embedding for query: {str(e)}') from e
+        raise ToolError(f'Failed to generate embedding for query: {format_exception_message(e)}') from e
 
     # Perform similarity search with optional filtering
     from app.repositories.embedding_repository import MetadataFilterValidationError
@@ -552,7 +552,7 @@ async def search_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error searching context: {e}')
-        raise ToolError(f'Failed to search context: {str(e)}') from e
+        raise ToolError(f'Failed to search context: {format_exception_message(e)}') from e
 
 
 async def semantic_search_context(
@@ -1248,9 +1248,9 @@ async def hybrid_search_context(
                 if explain_query:
                     fts_stats = stats
             except ToolError as e:
-                fts_error = str(e)
+                fts_error = format_exception_message(e)
             except Exception as e:
-                fts_error = str(e)
+                fts_error = format_exception_message(e)
 
         async def run_semantic_search() -> None:
             nonlocal semantic_results, semantic_error, semantic_stats
@@ -1274,9 +1274,9 @@ async def hybrid_search_context(
                 if explain_query:
                     semantic_stats = stats
             except ToolError as e:
-                semantic_error = str(e)
+                semantic_error = format_exception_message(e)
             except Exception as e:
-                semantic_error = str(e)
+                semantic_error = format_exception_message(e)
 
         # Run searches in parallel
         tasks: list[Coroutine[Any, Any, None]] = []

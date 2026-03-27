@@ -1340,6 +1340,64 @@ class ContextRepository(BaseRepository):
 
         return entry
 
+    async def get_ids_matching_batch_criteria(
+        self,
+        thread_ids: list[str] | None = None,
+        source: str | None = None,
+        older_than_days: int | None = None,
+    ) -> list[int]:
+        """Return context entry IDs matching batch deletion criteria.
+
+        Builds the same WHERE clause as delete_contexts_batch but executes
+        a SELECT instead of DELETE. Used to pre-query affected IDs for
+        embedding cleanup on SQLite (where vec0 virtual tables lack CASCADE).
+
+        Args:
+            thread_ids: Filter by these thread IDs
+            source: Filter by source ('user' or 'agent')
+            older_than_days: Filter entries older than N days
+
+        Returns:
+            List of matching context entry IDs.
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _select_ids_sqlite(conn: sqlite3.Connection) -> list[int]:
+                cursor = conn.cursor()
+                conditions: list[str] = []
+                params: list[Any] = []
+
+                if thread_ids:
+                    placeholders = ','.join([
+                        self._placeholder(len(params) + i + 1) for i in range(len(thread_ids))
+                    ])
+                    conditions.append(f'thread_id IN ({placeholders})')
+                    params.extend(thread_ids)
+
+                if source:
+                    conditions.append(f'source = {self._placeholder(len(params) + 1)}')
+                    params.append(source)
+
+                if older_than_days is not None:
+                    conditions.append(
+                        f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
+                    )
+                    params.append(f'-{older_than_days} days')
+
+                if not conditions:
+                    return []
+
+                where_clause = ' AND '.join(conditions)
+                query = f'SELECT id FROM context_entries WHERE {where_clause}'
+                cursor.execute(query, tuple(params))
+                return [row[0] for row in cursor.fetchall()]
+
+            return await self.backend.execute_read(_select_ids_sqlite)
+
+        # PostgreSQL: CASCADE handles embedding cleanup, so this method
+        # returns an empty list (caller should not need it).
+        return []
+
     async def delete_contexts_batch(
         self,
         context_ids: list[int] | None = None,
@@ -1351,7 +1409,10 @@ class ContextRepository(BaseRepository):
 
         At least one criterion must be provided. Criteria can be combined
         for more targeted deletion. Cascading delete removes associated
-        tags, images, and embeddings.
+        tags and images. On PostgreSQL, embeddings are also removed via CASCADE.
+        On SQLite, vec0 virtual table rows (vec_context_embeddings) are not
+        covered by CASCADE and require explicit cleanup via the embedding
+        repository.
 
         Args:
             context_ids: Specific context entry IDs to delete

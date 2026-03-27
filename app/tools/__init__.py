@@ -6,6 +6,9 @@ This package contains all MCP tool functions, organized by domain:
 - search.py: search_context, semantic_search_context, fts_search_context, hybrid_search_context
 - discovery.py: list_threads, get_statistics
 - batch.py: store_context_batch, update_context_batch, delete_context_batch
+- descriptions.py: Backend-specific dynamic tool descriptions (generate_fts_description)
+- _shared.py: Internal shared infrastructure for per-entry processing, image validation,
+  generation with timeout, transaction execution, and response message builders (not re-exported)
 
 The tool registration helpers and TOOL_ANNOTATIONS are defined here for use by server.py.
 """

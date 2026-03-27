@@ -12,6 +12,7 @@ from typing import Any
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
+from app.errors import format_exception_message
 from app.settings import get_settings
 from app.startup import DB_PATH
 from app.startup import ensure_backend
@@ -57,7 +58,7 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error listing threads: {e}')
-        raise ToolError(f'Failed to list threads: {str(e)}') from e
+        raise ToolError(f'Failed to list threads: {format_exception_message(e)}') from e
 
 
 async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
@@ -216,4 +217,4 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error getting statistics: {e}')
-        raise ToolError(f'Failed to get statistics: {str(e)}') from e
+        raise ToolError(f'Failed to get statistics: {format_exception_message(e)}') from e

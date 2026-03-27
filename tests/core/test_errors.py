@@ -358,3 +358,70 @@ class TestIsClientError:
         wrapper = RuntimeError('implicitly chained')
         wrapper.__context__ = context
         assert is_client_error(wrapper) is True
+
+
+class TestFormatExceptionMessage:
+    """Tests for format_exception_message()."""
+
+    def test_formats_exception_with_message(self) -> None:
+        """Test exception with non-empty str()."""
+        from app.errors import format_exception_message
+
+        error = ValueError('Something went wrong')
+        result = format_exception_message(error)
+
+        assert result == 'Something went wrong'
+
+    def test_handles_empty_str_exception(self) -> None:
+        """Test exception with empty str() falls back to repr."""
+        from typing import override
+
+        from app.errors import format_exception_message
+
+        # Create an exception subclass that returns empty string
+        class EmptyStrError(Exception):
+            @override
+            def __str__(self) -> str:
+                return ''
+
+        error = EmptyStrError()
+        result = format_exception_message(error)
+
+        # Should fall back to repr
+        assert 'EmptyStrError' in result
+
+    def test_handles_exception_with_repr(self) -> None:
+        """Test exception uses repr when str is empty."""
+        from typing import override
+
+        from app.errors import format_exception_message
+
+        class CustomError(Exception):
+            @override
+            def __str__(self) -> str:
+                return ''
+
+            @override
+            def __repr__(self) -> str:
+                return 'CustomError(custom repr)'
+
+        error = CustomError()
+        result = format_exception_message(error)
+
+        assert result == 'CustomError(custom repr)'
+
+    def test_standard_exceptions(self) -> None:
+        """Test formatting of standard Python exceptions."""
+        from app.errors import format_exception_message
+
+        # Test various standard exceptions
+        exceptions = [
+            (ValueError('value error'), 'value error'),
+            (TypeError('type error'), 'type error'),
+            (RuntimeError('runtime error'), 'runtime error'),
+            (KeyError('missing_key'), "'missing_key'"),
+        ]
+
+        for error, expected in exceptions:
+            result = format_exception_message(error)
+            assert expected in result

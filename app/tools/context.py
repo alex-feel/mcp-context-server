@@ -16,10 +16,13 @@ generation is enabled:
 3. Retry budgets are fully managed by app/embeddings/retry.py and app/summary/retry.py;
    no re-invocation occurs at the gather level
 4. If all generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+
+Infrastructure functions (embedding/summary generation, transaction heartbeat,
+connection error classification, image validation, response message builders) are
+in app.tools._shared -- the single source of truth for logic shared with batch.py.
 """
 
 import asyncio
-import base64
 import json
 import logging
 from collections.abc import Awaitable
@@ -27,22 +30,24 @@ from typing import Annotated
 from typing import Literal
 from typing import cast
 
-import asyncpg
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from app.embeddings.retry import compute_embedding_total_timeout
-from app.migrations import format_exception_message
+from app.errors import format_exception_message
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
-from app.startup import MAX_IMAGE_SIZE_MB
-from app.startup import MAX_TOTAL_SIZE_MB
 from app.startup import ensure_repositories
-from app.startup import get_chunking_service
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
-from app.summary.retry import compute_summary_total_timeout
+from app.tools._shared import build_store_response_message
+from app.tools._shared import build_update_response_message
+from app.tools._shared import execute_store_in_transaction
+from app.tools._shared import execute_update_in_transaction
+from app.tools._shared import generate_embeddings_with_timeout
+from app.tools._shared import generate_summary_with_timeout
+from app.tools._shared import is_connection_error
+from app.tools._shared import validate_and_normalize_images
 from app.types import ContextEntryDict
 from app.types import MetadataDict
 from app.types import StoreContextSuccessDict
@@ -50,224 +55,6 @@ from app.types import UpdateContextSuccessDict
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-# Concurrency limiter for embedding generation to prevent provider overload.
-# Initialized lazily on first use to ensure correct event loop binding.
-_embedding_semaphore: asyncio.Semaphore | None = None
-
-# Concurrency limiter for summary generation to prevent provider overload.
-# Initialized lazily on first use to ensure correct event loop binding.
-_summary_semaphore: asyncio.Semaphore | None = None
-
-
-def _get_embedding_semaphore() -> asyncio.Semaphore:
-    """Get or create the embedding concurrency semaphore.
-
-    Returns:
-        asyncio.Semaphore configured with EMBEDDING_MAX_CONCURRENT limit.
-    """
-    global _embedding_semaphore
-    if _embedding_semaphore is None:
-        _embedding_semaphore = asyncio.Semaphore(settings.embedding.max_concurrent)
-    return _embedding_semaphore
-
-
-def _get_summary_semaphore() -> asyncio.Semaphore:
-    """Get or create the summary concurrency semaphore."""
-    global _summary_semaphore
-    if _summary_semaphore is None:
-        _summary_semaphore = asyncio.Semaphore(settings.summary.max_concurrent)
-    return _summary_semaphore
-
-
-async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | None:
-    """Generate embeddings for text using configured provider.
-
-    This function implements the 'embedding-first' pattern by generating
-    embeddings BEFORE any database transaction is started. If embedding
-    generation fails, no data should be saved.
-
-    Args:
-        text: Text content to embed
-
-    Returns:
-        List of ChunkEmbedding objects with embedding vectors and boundaries,
-        or None if embedding generation is not enabled.
-
-    Raises:
-        ToolError: If embedding generation is enabled but fails.
-    """
-    embedding_provider = get_embedding_provider()
-    if embedding_provider is None:
-        return None
-
-    try:
-        chunking_service = get_chunking_service()
-        logger.debug(
-            f'Chunking service state: service={chunking_service}, '
-            f'enabled={chunking_service.is_enabled if chunking_service else "N/A"}',
-        )
-
-        if chunking_service is not None and chunking_service.is_enabled:
-            # Chunked embedding for long documents
-            chunks = chunking_service.split_text(text)
-            chunk_texts = [chunk.text for chunk in chunks]
-            logger.info(f'Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
-            embeddings = await embedding_provider.embed_documents(chunk_texts)
-            logger.info(f'Embeddings generated: chunks={len(chunk_texts)}, embeddings={len(embeddings)}')
-
-            return [
-                ChunkEmbedding(
-                    embedding=emb,
-                    start_index=chunk.start_index,
-                    end_index=chunk.end_index,
-                )
-                for emb, chunk in zip(embeddings, chunks, strict=True)
-            ]
-        # Single embedding (chunking disabled)
-        logger.info(f'Generating single embedding: text_len={len(text)}')
-        embedding = await embedding_provider.embed_query(text)
-        logger.info('Single embedding generated')
-        return [ChunkEmbedding(embedding=embedding, start_index=0, end_index=len(text))]
-
-    except Exception as e:
-        # CRITICAL: Embedding generation failed - this error must be raised
-        # to prevent any data from being saved
-        raise ToolError(f'Embedding generation failed: {format_exception_message(e)}') from e
-
-
-async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | None:
-    """Generate embeddings with concurrency limiting and total timeout.
-
-    Wraps _generate_embeddings_for_text with:
-    - Concurrency-limited access via embedding semaphore
-    - Total timeout computed from retry settings
-    - ToolError on timeout for clear client feedback
-
-    Used by all four tools: store_context, update_context, store_context_batch,
-    and update_context_batch.
-
-    Args:
-        text: Text content to generate embeddings for.
-
-    Returns:
-        List of ChunkEmbedding objects, or None if embedding provider
-        is not configured.
-
-    Raises:
-        ToolError: If embedding generation times out or fails.
-    """
-    if get_embedding_provider() is None:
-        return None
-
-    total_timeout = compute_embedding_total_timeout()
-    try:
-        async with _get_embedding_semaphore():
-            return await asyncio.wait_for(
-                _generate_embeddings_for_text(text),
-                timeout=total_timeout,
-            )
-    except TimeoutError:
-        raise ToolError(
-            f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
-            f'This may indicate the embedding provider is overloaded or unreachable.',
-        ) from None
-
-
-async def generate_summary_with_timeout(text: str, source: str) -> str | None:
-    """Generate summary with concurrency limiting and total timeout.
-
-    Wraps summary_provider.summarize() with:
-    - Concurrency-limited access via summary semaphore
-    - Total timeout computed from retry settings
-    - ToolError on timeout for clear client feedback
-
-    Used by all four tools: store_context, update_context,
-    store_context_batch, and update_context_batch.
-
-    Args:
-        text: Text content to generate summary for.
-        source: Source type ('user' or 'agent').
-
-    Returns:
-        Summary string, or None if summary provider is not configured.
-
-    Raises:
-        ToolError: If summary generation times out or fails.
-    """
-    summary_provider = get_summary_provider()
-    if summary_provider is None:
-        return None
-
-    total_timeout = compute_summary_total_timeout()
-    try:
-        logger.info('Generating summary: text_len=%d', len(text))
-        async with _get_summary_semaphore():
-            result = await asyncio.wait_for(
-                summary_provider.summarize(text, source),
-                timeout=total_timeout,
-            )
-        # Normalize empty/whitespace-only summaries to None
-        if not result.strip():
-            logger.warning('Summary provider returned empty/whitespace-only response, treating as None')
-            return None
-        logger.info('Summary generated: text_len=%d, summary_len=%d', len(text), len(result))
-        return result
-    except TimeoutError:
-        raise ToolError(
-            f'Summary generation exceeded total timeout ({total_timeout:.0f}s). '
-            f'This may indicate the summary provider is overloaded or unreachable.',
-        ) from None
-
-
-async def transaction_heartbeat(txn: object) -> None:
-    """Send lightweight heartbeat to prevent network intermediary idle timeout.
-
-    Executes SELECT 1 on the connection to generate wire-protocol traffic,
-    preventing NAT/firewall/proxy from classifying the connection as idle
-    and closing it during long-running transactions.
-
-    This is a defense-in-depth measure complementing TCP keepalive:
-    - TCP keepalive operates at kernel level (probes every ~15s)
-    - Heartbeat operates at application level (between sequential DB operations)
-    - Together they provide maximum protection against intermediary timeouts
-
-    For SQLite connections this is a no-op since SQLite does not use network
-    connections and is not subject to intermediary idle timeouts.
-
-    Args:
-        txn: Transaction context (TransactionContext) providing connection and backend_type.
-             Accepts object type for compatibility across backends.
-    """
-    backend_type = getattr(txn, 'backend_type', None)
-    if backend_type != 'postgresql':
-        return
-    conn = getattr(txn, 'connection', None)
-    if conn is None:
-        return
-    pg_conn = cast(asyncpg.Connection, conn)
-    await pg_conn.execute('SELECT 1')
-
-
-def is_connection_error(exc: Exception) -> bool:
-    """Check if an exception indicates a connection-level failure.
-
-    These errors are safe to retry because they indicate the connection
-    was lost (not a logical/data error). Operations using deduplication
-    (store_context) or idempotent updates are safe to retry.
-
-    Args:
-        exc: The exception to classify
-
-    Returns:
-        True if the exception is a connection error safe for retry
-    """
-    return isinstance(exc, (
-        asyncpg.InterfaceError,
-        asyncpg.ConnectionDoesNotExistError,
-        ConnectionResetError,
-        OSError,
-    ))
 
 
 async def store_context(
@@ -340,43 +127,7 @@ async def store_context(
             await ctx.info(f'Storing context for thread: {thread_id}')
 
         # Determine content type and validate images
-        content_type: Literal['text', 'multimodal'] = 'text'
-        validated_images: list[dict[str, str]] = []
-
-        if images:
-            total_size: float = 0.0
-            for idx, img in enumerate(images):
-                # Validate required data field
-                if 'data' not in img:
-                    raise ToolError(f'Image {idx} is missing required "data" field')
-
-                img_data_str = img.get('data', '')
-                if not img_data_str or not img_data_str.strip():
-                    raise ToolError(f'Image {idx} has empty "data" field')
-
-                # mime_type is optional - defaults to 'image/png' if not provided
-                if 'mime_type' not in img:
-                    img['mime_type'] = 'image/png'
-
-                # Validate base64 encoding
-                try:
-                    image_binary = base64.b64decode(img_data_str)
-                except Exception as e:
-                    raise ToolError(f'Image {idx} has invalid base64 encoding: {str(e)}') from None
-
-                # Validate image size
-                image_size_mb = len(image_binary) / (1024 * 1024)
-
-                if image_size_mb > MAX_IMAGE_SIZE_MB:
-                    raise ToolError(f'Image {idx} exceeds {MAX_IMAGE_SIZE_MB}MB limit')
-
-                total_size += image_size_mb
-                if total_size > MAX_TOTAL_SIZE_MB:
-                    raise ToolError(f'Total size exceeds {MAX_TOTAL_SIZE_MB}MB limit')
-
-            content_type = 'multimodal'
-            validated_images = images
-            logger.debug(f'Pre-validation passed for {len(validated_images)} images, total size: {total_size:.2f}MB')
+        validated_images, content_type, _ = validate_and_normalize_images(images, error_mode='raise')
 
         # === PHASE 2: Generate Summary + Embedding in PARALLEL (Outside Transaction) ===
         # CRITICAL: Both generation steps happen BEFORE any database operations.
@@ -482,74 +233,25 @@ async def store_context(
         for attempt in range(max_retries + 1):
             try:
                 async with backend.begin_transaction() as txn:
-                    # Store context entry with deduplication
-                    context_id, was_updated = await repos.context.store_with_deduplication(
+                    context_id, was_updated, embedding_stored = await execute_store_in_transaction(
+                        repos, txn,
                         thread_id=thread_id,
                         source=source,
                         content_type=content_type,
                         text_content=text,
-                        metadata=metadata_str,
+                        metadata_str=metadata_str,
                         summary=summary_text,
-                        txn=txn,
+                        tags=tags,
+                        validated_images=validated_images,
+                        chunk_embeddings=chunk_embeddings,
+                        embedding_model=settings.embedding.model,
                     )
 
-                    # Ensure we got a valid ID (not None or 0)
-                    if not context_id:
-                        raise ToolError('Failed to store context')
-
-                    # Heartbeat: keep connection alive between sequential operations
-                    await transaction_heartbeat(txn)
-
-                    # Store or replace tags depending on deduplication outcome
-                    if tags:
-                        if was_updated:
-                            await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
-                        else:
-                            await repos.tags.store_tags(context_id, tags, txn=txn)
-
-                    # Store or replace images depending on deduplication outcome
-                    if validated_images:
-                        if was_updated:
-                            await repos.images.replace_images_for_context(context_id, validated_images, txn=txn)
-                        else:
-                            await repos.images.store_images(context_id, validated_images, txn=txn)
-
-                    # Heartbeat before potentially long embedding storage
-                    if chunk_embeddings is not None:
-                        await transaction_heartbeat(txn)
-
-                    # Store embeddings only if:
-                    # 1. New entry (not was_updated) - always store embeddings, OR
-                    # 2. Deduplicated entry (was_updated) but no embeddings exist yet - store embeddings
-                    # Skip if: Deduplicated entry AND embeddings already exist
-                    if chunk_embeddings is not None:
-                        should_store_embedding = True
-                        if was_updated:
-                            embedding_exists = await repos.embeddings.exists(context_id)
-                            should_store_embedding = not embedding_exists
-                            if not should_store_embedding:
-                                logger.debug(
-                                    f'Skipping embedding storage for deduplicated context {context_id} '
-                                    f'(embeddings already exist)',
-                                )
-
-                        if should_store_embedding:
-                            await repos.embeddings.store_chunked(
-                                context_id=context_id,
-                                chunk_embeddings=chunk_embeddings,
-                                model=settings.embedding.model,
-                                txn=txn,
-                                upsert=was_updated,
-                            )
-                            embedding_stored = True
-
-                    # COMMIT happens here - all or nothing
-
-                # Transaction committed successfully — break retry loop
+                # Transaction committed successfully -- break retry loop
                 break
 
             except ToolError:
-                raise  # ToolError is a logical error, not connection error — do not retry
+                raise  # ToolError is a logical error, not connection error -- do not retry
             except Exception as e:
                 if is_connection_error(e) and attempt < max_retries:
                     delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
@@ -565,24 +267,14 @@ async def store_context(
         action = 'updated' if was_updated else 'stored'
         logger.info(f'{action.capitalize()} context {context_id} in thread {thread_id}')
 
-        # Build message parts
-        parts: list[str] = []
-
-        if embedding_generated and not embedding_stored:
-            parts.append('embedding generated but not stored - duplicate')
-        elif embedding_stored:
-            parts.append('embedding generated')
-
-        if summary_generated:
-            parts.append('summary generated')
-        elif summary_text is not None:
-            parts.append('summary preserved')
-
-        # Build base message: suppress "with 0 images" when no images
-        base = f'Context {action} with {len(validated_images)} images' if validated_images else f'Context {action}'
-
-        # Single consolidated parenthetical
-        message = f'{base} ({", ".join(parts)})' if parts else base
+        message = build_store_response_message(
+            action=action,
+            image_count=len(validated_images),
+            embedding_generated=embedding_generated,
+            embedding_stored=embedding_stored,
+            summary_generated=summary_generated,
+            summary_preserved=summary_text is not None and not summary_generated,
+        )
 
         return StoreContextSuccessDict(
             success=True,
@@ -666,7 +358,7 @@ async def get_context_by_ids(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error fetching context by IDs: {e}')
-        raise ToolError(f'Failed to fetch context entries: {str(e)}') from e
+        raise ToolError(f'Failed to fetch context entries: {format_exception_message(e)}') from e
 
 
 async def delete_context(
@@ -756,7 +448,7 @@ async def delete_context(
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:
         logger.error(f'Error deleting context: {e}')
-        raise ToolError(f'Failed to delete context: {str(e)}') from e
+        raise ToolError(f'Failed to delete context: {format_exception_message(e)}') from e
 
 
 async def update_context(
@@ -824,32 +516,7 @@ async def update_context(
             await ctx.info(f'Updating context entry {context_id}')
 
         # Validate images early (before any operations)
-        validated_images: list[dict[str, str]] = []
-        if images is not None and len(images) > 0:
-            total_size = 0.0
-            for img in images:
-                if 'data' not in img:
-                    raise ToolError('Each image must have "data" field')
-                if 'mime_type' not in img:
-                    img['mime_type'] = 'image/png'
-
-                # Check individual image size
-                try:
-                    img_data = base64.b64decode(img['data'])
-                except Exception:
-                    raise ToolError('Invalid base64 image data') from None
-
-                img_size_mb = len(img_data) / (1024 * 1024)
-                total_size += img_size_mb
-
-                if img_size_mb > MAX_IMAGE_SIZE_MB:
-                    raise ToolError(f'Image exceeds size limit of {MAX_IMAGE_SIZE_MB}MB')
-
-            # Check total size
-            if total_size > MAX_TOTAL_SIZE_MB:
-                raise ToolError(f'Total image size {total_size:.2f}MB exceeds limit of {MAX_TOTAL_SIZE_MB}MB')
-
-            validated_images = images
+        validated_images, _, _ = validate_and_normalize_images(images, error_mode='raise')
 
         # Get repositories
         repos = await ensure_repositories()
@@ -919,114 +586,27 @@ async def update_context(
 
         for attempt in range(max_retries + 1):
             try:
-                updated_fields = []  # Reset on each attempt
-
                 async with backend.begin_transaction() as txn:
-                    # Update text content and/or metadata (full replacement) if provided
-                    if text is not None or metadata is not None:
-                        # Prepare metadata JSON string if provided
-                        metadata_str: str | None = None
-                        if metadata is not None:
-                            metadata_str = json.dumps(metadata, ensure_ascii=False)
+                    updated_fields, _ = await execute_update_in_transaction(
+                        repos, txn,
+                        context_id=context_id,
+                        text=text,
+                        metadata=metadata,
+                        metadata_patch=metadata_patch,
+                        summary=summary_text,
+                        clear_summary=clear_summary,
+                        tags=tags,
+                        images=images,
+                        validated_images=validated_images,
+                        chunk_embeddings=chunk_embeddings,
+                        embedding_model=settings.embedding.model,
+                    )
 
-                        # Update context entry
-                        success, fields = await repos.context.update_context_entry(
-                            context_id=context_id,
-                            text_content=text,
-                            metadata=metadata_str,
-                            summary=summary_text,
-                            clear_summary=clear_summary,
-                            txn=txn,
-                        )
-
-                        if not success:
-                            raise ToolError('Failed to update context entry')
-
-                        updated_fields.extend(fields)
-
-                    # Apply metadata patch (partial update) if provided
-                    # RFC 7396 JSON Merge Patch: merges with existing metadata
-                    # - New keys are added
-                    # - Existing keys are replaced with new values
-                    # - null values DELETE keys (cannot store null values with patch)
-                    if metadata_patch is not None:
-                        success, fields = await repos.context.patch_metadata(
-                            context_id=context_id,
-                            patch=metadata_patch,
-                            txn=txn,
-                        )
-
-                        if not success:
-                            raise ToolError('Failed to patch metadata')
-
-                        updated_fields.extend(fields)
-                        logger.debug(f'Applied metadata patch to context {context_id}')
-
-                    # Heartbeat between operation groups
-                    await transaction_heartbeat(txn)
-
-                    # Replace tags if provided
-                    if tags is not None:
-                        await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
-                        updated_fields.append('tags')
-                        logger.debug(f'Replaced tags for context {context_id}')
-
-                    # Replace images if provided
-                    if images is not None:
-                        # If images list is empty (removing all images), update content_type to text
-                        if len(images) == 0:
-                            await repos.images.replace_images_for_context(context_id, [], txn=txn)
-                            await repos.context.update_content_type(context_id, 'text', txn=txn)
-                            updated_fields.extend(['images', 'content_type'])
-                            logger.debug(f'Removed all images from context {context_id}')
-                        else:
-                            # Replace images with validated data
-                            await repos.images.replace_images_for_context(context_id, validated_images, txn=txn)
-                            updated_fields.append('images')
-
-                            # Update content_type to multimodal if images were added
-                            await repos.context.update_content_type(context_id, 'multimodal', txn=txn)
-                            updated_fields.append('content_type')
-                            logger.debug(f'Replaced images for context {context_id}')
-
-                    # Check if we need to update content_type based on current state
-                    # Note: image count check is still read-only, safe to do inside transaction
-                    if images is None and (text is not None or metadata is not None):
-                        # Check if there are existing images to determine content_type
-                        image_count = await repos.images.count_images_for_context(context_id)
-                        current_content_type = 'multimodal' if image_count > 0 else 'text'
-
-                        # Get the stored content type
-                        stored_content_type = await repos.context.get_content_type(context_id)
-
-                        # Update if different
-                        if stored_content_type != current_content_type:
-                            await repos.context.update_content_type(context_id, current_content_type, txn=txn)
-                            updated_fields.append('content_type')
-
-                    # Heartbeat before embedding storage
-                    if chunk_embeddings is not None:
-                        await transaction_heartbeat(txn)
-                        # Delete existing chunks first (within the same transaction)
-                        await repos.embeddings.delete_all_chunks(context_id, txn=txn)
-
-                        # Store new embeddings
-                        await repos.embeddings.store_chunked(
-                            context_id=context_id,
-                            chunk_embeddings=chunk_embeddings,
-                            model=settings.embedding.model,
-                            txn=txn,
-                        )
-                        updated_fields.append('embedding')
-                        logger.debug(f'Updated {len(chunk_embeddings)} chunk embeddings for context {context_id}')
-
-                    # COMMIT happens here - all or nothing
-
-                # Transaction committed — break retry loop
+                # Transaction committed -- break retry loop
                 break
 
             except ToolError:
-                raise  # ToolError is a logical error, not connection error — do not retry
+                raise  # ToolError is a logical error, not connection error -- do not retry
             except Exception as e:
                 if is_connection_error(e) and attempt < max_retries:
                     delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
@@ -1041,16 +621,12 @@ async def update_context(
 
         logger.info(f'Successfully updated context {context_id}, fields: {updated_fields}')
 
-        parts: list[str] = []
-        if embedding_generated:
-            parts.append('embedding regenerated')
-        if summary_generated:
-            parts.append('summary regenerated')
-        elif clear_summary:
-            parts.append('summary cleared')
-
-        base = f'Successfully updated {len(updated_fields)} field(s)'
-        message = f'{base} ({", ".join(parts)})' if parts else base
+        message = build_update_response_message(
+            updated_fields_count=len(updated_fields),
+            embedding_generated=embedding_generated,
+            summary_generated=summary_generated,
+            summary_cleared=clear_summary,
+        )
 
         return UpdateContextSuccessDict(
             success=True,
