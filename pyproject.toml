@@ -38,6 +38,8 @@ constraint-dependencies = [
     "langchain-core>=1.2.11",  # CVE-2026-26013 fix
     "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
     "authlib>=1.6.7",  # CVE-2026-28802 fix
+    "pyjwt>=2.12.0",  # CVE-2026-32597 fix
+    "orjson>=3.11.6",  # CVE-2025-67221 fix
 ]
 
 [project.optional-dependencies]
