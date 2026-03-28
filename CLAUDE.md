@@ -148,7 +148,7 @@ Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `a
 
 uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+. Optional extras: `embeddings-ollama`, `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`, `summary-ollama`, `summary-openai`, `summary-anthropic`, `reranking`, `langsmith`.
 
-[Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker image (amd64/arm64).
+[Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker images (amd64/arm64): default Ollama variant and `ollama-openai` variant.
 
 ### SECURITY.md Maintenance
 
@@ -246,13 +246,15 @@ Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in 
 | `{providers}`       | `ollama`, `openai`, `ollama-openai`           | Embedding + summary provider combination. Single name when both use same provider; hyphenated `<embedding>-<summary>` when they differ.                                   |
 | `.local` (optional) | Present or absent                             | Present ONLY for provider combinations that have a published GHCR image, indicating the file builds that same configuration locally instead of pulling from the registry. |
 
-**Three image source categories:**
+**Five image source categories:**
 
-| Category                        | Files                                 | `image:`                                      | `pull_policy` | `build:` block                                  |
-|---------------------------------|---------------------------------------|-----------------------------------------------|---------------|-------------------------------------------------|
-| GHCR pull                       | `*.ollama.yml`                        | `ghcr.io/alex-feel/mcp-context-server:latest` | `always`      | None                                            |
-| Local build (GHCR equivalent)   | `*.ollama.local.yml`                  | `mcp-context-server`                          | `build`       | Yes (no custom args, uses Dockerfile defaults)  |
-| Local build (provider-specific) | `*.openai.yml`, `*.ollama-openai.yml` | `mcp-context-server`                          | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
+| Category                         | Files                        | `image:`                                                    | `pull_policy` | `build:` block                                  |
+|----------------------------------|------------------------------|-------------------------------------------------------------|---------------|-------------------------------------------------|
+| GHCR pull                        | `*.ollama.yml`               | `ghcr.io/alex-feel/mcp-context-server:latest`               | `always`      | None                                            |
+| GHCR pull (variant)              | `*.ollama-openai.yml`        | `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` | `always`      | None                                            |
+| Local build (GHCR equivalent)    | `*.ollama.local.yml`         | `mcp-context-server`                                        | `build`       | Yes (no custom args, uses Dockerfile defaults)  |
+| Local build (variant equivalent) | `*.ollama-openai.local.yml`  | `mcp-context-server`                                        | `build`       | Yes (with SUMMARY_EXTRA=summary-openai)         |
+| Local build (provider-specific)  | `*.openai.yml`               | `mcp-context-server`                                        | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
 
 **Extensibility rule:** When adding new provider combinations -- if a GHCR image is published for the combination, create both `*.{providers}.yml` (GHCR pull) and `*.{providers}.local.yml` (local build). If no GHCR image exists, create only `*.{providers}.yml` (local build, no `.local` variant needed).
 
