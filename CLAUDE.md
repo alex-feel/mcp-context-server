@@ -154,6 +154,13 @@ uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+.
 
 When a commit triggers a major version bump (Conventional Commit `!` suffix or `BREAKING CHANGE:` in body/footer), update the Supported Versions table in `SECURITY.md` in the same PR: add the new major version as supported, mark the previous major version as unsupported.
 
+## Documentation Maintenance
+
+When changing core functionality, update the corresponding doc before committing:
+
+- **`README.md`** -- Update when adding, changing, or removing user-facing features. The README is the first thing users read; its Key Features list must reflect current capabilities.
+- Update any other related documents in `docs/`.
+
 ## CI and Docker Lock File Discipline
 
 The `uv.lock` file is a UNIVERSAL resolution containing ALL dependencies across ALL optional groups and extras. At install time, `uv sync` with selective flags installs only the relevant subset.
