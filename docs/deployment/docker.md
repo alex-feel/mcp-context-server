@@ -6,7 +6,7 @@ This guide covers deploying the MCP Context Server using Docker and Docker Compo
 
 **Key Features:**
 - HTTP transport mode for remote access (vs. stdio for local)
-- Twelve pre-configured deployment options (9 standard + 3 local-build alternatives)
+- Fifteen pre-configured deployment options (9 standard + 6 local-build alternatives)
 - Support for Ollama (local), OpenAI (cloud), and mixed-provider (Ollama embeddings + OpenAI summary) configurations
 - Health checks and container orchestration support
 - Shared Ollama model volume across Ollama configurations
@@ -21,7 +21,7 @@ This guide covers deploying the MCP Context Server using Docker and Docker Compo
 
 ## Deployment Options
 
-Twelve Docker Compose configurations are provided, organized by provider combination:
+Fifteen Docker Compose configurations are provided, organized by provider combination:
 
 ### Ollama Embeddings (Local, Self-Hosted)
 
@@ -67,7 +67,17 @@ For users who want to build the MCP Context Server image from local source code 
 | PostgreSQL + Ollama (local build)    | `docker-compose.postgresql.ollama.local.yml`          | Internal PostgreSQL    | Testing PostgreSQL with local code           |
 | External PostgreSQL + Ollama (local) | `docker-compose.postgresql-external.ollama.local.yml` | Supabase, corporate DB | Testing external DB with local code          |
 
-These `.local` files build the same Docker image as the published GHCR image but from local source code. Use them when you want to test local changes before pushing. The OpenAI and mixed-provider files always build from source (no GHCR image exists for those configurations).
+### Local Build Alternatives (Ollama + OpenAI Summary)
+
+`.local` variants are also available for the mixed-provider (Ollama embeddings + OpenAI summary) configurations:
+
+| Configuration                                     | File                                                         | Database               | Use Case                                     |
+|---------------------------------------------------|--------------------------------------------------------------|------------------------|----------------------------------------------|
+| SQLite + Ollama/OpenAI (local build)              | `docker-compose.sqlite.ollama-openai.local.yml`              | Local SQLite           | Development, testing with local code changes |
+| PostgreSQL + Ollama/OpenAI (local build)          | `docker-compose.postgresql.ollama-openai.local.yml`          | Internal PostgreSQL    | Testing PostgreSQL with local code           |
+| External PostgreSQL + Ollama/OpenAI (local build) | `docker-compose.postgresql-external.ollama-openai.local.yml` | Supabase, corporate DB | Testing external DB with local code          |
+
+These `.local` files build the same Docker image as the published GHCR image but from local source code. Use them when you want to test local changes before pushing. The OpenAI-only compose files always build from source (no GHCR image exists for those configurations).
 
 ## Quick Start
 
@@ -169,7 +179,7 @@ curl http://localhost:8000/health
 
 ### Mixed Provider Deployments (Ollama Embeddings + OpenAI Summary)
 
-Mixed provider configurations use Ollama for local embedding generation and OpenAI for cloud-based summary generation. All configurations **require** an `.env` file with your OpenAI API key.
+Mixed provider configurations use Ollama for local embedding generation and OpenAI for cloud-based summary generation. These configurations pull the pre-built `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` image from GHCR. To build from local source code instead, use the `.local` variants (e.g., `docker-compose.sqlite.ollama-openai.local.yml`). All configurations **require** an `.env` file with your OpenAI API key.
 
 #### SQLite + Ollama Embeddings + OpenAI Summary
 
@@ -229,21 +239,22 @@ curl http://localhost:8000/health
 
 ### When to Build from Source
 
-The GHCR-published image (`ghcr.io/alex-feel/mcp-context-server:latest`) contains the Ollama embedding and summary providers. Use it for standard Ollama deployments.
+Two GHCR-published images are available: `ghcr.io/alex-feel/mcp-context-server:latest` (Ollama embeddings + Ollama summary) and `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` (Ollama embeddings + OpenAI summary).
 
 Build from source when:
 
-- **Testing local code changes** -- use the `.local` variants of Ollama compose files
+- **Testing local code changes** -- use the `.local` variants of compose files
 - **Using OpenAI embeddings** -- the OpenAI compose files build with `EMBEDDING_EXTRA=embeddings-openai`
-- **Using mixed providers** -- the Ollama+OpenAI compose files build with `EMBEDDING_EXTRA=embeddings-ollama` + `SUMMARY_EXTRA=summary-openai`
 
 ### Image Source Categories
 
-| Category                        | Files                                 | `image:`                                      | `pull_policy` | `build:` block                                  |
-|---------------------------------|---------------------------------------|-----------------------------------------------|---------------|-------------------------------------------------|
-| GHCR pull                       | `*.ollama.yml`                        | `ghcr.io/alex-feel/mcp-context-server:latest` | `always`      | None                                            |
-| Local build (GHCR equivalent)   | `*.ollama.local.yml`                  | `mcp-context-server`                          | `build`       | Yes (no custom args)                            |
-| Local build (provider-specific) | `*.openai.yml`, `*.ollama-openai.yml` | `mcp-context-server`                          | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
+| Category                         | Files                        | `image:`                                                    | `pull_policy` | `build:` block                                  |
+|----------------------------------|------------------------------|-------------------------------------------------------------|---------------|-------------------------------------------------|
+| GHCR pull                        | `*.ollama.yml`               | `ghcr.io/alex-feel/mcp-context-server:latest`               | `always`      | None                                            |
+| GHCR pull (variant)              | `*.ollama-openai.yml`        | `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` | `always`      | None                                            |
+| Local build (GHCR equivalent)    | `*.ollama.local.yml`         | `mcp-context-server`                                        | `build`       | Yes (no custom args)                            |
+| Local build (variant equivalent) | `*.ollama-openai.local.yml`  | `mcp-context-server`                                        | `build`       | Yes (with SUMMARY_EXTRA=summary-openai)         |
+| Local build (provider-specific)  | `*.openai.yml`               | `mcp-context-server`                                        | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
 
 ## Client Connection
 
@@ -1113,20 +1124,23 @@ If your container shows "Running" but the server is not responding:
 
 ### Docker Compose Files
 
-| File                                                   | Description                                              | Image Source |
-|--------------------------------------------------------|----------------------------------------------------------|--------------|
-| `docker-compose.sqlite.ollama.yml`                     | SQLite + Ollama embeddings                               | GHCR         |
-| `docker-compose.sqlite.ollama.local.yml`               | SQLite + Ollama embeddings (local build)                 | Local        |
-| `docker-compose.postgresql.ollama.yml`                 | PostgreSQL + Ollama embeddings                           | GHCR         |
-| `docker-compose.postgresql.ollama.local.yml`           | PostgreSQL + Ollama embeddings (local build)             | Local        |
-| `docker-compose.postgresql-external.ollama.yml`        | External PostgreSQL + Ollama embeddings                  | GHCR         |
-| `docker-compose.postgresql-external.ollama.local.yml`  | External PostgreSQL + Ollama embeddings (local build)    | Local        |
-| `docker-compose.sqlite.openai.yml`                     | SQLite + OpenAI embeddings                               | Local        |
-| `docker-compose.postgresql.openai.yml`                 | PostgreSQL + OpenAI embeddings                           | Local        |
-| `docker-compose.postgresql-external.openai.yml`        | External PostgreSQL + OpenAI embeddings                  | Local        |
-| `docker-compose.sqlite.ollama-openai.yml`              | SQLite + Ollama embeddings + OpenAI summary              | Local        |
-| `docker-compose.postgresql.ollama-openai.yml`          | PostgreSQL + Ollama embeddings + OpenAI summary          | Local        |
-| `docker-compose.postgresql-external.ollama-openai.yml` | External PostgreSQL + Ollama embeddings + OpenAI summary | Local        |
+| File                                                         | Description                                                      | Image Source |
+|--------------------------------------------------------------|------------------------------------------------------------------|--------------|
+| `docker-compose.sqlite.ollama.yml`                           | SQLite + Ollama embeddings                                       | GHCR         |
+| `docker-compose.sqlite.ollama.local.yml`                     | SQLite + Ollama embeddings (local build)                         | Local        |
+| `docker-compose.postgresql.ollama.yml`                       | PostgreSQL + Ollama embeddings                                   | GHCR         |
+| `docker-compose.postgresql.ollama.local.yml`                 | PostgreSQL + Ollama embeddings (local build)                     | Local        |
+| `docker-compose.postgresql-external.ollama.yml`              | External PostgreSQL + Ollama embeddings                          | GHCR         |
+| `docker-compose.postgresql-external.ollama.local.yml`        | External PostgreSQL + Ollama embeddings (local build)            | Local        |
+| `docker-compose.sqlite.openai.yml`                           | SQLite + OpenAI embeddings                                       | Local        |
+| `docker-compose.postgresql.openai.yml`                       | PostgreSQL + OpenAI embeddings                                   | Local        |
+| `docker-compose.postgresql-external.openai.yml`              | External PostgreSQL + OpenAI embeddings                          | Local        |
+| `docker-compose.sqlite.ollama-openai.yml`                    | SQLite + Ollama embeddings + OpenAI summary                      | GHCR         |
+| `docker-compose.sqlite.ollama-openai.local.yml`              | SQLite + Ollama embeddings + OpenAI summary (local build)        | Local        |
+| `docker-compose.postgresql.ollama-openai.yml`                | PostgreSQL + Ollama embeddings + OpenAI summary                  | GHCR         |
+| `docker-compose.postgresql.ollama-openai.local.yml`          | PostgreSQL + Ollama embeddings + OpenAI summary (local)          | Local        |
+| `docker-compose.postgresql-external.ollama-openai.yml`       | External PostgreSQL + Ollama embeddings + OpenAI summary         | GHCR         |
+| `docker-compose.postgresql-external.ollama-openai.local.yml` | External PostgreSQL + Ollama embeddings + OpenAI summary (local) | Local        |
 
 ### Environment Templates
 

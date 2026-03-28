@@ -61,6 +61,14 @@ RUN mkdir -p /cache/flashrank && chown appuser:appuser /cache/flashrank
 # Switch to non-root user
 USER appuser
 
+# OCI image metadata (static labels for manual builds; CI overrides via docker/metadata-action)
+LABEL org.opencontainers.image.source="https://github.com/alex-feel/mcp-context-server" \
+      org.opencontainers.image.documentation="https://github.com/alex-feel/mcp-context-server#readme" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="alex-feel" \
+      org.opencontainers.image.title="mcp-context-server" \
+      org.opencontainers.image.base.name="docker.io/library/python:3.12-slim-bookworm"
+
 # Expose HTTP port
 EXPOSE 8000
 

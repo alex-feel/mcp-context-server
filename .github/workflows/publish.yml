@@ -346,6 +346,13 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             io.modelcontextprotocol.server.name=${{ env.SERVER_NAME }}
+            org.opencontainers.image.description=MCP server providing persistent multimodal context storage for LLM agents. Ollama embeddings and summary provider.
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.vendor=alex-feel
+            org.opencontainers.image.documentation=https://github.com/alex-feel/mcp-context-server#readme
+            org.opencontainers.image.base.name=docker.io/library/python:3.12-slim-bookworm
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
 
       - name: Build and push Docker image
         id: push
@@ -356,8 +363,92 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=ollama
+          cache-to: type=gha,mode=max,scope=ollama
+          provenance: true
+          sbom: true
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  publish-docker-image-ollama-openai:
+    name: Publish Docker Image to GHCR (Ollama-OpenAI)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: alex-feel/mcp-context-server
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download uv.lock
+        uses: actions/download-artifact@v8
+        with:
+          name: uv-lock
+          path: .
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-ollama-openai,onlatest=true
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.build.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.build.outputs.version }},enable=${{ !startsWith(needs.build.outputs.version, '0.') }}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.description=MCP server providing persistent multimodal context storage for LLM agents. Ollama embeddings + OpenAI summary provider.
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.vendor=alex-feel
+            org.opencontainers.image.documentation=https://github.com/alex-feel/mcp-context-server#readme
+            org.opencontainers.image.base.name=docker.io/library/python:3.12-slim-bookworm
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            EMBEDDING_EXTRA=embeddings-ollama
+            SUMMARY_EXTRA=summary-openai
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=ollama-openai
+          cache-to: type=gha,mode=max,scope=ollama-openai
           provenance: true
           sbom: true
 
