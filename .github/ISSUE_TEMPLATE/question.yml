@@ -1,0 +1,52 @@
+name: Question
+description: Ask a question about mcp-context-server
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before asking, you may find your answer in the existing documentation:
+
+        - [README](https://github.com/alex-feel/mcp-context-server#readme) -- Overview and quick start
+        - [Documentation](https://github.com/alex-feel/mcp-context-server/tree/main/docs) -- Detailed guides
+        - [Environment Variables](https://github.com/alex-feel/mcp-context-server/blob/main/docs/environment-variables.md) -- Configuration reference
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Describe your question in detail. Include what you are trying to achieve and any relevant context.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic Area
+      description: What area does your question relate to?
+      options:
+        - Installation/Setup
+        - Configuration
+        - MCP Tools
+        - Search (Semantic/FTS/Hybrid)
+        - Storage Backends
+        - Embedding Providers
+        - Summary Providers
+        - Docker/Kubernetes Deployment
+        - Authentication
+        - API/Integration
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What I've Tried
+      description: Describe what you have already tried or investigated. This helps avoid suggesting things you already know.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, code snippets, or configuration details that may help answer your question.
