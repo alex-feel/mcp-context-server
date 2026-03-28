@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.2.2](https://github.com/alex-feel/mcp-context-server/compare/v2.2.1...v2.2.2) (2026-03-28)
+
+
+### Bug Fixes
+
+* add interleaving check to deduplication to preserve conversational turn ordering ([5ef8b2f](https://github.com/alex-feel/mcp-context-server/commit/5ef8b2fae6cf1703722de2bb27de3840791d495d))
+* bump pyjwt and orjson to fix HIGH-severity CVEs ([9489e85](https://github.com/alex-feel/mcp-context-server/commit/9489e8543c4fb92a394d5aacf39e9f2d2cdf998c))
+* extract shared tool infrastructure and resolve batch-nonbatch parity bugs ([f337a67](https://github.com/alex-feel/mcp-context-server/commit/f337a67a82e796d8055a588878fdf20c49fe1dc1))
+* pass API keys explicitly in summary providers and clean up project config ([ff03172](https://github.com/alex-feel/mcp-context-server/commit/ff031722896e97846eddfb0bcf54cbaa84af8cc7))
+
 ## [2.2.1](https://github.com/alex-feel/mcp-context-server/compare/v2.2.0...v2.2.1) (2026-03-26)
 
 
