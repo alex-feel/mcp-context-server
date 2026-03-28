@@ -1,0 +1,184 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the form below to help us investigate.
+
+        **Before submitting, please note:** A clear description and reproduction steps are the most helpful things you can provide. If you have done genuine investigation and have a non-obvious insight into the root cause, include it. But please do not speculate or include LLM-generated diagnoses -- an incorrect analysis is harder to work with than none at all.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Pre-submission Checks
+      options:
+        - label: I am using the latest version of mcp-context-server
+          required: true
+        - label: I searched existing issues and found no duplicates
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: >-
+        Describe the bug clearly. Include what happened and what you expected to happen instead.
+      placeholder: |
+        What happened:
+        ...
+
+        What I expected:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: >-
+        Provide the minimal steps needed to reproduce this bug. Include configuration snippets or
+        commands if applicable.
+      placeholder: |
+        1. Configure server with...
+        2. Run command...
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation Method
+      options:
+        - uvx
+        - uv run
+        - Docker
+        - Kubernetes/Helm
+    validations:
+      required: true
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport Mode
+      options:
+        - stdio
+        - http
+        - streamable-http
+        - sse
+    validations:
+      required: true
+
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage Backend
+      options:
+        - SQLite
+        - PostgreSQL
+        - Supabase
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mcp-client
+    attributes:
+      label: MCP Client
+      description: Select all MCP clients where you observed this issue.
+      multiple: true
+      options:
+        - Claude Code
+        - Claude Desktop
+        - Cursor
+        - Windsurf
+        - LangGraph
+        - Custom client
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: server-version
+    attributes:
+      label: Server Version
+      description: >-
+        Run `pip show mcp-context-server` or `uv pip show mcp-context-server` and paste the version.
+      placeholder: "e.g., 2.5.0"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: "Run `python --version` and paste the output."
+      placeholder: "e.g., 3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: Your OS and version.
+      placeholder: "e.g., Windows 11 23H2, macOS 15.2, Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Error Output
+      description: >-
+        Paste any error messages, tracebacks, or relevant log output. This will be automatically
+        formatted as a code block.
+      render: text
+
+  - type: checkboxes
+    id: features
+    attributes:
+      label: Enabled Features
+      description: Check the features that are enabled in your configuration.
+      options:
+        - label: ENABLE_SEMANTIC_SEARCH
+        - label: ENABLE_FTS
+        - label: ENABLE_HYBRID_SEARCH
+        - label: ENABLE_SUMMARY_GENERATION
+        - label: ENABLE_EMBEDDING_GENERATION
+        - label: ENABLE_RERANKING
+        - label: ENABLE_CHUNKING
+
+  - type: dropdown
+    id: embedding-provider
+    attributes:
+      label: Embedding Provider
+      description: If you are using embedding generation, select your provider.
+      options:
+        - Not applicable
+        - Ollama
+        - OpenAI
+        - Azure
+        - HuggingFace
+        - Voyage
+
+  - type: dropdown
+    id: summary-provider
+    attributes:
+      label: Summary Provider
+      description: If you are using summary generation, select your provider.
+      options:
+        - Not applicable
+        - Ollama
+        - OpenAI
+        - Anthropic
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: >-
+        Add any other context about the problem here. Screenshots, configuration files, or
+        environment details may be helpful.
