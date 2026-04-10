@@ -1,0 +1,54 @@
+# Context Management PreCompact Hook Configuration (Universal)
+# Controls what state to preserve before context compaction.
+#
+# Purpose: Instruct Claude on WHAT to preserve, WHAT NOT to preserve,
+# WHY each matters, and HOW to manage state across compaction.
+
+# Whether the hook is enabled (optional, default: true)
+enabled: true
+
+# How to handle context compaction for subagents (optional, default: skip)
+# Modes:
+#   skip - Exit silently, letting Claude use default compaction (recommended)
+#   full - Pass through compaction rules (for debugging)
+subagent_compaction_mode: skip
+
+# =============================================================================
+# PRECOMPACT MESSAGE (processed by hook)
+# =============================================================================
+message:
+  header: |
+    === CONTEXT STATE PRESERVATION ===
+
+  instruction: "Preserve important state before context compaction:"
+
+  preservation_rules:
+    - category: "Current task context and progress"
+      action: "PRESERVE"
+      rationale: "Required to continue work after compaction"
+    - category: "Context server entry IDs (context_ids)"
+      action: "PRESERVE"
+      rationale: "IDs enable retrieval of full content from context-server"
+    - category: "User decisions and preferences from this session"
+      action: "PRESERVE"
+      rationale: "User choices must persist across compaction"
+    - category: "Active file paths and modification state"
+      action: "PRESERVE"
+      rationale: "Needed to resume implementation work"
+    - category: "Detailed content already stored in context-server"
+      action: "DO NOT STORE"
+      rationale: "Retrievable via context_ids, do not duplicate"
+    - category: "Intermediate reasoning and analysis"
+      action: "SUMMARIZE"
+      rationale: "Keep key decisions, compress detailed reasoning"
+
+  must_responsibilities:
+    - "Never lose current state: active task, pending work, important context_ids"
+    - "Maintain context_ids for all stored work -- these are your retrieval keys"
+    - "Rely on context-server for detailed content retrieval"
+    - "Preserve user decisions and preferences from this session"
+
+  must_not_responsibilities:
+    - "Attempt to retain full stored content in the compacted context"
+    - "Store redundant copies of information available in context-server"
+    - "Lose track of which context_ids are important"

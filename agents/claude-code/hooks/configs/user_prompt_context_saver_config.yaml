@@ -1,0 +1,160 @@
+# User Prompt Context Saver Hook Configuration
+# This config controls which user prompts are saved to the context server.
+
+# Whether the hook is enabled (optional, default: true)
+enabled: true
+
+# Whether to output stored context_id to model context via hookSpecificOutput.additionalContext
+# When enabled, the hook outputs a JSON response with the context_id after successful storage,
+# allowing the orchestrator to reference the exact user message by ID in agent prompts.
+output_context_id: true
+
+# Regex patterns to skip saving (for internal hook prompts)
+# When creating new `type: prompt` hooks, add their prompt prefix pattern here
+# to prevent internal hook prompts from being saved to context server.
+# Patterns are matched against the START of the prompt text.
+skip_patterns:
+  - "^<task-notification>"
+  - "^<bash-notification>"
+
+# Pre-built Claude Code slash commands to skip saving
+# These are system-level operations that don't need context preservation
+# Source is available at https://code.claude.com/docs/en/commands
+prebuilt_commands:
+  - add-dir
+  - agents
+  - autofix-pr
+  - batch
+  - btw
+  - chrome
+  - claude-api
+  - clear
+  - color
+  - compact
+  - config
+  - context
+  - copy
+  - cost
+  - debug
+  - desktop
+  - diff
+  - doctor
+  - effort
+  - exit
+  - export
+  - extra-usage
+  - fast
+  - feedback
+  - branch
+  - help
+  - hooks
+  - ide
+  - init
+  - insights
+  - install-github-app
+  - install-slack-app
+  - keybindings
+  - login
+  - logout
+  - loop
+  - mcp
+  - memory
+  - mobile
+  - model
+  - passes
+  - permissions
+  - plan
+  - plugin
+  - powerup
+  - pr-comments
+  - privacy-settings
+  - release-notes
+  - reload-plugins
+  - remote-control
+  - remote-env
+  - rename
+  - resume
+  - review
+  - rewind
+  - sandbox
+  - schedule
+  - security-review
+  - setup-bedrock
+  - setup-vertex
+  - simplify
+  - skills
+  - stats
+  - status
+  - statusline
+  - stickers
+  - tasks
+  - teleport
+  - terminal-setup
+  - theme
+  - ultraplan
+  - upgrade
+  - usage
+  - vim
+  - voice
+  - web-setup
+
+# Message size limits for Windows subprocess pipe buffer handling
+# Windows pipes typically have 64KB buffer; use conservative limits
+message_limits:
+  # Maximum message size in bytes before chunking (default: 32768 = 32KB)
+  max_message_size: 32768
+  # Size of each chunk in bytes (default: 30000 = ~30KB)
+  chunk_size: 30000
+  # Estimated bytes for JSON structure overhead
+  json_overhead: 500
+
+# Retry settings for thread ID file reading
+thread_id:
+  # Maximum retry attempts for reading thread ID file
+  max_retries: 3
+
+# MCP client settings
+mcp_client:
+  # Maximum retry attempts for MCP client creation
+  max_retries: 3
+  # Retry attempts for actual MCP connection (inside async with Client)
+  max_connection_retries: 3
+  # Timeout per connection attempt (seconds)
+  connection_timeout: 30.0
+  # Timeout in seconds for first run (may need package download)
+  timeout_first_run: 240.0
+  # Timeout in seconds for subsequent runs
+  timeout_normal: 240.0
+
+# MCP server command configuration
+# Command and arguments to start the MCP context server
+mcp_server:
+  # Transport type: 'stdio' or 'http'
+  transport: http
+  # HTTP endpoint URL (required when transport: http)
+  url: http://localhost:8000/mcp
+  # Request timeout in seconds
+  timeout: 60.0
+  # Command to execute
+  # command: uvx
+  # Python version to use
+  # python_version: "3.12"
+  # Package with extras to install
+  # package: 'mcp-context-server[embeddings-ollama]<2.0.0'
+  # Entry point to run
+  # entry_point: mcp-context-server
+  # Pre-warm uvx cache at module load to avoid cold start delays
+  # prewarm_cache: true
+
+# Chunking reliability settings
+# Controls how large messages are split and stored with maximum reliability
+chunking:
+  # Retry attempts per chunk within a single connection
+  max_chunk_retries: 3
+  # Initial delay between chunk retries in seconds (exponential backoff applied)
+  chunk_retry_delay: 0.5
+  # Failure mode for partial chunk storage
+  # 'silent': Log only, no user feedback (original behavior)
+  # 'warn': Print warning to stderr that displays in TUI
+  # 'error': Print error to stderr that displays in TUI
+  fail_mode: warn
