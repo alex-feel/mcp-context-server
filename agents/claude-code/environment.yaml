@@ -142,7 +142,10 @@ permissions:
     - mcp__context-server__semantic_search_context
     - mcp__context-server__fts_search_context
     - mcp__context-server__list_threads
+    - mcp__context-server__get_statistics
 
-  deny:
+  ask:
+    - mcp__context-server__store_context_batch
+    - mcp__context-server__update_context_batch
     - mcp__context-server__delete_context
     - mcp__context-server__delete_context_batch

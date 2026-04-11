@@ -23,12 +23,15 @@ message:
   instruction: "Preserve important state before context compaction:"
 
   preservation_rules:
+    - category: "User request context_ids (HIGHEST PRIORITY - source='user' entries stored by user_prompt_context_saver hook)"
+      action: "PRESERVE"
+      rationale: "User messages are the AUTHORITATIVE source of truth for original requirements. Losing their context_ids means losing the path back to what the user asked for. PRESERVE these BEFORE any other category."
+    - category: "Agent report context_ids (source='agent' entries)"
+      action: "PRESERVE"
+      rationale: "IDs enable retrieval of full agent work (plans, research, implementation, validation) from context-server"
     - category: "Current task context and progress"
       action: "PRESERVE"
       rationale: "Required to continue work after compaction"
-    - category: "Context server entry IDs (context_ids)"
-      action: "PRESERVE"
-      rationale: "IDs enable retrieval of full content from context-server"
     - category: "User decisions and preferences from this session"
       action: "PRESERVE"
       rationale: "User choices must persist across compaction"
@@ -43,12 +46,50 @@ message:
       rationale: "Keep key decisions, compress detailed reasoning"
 
   must_responsibilities:
+    - "Preserve ALL user request context_ids verbatim -- original user requirements are authoritative"
+    - "After compaction, re-fetch user messages FIRST via get_context_by_ids to restore authoritative context"
     - "Never lose current state: active task, pending work, important context_ids"
     - "Maintain context_ids for all stored work -- these are your retrieval keys"
-    - "Rely on context-server for detailed content retrieval"
+    - "Rely on context-server for detailed content retrieval (especially user messages -- re-retrieve via get_context_by_ids when needed)"
     - "Preserve user decisions and preferences from this session"
 
   must_not_responsibilities:
+    - "Paraphrase or summarize user requirements in the compacted state (preserve context_ids pointing at the verbatim source instead)"
     - "Attempt to retain full stored content in the compacted context"
     - "Store redundant copies of information available in context-server"
-    - "Lose track of which context_ids are important"
+    - "Lose track of which context_ids are important (especially user request context_ids)"
+
+# =============================================================================
+# UNIVERSAL STATE VARIABLES (read by context_management_precompact.py)
+# =============================================================================
+# These variables are extracted by the hook's `build_flow_checklists` function
+# and emitted as a "UNIVERSAL (All Flows)" checklist in the precompact message.
+# Without this section, the hook's flow-specific checklist output is entirely
+# EMPTY for universal environments.
+#
+# Keep this section free of AEGIS-specific workflow terms. The universal
+# environment is flow-agnostic: no consensus, no default/custom flow, no
+# phased execution. Only flow-agnostic state variables belong here.
+critical_universal_state:
+  description: "State variables that MUST be preserved regardless of session type"
+  variables:
+    - name: "user_request_context_ids"
+      priority: "P0"
+      type: "array<integer>"
+      rationale: "Original user requests must be preserved verbatim - they are the authoritative source of truth"
+    - name: "active_task_description"
+      priority: "P0"
+      type: "string"
+      rationale: "What you are currently working on - cannot resume work without this"
+    - name: "agent_report_context_ids"
+      priority: "P1"
+      type: "array<integer>"
+      rationale: "Relevant agent reports from this session - retrievable via context-server"
+    - name: "user_decisions"
+      priority: "P1"
+      type: "array<string>"
+      rationale: "User choices must persist across compaction"
+    - name: "active_file_paths"
+      priority: "P1"
+      type: "array<string>"
+      rationale: "Files being modified - needed to resume implementation work"

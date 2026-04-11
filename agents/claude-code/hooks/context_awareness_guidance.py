@@ -46,44 +46,66 @@ def _load_json_output() -> ModuleType:
 
 
 # Default configuration - used when no config file provided
-# Maintains backward compatibility with hardcoded values
 DEFAULT_CONFIG: dict[str, Any] = {
     'enabled': True,
     'guidance': {
         'header': 'THREAD CONTEXT AWARENESS',
         'purpose': (
-            'After context compaction or session resume, you may have lost track of workflow state. '
-            'Subagents always retrieve their own context via context-retrieval-protocol skill, '
-            'but you as orchestrator might benefit from checking recent context entries.'
+            'After context compaction or session resume, you may have lost track of session state '
+            'AND the original user requirements. ALWAYS retrieve user messages first (source="user") -- '
+            'these contain the original requirements and are the PRIMARY SOURCE OF TRUTH. Then check '
+            'recent agent reports (source="agent") to restore awareness of prior work.'
         ),
         'when_to_check': [
-            'At session start, especially after context compaction',
-            'When agent_report_ids tracking is unavailable',
-            'When user asks about recent work or workflow state',
+            'At session start, especially after context compaction (retrieve original user requirements first)',
+            'When you are unsure about recent work or session state',
+            'When the user asks about prior work or session history',
+            "Before any action that depends on interpreting the user's original requirements",
         ],
         'how_to_check': {
-            'description': 'Use search_context to browse recent entries, then get_context_by_ids for relevant ones',
-            'example': "search_context(thread_id='thread-id', source='agent', limit=5)",
+            'description': (
+                "Retrieve user messages FIRST (source='user'), then agent reports (source='agent'), "
+                'then use get_context_by_ids for full content of relevant entries from both searches.'
+            ),
+            'example': (
+                "search_context(thread_id='thread-id', source='user', limit=10)   # USER MESSAGES FIRST\n"
+                "search_context(thread_id='thread-id', source='agent', limit=10)  # THEN AGENT REPORTS\n"
+                'get_context_by_ids(context_ids=[...relevant IDs, user messages first...])  # FULL CONTENT'
+            ),
         },
         'what_to_look_for': [
-            'Report IDs for agent_report_ids tracking',
-            'Workflow phase indicators (which agent completed last)',
+            "User messages (source='user') containing original requirements - AUTHORITATIVE source of truth",
+            'Recent agent work reports and their status',
             'Pending continuation markers (status: pending)',
+            'User decisions and preferences from this session',
+            'Discrepancies between agent reports and the original user messages',
         ],
         'boundaries': [
-            'This is for YOUR workflow awareness, not for agent task construction',
-            'Do NOT summarize retrieved content to agents',
-            'Agents retrieve context themselves via context-retrieval-protocol',
+            'This check is for restoring YOUR session awareness',
+            'Always retrieve user messages first (they are the AUTHORITATIVE source of truth)',
+            'User messages override any summary or interpretation (including your own compacted recollection)',
+            'Do NOT preemptively load all context -- retrieve user messages, then agent reports as needed',
+            'Focus on the most recent entries first',
         ],
-        'emphasis': 'This check is OPTIONAL but recommended for workflow continuity.',
+        'emphasis': 'This check is OPTIONAL but recommended for session continuity.',
         'recovery_after_compaction': {
             'header': 'Recovery After Compaction',
             'steps': [
-                'Check for agent_report_ids values - they may have been lost during compaction',
-                "Query context-server for most recent reports: search_context(thread_id='...', source='agent', limit=5)",
-                'Look for checkpoint entries with status: pending to identify interrupted workflows',
-                'Continue workflow from last confirmed checkpoint',
-                'Fall back to fresh invocations if report IDs are unavailable',
+                (
+                    "FIRST retrieve user messages: search_context(thread_id='...', source='user', limit=10) -- "
+                    'original requirements are authoritative'
+                ),
+                "THEN retrieve agent reports: search_context(thread_id='...', source='agent', limit=10)",
+                (
+                    'Use get_context_by_ids to read full content of relevant user messages AND agent reports '
+                    '(user messages first)'
+                ),
+                'Look for entries with status: pending to identify interrupted work',
+                (
+                    'Reconcile any orchestrator task description against retrieved user messages; '
+                    'user messages win on conflict'
+                ),
+                'Continue from last confirmed state, verified against user messages',
             ],
         },
     },
