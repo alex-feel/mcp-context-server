@@ -9,10 +9,7 @@
 # Deploy the MCP Context Server:
 #   docker compose -f docker-compose.postgresql.ollama.yml up -d
 
-name: Context Server Integration
-
-# Configuration version for update checking.
-version: "0.1.0"
+name: MCP Context Server Integration
 
 # Additional files to download (utility modules loaded by other hooks at runtime)
 files-to-download:
