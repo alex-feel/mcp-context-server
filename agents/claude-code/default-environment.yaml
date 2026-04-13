@@ -11,6 +11,9 @@
 
 name: Context Server Integration
 
+# Configuration version for update checking.
+version: "0.1.0"
+
 # Additional files to download (utility modules loaded by other hooks at runtime)
 files-to-download:
     - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_config_loader.py
