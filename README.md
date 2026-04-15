@@ -147,4 +147,11 @@ For Kubernetes deployments, a Helm chart is provided with configurable values fo
 
 For HTTP transport deployments requiring authentication, see the [Authentication Guide](docs/authentication.md) for bearer token configuration.
 
+## Getting Help
+
+- **Bug reports**: [Report a bug](https://github.com/alex-feel/mcp-context-server/issues/new?template=bug-report.yml)
+- **Feature requests**: [Suggest a feature](https://github.com/alex-feel/mcp-context-server/issues/new?template=feature-request.yml)
+- **Documentation issues**: [Report a docs issue](https://github.com/alex-feel/mcp-context-server/issues/new?template=docs-issue.yml)
+- **Questions**: [Ask a question](https://github.com/alex-feel/mcp-context-server/issues/new?template=question.yml)
+
 <!-- mcp-name: io.github.alex-feel/mcp-context-server -->
