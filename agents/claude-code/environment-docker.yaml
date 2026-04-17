@@ -7,7 +7,7 @@
 #   - Docker (required for running the MCP Context Server locally)
 #
 # Deploy the MCP Context Server:
-#   docker compose -f docker-compose.postgresql.ollama.yml up -d
+#   docker compose -f deploy/docker/docker-compose.postgresql.ollama.yml up -d
 
 name: MCP Context Server Integration
 
