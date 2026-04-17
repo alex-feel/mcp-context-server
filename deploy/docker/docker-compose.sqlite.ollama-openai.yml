@@ -48,14 +48,10 @@ services:
     restart: on-failure:5
 
   ollama:
-    # Ollama sidecar always builds locally (no published image)
-    build:
-      context: ../..
-      dockerfile: deploy/docker/ollama/Dockerfile
-      # Uncomment for AMD ROCm GPU (uses ollama/ollama:rocm base image):
-      # args:
-      #   OLLAMA_TAG: rocm
-    pull_policy: build
+    image: ollama/ollama:latest
+    # For AMD ROCm GPU (Linux host only), use the ROCm-tagged image instead:
+    # image: ollama/ollama:rocm
+    pull_policy: always
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_KEEP_ALIVE=-1
@@ -71,6 +67,24 @@ services:
       # - GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1
     volumes:
       - ollama-data:/root/.ollama
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        /bin/ollama serve &
+        serve_pid=$$!
+        echo "Waiting for Ollama server to start..."
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        echo "Checking embedding model: $${EMBEDDING_MODEL}..."
+        if ! ollama show "$${EMBEDDING_MODEL}" >/dev/null 2>&1; then
+          echo "Pulling embedding model: $${EMBEDDING_MODEL}..."
+          ollama pull "$${EMBEDDING_MODEL}"
+        else
+          echo "Embedding model already cached."
+        fi
+        echo "Embedding model ready. Continuing Ollama server..."
+        wait $$serve_pid
     # === GPU Acceleration ===
     # Uncomment ONE section based on your GPU vendor.
     # Full guide: docs/deployment/gpu-acceleration.md
@@ -84,7 +98,7 @@ services:
     #           count: all
     #           capabilities: [gpu]
     #
-    # --- AMD GPU (requires ROCm driver on Linux host; also uncomment OLLAMA_TAG above) ---
+    # --- AMD GPU (requires ROCm driver on Linux host; also switch to image: ollama/ollama:rocm above) ---
     # Requires /dev/dri and /dev/kfd device nodes (Linux only). NOT available on Docker Desktop for Windows.
     # devices:
     #   - /dev/kfd:/dev/kfd
