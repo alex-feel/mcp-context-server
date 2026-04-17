@@ -169,5 +169,4 @@ post-install-notes: |
     docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml down
 
   Update (re-download compose file + pull newer images + restart):
-    docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml pull
-    docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml up -d
+    Just re-run the same script from https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md
