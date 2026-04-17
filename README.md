@@ -25,67 +25,11 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client
 - **Production Ready**: Comprehensive test coverage, type safety, and robust error handling
 
-## Prerequisites
+## Connecting to Your AI Assistant
 
-- `uv` package manager ([install instructions](https://docs.astral.sh/uv/getting-started/installation/))
-- An MCP-compatible client (Claude Code, LangGraph, or any MCP client)
-- Ollama (for embedding and summary generation - default behavior):
-  - Install from [ollama.com/download](https://ollama.com/download)
-  - Pull embedding model: `ollama pull qwen3-embedding:0.6b`
-  - Pull summary model: `ollama pull qwen3:0.6b`
+The fastest way to connect the MCP Context Server to Claude Code is the one-command Docker bootstrap.
 
-## Adding the Server to Claude Code
-
-There are two ways to add the MCP Context Server to Claude Code:
-
-### Method 1: Using CLI Command
-
-```bash
-# Default setup (recommended) - embeddings + summary + reranking
-# Requires: Ollama installed + models pulled (see Prerequisites)
-claude mcp add context-server -- uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,summary-ollama,reranking]" mcp-context-server
-
-# From GitHub (latest development version)
-claude mcp add context-server -- uvx --python 3.12 --from git+https://github.com/alex-feel/mcp-context-server --with "mcp-context-server[embeddings-ollama,summary-ollama,reranking]" mcp-context-server
-```
-
-For more details, see: <https://docs.claude.com/en/docs/claude-code/mcp#option-1%3A-add-a-local-stdio-server>
-
-### Method 2: Direct File Configuration
-
-Add the following to your `.mcp.json` file in your project directory:
-
-```json
-{
-  "mcpServers": {
-    "context-server": {
-      "type": "stdio",
-      "command": "uvx",
-      "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,summary-ollama,reranking]", "mcp-context-server"],
-      "env": {}
-    }
-  }
-}
-```
-
-**Prerequisites:** Ollama must be installed with the required models pulled: `ollama pull qwen3-embedding:0.6b` and `ollama pull qwen3:0.6b`.
-
-For the latest development version from GitHub, use:
-```json
-"args": ["--python", "3.12", "--from", "git+https://github.com/alex-feel/mcp-context-server", "--with", "mcp-context-server[embeddings-ollama,summary-ollama,reranking]", "mcp-context-server"]
-```
-
-For configuration file locations and details, see: <https://docs.claude.com/en/docs/claude-code/settings#settings-files>
-
-### Verifying Installation
-
-```bash
-# Start Claude Code
-claude
-
-# Check MCP tools are available
-/mcp
-```
+For step-by-step instructions, prerequisites, troubleshooting, and update/uninstall commands, see the [Connecting to Your AI Assistant Guide](docs/connecting-ai-assistant.md).
 
 ## Environment Configuration
 

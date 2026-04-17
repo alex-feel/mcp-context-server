@@ -77,20 +77,20 @@ docker compose -f deploy/docker/<your-compose-file> exec ollama nvidia-smi
 
 **Steps:**
 
-1. Uncomment `OLLAMA_TAG: rocm` in the `build.args` section to use the ROCm-based Ollama image:
+1. Override the Ollama image to the ROCm-tagged variant in the `ollama` service. Each Ollama-based Compose file already includes a commented alternative immediately below the default `image:` line:
 
 ```yaml
-build:
-  context: ../..
-  dockerfile: deploy/docker/ollama/Dockerfile
-  args:
-    OLLAMA_TAG: rocm
+services:
+  ollama:
+    image: ollama/ollama:rocm
 ```
 
-2. Uncomment the AMD GPU section:
+   Apply the override either by uncommenting the `# image: ollama/ollama:rocm` line in your chosen Compose file, or by adding the snippet above to a Docker Compose override file (e.g., `docker-compose.override.yml`) loaded alongside the base file.
+
+2. Uncomment the AMD GPU section in the same `ollama` service:
 
 ```yaml
-# --- AMD GPU (requires ROCm driver; also uncomment OLLAMA_TAG above) ---
+# --- AMD GPU (requires ROCm driver on Linux host; also switch to image: ollama/ollama:rocm above) ---
 devices:
   - /dev/kfd:/dev/kfd
   - /dev/dri:/dev/dri
@@ -99,18 +99,13 @@ group_add:
   - render
 ```
 
-3. Rebuild the Ollama image:
+3. Restart the stack to apply the new image and device passthrough:
 
 ```bash
-docker compose -f deploy/docker/<your-compose-file> build ollama
 docker compose -f deploy/docker/<your-compose-file> up -d
 ```
 
-Alternatively, build with the `--build-arg` flag without editing the Compose file:
-
-```bash
-docker compose -f deploy/docker/<your-compose-file> build --build-arg OLLAMA_TAG=rocm ollama
-```
+   The first start with the ROCm image pulls `ollama/ollama:rocm` from Docker Hub (no local build).
 
 **Verify:**
 

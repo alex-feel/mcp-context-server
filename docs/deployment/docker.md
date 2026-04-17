@@ -309,7 +309,7 @@ Replace `localhost` with your server's IP or hostname for remote connections:
 - Non-root user (UID 10001) for security
 
 **ollama:**
-- Custom Ollama image with automatic model pulling
+- Stock `ollama/ollama:latest` image with automatic model pulling via inline entrypoint
 - Downloads `qwen3-embedding:0.6b` on first start
 - Health check waits for model availability
 
@@ -342,14 +342,15 @@ The `ollama-models` volume is shared across all Ollama configurations, so switch
 
 ### Automatic Model Download (Ollama Only)
 
-The custom Ollama image (`deploy/docker/ollama/Dockerfile`) includes an entrypoint script that:
+Each Ollama-based Docker Compose file declares an inline `entrypoint:` block on the `ollama` service that:
 
-1. Starts Ollama server on a temporary internal port
-2. Checks if the configured embedding model (`EMBEDDING_MODEL`) exists and pulls it if not present
-3. If `SUMMARY_MODEL` is configured and differs from the embedding model, checks and pulls the summary model if not present
-4. Restarts Ollama on the production port
+1. Starts the Ollama server in the background.
+2. Waits for the server to accept requests.
+3. Checks the configured embedding model (`EMBEDDING_MODEL`) and pulls it if not already cached.
+4. For Ollama-only configurations (where `SUMMARY_PROVIDER` is `ollama`), checks the summary model (`SUMMARY_MODEL`) and pulls it if missing and different from the embedding model. For mixed-provider configurations (`ollama-openai`), the summary model is not pulled because OpenAI handles summary generation.
+5. Hands off to the running Ollama server for normal request handling.
 
-This eliminates manual `ollama pull` steps after deployment. Both the embedding model and the summary model are automatically downloaded on first startup when configured in the Docker Compose environment.
+The check-then-pull logic is idempotent: subsequent restarts skip the download when models are already cached in the `ollama-models` Docker volume. Models persist across container restarts and across all Ollama configurations sharing this volume.
 
 ## Configuration
 
@@ -782,25 +783,25 @@ services:
 
 **AMD ROCm:**
 
-Build the Ollama image with the ROCm base image and uncomment the AMD GPU section:
+Override the Ollama image to the ROCm-tagged variant and uncomment the AMD GPU section:
 
-```bash
-docker compose -f <your-compose-file> build --build-arg OLLAMA_TAG=rocm
+```yaml
+services:
+  ollama:
+    image: ollama/ollama:rocm
 ```
 
 See the [GPU Acceleration Guide](gpu-acceleration.md) for AMD and Intel/Vulkan configuration.
 
 ### Building Images
 
-Both the MCP server and Ollama images are built locally:
+The MCP Context Server image is built from the repository root `Dockerfile`:
 
 ```bash
-# Build MCP server image
 docker build -t mcp-context-server .
-
-# Build custom Ollama image
-docker build -f deploy/docker/ollama/Dockerfile -t mcp-ollama .
 ```
+
+The Ollama service uses the published `ollama/ollama:latest` image directly (or `ollama/ollama:rocm` for AMD GPUs); no local Ollama image build is required.
 
 ### Building with Different Embedding Providers
 
@@ -1162,8 +1163,6 @@ If your container shows "Running" but the server is not responding:
 |--------------------------------------|---------------------------------------------------|
 | `Dockerfile`                         | Multi-stage MCP server image (repository root)    |
 | `deploy/docker/docker-entrypoint.sh` | Exit code handler to prevent infinite restart     |
-| `deploy/docker/ollama/Dockerfile`    | Custom Ollama image                               |
-| `deploy/docker/ollama/entrypoint.sh` | Auto model pull entrypoint                        |
 | `.dockerignore`                      | Build context optimization (repository root)      |
 
 ## Additional Resources

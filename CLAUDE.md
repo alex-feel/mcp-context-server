@@ -241,7 +241,7 @@ SQLite: B-tree via `json_extract` for scalar fields only. PostgreSQL: B-tree for
 
 ## Docker Deployment
 
-Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in `deploy/docker/`: SQLite, PostgreSQL, Supabase. Ollama sidecar in `deploy/docker/ollama/`. Both embedding and summary models are auto-pulled on first startup.
+Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in `deploy/docker/`: SQLite, PostgreSQL, Supabase. Ollama sidecar uses the stock `ollama/ollama:latest` image (or `ollama/ollama:rocm` for AMD GPUs) with an inline `entrypoint:` block in each compose file that pulls embedding and summary models on first startup.
 
 ### Docker Compose File Naming Convention
 
