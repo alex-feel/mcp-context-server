@@ -160,14 +160,14 @@ post-install-notes: |
 
   First-run: Ollama pulls qwen3-embedding:0.6b and qwen3:0.6b (~1.2 GB). Allow 2-5 minutes.
   Follow progress:
-    docker compose -f ~/.mcp-context-server/docker-compose.postgresql.ollama.yml logs -f ollama
+    docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml logs -f ollama
 
   Verify server health:
     curl http://localhost:8000/health
 
   Stop the stack:
-    docker compose -f ~/.mcp-context-server/docker-compose.postgresql.ollama.yml down
+    docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml down
 
   Update (re-download compose file + pull newer images + restart):
-    docker compose -f ~/.mcp-context-server/docker-compose.postgresql.ollama.yml pull
-    docker compose -f ~/.mcp-context-server/docker-compose.postgresql.ollama.yml up -d
+    docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml pull
+    docker compose -f ~/.mcp/docker-compose.postgresql.ollama.yml up -d
