@@ -1,0 +1,45 @@
+# MCP Context Server Integration
+# Lightweight environment for universal MCP Context Server integration.
+# Provides persistent memory across Claude Code sessions via context server hooks and skills.
+# Downloads the PostgreSQL+Ollama+OpenAI compose file and starts the stack automatically.
+#
+# Prerequisites:
+#   - uv (required for PEP 723 hooks with inline dependencies; auto-installed by setup-environment.ps1)
+#   - Docker Desktop running (required to start the MCP Context Server)
+
+name: MCP Context Server Integration
+
+inherit: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/environment-docker-ollama.yaml
+
+# Additional files to download (utility modules loaded by other hooks at runtime)
+files-to-download:
+  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_config_loader.py
+    dest: ~/.claude/hooks/
+  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/hook_json_output.py
+    dest: ~/.claude/hooks/
+  - source: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/deploy/docker/docker-compose.postgresql.ollama-openai.yml
+    dest: ~/.mcp/docker-compose.postgresql.ollama-openai.yml
+
+# Start the stack after the compose file has been downloaded.
+dependencies:
+  common:
+    - docker compose -f ~/.mcp/docker-compose.postgresql.ollama-openai.yml up -d
+
+post-install-notes: |
+  MCP Context Server is deploying at: http://localhost:8000/mcp
+
+  First-run: Ollama pulls qwen3-embedding:0.6b and qwen3:0.6b (~1.2 GB). Allow 2-5 minutes.
+
+  Follow progress:
+    docker compose -f ~/.mcp/docker-compose.postgresql.ollama-openai.yml logs -f ollama
+
+  Verify server health:
+    curl http://localhost:8000/health
+
+  Stop the stack:
+    docker compose -f ~/.mcp/docker-compose.postgresql.ollama-openai.yml down
+
+  Update (re-download compose file + pull newer images + restart):
+    Just re-run the same script from https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md
+
+  Windows PowerShell: replace ~ with $HOME in the commands above.
