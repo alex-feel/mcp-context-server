@@ -41,8 +41,6 @@ For the complete reference of all environment variables with types, defaults, co
 
 Summary generation automatically creates concise LLM-based summaries for each stored context entry. Summaries are returned in the `summary` field of all search tool results alongside truncated `text_content`, providing dense, informative summaries that help agents determine relevance without fetching full entries.
 
-This feature is **enabled by default** when the `summary-ollama` extra is installed. The default model is `qwen3:0.6b` (local Ollama). Alternative models in the same family: `qwen3:1.7b` (higher quality), `qwen3:4b` (high quality), `qwen3:8b` (highest quality).
-
 For detailed instructions including all providers (Ollama, OpenAI, Anthropic), model selection, and custom prompt configuration, see the [Summary Generation Guide](docs/summary-generation.md).
 
 ## Semantic Search
