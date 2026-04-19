@@ -77,7 +77,7 @@ This variant uses **Ollama for embeddings** and **OpenAI for summary generation*
 
 ### Additional Prerequisites
 
-- An [OpenAI API key](https://platform.openai.com/api-keys) with billing enabled
+- An OpenAI API key (see [How to Get an OpenAI API Key](#how-to-get-an-openai-api-key) below)
 
 ### Step 1: Create the `.env` File
 
@@ -159,6 +159,20 @@ curl http://localhost:8000/health
 ### Why the API Key Cannot Be Passed from the Command Line
 
 The `docker-compose.postgresql.ollama-openai.yml` file loads `OPENAI_API_KEY` from a `.env` file via the `env_file` directive -- it does not use `${OPENAI_API_KEY}` interpolation in the `environment:` section. Because `env_file` reads exclusively from a file on disk, setting `export OPENAI_API_KEY=sk-...` in the shell before running `docker compose up` has no effect on the container environment. The `.env` file is the only supported mechanism.
+
+### How to Get an OpenAI API Key
+
+1. Go to [platform.openai.com](https://platform.openai.com/) and sign up (or sign in with an existing account). You can register with an email address or use a Google, Microsoft, or Apple account.
+2. Navigate to **Settings > Billing** ([platform.openai.com/account/billing/overview](https://platform.openai.com/account/billing/overview)) and add a payment method. OpenAI uses a prepaid credit system -- you add funds and API calls deduct from that balance. The minimum top-up is $5.
+3. Go to **API Keys** ([platform.openai.com/api-keys](https://platform.openai.com/api-keys)) and click **Create new secret key**. Give the key a descriptive name (e.g., "MCP Context Server") and copy it immediately -- OpenAI displays the key only once.
+
+Use the copied key in the `.env` file in [Step 1](#step-1-create-the-env-file) above.
+
+For full details, see the [OpenAI Developer Quickstart](https://developers.openai.com/docs/quickstart).
+
+### Cost Estimate
+
+At current [OpenAI API pricing](https://openai.com/api/pricing/), `gpt-5.4-nano` costs $0.20 per 1 million input tokens and $1.25 per 1 million output tokens. In practice, generating 1,000 summaries costs approximately **$1 USD** depending on the average length of stored context entries.
 
 ## Troubleshooting
 
