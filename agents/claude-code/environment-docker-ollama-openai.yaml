@@ -7,7 +7,13 @@
 #   - uv (required for PEP 723 hooks with inline dependencies; auto-installed by setup-environment.ps1)
 #   - Docker Desktop running (required to start the MCP Context Server)
 
-name: MCP Context Server Integration
+name: MCP Context Server Integration (Ollama + OpenAI Models)
+
+description: |
+  IMPORTANT: Make sure you have created a .env file in the ~/.mcp/ directory and added your OpenAI API key before proceeding
+
+  For more information, see:
+  https://github.com/alex-feel/mcp-context-server/blob/main/docs/connecting-ai-assistant.md#ollama--openai-summary-variant
 
 inherit: https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/environment-docker-ollama.yaml
 
