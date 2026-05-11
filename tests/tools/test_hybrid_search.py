@@ -56,7 +56,7 @@ class TestRRFIntegration:
         """Test that RRF preserves metadata from both sources."""
         fts_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'score': 10.0,
                 'text_content': 'Test content',
                 'thread_id': 'thread-1',
@@ -68,7 +68,7 @@ class TestRRFIntegration:
 
         semantic_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'distance': 0.1,
                 'text_content': 'Test content',
                 'metadata': {'key': 'value', 'priority': 5},
@@ -117,13 +117,13 @@ class TestRRFIntegration:
     def test_rrf_k_parameter_impact(self) -> None:
         """Test how k parameter affects ranking and score distribution."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 10.0, 'text_content': 'Top FTS result'},
-            {'id': 2, 'score': 5.0, 'text_content': 'Second FTS result'},
+            {'id': '1', 'score': 10.0, 'text_content': 'Top FTS result'},
+            {'id': '2', 'score': 5.0, 'text_content': 'Second FTS result'},
         ]
 
         semantic_results: list[dict[str, Any]] = [
-            {'id': 2, 'distance': 0.1, 'text_content': 'Top semantic (also #2 in FTS)'},
-            {'id': 3, 'distance': 0.2, 'text_content': 'Second semantic only'},
+            {'id': '2', 'distance': 0.1, 'text_content': 'Top semantic (also #2 in FTS)'},
+            {'id': '3', 'distance': 0.2, 'text_content': 'Second semantic only'},
         ]
 
         # With small k, top ranks matter more
@@ -132,16 +132,16 @@ class TestRRFIntegration:
         results_large_k = reciprocal_rank_fusion(fts_results, semantic_results, k=100, limit=10)
 
         # Document 2 appears in both - should be top in both cases
-        assert results_small_k[0].get('id') == 2
-        assert results_large_k[0].get('id') == 2
+        assert results_small_k[0].get('id') == '2'
+        assert results_large_k[0].get('id') == '2'
 
         # Verify k affects score magnitudes
         small_k_scores = {r.get('id'): r.get('scores', {}).get('rrf', 0) for r in results_small_k}
         large_k_scores = {r.get('id'): r.get('scores', {}).get('rrf', 0) for r in results_large_k}
 
         # Scores should be smaller with large k (1/(k+rank) decreases as k increases)
-        assert small_k_scores[2] > large_k_scores[2]
-        assert small_k_scores[1] > large_k_scores[1]
+        assert small_k_scores['2'] > large_k_scores['2']
+        assert small_k_scores['1'] > large_k_scores['1']
 
         # With small k, the absolute difference between rank 1 and rank 2 is larger
         # k=1: rank1 = 1/2 = 0.5, rank2 = 1/3 = 0.333, diff = 0.167
@@ -196,7 +196,7 @@ class TestHybridSearchToolIntegration:
         """Test fusion with only FTS results (semantic unavailable scenario)."""
         fts_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'thread_id': 't1',
                 'source': 'agent',
                 'content_type': 'text',
@@ -211,7 +211,7 @@ class TestHybridSearchToolIntegration:
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
-        assert results[0].get('id') == 1
+        assert results[0].get('id') == '1'
         scores = results[0].get('scores', {})
         assert scores.get('fts_rank') == 1
         assert scores.get('semantic_rank') is None
@@ -220,7 +220,7 @@ class TestHybridSearchToolIntegration:
         """Test fusion with only semantic results (FTS unavailable scenario)."""
         semantic_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'thread_id': 't1',
                 'source': 'agent',
                 'content_type': 'text',
@@ -235,7 +235,7 @@ class TestHybridSearchToolIntegration:
         results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
 
         assert len(results) == 1
-        assert results[0].get('id') == 1
+        assert results[0].get('id') == '1'
         scores = results[0].get('scores', {})
         assert scores.get('fts_rank') is None
         assert scores.get('semantic_rank') == 1
@@ -244,7 +244,7 @@ class TestHybridSearchToolIntegration:
         """Test that fusion preserves metadata regardless of format."""
         fts_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'text_content': 'Test content',
                 'score': 10.0,
                 'metadata': {'priority': 5},  # Already a dict
@@ -268,7 +268,7 @@ class TestRRFEdgeCases:
         """
         semantic_results: list[dict[str, Any]] = [
             {'id': None, 'distance': 0.1, 'text_content': 'No ID entry'},
-            {'id': 1, 'distance': 0.2, 'text_content': 'Valid entry'},
+            {'id': '1', 'distance': 0.2, 'text_content': 'Valid entry'},
         ]
         fts_results: list[dict[str, Any]] = []
 
@@ -276,36 +276,36 @@ class TestRRFEdgeCases:
 
         # Only the entry with valid ID should be in results
         assert len(results) == 1
-        assert results[0].get('id') == 1
+        assert results[0].get('id') == '1'
 
     def test_rrf_skips_fts_results_with_none_id(self) -> None:
         """Test RRF skips FTS results where id is None."""
         fts_results: list[dict[str, Any]] = [
             {'id': None, 'score': 10.0, 'text_content': 'No ID'},
-            {'id': 2, 'score': 8.0, 'text_content': 'Valid'},
+            {'id': '2', 'score': 8.0, 'text_content': 'Valid'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
-        assert results[0].get('id') == 2
+        assert results[0].get('id') == '2'
 
     def test_rrf_skips_both_sources_with_none_ids(self) -> None:
         """Test RRF skips None IDs from both FTS and semantic results."""
         fts_results: list[dict[str, Any]] = [
             {'id': None, 'score': 10.0, 'text_content': 'FTS no ID'},
-            {'id': 1, 'score': 8.0, 'text_content': 'FTS valid'},
+            {'id': '1', 'score': 8.0, 'text_content': 'FTS valid'},
         ]
         semantic_results: list[dict[str, Any]] = [
             {'id': None, 'distance': 0.1, 'text_content': 'Semantic no ID'},
-            {'id': 2, 'distance': 0.2, 'text_content': 'Semantic valid'},
+            {'id': '2', 'distance': 0.2, 'text_content': 'Semantic valid'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
 
         # Only entries with valid IDs should be in results
         result_ids = {r.get('id') for r in results}
-        assert result_ids == {1, 2}
+        assert result_ids == {'1', '2'}
         assert len(results) == 2
 
     def test_rrf_all_none_ids_returns_empty(self) -> None:
@@ -330,7 +330,7 @@ class TestHybridSearchPagination:
         """Test that limit is applied after RRF fusion."""
         # Create 10 FTS results
         fts_results: list[dict[str, Any]] = [
-            {'id': i, 'score': 10.0 - i, 'text_content': f'Doc {i}', 'thread_id': 't1'}
+            {'id': str(i), 'score': 10.0 - i, 'text_content': f'Doc {i}', 'thread_id': 't1'}
             for i in range(1, 11)
         ]
 
@@ -340,12 +340,12 @@ class TestHybridSearchPagination:
         assert len(results) == 3
         # Results should be top 3 by RRF score
         result_ids = [r.get('id') for r in results]
-        assert result_ids == [1, 2, 3]
+        assert result_ids == ['1', '2', '3']
 
     def test_limit_exceeds_available_results(self) -> None:
         """Test limit larger than available results returns all."""
         fts_results: list[dict[str, Any]] = [
-            {'id': i, 'score': 10.0 - i, 'text_content': f'Doc {i}'}
+            {'id': str(i), 'score': 10.0 - i, 'text_content': f'Doc {i}'}
             for i in range(1, 6)  # Only 5 results
         ]
 
@@ -362,7 +362,7 @@ class TestHybridSearchPagination:
         """
         # Create 10 FTS results
         fts_results: list[dict[str, Any]] = [
-            {'id': i, 'score': 10.0 - (i * 0.1), 'text_content': f'Doc {i}', 'thread_id': 't1'}
+            {'id': str(i), 'score': 10.0 - (i * 0.1), 'text_content': f'Doc {i}', 'thread_id': 't1'}
             for i in range(1, 11)
         ]
 
@@ -375,9 +375,9 @@ class TestHybridSearchPagination:
         assert len(paginated) == 3
         # First 3 IDs (1, 2, 3) should be skipped
         paginated_ids = [r.get('id') for r in paginated]
-        assert 1 not in paginated_ids
-        assert 2 not in paginated_ids
-        assert 3 not in paginated_ids
+        assert '1' not in paginated_ids
+        assert '2' not in paginated_ids
+        assert '3' not in paginated_ids
 
 
 class TestHybridSearchResponseStructure:

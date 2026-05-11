@@ -25,6 +25,22 @@ from app.tools.batch import update_context_batch
 from app.tools.context import delete_context
 from app.tools.context import store_context
 from app.tools.context import update_context
+from app.types import JsonValue
+
+
+def _require_context_id(value: str | None) -> str:
+    """Return value as str, asserting it is non-None.
+
+    Batch store/update result items declare context_id as Optional because
+    failed entries omit the identifier, but successful conformance results
+    always carry a string ID.
+
+    Returns:
+        The non-None string identifier.
+    """
+    assert value is not None, 'batch result missing context_id'
+    return value
+
 
 # Minimal valid 1x1 PNG for conformance tests
 _CONFORMANCE_PNG_DATA = base64.b64encode(bytes([
@@ -42,7 +58,7 @@ _CONFORMANCE_PNG_DATA = base64.b64encode(bytes([
 _THREAD_PREFIX = 'conformance'
 
 
-async def _read_db_entry(context_id: int) -> dict[str, Any]:
+async def _read_db_entry(context_id: str) -> dict[str, Any]:
     """Read a context entry from the database and return a normalized dict for state comparison."""
     repos = await ensure_repositories()
     rows = await repos.context.get_by_ids([context_id])
@@ -125,7 +141,7 @@ class TestStoreConformance:
         assert b_result['success'] is True
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['content_type'] == 'text'
@@ -152,7 +168,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['tags'] == ['alpha', 'beta', 'gamma']
@@ -177,7 +193,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['content_type'] == 'multimodal'
@@ -188,7 +204,7 @@ class TestStoreConformance:
         """A4: Store with metadata produces identical metadata after round-trip."""
         thread_nb = f'{_THREAD_PREFIX}_store_meta_nb'
         thread_b = f'{_THREAD_PREFIX}_store_meta_b'
-        meta = {'key': 'value', 'priority': 42, 'nested': {'a': 1}}
+        meta: dict[str, JsonValue] = {'key': 'value', 'priority': 42, 'nested': {'a': 1}}
 
         nb_result = await store_context(
             thread_id=thread_nb, source='user', text='Metadata content',
@@ -203,7 +219,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['metadata'] == meta
@@ -228,7 +244,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         assert nb_state['content_type'] == 'multimodal'
         assert b_state['content_type'] == 'multimodal'
@@ -389,7 +405,7 @@ class TestUpdateConformance:
         """B2: Full metadata replacement produces identical metadata."""
         nb_id = await self._create_entry(f'{_THREAD_PREFIX}_upd_meta_nb')
         b_id = await self._create_entry(f'{_THREAD_PREFIX}_upd_meta_b')
-        new_meta = {'new_key': 'new_value'}
+        new_meta: dict[str, JsonValue] = {'new_key': 'new_value'}
 
         await update_context(context_id=nb_id, metadata=new_meta)
         await update_context_batch(
@@ -481,7 +497,7 @@ class TestUpdateConformance:
             atomic=True,
         )
         nb_id = nb_r['context_id']
-        b_id = b_r['results'][0]['context_id']
+        b_id = _require_context_id(b_r['results'][0]['context_id'])
 
         await update_context(context_id=nb_id, images=[])
         await update_context_batch(
@@ -564,7 +580,9 @@ class TestDeleteConformance:
         )
 
         nb_del = await delete_context(context_ids=[nb_r['context_id']])
-        b_del = await delete_context_batch(context_ids=[b_r['results'][0]['context_id']])
+        b_del = await delete_context_batch(
+            context_ids=[_require_context_id(b_r['results'][0]['context_id'])],
+        )
 
         assert nb_del['deleted_count'] == 1
         assert b_del['deleted_count'] == 1
@@ -607,7 +625,7 @@ class TestDeleteConformance:
         )
 
         nb_id = nb_r['context_id']
-        b_id = b_r['results'][0]['context_id']
+        b_id = _require_context_id(b_r['results'][0]['context_id'])
 
         mock_delete = AsyncMock()
         repos = await ensure_repositories()

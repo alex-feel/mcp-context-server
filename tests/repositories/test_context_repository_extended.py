@@ -14,6 +14,7 @@ import pytest_asyncio
 
 from app.backends import create_backend
 from app.backends.base import StorageBackend
+from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
 from app.schemas import load_schema
@@ -658,7 +659,7 @@ class TestContextRepositoryGetById:
         repos: RepositoryContainer,
     ) -> None:
         """Test getting nonexistent IDs returns empty."""
-        rows = await repos.context.get_by_ids([999998, 999999])
+        rows = await repos.context.get_by_ids([generate_id(), generate_id()])
 
         assert rows == []
 
@@ -675,7 +676,7 @@ class TestContextRepositoryGetById:
             text_content='Exists',
         )
 
-        rows = await repos.context.get_by_ids([ctx_id, 999999])
+        rows = await repos.context.get_by_ids([ctx_id, generate_id()])
 
         assert len(rows) == 1
         assert rows[0]['id'] == ctx_id
@@ -701,7 +702,7 @@ class TestContextRepositoryUpdate:
         assert exists is True
         assert source == 'user'
 
-        not_exists, no_source = await repos.context.check_entry_exists(999999)
+        not_exists, no_source = await repos.context.check_entry_exists(generate_id())
         assert not_exists is False
         assert no_source is None
 
@@ -728,7 +729,7 @@ class TestContextRepositoryUpdate:
         repos: RepositoryContainer,
     ) -> None:
         """Test getting content type for nonexistent entry."""
-        content_type = await repos.context.get_content_type(999999)
+        content_type = await repos.context.get_content_type(generate_id())
 
         assert content_type is None
 
@@ -926,7 +927,7 @@ class TestContextRepositoryPatchMetadata:
         self, context_repo: ContextRepository,
     ) -> None:
         """Patching nonexistent entry returns (False, [])."""
-        success, fields = await context_repo.patch_metadata(999999, {'key': 'value'})
+        success, fields = await context_repo.patch_metadata(generate_id(), {'key': 'value'})
         assert success is False
         assert fields == []
 
@@ -987,7 +988,7 @@ class TestContextRepositoryBatchDelete:
             text_content='Entry to delete partially',
         )
         deleted_count, _ = await context_repo.delete_contexts_batch(
-            context_ids=[ctx_id, 999998, 999999],
+            context_ids=[ctx_id, generate_id(), generate_id()],
         )
         assert deleted_count == 1
 

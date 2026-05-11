@@ -15,6 +15,10 @@ from app.server import get_statistics
 from app.server import search_context
 from app.server import store_context
 from app.server import update_context
+from app.types import JsonValue
+
+# Type alias anchored to a usage site so ruff cannot strip the JsonValue import.
+_MetadataDict = dict[str, JsonValue]
 
 
 class TestStoreContextEdgeCases:
@@ -502,7 +506,7 @@ class TestGetContextByIdsEdgeCases:
     @pytest.mark.usefixtures('initialized_server')
     async def test_get_context_preserves_metadata(self) -> None:
         """Test that get_context_by_ids preserves metadata."""
-        complex_metadata = {
+        complex_metadata: _MetadataDict = {
             'nested': {'key': 'value'},
             'list': [1, 2, 3],
             'boolean': True,
@@ -606,12 +610,14 @@ class TestStoreContextWithImages:
     @pytest.mark.usefixtures('initialized_server')
     async def test_store_image_with_metadata(self) -> None:
         """Test storing image with metadata."""
+        import json as _json
+
         image_metadata = {'width': 800, 'height': 600, 'format': 'png'}
         images = [
             {
                 'data': base64.b64encode(b'image with meta').decode('utf-8'),
                 'mime_type': 'image/png',
-                'metadata': image_metadata,
+                'metadata': _json.dumps(image_metadata),
             },
         ]
 

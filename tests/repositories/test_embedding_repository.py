@@ -10,6 +10,7 @@ import importlib.util
 import pytest
 
 from app.backends import StorageBackend
+from app.ids import generate_id
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(
@@ -291,7 +292,7 @@ class TestEmbeddingRepository:
         embedding_repo = EmbeddingRepository(backend)
 
         # Check non-existent ID
-        exists = await embedding_repo.exists(99999)
+        exists = await embedding_repo.exists(generate_id())
         assert exists is False
 
     @requires_sqlite_vec

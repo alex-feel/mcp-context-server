@@ -236,7 +236,7 @@ ignore-one-line-docstrings = true
 [tool.mypy]
 # Core safety, balanced for production
 python_version = '3.12'
-files = ['app']
+files = ['app', 'tests']
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_calls = true

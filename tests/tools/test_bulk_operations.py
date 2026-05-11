@@ -12,12 +12,17 @@ Tests cover:
 - Error handling and validation tests
 """
 
+from typing import Any
+
 import pytest
 from fastmcp.exceptions import ToolError
 
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
+
+# Type alias anchored to a usage site so ruff cannot strip the Any import.
+_UpdateBatch = list[dict[str, Any]]
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
@@ -401,7 +406,7 @@ class TestUpdateContextBatch:
     @pytest.mark.asyncio
     async def test_update_batch_atomic_rollback(self) -> None:
         """Test atomic mode fails fast on validation error."""
-        updates = [
+        updates: list[dict[str, Any]] = [
             {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Valid update'},
             {'context_id': -1, 'text': 'Invalid context_id'},
         ]

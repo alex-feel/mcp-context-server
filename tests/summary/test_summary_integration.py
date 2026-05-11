@@ -13,7 +13,7 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 import app.startup
-import app.tools.context as context_tools
+import app.tools._shared as shared_tools
 import app.tools.search as search_tools
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.startup import ensure_repositories
@@ -77,14 +77,14 @@ def reset_summary_state() -> Generator[None, None, None]:
     """Reset global summary state between tests."""
     original_summary_provider = app.startup.get_summary_provider()
     original_embedding_provider = app.startup.get_embedding_provider()
-    context_tools._summary_semaphore = None
+    shared_tools._summary_semaphore = None
 
     try:
         yield
     finally:
         set_summary_provider(original_summary_provider)
         set_embedding_provider(original_embedding_provider)
-        context_tools._summary_semaphore = None
+        shared_tools._summary_semaphore = None
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -105,7 +105,7 @@ class TestGenerateSummaryWithTimeout:
         ):
             mock_settings.summary.max_concurrent = 2
 
-            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
+            result = await shared_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result == 'Generated summary'
         mock_provider.summarize.assert_awaited_once_with('Long text', 'agent')
@@ -130,7 +130,7 @@ class TestGenerateSummaryWithTimeout:
             mock_settings.summary.max_concurrent = 2
 
             with pytest.raises(ToolError, match='Summary generation exceeded total timeout'):
-                await context_tools.generate_summary_with_timeout('Long text', 'agent')
+                await shared_tools.generate_summary_with_timeout('Long text', 'agent')
 
     @pytest.mark.asyncio
     async def test_provider_none_skips_generation(self) -> None:
@@ -139,7 +139,7 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._shared.get_summary_provider', return_value=None),
         ):
-            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
+            result = await shared_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result is None
 

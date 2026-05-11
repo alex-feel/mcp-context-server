@@ -10,6 +10,7 @@ Contains:
 
 import asyncio
 import base64
+from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import PropertyMock
@@ -18,6 +19,7 @@ import asyncpg
 import pytest
 from fastmcp.exceptions import ToolError
 
+from app.repositories.embedding_repository import ChunkEmbedding
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import build_store_response_message
@@ -27,6 +29,8 @@ from app.tools._shared import execute_update_in_transaction
 from app.tools._shared import is_connection_error
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
+
+_ChunkEmbeddingList = list[ChunkEmbedding]
 
 # ---------------------------------------------------------------------------
 # Relocated: TestTransactionHeartbeat (from tests/backends/test_postgresql_backend.py)
@@ -401,7 +405,7 @@ class TestExecuteStoreInTransaction:
     def mock_repos(self) -> MagicMock:
         """Create a mock RepositoryContainer with all required sub-repositories."""
         repos = MagicMock()
-        repos.context.store_with_deduplication = AsyncMock(return_value=(42, False))
+        repos.context.store_with_deduplication = AsyncMock(return_value=('42', False))
         repos.tags.store_tags = AsyncMock()
         repos.tags.replace_tags_for_context = AsyncMock()
         repos.images.store_images = AsyncMock()
@@ -435,7 +439,7 @@ class TestExecuteStoreInTransaction:
             chunk_embeddings=None,
             embedding_model='test-model',
         )
-        assert context_id == 42
+        assert context_id == '42'
         assert was_updated is False
         assert embedding_stored is False
         mock_repos.context.store_with_deduplication.assert_called_once()
@@ -452,7 +456,7 @@ class TestExecuteStoreInTransaction:
             tags=['tag1', 'tag2'], validated_images=[],
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.tags.store_tags.assert_called_once_with(42, ['tag1', 'tag2'], txn=mock_txn)
+        mock_repos.tags.store_tags.assert_called_once_with('42', ['tag1', 'tag2'], txn=mock_txn)
         mock_repos.tags.replace_tags_for_context.assert_not_called()
 
     @pytest.mark.asyncio
@@ -476,7 +480,7 @@ class TestExecuteStoreInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """New entry stores embeddings and returns embedding_stored=True."""
-        chunk_embeddings = [MagicMock()]
+        chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
             thread_id='t', source='user', content_type='text',
@@ -494,7 +498,7 @@ class TestExecuteStoreInTransaction:
         """Deduplicated entry with existing embeddings skips storage."""
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=(42, True))
         mock_repos.embeddings.exists = AsyncMock(return_value=True)
-        chunk_embeddings = [MagicMock()]
+        chunk_embeddings = cast(_ChunkEmbeddingList, [MagicMock()])
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
             thread_id='t', source='user', content_type='text',
@@ -533,7 +537,7 @@ class TestExecuteStoreInTransaction:
             tags=None, validated_images=images,
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.images.store_images.assert_called_once_with(42, images, txn=mock_txn)
+        mock_repos.images.store_images.assert_called_once_with('42', images, txn=mock_txn)
         mock_repos.images.replace_images_for_context.assert_not_called()
 
 
@@ -662,7 +666,7 @@ class TestExecuteUpdateInTransaction:
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """Chunk embeddings provided triggers delete+store cycle."""
-        chunk_embeddings = [MagicMock()]
+        chunk_embeddings = cast(_ChunkEmbeddingList, [MagicMock()])
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
             context_id='0190abcdef1234567890abcd00000001',

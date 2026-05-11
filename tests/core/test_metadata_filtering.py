@@ -11,9 +11,13 @@ from app.metadata_types import MetadataOperator
 from app.query_builder import MetadataQueryBuilder
 from app.server import search_context
 from app.server import store_context
+from app.types import JsonValue
 
 if TYPE_CHECKING:
     pass
+
+
+_TestData = list[dict[str, JsonValue]]
 
 
 class TestMetadataQueryBuilder:
@@ -701,7 +705,7 @@ async def test_all_operators(
 ) -> None:
     """Parameterized test for all metadata operators."""
     # Create test data
-    test_data = [
+    test_data: list[dict[str, JsonValue]] = [
         {'status': 'active', 'priority': 5, 'agent_name': 'planner'},
         {'status': 'pending', 'priority': 3, 'agent_name': 'executor'},
         {'status': 'active', 'priority': 8, 'agent_name': 'reviewer'},
@@ -799,7 +803,7 @@ class TestNestedJSONMetadata:
     @pytest.mark.asyncio
     async def test_store_nested_objects(self) -> None:
         """Test storing nested JSON objects in metadata."""
-        complex_metadata = {
+        complex_metadata: dict[str, JsonValue] = {
             'status': 'active',
             'config': {
                 'database': {
@@ -841,7 +845,7 @@ class TestNestedJSONMetadata:
     @pytest.mark.asyncio
     async def test_store_arrays_in_metadata(self) -> None:
         """Test storing arrays in metadata."""
-        metadata_with_arrays = {
+        metadata_with_arrays: dict[str, JsonValue] = {
             'tags': ['urgent', 'backend', 'production'],
             'priority_levels': [1, 2, 3, 4, 5],
             'mixed_array': ['string', 42, math.pi, True, None],
@@ -902,7 +906,7 @@ class TestNestedJSONMetadata:
     @pytest.mark.asyncio
     async def test_complex_nested_structure(self) -> None:
         """Test very complex nested structure with multiple levels."""
-        complex_structure = {
+        complex_structure: dict[str, JsonValue] = {
             'level1': {
                 'level2': {
                     'level3': {
@@ -960,7 +964,7 @@ class TestNestedJSONMetadata:
     @pytest.mark.asyncio
     async def test_mixed_flat_and_nested(self) -> None:
         """Test mixing flat and nested metadata structures."""
-        mixed_metadata = {
+        mixed_metadata: dict[str, JsonValue] = {
             'simple_string': 'value',
             'simple_int': 42,
             'simple_bool': True,

@@ -12,6 +12,7 @@ import pytest
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
+from app.types import JsonValue
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 store_context = app.server.store_context
@@ -22,7 +23,7 @@ search_context = app.server.search_context
 @pytest.mark.usefixtures('initialized_server')
 async def test_complex_nested_metadata() -> None:
     """Test that complex nested JSON structures can be stored in metadata."""
-    complex_metadata = {
+    complex_metadata: dict[str, JsonValue] = {
         'database': {
             'connection': {
                 'pool': {
@@ -85,7 +86,7 @@ async def test_complex_nested_metadata() -> None:
 @pytest.mark.usefixtures('initialized_server')
 async def test_array_metadata() -> None:
     """Test that arrays can be stored in metadata."""
-    array_metadata = {
+    array_metadata: dict[str, JsonValue] = {
         'tags': ['tag1', 'tag2', 'tag3'],
         'numbers': [1, 2, 3, 4, 5],
         'mixed': ['string', 42, math.pi, True, None],
@@ -121,7 +122,7 @@ async def test_array_metadata() -> None:
 @pytest.mark.usefixtures('initialized_server')
 async def test_deeply_nested_metadata() -> None:
     """Test that deeply nested structures (7 levels) can be stored."""
-    deeply_nested = {
+    deeply_nested: dict[str, JsonValue] = {
         'level1': {
             'level2': {
                 'level3': {
@@ -167,7 +168,7 @@ async def test_deeply_nested_metadata() -> None:
 @pytest.mark.usefixtures('initialized_server')
 async def test_mixed_nested_structures() -> None:
     """Test mixed nested structures with objects and arrays."""
-    mixed_metadata = {
+    mixed_metadata: dict[str, JsonValue] = {
         'config': {
             'database': {
                 'hosts': ['host1', 'host2', 'host3'],
@@ -224,7 +225,7 @@ async def test_mixed_nested_structures() -> None:
 @pytest.mark.usefixtures('initialized_server')
 async def test_backward_compatibility_flat_metadata() -> None:
     """Test that flat metadata still works (backward compatibility)."""
-    flat_metadata = {
+    flat_metadata: dict[str, JsonValue] = {
         'status': 'active',
         'priority': 8,
         'completed': False,

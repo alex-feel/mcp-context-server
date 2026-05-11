@@ -246,14 +246,11 @@ class TestTagOperations:
         async_test_db.commit()
 
         # Retrieve tags
-        if context_id is not None:
-            cursor.execute(
-                'SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag',
-                (context_id,),
-            )
-            retrieved_tags = [row['tag'] for row in cursor.fetchall()]
-        else:
-            retrieved_tags = []
+        cursor.execute(
+            'SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag',
+            (context_id,),
+        )
+        retrieved_tags = [row['tag'] for row in cursor.fetchall()]
         assert retrieved_tags == ['alpha', 'beta', 'gamma']
 
     @pytest.mark.asyncio
@@ -269,14 +266,11 @@ class TestTagOperations:
         async_test_db.commit()
 
         # Retrieve tags for entry without tags
-        if context_id is not None:
-            cursor.execute(
-                'SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag',
-                (context_id,),
-            )
-            tags = [row['tag'] for row in cursor.fetchall()]
-        else:
-            tags = []
+        cursor.execute(
+            'SELECT tag FROM tags WHERE context_entry_id = ? ORDER BY tag',
+            (context_id,),
+        )
+        tags = [row['tag'] for row in cursor.fetchall()]
         assert tags == []
 
 

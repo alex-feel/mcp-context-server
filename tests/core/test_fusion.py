@@ -19,16 +19,16 @@ class TestReciprocalRankFusion:
     def test_fts_only(self) -> None:
         """Test RRF with only FTS results."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'doc1'},
-            {'id': 2, 'score': 1.8, 'text_content': 'doc2'},
+            {'id': '1', 'score': 2.5, 'text_content': 'doc1'},
+            {'id': '2', 'score': 1.8, 'text_content': 'doc2'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
 
         assert len(results) == 2
         # Doc 1 should be first (higher FTS rank)
-        assert results[0].get('id') == 1
-        assert results[1].get('id') == 2
+        assert results[0].get('id') == '1'
+        assert results[1].get('id') == '2'
 
         # Check scores structure
         scores = results[0].get('scores', {})
@@ -41,16 +41,16 @@ class TestReciprocalRankFusion:
     def test_semantic_only(self) -> None:
         """Test RRF with only semantic results."""
         semantic_results: list[dict[str, Any]] = [
-            {'id': 3, 'distance': 0.3, 'text_content': 'doc3'},
-            {'id': 4, 'distance': 0.5, 'text_content': 'doc4'},
+            {'id': '3', 'distance': 0.3, 'text_content': 'doc3'},
+            {'id': '4', 'distance': 0.5, 'text_content': 'doc4'},
         ]
 
         results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
 
         assert len(results) == 2
         # Doc 3 should be first (lower distance = rank 1)
-        assert results[0].get('id') == 3
-        assert results[1].get('id') == 4
+        assert results[0].get('id') == '3'
+        assert results[1].get('id') == '4'
 
         # Check scores structure
         scores = results[0].get('scores', {})
@@ -62,12 +62,12 @@ class TestReciprocalRankFusion:
     def test_overlapping_results_score_higher(self) -> None:
         """Test that documents appearing in both result sets score higher."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'doc1'},
-            {'id': 2, 'score': 1.8, 'text_content': 'doc2'},
+            {'id': '1', 'score': 2.5, 'text_content': 'doc1'},
+            {'id': '2', 'score': 1.8, 'text_content': 'doc2'},
         ]
         semantic_results: list[dict[str, Any]] = [
-            {'id': 2, 'distance': 0.3, 'text_content': 'doc2'},  # Overlap!
-            {'id': 3, 'distance': 0.5, 'text_content': 'doc3'},
+            {'id': '2', 'distance': 0.3, 'text_content': 'doc2'},  # Overlap!
+            {'id': '3', 'distance': 0.5, 'text_content': 'doc3'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
@@ -75,9 +75,9 @@ class TestReciprocalRankFusion:
         assert len(results) == 3
 
         # Doc 2 appears in both, should score highest
-        doc2 = next(r for r in results if r.get('id') == 2)
-        doc1 = next(r for r in results if r.get('id') == 1)
-        doc3 = next(r for r in results if r.get('id') == 3)
+        doc2 = next(r for r in results if r.get('id') == '2')
+        doc1 = next(r for r in results if r.get('id') == '1')
+        doc3 = next(r for r in results if r.get('id') == '3')
 
         assert doc2.get('scores', {}).get('rrf', 0) > doc1.get('scores', {}).get('rrf', 0)
         assert doc2.get('scores', {}).get('rrf', 0) > doc3.get('scores', {}).get('rrf', 0)
@@ -93,10 +93,10 @@ class TestReciprocalRankFusion:
         """Verify RRF formula: score(d) = sum(1 / (k + rank_i(d)))."""
         k = 60
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'doc1'},
+            {'id': '1', 'score': 2.5, 'text_content': 'doc1'},
         ]
         semantic_results: list[dict[str, Any]] = [
-            {'id': 1, 'distance': 0.3, 'text_content': 'doc1'},  # Same doc
+            {'id': '1', 'distance': 0.3, 'text_content': 'doc1'},  # Same doc
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=k, limit=10)
@@ -109,7 +109,7 @@ class TestReciprocalRankFusion:
     def test_limit_parameter(self) -> None:
         """Test that limit parameter correctly restricts results."""
         fts_results: list[dict[str, Any]] = [
-            {'id': i, 'score': 10 - i, 'text_content': f'doc{i}'}
+            {'id': str(i), 'score': 10 - i, 'text_content': f'doc{i}'}
             for i in range(1, 6)
         ]
 
@@ -117,13 +117,13 @@ class TestReciprocalRankFusion:
 
         assert len(results) == 3
         # Should keep top 3 by RRF score
-        assert [r.get('id') for r in results] == [1, 2, 3]
+        assert [r.get('id') for r in results] == ['1', '2', '3']
 
     def test_k_parameter_effect(self) -> None:
         """Test that k parameter affects relative ranking."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'doc1'},
-            {'id': 2, 'score': 1.8, 'text_content': 'doc2'},
+            {'id': '1', 'score': 2.5, 'text_content': 'doc1'},
+            {'id': '2', 'score': 1.8, 'text_content': 'doc2'},
         ]
 
         # With small k, rank difference matters more
@@ -148,7 +148,7 @@ class TestReciprocalRankFusion:
         """Test that data from both sources is merged correctly."""
         fts_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'score': 2.5,
                 'text_content': 'doc1',
                 'thread_id': 'thread-1',
@@ -157,7 +157,7 @@ class TestReciprocalRankFusion:
         ]
         semantic_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'distance': 0.3,
                 'text_content': 'doc1',
                 'metadata': {'key': 'value'},
@@ -177,18 +177,18 @@ class TestReciprocalRankFusion:
         """Test that results are sorted by RRF score descending."""
         # Create a scenario where order differs from input order
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 1.0, 'text_content': 'doc1'},  # FTS rank 1
-            {'id': 2, 'score': 0.5, 'text_content': 'doc2'},  # FTS rank 2
+            {'id': '1', 'score': 1.0, 'text_content': 'doc1'},  # FTS rank 1
+            {'id': '2', 'score': 0.5, 'text_content': 'doc2'},  # FTS rank 2
         ]
         semantic_results: list[dict[str, Any]] = [
-            {'id': 2, 'distance': 0.1, 'text_content': 'doc2'},  # Semantic rank 1
-            {'id': 3, 'distance': 0.2, 'text_content': 'doc3'},  # Semantic rank 2
+            {'id': '2', 'distance': 0.1, 'text_content': 'doc2'},  # Semantic rank 1
+            {'id': '3', 'distance': 0.2, 'text_content': 'doc3'},  # Semantic rank 2
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
 
         # Doc 2 should be first (appears in both)
-        assert results[0].get('id') == 2
+        assert results[0].get('id') == '2'
         # Verify descending order
         for i in range(len(results) - 1):
             rrf_i = results[i].get('scores', {}).get('rrf', 0)
@@ -198,7 +198,7 @@ class TestReciprocalRankFusion:
     def test_none_id_filtered(self) -> None:
         """Test that entries without id are filtered out."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'doc1'},
+            {'id': '1', 'score': 2.5, 'text_content': 'doc1'},
             {'id': None, 'score': 1.0, 'text_content': 'no_id'},  # Should be skipped
             {'score': 0.5, 'text_content': 'missing_id'},  # No id field
         ]
@@ -206,12 +206,12 @@ class TestReciprocalRankFusion:
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
-        assert results[0].get('id') == 1
+        assert results[0].get('id') == '1'
 
     def test_default_values_in_result(self) -> None:
         """Test that missing fields get default values."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5},  # Minimal data
+            {'id': '1', 'score': 2.5},  # Minimal data
         ]
 
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
@@ -239,8 +239,8 @@ class TestCountUniqueResults:
 
     def test_no_overlap(self) -> None:
         """Test with completely disjoint result sets."""
-        fts_results: list[dict[str, Any]] = [{'id': 1}, {'id': 2}]
-        semantic_results: list[dict[str, Any]] = [{'id': 3}, {'id': 4}]
+        fts_results: list[dict[str, Any]] = [{'id': '1'}, {'id': '2'}]
+        semantic_results: list[dict[str, Any]] = [{'id': '3'}, {'id': '4'}]
 
         fts_only, semantic_only, overlap = count_unique_results(fts_results, semantic_results)
 
@@ -250,8 +250,8 @@ class TestCountUniqueResults:
 
     def test_full_overlap(self) -> None:
         """Test with identical result sets."""
-        fts_results: list[dict[str, Any]] = [{'id': 1}, {'id': 2}]
-        semantic_results: list[dict[str, Any]] = [{'id': 1}, {'id': 2}]
+        fts_results: list[dict[str, Any]] = [{'id': '1'}, {'id': '2'}]
+        semantic_results: list[dict[str, Any]] = [{'id': '1'}, {'id': '2'}]
 
         fts_only, semantic_only, overlap = count_unique_results(fts_results, semantic_results)
 
@@ -261,8 +261,8 @@ class TestCountUniqueResults:
 
     def test_partial_overlap(self) -> None:
         """Test with partial overlap."""
-        fts_results: list[dict[str, Any]] = [{'id': 1}, {'id': 2}, {'id': 3}]
-        semantic_results: list[dict[str, Any]] = [{'id': 2}, {'id': 3}, {'id': 4}]
+        fts_results: list[dict[str, Any]] = [{'id': '1'}, {'id': '2'}, {'id': '3'}]
+        semantic_results: list[dict[str, Any]] = [{'id': '2'}, {'id': '3'}, {'id': '4'}]
 
         fts_only, semantic_only, overlap = count_unique_results(fts_results, semantic_results)
 
@@ -272,8 +272,8 @@ class TestCountUniqueResults:
 
     def test_none_ids_ignored(self) -> None:
         """Test that None ids are ignored in counting."""
-        fts_results: list[dict[str, Any]] = [{'id': 1}, {'id': None}, {'other': 'data'}]
-        semantic_results: list[dict[str, Any]] = [{'id': 1}, {'id': 2}]
+        fts_results: list[dict[str, Any]] = [{'id': '1'}, {'id': None}, {'other': 'data'}]
+        semantic_results: list[dict[str, Any]] = [{'id': '1'}, {'id': '2'}]
 
         fts_only, semantic_only, overlap = count_unique_results(fts_results, semantic_results)
 
@@ -288,8 +288,8 @@ class TestRRFPreservesRerankText:
     def test_rrf_preserves_rerank_text_from_fts(self) -> None:
         """Test that RRF fusion preserves rerank_text from FTS results."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'full doc 1', 'rerank_text': 'passage 1'},
-            {'id': 2, 'score': 1.8, 'text_content': 'full doc 2', 'rerank_text': 'passage 2'},
+            {'id': '1', 'score': 2.5, 'text_content': 'full doc 1', 'rerank_text': 'passage 1'},
+            {'id': '2', 'score': 1.8, 'text_content': 'full doc 2', 'rerank_text': 'passage 2'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
@@ -297,14 +297,14 @@ class TestRRFPreservesRerankText:
         assert len(results) == 2
         # Verify rerank_text is preserved for FTS-only results
         result_by_id = {r.get('id'): r for r in results}
-        assert result_by_id[1].get('rerank_text') == 'passage 1'
-        assert result_by_id[2].get('rerank_text') == 'passage 2'
+        assert result_by_id['1'].get('rerank_text') == 'passage 1'
+        assert result_by_id['2'].get('rerank_text') == 'passage 2'
 
     def test_rrf_preserves_rerank_text_from_semantic(self) -> None:
         """Test that RRF fusion preserves rerank_text from semantic results."""
         semantic_results: list[dict[str, Any]] = [
-            {'id': 3, 'distance': 0.3, 'text_content': 'full doc 3', 'rerank_text': 'chunk 3'},
-            {'id': 4, 'distance': 0.5, 'text_content': 'full doc 4', 'rerank_text': 'chunk 4'},
+            {'id': '3', 'distance': 0.3, 'text_content': 'full doc 3', 'rerank_text': 'chunk 3'},
+            {'id': '4', 'distance': 0.5, 'text_content': 'full doc 4', 'rerank_text': 'chunk 4'},
         ]
 
         results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
@@ -312,18 +312,18 @@ class TestRRFPreservesRerankText:
         assert len(results) == 2
         # Verify rerank_text is preserved for semantic-only results
         result_by_id = {r.get('id'): r for r in results}
-        assert result_by_id[3].get('rerank_text') == 'chunk 3'
-        assert result_by_id[4].get('rerank_text') == 'chunk 4'
+        assert result_by_id['3'].get('rerank_text') == 'chunk 3'
+        assert result_by_id['4'].get('rerank_text') == 'chunk 4'
 
     def test_rrf_preserves_rerank_text_for_overlapping_docs(self) -> None:
         """Test that overlapping docs preserve rerank_text from first source (FTS)."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'full doc 1', 'rerank_text': 'fts passage 1'},
-            {'id': 2, 'score': 1.8, 'text_content': 'full doc 2', 'rerank_text': 'fts passage 2'},
+            {'id': '1', 'score': 2.5, 'text_content': 'full doc 1', 'rerank_text': 'fts passage 1'},
+            {'id': '2', 'score': 1.8, 'text_content': 'full doc 2', 'rerank_text': 'fts passage 2'},
         ]
         semantic_results: list[dict[str, Any]] = [
-            {'id': 2, 'distance': 0.3, 'text_content': 'full doc 2', 'rerank_text': 'semantic chunk 2'},
-            {'id': 3, 'distance': 0.5, 'text_content': 'full doc 3', 'rerank_text': 'semantic chunk 3'},
+            {'id': '2', 'distance': 0.3, 'text_content': 'full doc 2', 'rerank_text': 'semantic chunk 2'},
+            {'id': '3', 'distance': 0.5, 'text_content': 'full doc 3', 'rerank_text': 'semantic chunk 3'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
@@ -332,21 +332,21 @@ class TestRRFPreservesRerankText:
         result_by_id = {r.get('id'): r for r in results}
 
         # Doc 1 (FTS only) should have FTS passage
-        assert result_by_id[1].get('rerank_text') == 'fts passage 1'
+        assert result_by_id['1'].get('rerank_text') == 'fts passage 1'
 
         # Doc 2 (both) should have FTS passage (FTS processed first)
-        assert result_by_id[2].get('rerank_text') == 'fts passage 2'
+        assert result_by_id['2'].get('rerank_text') == 'fts passage 2'
 
         # Doc 3 (semantic only) should have semantic chunk
-        assert result_by_id[3].get('rerank_text') == 'semantic chunk 3'
+        assert result_by_id['3'].get('rerank_text') == 'semantic chunk 3'
 
     def test_rrf_handles_missing_rerank_text(self) -> None:
         """Test that RRF fusion handles results without rerank_text gracefully."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 2.5, 'text_content': 'full doc 1'},  # No rerank_text
+            {'id': '1', 'score': 2.5, 'text_content': 'full doc 1'},  # No rerank_text
         ]
         semantic_results: list[dict[str, Any]] = [
-            {'id': 2, 'distance': 0.3, 'text_content': 'full doc 2'},  # No rerank_text
+            {'id': '2', 'distance': 0.3, 'text_content': 'full doc 2'},  # No rerank_text
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
@@ -354,5 +354,5 @@ class TestRRFPreservesRerankText:
         assert len(results) == 2
         # Verify rerank_text is None when not provided
         result_by_id = {r.get('id'): r for r in results}
-        assert result_by_id[1].get('rerank_text') is None
-        assert result_by_id[2].get('rerank_text') is None
+        assert result_by_id['1'].get('rerank_text') is None
+        assert result_by_id['2'].get('rerank_text') is None

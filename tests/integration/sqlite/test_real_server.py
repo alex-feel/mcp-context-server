@@ -9109,6 +9109,7 @@ class MCPServerIntegrationTest:
         """
         test_name = 'store_batch_single_matches_store_nonbatch'
         try:
+            assert self.client is not None
             # Store via non-batch
             nonbatch_result = await self.client.call_tool(
                 'store_context',
@@ -9208,6 +9209,7 @@ class MCPServerIntegrationTest:
         """
         test_name = 'update_batch_single_matches_update_nonbatch'
         try:
+            assert self.client is not None
             # Create two entries (one for each path)
             nb_store = await self.client.call_tool(
                 'store_context',
@@ -9295,6 +9297,7 @@ class MCPServerIntegrationTest:
         """
         test_name = 'delete_batch_single_matches_delete_nonbatch'
         try:
+            assert self.client is not None
             # Create two entries
             nb_store = await self.client.call_tool(
                 'store_context',

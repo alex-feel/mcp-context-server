@@ -694,7 +694,7 @@ class TestPostgresqlSubqueryStructure:
         mock_backend: MagicMock,
         *,
         highlight: bool = True,
-        mode: str = 'match',
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'] = 'match',
         query: str = 'test query',
         limit: int = 10,
     ) -> str:
@@ -819,7 +819,7 @@ class TestPostgresqlSubqueryStructure:
         self,
         repo: FtsRepository,
         mock_backend: MagicMock,
-        mode: str,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
     ) -> None:
         """Verify all FTS modes produce subquery-structured SQL."""
         sql = await self._capture_sql(repo, mock_backend, mode=mode)
