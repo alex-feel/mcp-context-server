@@ -5,7 +5,6 @@ Uses ChatAnthropic for LLM-based abstractive summarization via Anthropic API.
 Requires ANTHROPIC_API_KEY environment variable (read from SummarySettings, passed explicitly).
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any

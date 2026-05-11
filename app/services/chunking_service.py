@@ -11,7 +11,6 @@ to keep natural text units (paragraphs, sentences) intact while respecting
 chunk size limits. Chunk boundaries are tracked for chunk-aware reranking.
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

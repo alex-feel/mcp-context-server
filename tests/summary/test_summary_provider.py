@@ -8,8 +8,6 @@ Tests verify:
 - Global state set/get round-trip
 """
 
-from __future__ import annotations
-
 from unittest.mock import patch
 
 import pytest

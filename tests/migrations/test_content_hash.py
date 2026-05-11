@@ -9,8 +9,6 @@ Tests cover:
 - Backward compatibility with pre-migration rows (NULL hash fallback)
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import json
@@ -397,13 +395,15 @@ class TestNullHashFallback:
         # Apply the migration so the column exists (needed for INSERT to include content_hash)
         await apply_content_hash_migration(backend=backend_pre_migration)
 
-        # Manually insert a row WITHOUT content_hash (simulating pre-migration data)
+        # Manually insert a row WITHOUT content_hash (legacy data shape)
         def _insert_without_hash(conn: sqlite3.Connection) -> int:
             cursor = conn.execute(
                 "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
                 "VALUES ('t1', 'user', 'text', 'Legacy text')",
             )
-            return cursor.lastrowid or 0
+            inserted_id = cursor.lastrowid
+            assert inserted_id is not None
+            return inserted_id
 
         legacy_id = await backend_pre_migration.execute_write(_insert_without_hash)
         assert legacy_id > 0
@@ -438,7 +438,9 @@ class TestNullHashFallback:
                 "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
                 "VALUES ('t1', 'agent', 'text', 'Old agent text')",
             )
-            return cursor.lastrowid or 0
+            inserted_id = cursor.lastrowid
+            assert inserted_id is not None
+            return inserted_id
 
         legacy_id = await backend_pre_migration.execute_write(_insert_without_hash)
 

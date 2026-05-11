@@ -4,8 +4,6 @@ Tests for check_summary_provider_dependencies() and provider-specific
 check functions in app/migrations/dependencies.py.
 """
 
-from __future__ import annotations
-
 import os
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock

@@ -4,7 +4,6 @@ This module provides a production-grade PostgreSQL backend implementing the Stor
 protocol with asyncpg connection pooling, circuit breaker pattern, retry logic, and health monitoring.
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -85,10 +84,10 @@ class PostgreSQLTransactionContext:
         _connection: The asyncpg connection proxy for this transaction
     """
 
-    _connection: asyncpg.pool.PoolConnectionProxy[asyncpg.Record]
+    _connection: 'asyncpg.pool.PoolConnectionProxy[asyncpg.Record]'
 
     @property
-    def connection(self) -> asyncpg.pool.PoolConnectionProxy[asyncpg.Record]:
+    def connection(self) -> 'asyncpg.pool.PoolConnectionProxy[asyncpg.Record]':
         """Get the asyncpg connection proxy."""
         return self._connection
 
@@ -434,6 +433,30 @@ class PostgreSQLBackend:
                     logger.error(f'Failed to register pgvector type codec: {e}')
                     logger.error('Ensure pgvector extension is enabled and accessible')
                     raise ConfigurationError(f'pgvector codec registration failed: {e}') from e
+
+                # === UUID Type Codec Registration ===
+                # asyncpg's default codec maps the PostgreSQL ``uuid`` type to
+                # ``asyncpg.pgproto.pgproto.UUID``, a fast subclass that
+                # ``isinstance``-tests as ``uuid.UUID`` but is not a literal
+                # ``str``. The repository layer exchanges identifiers as
+                # canonical 32-char lowercase hex strings, so this codec
+                # round-trips both directions through ``str``.
+                #
+                # Encoder: pass the string through verbatim. PostgreSQL's
+                # native UUID input parser accepts both 32-char hex and
+                # 36-char hyphenated forms (case-insensitive).
+                # Decoder: normalize the 36-char hyphenated text returned by
+                # PostgreSQL into the 32-char lowercase hex canonical form.
+                from app.ids import normalize_id
+
+                await conn.set_type_codec(
+                    'uuid',
+                    schema='pg_catalog',
+                    encoder=lambda v: v,
+                    decoder=normalize_id,
+                    format='text',
+                )
+                logger.debug('Registered uuid->str type codec')
 
             async def _reset_connection(conn: asyncpg.Connection) -> None:
                 """Validate and reset connection before returning to pool.

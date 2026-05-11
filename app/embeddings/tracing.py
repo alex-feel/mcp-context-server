@@ -11,7 +11,6 @@ For uvx (combined with embeddings):
     uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,langsmith]" mcp-context-server
 """
 
-from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable

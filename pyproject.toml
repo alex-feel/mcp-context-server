@@ -17,6 +17,7 @@ dependencies = [
     "asyncpg==0.31.0",
     "anyio==4.12.1",
     "tenacity==9.1.2",
+    "uuid_utils>=0.14.1,<0.15.0",
 ]
 
 [build-system]
@@ -26,6 +27,7 @@ build-backend = "hatchling.build"
 [project.scripts]
 mcp-context-server = "app.server:main"
 mcp-context = "app.server:main"
+mcp-context-server-migrate = "app.cli.migrate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

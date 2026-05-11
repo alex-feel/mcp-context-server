@@ -9,8 +9,6 @@ Covers:
 - Response message parity (summaries preserved, embedding stored vs generated, summaries cleared)
 """
 
-from __future__ import annotations
-
 import base64
 from contextlib import asynccontextmanager
 from pathlib import Path

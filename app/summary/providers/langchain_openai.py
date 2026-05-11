@@ -5,7 +5,6 @@ Uses ChatOpenAI for LLM-based abstractive summarization via OpenAI API.
 Requires OPENAI_API_KEY environment variable (read from SummarySettings, passed explicitly).
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any

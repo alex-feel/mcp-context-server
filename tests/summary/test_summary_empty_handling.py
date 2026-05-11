@@ -9,8 +9,6 @@ at multiple defense-in-depth layers:
 - search_context: empty summary -> None in response
 """
 
-from __future__ import annotations
-
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -20,11 +18,12 @@ from unittest.mock import patch
 
 import pytest
 
+from app.ids import generate_id
 from app.repositories.context_repository import ContextRepository
 
 _CREATE_TABLE_SQL = '''
     CREATE TABLE context_entries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
         source TEXT NOT NULL,
         content_type TEXT NOT NULL DEFAULT 'text',
@@ -162,12 +161,12 @@ class TestStoreWithDeduplicationEmptySummary:
         # Create database and table with initial entry
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        existing_id = generate_id()
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(
-            '''INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, summary)
-            VALUES (?, ?, ?, ?, ?)''',
-            ('test-thread', 'agent', 'text', 'Some text content', 'Valid existing summary'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (existing_id, 'test-thread', 'agent', 'text', 'Some text content', 'Valid existing summary'),
         )
         conn.commit()
         conn.close()
@@ -208,19 +207,19 @@ class TestGetSummaryEmptyNormalization:
         # Create database with an entry that has empty summary
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        entry_id = generate_id()
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(
-            '''INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, summary)
-            VALUES (?, ?, ?, ?, ?)''',
-            ('test-thread', 'agent', 'text', 'Some text', ''),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (entry_id, 'test-thread', 'agent', 'text', 'Some text', ''),
         )
         conn.commit()
         conn.close()
 
         mock_backend = _make_sqlite_read_backend(db_path)
         repo = ContextRepository(mock_backend)
-        result = await repo.get_summary(1)
+        result = await repo.get_summary(entry_id)
 
         assert result is None
 
@@ -231,18 +230,18 @@ class TestGetSummaryEmptyNormalization:
 
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        entry_id = generate_id()
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(
-            '''INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, summary)
-            VALUES (?, ?, ?, ?, ?)''',
-            ('test-thread', 'agent', 'text', 'Some text', 'A valid summary'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (entry_id, 'test-thread', 'agent', 'text', 'Some text', 'A valid summary'),
         )
         conn.commit()
         conn.close()
 
         mock_backend = _make_sqlite_read_backend(db_path)
         repo = ContextRepository(mock_backend)
-        result = await repo.get_summary(1)
+        result = await repo.get_summary(entry_id)
 
         assert result == 'A valid summary'

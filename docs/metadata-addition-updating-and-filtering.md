@@ -119,7 +119,7 @@ store_context(
         "project": "backend-api",     # Indexed - project filtering
         "report_type": "implementation",  # Indexed - report categorization
         "technologies": ["python", "fastapi"],  # GIN indexed in PostgreSQL
-        "references": {"context_ids": [100, 101]},  # GIN indexed in PostgreSQL
+        "references": {"context_ids": ["0190abcdef1234567890abcdef100abc", "0190abcdef1234567890abcdef101abc"]},  # GIN indexed in PostgreSQL
         "assignee": "alice@example.com",  # Not indexed but still queryable
         "due_date": "2025-10-20"          # Not indexed but still queryable
     }
@@ -247,7 +247,7 @@ Use the `metadata` parameter to completely replace all metadata:
 ```python
 # Replace all metadata
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     metadata={
         "status": "completed",
         "priority": 10,
@@ -271,20 +271,20 @@ The `metadata_patch` parameter implements RFC 7396 JSON Merge Patch semantics:
 # Original metadata: {"status": "pending", "priority": 5, "assignee": "alice"}
 
 # Add a new field
-update_context(context_id=123, metadata_patch={"category": "backend"})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"category": "backend"})
 # Result: {"status": "pending", "priority": 5, "assignee": "alice", "category": "backend"}
 
 # Update existing field
-update_context(context_id=123, metadata_patch={"status": "completed"})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"status": "completed"})
 # Result: {"status": "completed", "priority": 5, "assignee": "alice", "category": "backend"}
 
 # Delete a field using null
-update_context(context_id=123, metadata_patch={"assignee": None})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"assignee": None})
 # Result: {"status": "completed", "priority": 5, "category": "backend"}
 
 # Multiple operations in one call
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     metadata_patch={
         "status": "archived",      # Update existing
         "archived_at": "2025-10",  # Add new
@@ -301,14 +301,14 @@ The `metadata_patch` can be combined with other update fields:
 ```python
 # Update text and patch metadata in one operation
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     text="Updated analysis results",
     metadata_patch={"status": "reviewed", "reviewer": "bob"}
 )
 
 # Update tags and patch metadata
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     tags=["completed", "verified"],
     metadata_patch={"completed": True}
 )
@@ -322,14 +322,14 @@ Using `null` in the patch always DELETES the key. If you need to store a null va
 
 ```python
 # This DELETES the field, not sets it to null
-update_context(context_id=123, metadata_patch={"optional_field": None})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"optional_field": None})
 # Result: field is removed
 
 # To store null, use full replacement
-current = get_context_by_ids(context_ids=[123])
+current = get_context_by_ids(context_ids=["0190abcdef1234567890abcdef123456"])
 new_metadata = current[0]["metadata"]
 new_metadata["optional_field"] = None
-update_context(context_id=123, metadata=new_metadata)
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata=new_metadata)
 ```
 
 **2. Arrays are Replaced Entirely**
@@ -340,14 +340,14 @@ Array operations are replace-only - no element-wise add/remove:
 # Original: {"tags": ["a", "b", "c"]}
 
 # This replaces the entire array
-update_context(context_id=123, metadata_patch={"tags": ["x", "y"]})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"tags": ["x", "y"]})
 # Result: {"tags": ["x", "y"]}  (not ["a", "b", "c", "x", "y"])
 
 # To append, read current array first
-current = get_context_by_ids(context_ids=[123])
+current = get_context_by_ids(context_ids=["0190abcdef1234567890abcdef123456"])
 tags = current[0]["metadata"]["tags"]
 tags.append("new_tag")
-update_context(context_id=123, metadata_patch={"tags": tags})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"tags": tags})
 ```
 
 ## Filtering by Metadata
@@ -691,7 +691,7 @@ Check if a JSON array field contains a specific element value.
 {"key": "technologies", "operator": "array_contains", "value": "PYTHON", "case_sensitive": False}
 
 # Nested array path
-{"key": "references.context_ids", "operator": "array_contains", "value": 200}
+{"key": "references.context_ids", "operator": "array_contains", "value": "0190abcdef1234567890abcdef200abc"}
 ```
 
 **Value Requirements:**
@@ -702,7 +702,7 @@ Check if a JSON array field contains a specific element value.
 - Filter by technology stack: `{"key": "technologies", "operator": "array_contains", "value": "python"}`
 - Filter by tag in array: `{"key": "tags", "operator": "array_contains", "value": "urgent"}`
 - Filter by numeric value in array: `{"key": "priority_levels", "operator": "array_contains", "value": 5}`
-- Filter nested arrays: `{"key": "references.context_ids", "operator": "array_contains", "value": 2322}`
+- Filter nested arrays: `{"key": "references.context_ids", "operator": "array_contains", "value": "0190abcdef1234567890abcdef200abc"}`
 
 **Example:**
 
@@ -724,10 +724,10 @@ search_context(
 )
 
 # Nested path example
-# metadata = {"references": {"context_ids": [100, 200, 300]}}
+# metadata = {"references": {"context_ids": ["0190abcdef1234567890abcdef100abc", "0190abcdef1234567890abcdef200abc", "0190abcdef1234567890abcdef300abc"]}}
 search_context(
     metadata_filters=[
-        {"key": "references.context_ids", "operator": "array_contains", "value": 200}
+        {"key": "references.context_ids", "operator": "array_contains", "value": "0190abcdef1234567890abcdef200abc"}
     ]
 )
 ```

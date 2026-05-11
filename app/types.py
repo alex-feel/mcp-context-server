@@ -21,7 +21,7 @@ class ImageAttachmentDict(TypedDict):
     """Type definition for image attachment responses."""
 
     image_id: int
-    context_id: int
+    context_id: str
     mime_type: str
     size_bytes: int
 
@@ -32,7 +32,7 @@ class ContextEntryDict(TypedDict, total=False):
     Uses total=False to handle optional fields properly.
     """
 
-    id: int
+    id: str
     thread_id: str
     source: str
     content_type: str
@@ -71,7 +71,7 @@ class StoreContextSuccessDict(TypedDict):
     """Type definition for successful store context response."""
 
     success: bool
-    context_id: int
+    context_id: str
     thread_id: str
     message: str
 
@@ -85,7 +85,7 @@ class ThreadInfoDict(TypedDict):
     multimodal_count: int
     first_entry: str
     last_entry: str
-    last_id: int
+    last_id: str
 
 
 class ThreadListDict(TypedDict):
@@ -107,7 +107,7 @@ class UpdateContextSuccessDict(TypedDict):
     """Type definition for successful update context response."""
 
     success: bool
-    context_id: int
+    context_id: str
     updated_fields: list[str]
     message: str
 
@@ -135,7 +135,7 @@ class BulkStoreResultItemDict(TypedDict):
 
     index: int
     success: bool
-    context_id: int | None
+    context_id: str | None
     error: str | None
 
 
@@ -158,7 +158,7 @@ class BulkUpdateItemDict(TypedDict, total=False):
     Note: metadata and metadata_patch are mutually exclusive per entry.
     """
 
-    context_id: int
+    context_id: str
     text: str | None
     metadata: MetadataDict | None
     metadata_patch: MetadataDict | None
@@ -170,7 +170,7 @@ class BulkUpdateResultItemDict(TypedDict):
     """Type definition for a single result in bulk update response."""
 
     index: int
-    context_id: int
+    context_id: str
     success: bool
     updated_fields: list[str] | None
     error: str | None
@@ -240,7 +240,7 @@ class FtsSearchResultDict(TypedDict, total=False):
     - rerank_score: Present when reranking is enabled (HIGHER = better)
     """
 
-    id: int
+    id: str
     thread_id: str
     source: str
     content_type: str
@@ -281,7 +281,7 @@ class SemanticSearchResultDict(TypedDict, total=False):
     - rerank_score: Present when reranking is enabled (HIGHER = better)
     """
 
-    id: int
+    id: str
     thread_id: str
     source: str
     content_type: str
@@ -354,7 +354,7 @@ class HybridSearchResultDict(TypedDict, total=False):
     hybrid-specific scoring information.
     """
 
-    id: int
+    id: str
     thread_id: str
     source: str
     content_type: str

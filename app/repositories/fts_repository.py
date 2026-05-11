@@ -5,7 +5,6 @@ This module provides data access for full-text search functionality,
 handling search operations across both SQLite (FTS5) and PostgreSQL (tsvector) backends.
 """
 
-from __future__ import annotations
 
 import logging
 import re
@@ -307,7 +306,7 @@ class FtsRepository(BaseRepository):
                     -bm25(context_entries_fts) as score,
                     {highlight_expr}
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 {where_clause}
                 {'AND' if where_clause else 'WHERE'} fts.text_content MATCH ?
                 ORDER BY score DESC
@@ -388,7 +387,7 @@ class FtsRepository(BaseRepository):
         # Track metadata filter count for stats
         metadata_filter_count = 0
 
-        async def _search_postgresql_inner(conn: asyncpg.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        async def _search_postgresql_inner(conn: 'asyncpg.Connection') -> tuple[list[dict[str, Any]], dict[str, Any]]:
             nonlocal metadata_filter_count
             start_time = time_module.time()
             filter_conditions = ['1=1']  # Always true, makes building easier
@@ -781,7 +780,7 @@ class FtsRepository(BaseRepository):
             return await self.backend.execute_write(_rebuild_sqlite)
 
         # postgresql
-        async def _rebuild_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _rebuild_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             # Count entries
             entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
 
@@ -813,7 +812,7 @@ class FtsRepository(BaseRepository):
                     cursor = conn.execute(
                         '''
                         SELECT COUNT(*) FROM context_entries_fts fts
-                        JOIN context_entries ce ON ce.id = fts.rowid
+                        JOIN context_entries ce ON ce.rowid_int = fts.rowid
                         WHERE ce.thread_id = ?
                         ''',
                         (thread_id,),
@@ -845,7 +844,7 @@ class FtsRepository(BaseRepository):
             return await self.backend.execute_read(_get_stats_sqlite)
 
         # postgresql
-        async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             # Count entries with tsvector populated
             if thread_id:
                 indexed_count = await conn.fetchval(
@@ -896,7 +895,7 @@ class FtsRepository(BaseRepository):
             return await self.backend.execute_read(_check_sqlite)
 
         # postgresql
-        async def _check_postgresql(conn: asyncpg.Connection) -> bool:
+        async def _check_postgresql(conn: 'asyncpg.Connection') -> bool:
             try:
                 # Check if text_search_vector column exists
                 result = await conn.fetchval(
@@ -967,7 +966,7 @@ class FtsRepository(BaseRepository):
         if self.backend.backend_type != 'postgresql':
             return None
 
-        async def _get_language(conn: asyncpg.Connection) -> str | None:
+        async def _get_language(conn: 'asyncpg.Connection') -> str | None:
             # Query to get the generation expression for text_search_vector column
             result = await conn.fetchval(
                 '''
@@ -1046,23 +1045,27 @@ class FtsRepository(BaseRepository):
             conn.execute('DROP TRIGGER IF EXISTS context_fts_update')
             conn.execute('DROP TABLE IF EXISTS context_entries_fts')
 
-            # Recreate FTS5 table with new tokenizer
+            # Recreate FTS5 table with new tokenizer.
+            # The FTS5 ``content_rowid`` MUST point at an INTEGER PRIMARY KEY
+            # column; ``context_entries.rowid_int`` is the SQLite private
+            # surrogate used for this purpose, while ``context_entries.id`` is
+            # the public UUIDv7 hex value exchanged across the MCP boundary.
             create_sql = f'''
                 CREATE VIRTUAL TABLE context_entries_fts USING fts5(
                     text_content,
                     content='context_entries',
-                    content_rowid='id',
+                    content_rowid='rowid_int',
                     tokenize='{new_tokenizer}'
                 )
             '''
             conn.execute(create_sql)
 
-            # Recreate triggers
+            # Recreate triggers using ``rowid_int`` as the FTS5 rowid alias.
             conn.execute('''
                 CREATE TRIGGER context_fts_insert AFTER INSERT ON context_entries
                 BEGIN
                     INSERT INTO context_entries_fts(rowid, text_content)
-                    VALUES (new.id, new.text_content);
+                    VALUES (new.rowid_int, new.text_content);
                 END
             ''')
 
@@ -1070,7 +1073,7 @@ class FtsRepository(BaseRepository):
                 CREATE TRIGGER context_fts_delete AFTER DELETE ON context_entries
                 BEGIN
                     INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
-                    VALUES('delete', old.id, old.text_content);
+                    VALUES('delete', old.rowid_int, old.text_content);
                 END
             ''')
 
@@ -1078,9 +1081,9 @@ class FtsRepository(BaseRepository):
                 CREATE TRIGGER context_fts_update AFTER UPDATE OF text_content ON context_entries
                 BEGIN
                     INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
-                    VALUES('delete', old.id, old.text_content);
+                    VALUES('delete', old.rowid_int, old.text_content);
                     INSERT INTO context_entries_fts(rowid, text_content)
-                    VALUES (new.id, new.text_content);
+                    VALUES (new.rowid_int, new.text_content);
                 END
             ''')
 
@@ -1118,7 +1121,7 @@ class FtsRepository(BaseRepository):
 
         old_language = await self.get_current_language()
 
-        async def _migrate_language(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _migrate_language(conn: 'asyncpg.Connection') -> dict[str, Any]:
             # Count entries for statistics
             entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
 

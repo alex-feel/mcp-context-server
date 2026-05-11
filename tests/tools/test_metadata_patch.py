@@ -44,9 +44,9 @@ def mock_context():
 def mock_repositories():
     """Create mock repository container with all necessary repositories.
 
-    Note: Phase 3 Transactional Integrity introduced backend.begin_transaction()
-    and txn parameter to repository methods. Tests checking repository call
-    arguments should use unittest.mock.ANY for the txn parameter.
+    Tools call ``backend.begin_transaction()`` and pass a ``txn`` argument to
+    repository methods. Tests that assert on repository call arguments should
+    use ``unittest.mock.ANY`` for the ``txn`` parameter.
 
     Returns:
         Mock: Repository container with mocked repositories.
@@ -55,7 +55,7 @@ def mock_repositories():
 
     repos = Mock()
 
-    # Mock backend with begin_transaction() support (Phase 3)
+    # Mock backend exposing begin_transaction() as an async context manager
     mock_backend = Mock()
 
     @asynccontextmanager
@@ -85,7 +85,7 @@ def mock_repositories():
     repos.images.replace_images_for_context = AsyncMock()
     repos.images.count_images_for_context = AsyncMock(return_value=0)
 
-    # Mock embeddings repository (Phase 3)
+    # Mock embeddings repository for generation-first transactional writes
     repos.embeddings = Mock()
     repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
@@ -105,7 +105,7 @@ class TestMetadataPatchBasicOperations:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text=None,
                 metadata=None,
                 metadata_patch={'new_field': 'new_value'},
@@ -115,13 +115,13 @@ class TestMetadataPatchBasicOperations:
             )
 
             assert result['success'] is True
-            assert result['context_id'] == 123
+            assert result['context_id'] == '0190abcdef1234567890abcd0000007b'
             assert 'metadata' in result['updated_fields']
 
             # Verify patch_metadata was called with correct arguments
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 patch={'new_field': 'new_value'},
                 txn=ANY,
             )
@@ -134,7 +134,7 @@ class TestMetadataPatchBasicOperations:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=456,
+                context_id='0190abcdef1234567890abcd000001c8',
                 text=None,
                 metadata=None,
                 metadata_patch={'status': 'completed'},
@@ -148,7 +148,7 @@ class TestMetadataPatchBasicOperations:
 
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=456,
+                context_id='0190abcdef1234567890abcd000001c8',
                 patch={'status': 'completed'},
                 txn=ANY,
             )
@@ -162,7 +162,7 @@ class TestMetadataPatchBasicOperations:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=789,
+                context_id='0190abcdef1234567890abcd00000315',
                 text=None,
                 metadata=None,
                 metadata_patch={'field_to_delete': None},
@@ -176,7 +176,7 @@ class TestMetadataPatchBasicOperations:
 
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=789,
+                context_id='0190abcdef1234567890abcd00000315',
                 patch={'field_to_delete': None},
                 txn=ANY,
             )
@@ -201,7 +201,7 @@ class TestMetadataPatchNestedOperations:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=111,
+                context_id='0190abcdef1234567890abcd0000006f',
                 text=None,
                 metadata=None,
                 metadata_patch=nested_patch,
@@ -215,7 +215,7 @@ class TestMetadataPatchNestedOperations:
 
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=111,
+                context_id='0190abcdef1234567890abcd0000006f',
                 patch=nested_patch,
                 txn=ANY,
             )
@@ -235,7 +235,7 @@ class TestMetadataPatchNestedOperations:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=222,
+                context_id='0190abcdef1234567890abcd000000de',
                 text=None,
                 metadata=None,
                 metadata_patch=deep_patch,
@@ -247,7 +247,7 @@ class TestMetadataPatchNestedOperations:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=222,
+                context_id='0190abcdef1234567890abcd000000de',
                 patch=deep_patch,
                 txn=ANY,
             )
@@ -268,7 +268,7 @@ class TestMetadataPatchMultipleFields:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=333,
+                context_id='0190abcdef1234567890abcd0000014d',
                 text=None,
                 metadata=None,
                 metadata_patch=multi_patch,
@@ -280,7 +280,7 @@ class TestMetadataPatchMultipleFields:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=333,
+                context_id='0190abcdef1234567890abcd0000014d',
                 patch=multi_patch,
                 txn=ANY,
             )
@@ -302,7 +302,7 @@ class TestMetadataPatchMultipleFields:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=444,
+                context_id='0190abcdef1234567890abcd000001bc',
                 text=None,
                 metadata=None,
                 metadata_patch=mixed_patch,
@@ -314,7 +314,7 @@ class TestMetadataPatchMultipleFields:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=444,
+                context_id='0190abcdef1234567890abcd000001bc',
                 patch=mixed_patch,
                 txn=ANY,
             )
@@ -331,7 +331,7 @@ class TestMetadataPatchEdgeCases:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=555,
+                context_id='0190abcdef1234567890abcd0000022b',
                 text=None,
                 metadata=None,
                 metadata_patch={},
@@ -343,7 +343,7 @@ class TestMetadataPatchEdgeCases:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=555,
+                context_id='0190abcdef1234567890abcd0000022b',
                 patch={},
                 txn=ANY,
             )
@@ -356,7 +356,7 @@ class TestMetadataPatchEdgeCases:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=666,
+                context_id='0190abcdef1234567890abcd0000029a',
                 text=None,
                 metadata=None,
                 metadata_patch={'first_field': 'first_value'},
@@ -377,7 +377,7 @@ class TestMetadataPatchEdgeCases:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=777,
+                context_id='0190abcdef1234567890abcd00000309',
                 text=None,
                 metadata=None,
                 metadata_patch={'only_this_changes': 'new_value'},
@@ -403,7 +403,7 @@ class TestMetadataPatchEdgeCases:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=888,
+                context_id='0190abcdef1234567890abcd00000378',
                 text=None,
                 metadata=None,
                 metadata_patch=array_patch,
@@ -415,7 +415,7 @@ class TestMetadataPatchEdgeCases:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=888,
+                context_id='0190abcdef1234567890abcd00000378',
                 patch=array_patch,
                 txn=ANY,
             )
@@ -434,7 +434,7 @@ class TestMetadataPatchValidation:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=999,
+                    context_id='0190abcdef1234567890abcd000003e7',
                     text=None,
                     metadata={'full': 'replacement'},
                     metadata_patch={'partial': 'update'},
@@ -455,7 +455,7 @@ class TestMetadataPatchValidation:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=12345,
+                    context_id='0190abcdef1234567890abcd00003039',
                     text=None,
                     metadata=None,
                     metadata_patch={'field': 'value'},
@@ -474,7 +474,7 @@ class TestMetadataPatchValidation:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=1111,
+                    context_id='0190abcdef1234567890abcd00000457',
                     text=None,
                     metadata=None,
                     metadata_patch={'field': 'value'},
@@ -494,7 +494,7 @@ class TestMetadataPatchWithOtherFields:
         """Test metadata_patch combined with text content update."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=2222,
+                context_id='0190abcdef1234567890abcd000008ae',
                 text='Updated text content',
                 metadata=None,
                 metadata_patch={'status': 'updated'},
@@ -516,7 +516,7 @@ class TestMetadataPatchWithOtherFields:
         """Test metadata_patch combined with tags update."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=3333,
+                context_id='0190abcdef1234567890abcd00000d05',
                 text=None,
                 metadata=None,
                 metadata_patch={'status': 'tagged'},
@@ -537,7 +537,7 @@ class TestMetadataPatchWithOtherFields:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=4444,
+                context_id='0190abcdef1234567890abcd0000115c',
                 text=None,
                 metadata=None,
                 metadata_patch={'only_field': 'only_value'},
@@ -561,7 +561,7 @@ class TestMetadataPatchTimestamp:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=5555,
+                context_id='0190abcdef1234567890abcd000015b3',
                 text=None,
                 metadata=None,
                 metadata_patch={'timestamp_test': True},
@@ -583,7 +583,7 @@ class TestMetadataPatchSpecialValues:
         """Test patching with boolean values."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=6666,
+                context_id='0190abcdef1234567890abcd00001a0a',
                 text=None,
                 metadata=None,
                 metadata_patch={'completed': True, 'active': False},
@@ -595,7 +595,7 @@ class TestMetadataPatchSpecialValues:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=6666,
+                context_id='0190abcdef1234567890abcd00001a0a',
                 patch={'completed': True, 'active': False},
                 txn=ANY,
             )
@@ -605,7 +605,7 @@ class TestMetadataPatchSpecialValues:
         """Test patching with integer and float values."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7777,
+                context_id='0190abcdef1234567890abcd00001e61',
                 text=None,
                 metadata=None,
                 metadata_patch={'priority': 5, 'score': 98.6},
@@ -617,7 +617,7 @@ class TestMetadataPatchSpecialValues:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7777,
+                context_id='0190abcdef1234567890abcd00001e61',
                 patch={'priority': 5, 'score': 98.6},
                 txn=ANY,
             )
@@ -627,7 +627,7 @@ class TestMetadataPatchSpecialValues:
         """Test patching with various string values including special characters."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=8888,
+                context_id='0190abcdef1234567890abcd000022b8',
                 text=None,
                 metadata=None,
                 metadata_patch={
@@ -674,7 +674,7 @@ class TestRFC7396DeepMergeSemantics:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7396,
+                context_id='0190abcdef1234567890abcd00001ce4',
                 text=None,
                 metadata=None,
                 metadata_patch=nested_patch,
@@ -686,7 +686,7 @@ class TestRFC7396DeepMergeSemantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7396,
+                context_id='0190abcdef1234567890abcd00001ce4',
                 patch=nested_patch,
                 txn=ANY,
             )
@@ -704,7 +704,7 @@ class TestRFC7396DeepMergeSemantics:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7413,
+                context_id='0190abcdef1234567890abcd00001cf5',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': 1},  # Does not affect existing null in target
@@ -716,7 +716,7 @@ class TestRFC7396DeepMergeSemantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7413,
+                context_id='0190abcdef1234567890abcd00001cf5',
                 patch={'a': 1},
                 txn=ANY,
             )
@@ -742,7 +742,7 @@ class TestRFC7396DeepMergeSemantics:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7415,
+                context_id='0190abcdef1234567890abcd00001cf7',
                 text=None,
                 metadata=None,
                 metadata_patch=deep_patch,
@@ -754,7 +754,7 @@ class TestRFC7396DeepMergeSemantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7415,
+                context_id='0190abcdef1234567890abcd00001cf7',
                 patch=deep_patch,
                 txn=ANY,
             )
@@ -771,7 +771,7 @@ class TestRFC7396DeepMergeSemantics:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7400,
+                context_id='0190abcdef1234567890abcd00001ce8',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': {'b': 'updated'}},
@@ -783,7 +783,7 @@ class TestRFC7396DeepMergeSemantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7400,
+                context_id='0190abcdef1234567890abcd00001ce8',
                 patch={'a': {'b': 'updated'}},
                 txn=ANY,
             )
@@ -800,7 +800,7 @@ class TestRFC7396DeepMergeSemantics:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7401,
+                context_id='0190abcdef1234567890abcd00001ce9',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': {'b': None}},
@@ -812,7 +812,7 @@ class TestRFC7396DeepMergeSemantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7401,
+                context_id='0190abcdef1234567890abcd00001ce9',
                 patch={'a': {'b': None}},
                 txn=ANY,
             )
@@ -832,7 +832,7 @@ class TestMetadataPatchRFC7396AppendixA:
         """RFC 7396 Case #1: Simple value replacement {"a":"b"} + {"a":"c"} = {"a":"c"}."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7301,
+                context_id='0190abcdef1234567890abcd00001c85',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': 'c'},
@@ -843,7 +843,7 @@ class TestMetadataPatchRFC7396AppendixA:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7301,
+                context_id='0190abcdef1234567890abcd00001c85',
                 patch={'a': 'c'},
                 txn=ANY,
             )
@@ -853,7 +853,7 @@ class TestMetadataPatchRFC7396AppendixA:
         """RFC 7396 Case #2: Add new key {"a":"b"} + {"b":"c"} = {"a":"b","b":"c"}."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7302,
+                context_id='0190abcdef1234567890abcd00001c86',
                 text=None,
                 metadata=None,
                 metadata_patch={'b': 'c'},
@@ -864,7 +864,7 @@ class TestMetadataPatchRFC7396AppendixA:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7302,
+                context_id='0190abcdef1234567890abcd00001c86',
                 patch={'b': 'c'},
                 txn=ANY,
             )
@@ -874,7 +874,7 @@ class TestMetadataPatchRFC7396AppendixA:
         """RFC 7396 Case #3: Delete key with null {"a":"b"} + {"a":null} = {}."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7303,
+                context_id='0190abcdef1234567890abcd00001c87',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': None},
@@ -885,7 +885,7 @@ class TestMetadataPatchRFC7396AppendixA:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7303,
+                context_id='0190abcdef1234567890abcd00001c87',
                 patch={'a': None},
                 txn=ANY,
             )
@@ -895,7 +895,7 @@ class TestMetadataPatchRFC7396AppendixA:
         """RFC 7396 Case #4: Delete one key, preserve another {"a":"b","b":"c"} + {"a":null} = {"b":"c"}."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7304,
+                context_id='0190abcdef1234567890abcd00001c88',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': None},
@@ -906,7 +906,7 @@ class TestMetadataPatchRFC7396AppendixA:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7304,
+                context_id='0190abcdef1234567890abcd00001c88',
                 patch={'a': None},
                 txn=ANY,
             )
@@ -916,7 +916,7 @@ class TestMetadataPatchRFC7396AppendixA:
         """RFC 7396 Case #5: Array replacement {"a":["b"]} + {"a":"c"} = {"a":"c"}."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7305,
+                context_id='0190abcdef1234567890abcd00001c89',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': 'c'},
@@ -927,7 +927,7 @@ class TestMetadataPatchRFC7396AppendixA:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7305,
+                context_id='0190abcdef1234567890abcd00001c89',
                 patch={'a': 'c'},
                 txn=ANY,
             )
@@ -937,7 +937,7 @@ class TestMetadataPatchRFC7396AppendixA:
         """RFC 7396 Case #6: Replace value with array {"a":"c"} + {"a":["b"]} = {"a":["b"]}."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7306,
+                context_id='0190abcdef1234567890abcd00001c8a',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': ['b']},
@@ -948,7 +948,7 @@ class TestMetadataPatchRFC7396AppendixA:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7306,
+                context_id='0190abcdef1234567890abcd00001c8a',
                 patch={'a': ['b']},
                 txn=ANY,
             )
@@ -958,7 +958,7 @@ class TestMetadataPatchRFC7396AppendixA:
         """RFC 7396 Case #8: Array of objects replacement {"a":[{"b":"c"}]} + {"a":[1]} = {"a":[1]}."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7308,
+                context_id='0190abcdef1234567890abcd00001c8c',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': [1]},
@@ -969,7 +969,7 @@ class TestMetadataPatchRFC7396AppendixA:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7308,
+                context_id='0190abcdef1234567890abcd00001c8c',
                 patch={'a': [1]},
                 txn=ANY,
             )
@@ -987,7 +987,7 @@ class TestMetadataPatchTypeConversions:
         """Test replacing object value with scalar."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=9001,
+                context_id='0190abcdef1234567890abcd00002329',
                 text=None,
                 metadata=None,
                 metadata_patch={'config': 'simple_value'},
@@ -1002,7 +1002,7 @@ class TestMetadataPatchTypeConversions:
         """Test replacing scalar value with object."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=9002,
+                context_id='0190abcdef1234567890abcd0000232a',
                 text=None,
                 metadata=None,
                 metadata_patch={'status': {'code': 200, 'message': 'OK'}},
@@ -1017,7 +1017,7 @@ class TestMetadataPatchTypeConversions:
         """Test replacing array value with object."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=9003,
+                context_id='0190abcdef1234567890abcd0000232b',
                 text=None,
                 metadata=None,
                 metadata_patch={'items': {'count': 3, 'data': [1, 2, 3]}},
@@ -1032,7 +1032,7 @@ class TestMetadataPatchTypeConversions:
         """Test replacing object value with array."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=9004,
+                context_id='0190abcdef1234567890abcd0000232c',
                 text=None,
                 metadata=None,
                 metadata_patch={'items': ['a', 'b', 'c']},

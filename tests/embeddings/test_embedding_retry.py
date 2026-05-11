@@ -9,8 +9,6 @@ Tests verify:
 - All timeouts exhausted raises EmbeddingTimeoutError
 """
 
-from __future__ import annotations
-
 import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import patch

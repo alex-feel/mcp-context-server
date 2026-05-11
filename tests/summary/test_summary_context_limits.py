@@ -7,8 +7,6 @@ Tests verify:
 - Registry consistency (all entries have required fields)
 """
 
-from __future__ import annotations
-
 import pytest
 
 from app.summary.context_limits import SUMMARY_MODEL_SPECS

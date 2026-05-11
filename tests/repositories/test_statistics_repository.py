@@ -4,8 +4,6 @@ This module tests the StatisticsRepository class which provides
 database statistics and thread information retrieval.
 """
 
-from __future__ import annotations
-
 import json
 import sqlite3
 from collections.abc import AsyncGenerator
@@ -16,6 +14,7 @@ import pytest_asyncio
 
 from app.backends import create_backend
 from app.backends.base import StorageBackend
+from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.statistics_repository import StatisticsRepository
 from app.schemas import load_schema
@@ -76,16 +75,16 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Insert test data
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread1', 'user', 'text', 'Test 1')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000001', 'thread1', 'user', 'text', 'Test 1')",
             )
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread1', 'agent', 'text', 'Test 2')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000002', 'thread1', 'agent', 'text', 'Test 2')",
             )
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread2', 'user', 'multimodal', 'Test 3')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000003', 'thread2', 'user', 'multimodal', 'Test 3')",
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -235,24 +234,27 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Insert context entries
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread1', 'user', 'text', 'Test 1')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000004', 'thread1', 'user', 'text', 'Test 1')",
             )
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread1', 'agent', 'text', 'Test 2')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000005', 'thread1', 'agent', 'text', 'Test 2')",
             )
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread2', 'user', 'text', 'Test 3')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000006', 'thread2', 'user', 'text', 'Test 3')",
             )
-            # Insert tags - 'important' used 3 times, 'test' used 2 times, 'unique' used 1 time
-            cursor.execute("INSERT INTO tags (context_entry_id, tag) VALUES (1, 'important')")
-            cursor.execute("INSERT INTO tags (context_entry_id, tag) VALUES (1, 'test')")
-            cursor.execute("INSERT INTO tags (context_entry_id, tag) VALUES (2, 'important')")
-            cursor.execute("INSERT INTO tags (context_entry_id, tag) VALUES (2, 'test')")
-            cursor.execute("INSERT INTO tags (context_entry_id, tag) VALUES (3, 'important')")
-            cursor.execute("INSERT INTO tags (context_entry_id, tag) VALUES (3, 'unique')")
+            # Tags: 'important' used 3 times, 'test' used 2 times, 'unique' used 1 time
+            id_a = '0190abcdef1234567890abcd00000004'
+            id_b = '0190abcdef1234567890abcd00000005'
+            id_c = '0190abcdef1234567890abcd00000006'
+            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_a, 'important'))
+            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_a, 'test'))
+            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_b, 'important'))
+            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_b, 'test'))
+            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_c, 'important'))
+            cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (id_c, 'unique'))
 
         await stats_test_db.execute_write(_insert_data)
 
@@ -286,12 +288,16 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Insert context entry
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread1', 'user', 'text', 'Test')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000007', 'thread1', 'user', 'text', 'Test')",
             )
             # Insert 15 tags to test top_10 filtering
+            entry_id = '0190abcdef1234567890abcd00000007'
             for i in range(15):
-                cursor.execute(f"INSERT INTO tags (context_entry_id, tag) VALUES (1, 'tag{i:02d}')")
+                cursor.execute(
+                    'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                    (entry_id, f'tag{i:02d}'),
+                )
 
         await stats_test_db.execute_write(_insert_data)
 
@@ -315,8 +321,8 @@ class TestStatisticsRepository:
         def _insert_data(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute(
-                '''INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                   VALUES ('thread1', 'user', 'text', 'Test')''',
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd00000008', 'thread1', 'user', 'text', 'Test')",
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -350,18 +356,21 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Entry with valid summary
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
-                "VALUES ('t1', 'user', 'text', 'Content 1', 'Summary 1')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+                "VALUES (?, 't1', 'user', 'text', 'Content 1', 'Summary 1')",
+                (generate_id(),),
             )
             # Entry with NULL summary
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('t1', 'agent', 'text', 'Content 2')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 't1', 'agent', 'text', 'Content 2')",
+                (generate_id(),),
             )
             # Entry with valid summary
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
-                "VALUES ('t2', 'user', 'text', 'Content 3', 'Summary 3')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+                "VALUES (?, 't2', 'user', 'text', 'Content 3', 'Summary 3')",
+                (generate_id(),),
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -389,18 +398,21 @@ class TestStatisticsRepository:
             cursor = conn.cursor()
             # Entry with valid summary
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
-                "VALUES ('t1', 'user', 'text', 'Content 1', 'Valid summary')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+                "VALUES (?, 't1', 'user', 'text', 'Content 1', 'Valid summary')",
+                (generate_id(),),
             )
-            # Entry with empty string summary (the edge case)
+            # Entry with empty string summary (edge case)
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
-                "VALUES ('t1', 'agent', 'text', 'Content 2', '')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+                "VALUES (?, 't1', 'agent', 'text', 'Content 2', '')",
+                (generate_id(),),
             )
             # Entry with NULL summary
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('t2', 'user', 'text', 'Content 3')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 't2', 'user', 'text', 'Content 3')",
+                (generate_id(),),
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -422,16 +434,19 @@ class TestStatisticsRepository:
         def _insert_data(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('ct-thread', 'user', 'text', 'Text entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 'ct-thread', 'user', 'text', 'Text entry')",
+                (generate_id(),),
             )
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('ct-thread', 'user', 'multimodal', 'Multimodal entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 'ct-thread', 'user', 'multimodal', 'Multimodal entry')",
+                (generate_id(),),
             )
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('ct-thread', 'agent', 'text', 'Another text entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 'ct-thread', 'agent', 'text', 'Another text entry')",
+                (generate_id(),),
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -538,12 +553,14 @@ class TestThreadListDetails:
         def _insert_data(conn: sqlite3.Connection) -> None:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('mm-thread', 'user', 'text', 'Text only')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 'mm-thread', 'user', 'text', 'Text only')",
+                (generate_id(),),
             )
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('mm-thread', 'user', 'multimodal', 'With images')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 'mm-thread', 'user', 'multimodal', 'With images')",
+                (generate_id(),),
             )
 
         await stats_test_db.execute_write(_insert_data)
@@ -671,12 +688,14 @@ class TestStatisticsBackendField:
             cursor = conn.cursor()
             for i in range(3):
                 cursor.execute(
-                    "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                    f"VALUES ('busy-thread', 'user', 'text', 'Entry {i}')",
+                    'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                    f"VALUES (?, 'busy-thread', 'user', 'text', 'Entry {i}')",
+                    (generate_id(),),
                 )
             cursor.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('quiet-thread', 'user', 'text', 'Single entry')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 'quiet-thread', 'user', 'text', 'Single entry')",
+                (generate_id(),),
             )
 
         await stats_test_db.execute_write(_insert_data)

@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
@@ -64,7 +63,7 @@ class ContextEntry(BaseModel):
         },
     }
 
-    id: int | None = Field(default=None, description='Auto-generated ID')
+    id: str | None = Field(default=None, description='Auto-generated UUIDv7 hex (32-char lowercase) ID')
     thread_id: str = Field(..., description='Thread identifier for context scoping')
     source: SourceType = Field(..., description='Origin of the context')
     content_type: ContentType = Field(default=ContentType.TEXT)
@@ -108,7 +107,7 @@ class ContextEntry(BaseModel):
         return validated_tags
 
     @model_validator(mode='after')
-    def set_content_type(self) -> ContextEntry:
+    def set_content_type(self) -> 'ContextEntry':
         """Auto-set content type to MULTIMODAL when images are present"""
         if self.images:
             self.content_type = ContentType.MULTIMODAL
@@ -171,19 +170,19 @@ class StoreContextRequest(BaseModel):
 class DeleteContextRequest(BaseModel):
     """Request model for deleting context"""
 
-    context_ids: list[int] | None = Field(default=None)
+    context_ids: list[str] | None = Field(default=None)
     thread_id: str | None = Field(default=None)
 
     @field_validator('context_ids')
     @classmethod
-    def validate_context_ids(cls, v: list[int] | None) -> list[int] | None:
+    def validate_context_ids(cls, v: list[str] | None) -> list[str] | None:
         """Validate context_ids is not empty if provided."""
         if v is not None and len(v) == 0:
             raise ValueError('context_ids cannot be an empty list')
         return v
 
     @model_validator(mode='after')
-    def validate_has_fields(self) -> DeleteContextRequest:
+    def validate_has_fields(self) -> 'DeleteContextRequest':
         """Ensure at least one field is provided for deletion"""
         if not self.context_ids and not self.thread_id:
             raise ValueError('Must provide either context_ids or thread_id')

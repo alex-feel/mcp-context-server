@@ -15,7 +15,7 @@ SET search_path = pg_catalog, pg_temp;
 
 -- Main context storage table
 CREATE TABLE IF NOT EXISTS context_entries (
-    id BIGSERIAL PRIMARY KEY,
+    id UUID NOT NULL PRIMARY KEY,
     thread_id TEXT NOT NULL,
     source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
     content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_thread_source ON context_entries(thread_id, sourc
 -- Tags table (many-to-many relationship)
 CREATE TABLE IF NOT EXISTS tags (
     id BIGSERIAL PRIMARY KEY,
-    context_entry_id BIGINT NOT NULL,
+    context_entry_id UUID NOT NULL,
     tag TEXT NOT NULL,
     FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
 );
@@ -54,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 -- Image attachments table
 CREATE TABLE IF NOT EXISTS image_attachments (
     id BIGSERIAL PRIMARY KEY,
-    context_entry_id BIGINT NOT NULL,
+    context_entry_id UUID NOT NULL,
     image_data BYTEA NOT NULL,
     mime_type TEXT NOT NULL,
     image_metadata JSONB,

@@ -8,8 +8,6 @@ Tests verify:
 - FTS/semantic error logging in hybrid search graceful degradation
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from unittest.mock import AsyncMock

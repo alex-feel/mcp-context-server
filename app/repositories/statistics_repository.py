@@ -5,7 +5,6 @@ This module handles all database operations related to statistics,
 thread information, and database metrics.
 """
 
-from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
@@ -73,7 +72,7 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _list_threads_postgresql(conn: asyncpg.Connection) -> list[ThreadInfoDict]:
+        async def _list_threads_postgresql(conn: 'asyncpg.Connection') -> list[ThreadInfoDict]:
             rows = await conn.fetch('''
                     SELECT
                         thread_id,
@@ -162,7 +161,7 @@ class StatisticsRepository(BaseRepository):
             stats = await self.backend.execute_read(_get_stats_sqlite)
         else:  # postgresql
 
-            async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+            async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
                 stats: dict[str, Any] = {}
 
                 row = await conn.fetchrow('SELECT COUNT(*) as count FROM context_entries')
@@ -290,7 +289,7 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_thread_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_thread_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             stats: dict[str, Any] = {'thread_id': thread_id}
 
             query1 = f'''
@@ -380,7 +379,7 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_tag_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_tag_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             stats: dict[str, Any] = {}
 
             row = await conn.fetchrow('SELECT COUNT(*) as count FROM tags')
@@ -439,7 +438,7 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_summary_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_summary_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             total_entries = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
 
             summary_count = await conn.fetchval(

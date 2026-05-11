@@ -11,6 +11,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 ## Key Features
 
 - **Multimodal Context Storage**: Store and retrieve both text and images
+- **UUIDv7 Context Identifiers**: Every context entry is identified by a 32-character lowercase hex UUIDv7 value, providing time-ordered, globally unique IDs with a stable lex-string ordering
 - **Thread-Based Scoping**: Agents working on the same task share context through thread IDs
 - **Flexible Metadata Filtering**: Store custom structured data with any JSON-serializable fields and filter using 16 powerful operators
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
@@ -64,6 +65,14 @@ For comprehensive metadata filtering including 16 operators, nested JSON paths, 
 The server supports multiple database backends, selectable via the `STORAGE_BACKEND` environment variable. SQLite (default) provides zero-configuration local storage perfect for single-user deployments. PostgreSQL offers high-performance capabilities with 10x+ write throughput for multi-user and high-traffic deployments.
 
 For detailed configuration instructions including PostgreSQL setup with Docker, Supabase integration, connection methods, and troubleshooting, see the [Database Backends Guide](docs/database-backends.md).
+
+## Migrating Existing Databases
+
+For users whose existing context databases were created with the integer primary-key layout and need to be re-keyed to UUIDv7, the project ships an opt-in CLI named `mcp-context-server-migrate`. The CLI is invoked manually against a backup of the source database; it is not run automatically by the server.
+
+The CLI accepts a SQLite filesystem path, a `sqlite:///` URL, or a `postgresql://` URL for both `--source-url` and `--target-url`, and supports same-backend and cross-backend migrations. Optional flags include `--dry-run` (run migration logic without writing to the target) and `--report PATH` (write a JSON run report).
+
+For the full step-by-step guide including prerequisites, expected behavior, and troubleshooting, see the [Migration Guide](docs/MIGRATION-v2-to-v3.md).
 
 ## API Reference
 

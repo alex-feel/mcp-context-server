@@ -201,7 +201,7 @@ class TestUpdateContextErrors:
         _ = mock_server_dependencies  # Fixture needed for mocking
         with pytest.raises(ToolError, match='text cannot be empty'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='',
             )
 
@@ -211,7 +211,7 @@ class TestUpdateContextErrors:
         _ = mock_server_dependencies  # Fixture needed for mocking
         with pytest.raises(ToolError, match='text cannot be empty'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='   ',
             )
 
@@ -221,7 +221,7 @@ class TestUpdateContextErrors:
         _ = mock_server_dependencies  # Fixture needed for mocking
         with pytest.raises(ToolError, match='At least one field must be provided'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
             )
 
     @pytest.mark.asyncio
@@ -229,9 +229,9 @@ class TestUpdateContextErrors:
         """Test that updating non-existent context raises ToolError."""
         mock_server_dependencies.context.check_entry_exists.return_value = (False, None)
 
-        with pytest.raises(ToolError, match='Context entry with ID 999 not found'):
+        with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd000003e7 not found'):
             await update_context(
-                context_id=999,
+                context_id='0190abcdef1234567890abcd000003e7',
                 text='new text',
             )
 
@@ -243,7 +243,7 @@ class TestUpdateContextErrors:
 
         with pytest.raises(ToolError, match='Failed to update context entry'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='new text',
             )
 
@@ -254,7 +254,7 @@ class TestUpdateContextErrors:
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 images=[{'data': 'not-valid-base64!!!'}],  # Invalid base64, mime_type defaults to 'image/png'
             )
 
@@ -265,7 +265,7 @@ class TestUpdateContextErrors:
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 images=[{'data': 'not-base64!!!', 'mime_type': 'image/png'}],
             )
 
@@ -286,7 +286,13 @@ class TestDeleteContextErrors:
         mock_server_dependencies.context.delete_by_ids.side_effect = Exception('Deletion failed')
 
         with pytest.raises(ToolError, match='Failed to delete context: Deletion failed'):
-            await delete_context(context_ids=[1, 2, 3])
+            await delete_context(
+                context_ids=[
+                    '0190abcdef1234567890abcd00000001',
+                    '0190abcdef1234567890abcd00000002',
+                    '0190abcdef1234567890abcd00000003',
+                ],
+            )
 
 
 class TestSearchContextErrors:
@@ -346,7 +352,13 @@ class TestGetContextByIdsErrors:
         mock_server_dependencies.context.get_by_ids.return_value = []
 
         # Valid non-empty list works fine
-        result = await get_context_by_ids(context_ids=[1, 2, 3])
+        result = await get_context_by_ids(
+            context_ids=[
+                '0190abcdef1234567890abcd00000001',
+                '0190abcdef1234567890abcd00000002',
+                '0190abcdef1234567890abcd00000003',
+            ],
+        )
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
@@ -355,7 +367,13 @@ class TestGetContextByIdsErrors:
         mock_server_dependencies.context.get_by_ids.side_effect = Exception('Fetch failed')
 
         with pytest.raises(ToolError, match='Failed to fetch context entries: Fetch failed'):
-            await get_context_by_ids(context_ids=[1, 2, 3])
+            await get_context_by_ids(
+                context_ids=[
+                    '0190abcdef1234567890abcd00000001',
+                    '0190abcdef1234567890abcd00000002',
+                    '0190abcdef1234567890abcd00000003',
+                ],
+            )
 
 
 class TestListThreadsErrors:
@@ -419,7 +437,7 @@ class TestFieldValidation:
         # Testing our manual validation as fallback
         with pytest.raises(ToolError):
             await update_context(
-                context_id=0,  # Should be > 0
+                context_id='0190abcdef1234567890abcd00000000',  # Should be > 0
                 text='test',
             )
 
@@ -476,7 +494,7 @@ class TestErrorMessageConsistency:
 
         with pytest.raises(ToolError, match='Context entry with ID .* not found'):
             await update_context(
-                context_id=999,
+                context_id='0190abcdef1234567890abcd000003e7',
                 text='test',
             )
 
@@ -696,8 +714,12 @@ class TestJSONErrorConsistency:
             ),
             ('store_context whitespace text', lambda: store_context(thread_id='test', source='user', text='   '), 'text'),
             # update_context business logic validation
-            ('update_context empty text', lambda: update_context(context_id=1, text=''), 'text'),
-            ('update_context no fields', lambda: update_context(context_id=1), 'field'),
+            (
+                'update_context empty text',
+                lambda: update_context(context_id='0190abcdef1234567890abcd00000001', text=''),
+                'text',
+            ),
+            ('update_context no fields', lambda: update_context(context_id='0190abcdef1234567890abcd00000001'), 'field'),
             # delete_context business logic validation
             ('delete_context no parameters', lambda: delete_context(), 'provide'),
         ]
@@ -729,7 +751,7 @@ class TestJSONErrorConsistency:
         mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
         mock_server_dependencies.context.update_context_entry.side_effect = Exception('Update failed')
         with pytest.raises(ToolError, match='Failed to update context'):
-            await update_context(context_id=1, text='new text')
+            await update_context(context_id='0190abcdef1234567890abcd00000001', text='new text')
 
         # Test search_context database error
         mock_server_dependencies.context.search_contexts.side_effect = Exception('Search failed')
@@ -739,7 +761,7 @@ class TestJSONErrorConsistency:
         # Test get_context_by_ids database error
         mock_server_dependencies.context.get_by_ids.side_effect = Exception('Fetch failed')
         with pytest.raises(ToolError, match='Failed to fetch context'):
-            await get_context_by_ids(context_ids=[1, 2])
+            await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001', '0190abcdef1234567890abcd00000002'])
 
         # Test list_threads database error
         mock_server_dependencies.statistics.get_thread_list.side_effect = Exception('List failed')
@@ -799,7 +821,7 @@ class TestJSONErrorConsistency:
 
         # Test no fields provided (business logic: at least one field required)
         with pytest.raises(ToolError) as exc_info:
-            await update_context(context_id=1)
+            await update_context(context_id='0190abcdef1234567890abcd00000001')
         assert 'field' in str(exc_info.value).lower()
         assert 'least' in str(exc_info.value).lower() or 'provide' in str(exc_info.value).lower()
 
@@ -838,7 +860,7 @@ class TestJSONErrorConsistency:
             error_messages.append(str(e))
 
         try:
-            await update_context(context_id=1)
+            await update_context(context_id='0190abcdef1234567890abcd00000001')
         except ToolError as e:
             error_messages.append(str(e))
 
@@ -863,7 +885,7 @@ class TestJSONErrorConsistency:
         # All tools should raise ToolError for business logic failures
         tools_and_errors = [
             (store_context, {'thread_id': '', 'source': 'user', 'text': 'test'}),  # Empty after strip
-            (update_context, {'context_id': 1, 'text': ''}),  # Empty text
+            (update_context, {'context_id': '0190abcdef1234567890abcd00000001', 'text': ''}),  # Empty text
             (delete_context, {}),  # No parameters provided
         ]
 

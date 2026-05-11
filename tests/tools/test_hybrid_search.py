@@ -3,8 +3,6 @@
 Tests the hybrid search combining FTS and semantic search with RRF fusion.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from app.fusion import count_unique_results
@@ -18,18 +16,18 @@ class TestRRFIntegration:
         """Test RRF with documents having different rankings in each source."""
         # Simulate FTS results (ranked by relevance score)
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 10.0, 'text_content': 'Python programming tutorial', 'thread_id': 't1'},
-            {'id': 2, 'score': 8.5, 'text_content': 'Python data science guide', 'thread_id': 't1'},
-            {'id': 3, 'score': 7.0, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
-            {'id': 4, 'score': 5.5, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
+            {'id': '1', 'score': 10.0, 'text_content': 'Python programming tutorial', 'thread_id': 't1'},
+            {'id': '2', 'score': 8.5, 'text_content': 'Python data science guide', 'thread_id': 't1'},
+            {'id': '3', 'score': 7.0, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
+            {'id': '4', 'score': 5.5, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
         ]
 
         # Simulate semantic results (ranked by distance - lower is better)
         semantic_results: list[dict[str, Any]] = [
-            {'id': 3, 'distance': 0.1, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
-            {'id': 4, 'distance': 0.2, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
-            {'id': 2, 'distance': 0.3, 'text_content': 'Python data science guide', 'thread_id': 't1'},
-            {'id': 5, 'distance': 0.4, 'text_content': 'AI fundamentals', 'thread_id': 't1'},
+            {'id': '3', 'distance': 0.1, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
+            {'id': '4', 'distance': 0.2, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
+            {'id': '2', 'distance': 0.3, 'text_content': 'Python data science guide', 'thread_id': 't1'},
+            {'id': '5', 'distance': 0.4, 'text_content': 'AI fundamentals', 'thread_id': 't1'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
@@ -40,7 +38,7 @@ class TestRRFIntegration:
 
         # Documents appearing in both should have higher scores
         # Doc 2, 3, 4 appear in both
-        overlap_ids = {2, 3, 4}
+        overlap_ids = {'2', '3', '4'}
         for r in results:
             if r.get('id') in overlap_ids:
                 scores = r.get('scores', {})

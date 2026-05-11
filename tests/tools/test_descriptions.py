@@ -6,8 +6,6 @@ configurations, and that structural invariants of the description
 template are maintained.
 """
 
-from __future__ import annotations
-
 from app.tools.descriptions import _FTS_DESCRIPTION_TEMPLATE
 from app.tools.descriptions import _POSTGRESQL_MODE_DESCRIPTIONS
 from app.tools.descriptions import _SQLITE_MODE_DESCRIPTIONS

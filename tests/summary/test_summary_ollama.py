@@ -11,8 +11,6 @@ Tests verify:
 - provider_name returns 'ollama'
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch

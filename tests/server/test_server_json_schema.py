@@ -8,7 +8,6 @@ errors before deployment and ensures the server can be properly discovered by MC
 Schema URL: Dynamically read from server.json's $schema field (currently hosted at static.modelcontextprotocol.io).
 """
 
-from __future__ import annotations
 
 import json
 import re
@@ -302,7 +301,7 @@ class TestServerJsonSchemaValidation:
                 if field_info.alias:
                     aliases.add(field_info.alias)
 
-            # Resolve type annotations (handles 'from __future__ import annotations')
+            # Resolve type annotations (resolves string-form/forward references too)
             try:
                 hints = get_type_hints(settings_cls)
             except Exception:

@@ -4,7 +4,6 @@ OpenAI embedding provider using LangChain integration.
 This provider uses langchain-openai package for OpenAI's embedding API.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any

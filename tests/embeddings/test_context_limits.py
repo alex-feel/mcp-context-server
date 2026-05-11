@@ -1,7 +1,5 @@
 """Tests for embedding model context limits reference data."""
 
-from __future__ import annotations
-
 from app.embeddings.context_limits import EMBEDDING_MODEL_SPECS
 from app.embeddings.context_limits import get_model_spec
 from app.embeddings.context_limits import get_provider_default_context

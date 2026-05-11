@@ -4,8 +4,6 @@ This module tests the MetadataQueryBuilder class with PostgreSQL backend type
 to ensure proper SQL generation for PostgreSQL syntax.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from app.metadata_types import MetadataFilter

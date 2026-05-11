@@ -5,16 +5,12 @@ Tests the ImageRepository class for storing, retrieving, and managing
 image attachments associated with context entries.
 """
 
-from __future__ import annotations
-
 import base64
-from typing import TYPE_CHECKING
 from typing import Any
 
 import pytest
 
-if TYPE_CHECKING:
-    from app.backends import StorageBackend
+from app.backends import StorageBackend
 
 
 @pytest.mark.asyncio

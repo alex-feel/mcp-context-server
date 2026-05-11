@@ -4,8 +4,6 @@ This module tests the SimpleTokenVerifier authentication mechanism
 using centralized AuthSettings from app.settings.
 """
 
-from __future__ import annotations
-
 import os
 from unittest.mock import MagicMock
 from unittest.mock import patch

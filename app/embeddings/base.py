@@ -8,7 +8,6 @@ embedding generation.
 The protocol uses @runtime_checkable to enable isinstance() checks.
 """
 
-from __future__ import annotations
 
 from typing import Protocol
 from typing import runtime_checkable

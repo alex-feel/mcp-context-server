@@ -4,8 +4,6 @@ This module tests the create_embedding_provider factory function
 and its provider mappings.
 """
 
-from __future__ import annotations
-
 from unittest.mock import MagicMock
 from unittest.mock import patch
 

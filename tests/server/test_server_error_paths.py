@@ -4,8 +4,6 @@ This module tests specific error handling code paths in app/server.py
 to improve coverage of exception handling and edge cases.
 """
 
-from __future__ import annotations
-
 import base64
 from typing import Any
 
@@ -238,7 +236,13 @@ class TestGetContextByIdsErrorPaths:
     @pytest.mark.usefixtures('initialized_server')
     async def test_get_by_ids_all_nonexistent(self) -> None:
         """Test getting all non-existent IDs returns empty list."""
-        entries = await get_context_by_ids(context_ids=[999997, 999998, 999999])
+        entries = await get_context_by_ids(
+            context_ids=[
+                '0190abcdef1234567890abcd000f423d',
+                '0190abcdef1234567890abcd000f423e',
+                '0190abcdef1234567890abcd000f423f',
+            ],
+        )
         assert entries == []
 
     @pytest.mark.asyncio

@@ -274,22 +274,28 @@ class StorageBackend(Protocol):
             Exception: Original exception from operation after retries exhausted
 
         Example (SQLite - sync):
+            from app.ids import generate_id
+
             def insert_context(conn, text, thread_id):
-                cursor = conn.execute(
-                    'INSERT INTO context_entries (text_content, thread_id) VALUES (?, ?)',
-                    (text, thread_id)
+                new_id = generate_id()
+                conn.execute(
+                    'INSERT INTO context_entries (id, text_content, thread_id) VALUES (?, ?, ?)',
+                    (new_id, text, thread_id),
                 )
-                return cursor.lastrowid
+                return new_id
 
             context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123')
 
         Example (PostgreSQL - async):
+            from app.ids import generate_id
+
             async def insert_context(conn, text, thread_id):
-                row = await conn.fetchrow(
-                    'INSERT INTO context_entries (text_content, thread_id) VALUES ($1, $2) RETURNING id',
-                    text, thread_id
+                new_id = generate_id()
+                await conn.execute(
+                    'INSERT INTO context_entries (id, text_content, thread_id) VALUES ($1, $2, $3)',
+                    new_id, text, thread_id,
                 )
-                return row['id']
+                return new_id
 
             context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123')
         """

@@ -6,11 +6,10 @@ This module tests the embedding-first pattern in MCP tools:
 - store_context_batch: atomic mode embedding failure = no entries saved
 - update_context_batch: atomic mode embedding failure = no entries modified
 
-Phase 3 of the Transactional Integrity Fix:
+Tools wrap writes in backend.begin_transaction() (atomic transactional writes):
 - Tool Layer Refactoring with Embedding-First Pattern
 """
 
-from __future__ import annotations
 
 import sqlite3
 from collections.abc import AsyncGenerator
@@ -23,6 +22,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends.sqlite_backend import SQLiteBackend
+from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.schemas import load_schema
 
@@ -134,7 +134,7 @@ class TestUpdateContextEmbeddingFirst:
     @pytest_asyncio.fixture
     async def setup_with_existing_entry(
         self, tmp_path: Path,
-    ) -> AsyncGenerator[tuple[SQLiteBackend, RepositoryContainer, int], None]:
+    ) -> AsyncGenerator[tuple[SQLiteBackend, RepositoryContainer, str], None]:
         """Set up backend with an existing entry for update tests."""
         db_path = tmp_path / 'test_update.db'
 
@@ -143,11 +143,12 @@ class TestUpdateContextEmbeddingFirst:
         with sqlite3.connect(str(db_path)) as conn:
             conn.executescript(schema_sql)
             # Insert an existing entry
+            existing_id = generate_id()
             conn.execute(
                 '''INSERT INTO context_entries
-                   (thread_id, source, text_content, content_type, metadata)
-                   VALUES (?, ?, ?, ?, ?)''',
-                ('existing-thread', 'agent', 'Original content', 'text', '{"status": "original"}'),
+                   (id, thread_id, source, text_content, content_type, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (existing_id, 'existing-thread', 'agent', 'Original content', 'text', '{"status": "original"}'),
             )
             conn.commit()
 
@@ -170,7 +171,7 @@ class TestUpdateContextEmbeddingFirst:
 
     @pytest.mark.asyncio
     async def test_update_context_embedding_failure_preserves_original(
-        self, setup_with_existing_entry: tuple[SQLiteBackend, RepositoryContainer, int],
+        self, setup_with_existing_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
         """Test that update_context preserves original data when embedding fails."""
         backend, repos, entry_id = setup_with_existing_entry
@@ -213,7 +214,7 @@ class TestUpdateContextEmbeddingFirst:
 
     @pytest.mark.asyncio
     async def test_update_context_metadata_only_no_embedding_required(
-        self, setup_with_existing_entry: tuple[SQLiteBackend, RepositoryContainer, int],
+        self, setup_with_existing_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
         """Test that metadata-only updates work without embedding generation."""
         backend, repos, entry_id = setup_with_existing_entry
@@ -250,7 +251,7 @@ class TestUpdateContextEmbeddingFirst:
 
     @pytest.mark.asyncio
     async def test_update_context_no_embedding_provider_saves_data(
-        self, setup_with_existing_entry: tuple[SQLiteBackend, RepositoryContainer, int],
+        self, setup_with_existing_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
         """Test that update_context saves data when embedding provider is disabled."""
         backend, repos, entry_id = setup_with_existing_entry
@@ -475,7 +476,7 @@ class TestUpdateContextBatchEmbeddingFirst:
     @pytest_asyncio.fixture
     async def setup_with_existing_entries(
         self, tmp_path: Path,
-    ) -> AsyncGenerator[tuple[SQLiteBackend, RepositoryContainer, list[int]], None]:
+    ) -> AsyncGenerator[tuple[SQLiteBackend, RepositoryContainer, list[str]], None]:
         """Set up backend with existing entries for batch update tests."""
         db_path = tmp_path / 'test_batch_update.db'
 
@@ -486,21 +487,21 @@ class TestUpdateContextBatchEmbeddingFirst:
             # Insert existing entries
             conn.execute(
                 '''INSERT INTO context_entries
-                   (thread_id, source, text_content, content_type)
-                   VALUES (?, ?, ?, ?)''',
-                ('batch-update-test', 'agent', 'Original 1', 'text'),
+                   (id, thread_id, source, text_content, content_type)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (generate_id(), 'batch-update-test', 'agent', 'Original 1', 'text'),
             )
             conn.execute(
                 '''INSERT INTO context_entries
-                   (thread_id, source, text_content, content_type)
-                   VALUES (?, ?, ?, ?)''',
-                ('batch-update-test', 'agent', 'Original 2', 'text'),
+                   (id, thread_id, source, text_content, content_type)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (generate_id(), 'batch-update-test', 'agent', 'Original 2', 'text'),
             )
             conn.execute(
                 '''INSERT INTO context_entries
-                   (thread_id, source, text_content, content_type)
-                   VALUES (?, ?, ?, ?)''',
-                ('batch-update-test', 'agent', 'Original 3', 'text'),
+                   (id, thread_id, source, text_content, content_type)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (generate_id(), 'batch-update-test', 'agent', 'Original 3', 'text'),
             )
             conn.commit()
 
@@ -523,7 +524,7 @@ class TestUpdateContextBatchEmbeddingFirst:
 
     @pytest.mark.asyncio
     async def test_batch_update_atomic_embedding_failure_preserves_all(
-        self, setup_with_existing_entries: tuple[SQLiteBackend, RepositoryContainer, list[int]],
+        self, setup_with_existing_entries: tuple[SQLiteBackend, RepositoryContainer, list[str]],
     ) -> None:
         """Test that atomic batch update preserves all data when embedding fails."""
         backend, repos, entry_ids = setup_with_existing_entries
@@ -580,7 +581,7 @@ class TestUpdateContextBatchEmbeddingFirst:
 
     @pytest.mark.asyncio
     async def test_batch_update_non_atomic_partial_success(
-        self, setup_with_existing_entries: tuple[SQLiteBackend, RepositoryContainer, list[int]],
+        self, setup_with_existing_entries: tuple[SQLiteBackend, RepositoryContainer, list[str]],
     ) -> None:
         """Test that non-atomic batch update allows partial success."""
         backend, repos, entry_ids = setup_with_existing_entries
@@ -654,7 +655,7 @@ class TestUpdateContextBatchEmbeddingFirst:
 
     @pytest.mark.asyncio
     async def test_batch_update_no_embedding_provider_saves_all_updates(
-        self, setup_with_existing_entries: tuple[SQLiteBackend, RepositoryContainer, list[int]],
+        self, setup_with_existing_entries: tuple[SQLiteBackend, RepositoryContainer, list[str]],
     ) -> None:
         """Test that update_context_batch saves all updates when embedding provider is disabled."""
         backend, repos, entry_ids = setup_with_existing_entries

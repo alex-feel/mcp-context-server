@@ -1,6 +1,11 @@
 -- Chunking migration for PostgreSQL: Enable 1:N embedding relationship
--- This migration converts vec_context_embeddings from 1:1 to 1:N with context_entries
--- Includes chunk boundaries for chunk-aware reranking
+-- This migration converts vec_context_embeddings from 1:1 to 1:N with
+-- context_entries by adding a BIGSERIAL `id` column as the new PRIMARY KEY.
+-- The pgvector vector index requires an integer key, so `id` is BIGSERIAL.
+-- `context_id` remains a UUID foreign key to context_entries(id) (set by
+-- the semantic-search migration; this migration does NOT alter
+-- `context_id`'s type).
+-- Includes chunk boundaries for chunk-aware reranking.
 -- NOTE: This migration is idempotent (safe to run multiple times)
 -- NOTE: Schema is templated and replaced during migration
 
@@ -41,8 +46,10 @@ BEGIN
         ALTER TABLE {SCHEMA}.vec_context_embeddings
             ADD PRIMARY KEY (id);
 
-        -- Step 6: Create index for context_id lookups
+        -- Step 6: Create index for context_id (UUID) lookups
         -- Required for deduplication queries and cascading deletes
+        -- B-tree index on UUID column works identically to BIGINT
+        -- (PostgreSQL handles native uuid type natively).
         CREATE INDEX IF NOT EXISTS idx_vec_embeddings_context_id
             ON {SCHEMA}.vec_context_embeddings(context_id);
 

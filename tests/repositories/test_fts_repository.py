@@ -4,8 +4,6 @@ Tests the query transformation logic and PostgreSQL tsquery function selection
 without requiring a database connection.
 """
 
-from __future__ import annotations
-
 from typing import Literal
 from unittest.mock import MagicMock
 

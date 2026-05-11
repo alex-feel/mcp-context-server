@@ -35,6 +35,9 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.errors import format_exception_message
+from app.ids import is_id_prefix
+from app.ids import normalize_id
+from app.ids import resolve_prefix
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -140,7 +143,7 @@ async def store_context(
         summary_generated = False
 
         # Performance optimization: pre-check for likely duplicates (read-only)
-        likely_duplicate_id: int | None = None
+        likely_duplicate_id: str | None = None
 
         if get_embedding_provider() is not None or get_summary_provider() is not None:
             likely_duplicate_id = await repos.context.check_latest_is_duplicate(
@@ -160,12 +163,12 @@ async def store_context(
                 if has_embeddings:
                     logger.debug(
                         'Pre-check: skipping embedding generation for likely duplicate '
-                        'of context %d in thread %s',
+                        'of context %s in thread %s',
                         likely_duplicate_id, thread_id,
                     )
                 else:
                     logger.debug(
-                        'Pre-check: duplicate detected but no embeddings exist for context %d '
+                        'Pre-check: duplicate detected but no embeddings exist for context %s '
                         'in thread %s, generating embeddings',
                         likely_duplicate_id, thread_id,
                     )
@@ -189,7 +192,7 @@ async def store_context(
                     summary_text = existing_summary
                     logger.debug(
                         'Pre-check: reusing existing summary for likely duplicate '
-                        'of context %d in thread %s',
+                        'of context %s in thread %s',
                         likely_duplicate_id, thread_id,
                     )
                 else:
@@ -226,7 +229,7 @@ async def store_context(
         metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
 
         max_retries = 2
-        context_id = 0
+        context_id = ''
         was_updated = False
         embedding_stored = False
 
@@ -290,7 +293,7 @@ async def store_context(
 
 
 async def get_context_by_ids(
-    context_ids: Annotated[list[int], Field(min_length=1, description='List of context entry IDs to retrieve')],
+    context_ids: Annotated[list[str], Field(min_length=1, description='List of context entry IDs to retrieve')],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
     ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
@@ -311,6 +314,12 @@ async def get_context_by_ids(
     try:
         if ctx:
             await ctx.info(f'Fetching context entries: {context_ids}')
+
+        # Normalize all incoming IDs at the boundary
+        try:
+            context_ids = [normalize_id(cid) for cid in context_ids]
+        except ValueError as e:
+            raise ToolError(f'Invalid context ID: {e}') from e
 
         # Get repositories
         repos = await ensure_repositories()
@@ -336,7 +345,7 @@ async def get_context_by_ids(
             # Get normalized tags
             entry_id_raw = entry.get('id')
             if entry_id_raw is not None:
-                entry_id = int(entry_id_raw)
+                entry_id = str(entry_id_raw)
                 tags_result = await repos.tags.get_tags_for_context(entry_id)
                 entry['tags'] = tags_result
             else:
@@ -346,7 +355,7 @@ async def get_context_by_ids(
             if include_images and entry.get('content_type') == 'multimodal':
                 entry_id_img = entry.get('id')
                 if entry_id_img is not None:
-                    images_result = await repos.images.get_images_for_context(int(entry_id_img), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(entry_id_img), include_data=True)
                     entry['images'] = cast(list[dict[str, str]], images_result)
                 else:
                     entry['images'] = []
@@ -363,7 +372,7 @@ async def get_context_by_ids(
 
 async def delete_context(
     context_ids: Annotated[
-        list[int] | None,
+        list[str] | None,
         Field(min_length=1, description='Specific context entry IDs to delete (mutually exclusive with thread_id)'),
     ] = None,
     thread_id: Annotated[
@@ -392,6 +401,13 @@ async def delete_context(
 
         if ctx:
             await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
+
+        # Normalize all incoming IDs at the boundary
+        if context_ids:
+            try:
+                context_ids = [normalize_id(cid) for cid in context_ids]
+            except ValueError as e:
+                raise ToolError(f'Invalid context ID: {e}') from e
 
         # Get repositories
         repos = await ensure_repositories()
@@ -429,7 +445,7 @@ async def delete_context(
                         context_id = row['id']  # sqlite3.Row supports __getitem__
                         if context_id:
                             try:
-                                await repos.embeddings.delete(int(context_id))
+                                await repos.embeddings.delete(str(context_id))
                             except Exception as e:
                                 logger.warning(f'Failed to delete embedding for context {context_id}: {e}')
                 except Exception as e:
@@ -452,7 +468,14 @@ async def delete_context(
 
 
 async def update_context(
-    context_id: Annotated[int, Field(gt=0, description='ID of the context entry to update')],
+    context_id: Annotated[
+        str,
+        Field(
+            min_length=8,
+            description='ID (full 32-char hex, 36-char hyphenated, or 8-31 char hex prefix) '
+            'of the context entry to update',
+        ),
+    ],
     text: Annotated[str | None, Field(min_length=1, description='New text content (replaces existing)')] = None,
     metadata: Annotated[MetadataDict | None, Field(description='New metadata (FULL REPLACEMENT)')] = None,
     metadata_patch: Annotated[
@@ -520,6 +543,15 @@ async def update_context(
 
         # Get repositories
         repos = await ensure_repositories()
+
+        # Boundary normalization: accept full hex (32 or 36 chars) or 8-31 char hex prefix
+        try:
+            if is_id_prefix(context_id):
+                context_id = await resolve_prefix(context_id, repos.context)
+            else:
+                context_id = normalize_id(context_id)
+        except ValueError as e:
+            raise ToolError(f'Invalid context ID: {e}') from e
 
         # Check if entry exists and retrieve source (read-only, outside transaction)
         exists, entry_source = await repos.context.check_entry_exists(context_id)

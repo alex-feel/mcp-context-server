@@ -5,8 +5,6 @@ Tests model validation, field validators, content type detection,
 tag normalization, and base64 image validation.
 """
 
-from __future__ import annotations
-
 import base64
 from datetime import UTC
 from datetime import datetime
@@ -138,8 +136,9 @@ class TestContextEntry:
     def test_full_context_entry(self) -> None:
         """Test creating context entry with all fields."""
         now = datetime.now(tz=UTC)
+        canonical_id = '0190abcdef1234567890abcdef123456'
         entry = ContextEntry(
-            id=1,
+            id=canonical_id,
             thread_id='test_thread',
             source=SourceType.AGENT,
             content_type=ContentType.MULTIMODAL,
@@ -150,7 +149,7 @@ class TestContextEntry:
             created_at=now,
             updated_at=now,
         )
-        assert entry.id == 1
+        assert entry.id == canonical_id
         assert entry.thread_id == 'test_thread'
         assert entry.source == SourceType.AGENT
         assert entry.content_type == ContentType.MULTIMODAL
@@ -333,8 +332,13 @@ class TestDeleteContextRequest:
 
     def test_delete_by_ids(self) -> None:
         """Test delete request with context IDs."""
-        request = DeleteContextRequest(context_ids=[1, 2, 3])
-        assert request.context_ids == [1, 2, 3]
+        ids = [
+            '0190abcdef1234567890abcdef111111',
+            '0190abcdef1234567890abcdef222222',
+            '0190abcdef1234567890abcdef333333',
+        ]
+        request = DeleteContextRequest(context_ids=ids)
+        assert request.context_ids == ids
         assert request.thread_id is None
 
     def test_delete_by_thread(self) -> None:
@@ -345,11 +349,15 @@ class TestDeleteContextRequest:
 
     def test_delete_with_both_fields(self) -> None:
         """Test delete request can have both IDs and thread."""
+        ids = [
+            '0190abcdef1234567890abcdef444444',
+            '0190abcdef1234567890abcdef555555',
+        ]
         request = DeleteContextRequest(
-            context_ids=[1, 2],
+            context_ids=ids,
             thread_id='test_thread',
         )
-        assert request.context_ids == [1, 2]
+        assert request.context_ids == ids
         assert request.thread_id == 'test_thread'
 
     def test_delete_without_any_field(self) -> None:

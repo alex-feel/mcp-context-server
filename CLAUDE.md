@@ -74,7 +74,7 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 8. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`): `MetadataFilter` with 16 operators. `QueryBuilder`: backend-aware SQL with nested JSON paths. Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) operators.
 
-9. **Other modules**: `app/fusion.py` (RRF algorithm), `app/errors.py` (error classification + exception formatting, see Key Implementation Details #5), `app/instructions.py` (server instructions), `app/types.py` (40+ TypedDicts for API responses), `app/logger_config.py` (logging configuration), `app/schemas/` (SQL schema files).
+9. **Other modules**: `app/fusion.py` (RRF algorithm), `app/errors.py` (error classification + exception formatting, see Key Implementation Details #5), `app/ids.py` (UUIDv7 generation and boundary normalization -- see Key Implementation Details #7), `app/cli/migrate.py` (database migration CLI -- see "Package and Release"), `app/instructions.py` (server instructions), `app/types.py` (40+ TypedDicts for API responses), `app/logger_config.py` (logging configuration), `app/schemas/` (SQL schema files).
 
 ### Thread-Based Context Management
 
@@ -83,6 +83,12 @@ Agents share context via `thread_id`. Entries tagged with `source`: 'user' or 'a
 ### Database Schema
 
 Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata, summary column), `tags` (many-to-many, lowercase), `image_attachments` (binary, cascade delete).
+
+**Public primary key (`context_entries.id`)**: 32-character lowercase hex UUIDv7. SQLite stores it as `TEXT NOT NULL UNIQUE`; PostgreSQL stores it as native `UUID NOT NULL PRIMARY KEY`. All foreign keys (`tags.context_entry_id`, `image_attachments.context_entry_id`, `embedding_metadata.context_id`, `embedding_chunks.context_id`, `vec_context_embeddings.context_id`) reference `context_entries(id)` as TEXT on SQLite and UUID on PostgreSQL.
+
+**SQLite `rowid_int` surrogate**: On SQLite, `context_entries` carries an additional `rowid_int INTEGER PRIMARY KEY AUTOINCREMENT` column. It is a stable INTEGER rowid that backs the FTS5 external-content table and is immune to VACUUM-time renumbering; it is never exposed at the MCP tool boundary. PostgreSQL has no equivalent surrogate -- the native `UUID` PRIMARY KEY has stable storage independent of physical row layout.
+
+**Embedding chunk and vec0 INTEGER bridge (preserved)**: The project's chunking-layer architecture maintains a 1:N context-to-embedding mapping via `embedding_chunks` with INTEGER rowid bridges to vec0. The columns `embedding_chunks.id`, `embedding_chunks.vec_rowid`, and `vec_context_embeddings.id` remain INTEGER/BIGSERIAL; only the outer `context_id` foreign key is TEXT/UUID.
 
 **Performance**: WAL mode, 256MB mmap, compound index (thread_id, source). Indexed metadata: `status`, `agent_name`, `task_name`, `project`, `report_type`. See "Metadata Field Indexing by Backend" for per-backend details.
 
@@ -144,9 +150,20 @@ Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `a
 
 6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Empty string disables. Includes `## Skill Integration` section directing agents to discover and apply context-server-related Skills.
 
+7. **UUIDv7 ID Generation** (`app/ids.py`): Single source of truth for context-entry identifier handling. Public functions: `generate_id()`, `generate_id_with_timestamp(created_at)`, `normalize_id(value)`, `is_id_prefix(value)`, `resolve_prefix(prefix, repo)`.
+
+   - **`uuid_utils.uuid7` parameter contract**: `timestamp` is UNIX **SECONDS** (integer), `nanos` is the nanosecond fraction within that second. The migration CLI uses `seconds = int(created_at.timestamp())` and `nanos = created_at.microsecond * 1_000`. Passing milliseconds in the `timestamp` slot would shift the embedded timestamp roughly 1000x into the future. Upstream tracker documenting user confusion about parameter units: [`aminalaee/uuid-utils#73`](https://github.com/aminalaee/uuid-utils/issues/73).
+   - **Lex-string ordering**: UUIDv7 hex strings sort chronologically at MILLISECOND granularity (the first 48 bits encode `unix_ts_ms`). Sub-millisecond order is determined by the random tail. The `id > ?` interleaving check in the deduplication path remains monotonic for any two timestamps that differ by >= 1 ms.
+   - **Lowercase invariant**: `normalize_id` always emits lowercase hex. Under SQLite TEXT BINARY collation, uppercase `A-F` sorts before lowercase `a-f`; storing mixed-case IDs would corrupt `id > ?` ordering comparisons. Tools accept either case at the boundary; storage is canonical lowercase.
+   - **Public display format**: 32-character hyphen-free lowercase hex (e.g. `0190abcdef1234567890abcdef123456`). Tools accept both the 32-char form and the 36-char hyphenated form (`0190abcd-ef12-3456-7890-abcdef123456`) at the boundary via `normalize_id`. Prefix lookup (`is_id_prefix` + `resolve_prefix`) requires a minimum of 8 hex characters and a maximum of 31.
+   - **asyncpg `pgproto.UUID` quirk**: asyncpg returns UUID columns as its own `asyncpg.pgproto.pgproto.UUID` type, NOT `uuid.UUID`. Code that needs to detect UUID values MUST use `isinstance(x, uuid.UUID)` (the asyncpg type subclasses `uuid.UUID` so isinstance works) and MUST NOT use `type(x) is uuid.UUID` (would fail at runtime).
+   - **Future stdlib `uuid.uuid7()` (Python 3.14)**: The stdlib function is parameterless and cannot be used by the migration CLI, which requires deterministic generation from a specific `created_at` value. Server-side ID generation may switch to the stdlib function after Python 3.14 adoption, but `uuid_utils` remains the canonical generator for the migration CLI.
+
 ## Package and Release
 
-uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context`. Python 3.12+. Optional extras: `embeddings-ollama`, `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`, `summary-ollama`, `summary-openai`, `summary-anthropic`, `reranking`, `langsmith`.
+uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context` (server entry points to `app.server:main`), `mcp-context-server-migrate` (database migration CLI, entry point `app.cli.migrate:main`). Python 3.12+. Optional extras: `embeddings-ollama`, `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`, `summary-ollama`, `summary-openai`, `summary-anthropic`, `reranking`, `langsmith`.
+
+The `mcp-context-server-migrate` console script ships alongside the server. It migrates integer-keyed context databases to the UUIDv7-keyed schema. It is invoked manually on a backup of the source database, accepts `--source-url`/`--target-url`/`--dry-run`/`--report PATH`, and supports SQLite -> SQLite, PostgreSQL -> PostgreSQL, and cross-backend runs. See [`docs/MIGRATION-v2-to-v3.md`](docs/MIGRATION-v2-to-v3.md) for the full step-by-step guide.
 
 [Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker images (amd64/arm64): default Ollama variant and `ollama-openai` variant.
 
@@ -231,6 +248,8 @@ docker run --name pgvector18 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=post
 export STORAGE_BACKEND=postgresql
 uv run mcp-context-server  # Auto-initializes schema, enables pgvector
 ```
+
+**Optional: PostgreSQL 18+ `DEFAULT uuidv7()`.** Users on PostgreSQL 18 or later MAY optionally set `id UUID PRIMARY KEY DEFAULT uuidv7()` for server-side UUID generation (`ALTER TABLE context_entries ALTER COLUMN id SET DEFAULT uuidv7();`). This is a pure operator-side optimization and is NOT required: the application generates UUIDs Python-side via `app/ids.py` regardless of the column default, and the migration CLI uses deterministic Python-side generation anchored to each row's `created_at`. PostgreSQL 17 and earlier do not have the `uuidv7()` function.
 
 ### Supabase
 `STORAGE_BACKEND=postgresql` + `POSTGRESQL_CONNECTION_STRING`. Session Pooler for IPv4. "getaddrinfo failed" = switch from Direct to Session Pooler.
@@ -323,6 +342,10 @@ All GitHub Actions workflows MUST follow these rules:
 
 Use `Field(alias='ENV_VAR_NAME')`.
 
+### Context Identifier Normalization
+
+`app/ids.py.normalize_id` is the canonical boundary normalizer for context-entry IDs. Any code that accepts a `context_id` from outside the storage layer (tool parameters, CLI flags, JSON payloads) MUST route it through `normalize_id` to fold case, strip whitespace, and validate format. The lowercase-hex invariant is load-bearing for SQLite TEXT BINARY ordering -- see Key Implementation Details #7 for details.
+
 ### Settings Singleton Caching (`@lru_cache`)
 
 `get_settings()` is `@lru_cache`-decorated — a process-lifetime singleton. Once called, env var changes are ignored.
@@ -389,7 +412,7 @@ async def my_tool(
     ctx: Context | None = None,
 ) -> MyToolResponse:
     repos = await ensure_repositories()
-    return {'success': True}
+    return {'success': True, 'context_id': '0190abcdef1234567890abcdef123456'}
 ```
 
 **Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `tests/integration/sqlite/test_real_server.py` 7) Update `server.json` if new env vars 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py` 9) For store/update operations, use shared functions from `app/tools/_shared.py` (image validation, generation with timeout, transaction execution, response builders) to maintain behavioral parity with existing tools

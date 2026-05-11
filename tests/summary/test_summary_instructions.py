@@ -11,8 +11,6 @@ Tests verify:
 - DEFAULT_SUMMARY_PROMPT is alias for AGENT_SUMMARY_PROMPT
 """
 
-from __future__ import annotations
-
 from unittest.mock import MagicMock
 from unittest.mock import patch
 

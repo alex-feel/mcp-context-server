@@ -6,7 +6,6 @@ handling storage, retrieval, and search operations on vector embeddings
 across both SQLite (sqlite-vec) and PostgreSQL (pgvector) backends.
 """
 
-from __future__ import annotations
 
 import logging
 import sqlite3
@@ -93,7 +92,7 @@ class EmbeddingRepository(BaseRepository):
 
     async def store(
         self,
-        context_id: int,
+        context_id: str,
         embedding: list[float],
         model: str,
         *,
@@ -120,10 +119,10 @@ class EmbeddingRepository(BaseRepository):
 
     async def store_chunked(
         self,
-        context_id: int,
+        context_id: str,
         chunk_embeddings: list[ChunkEmbedding],
         model: str,
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
         *,
         upsert: bool = False,
     ) -> None:
@@ -211,7 +210,7 @@ class EmbeddingRepository(BaseRepository):
 
         else:  # postgresql
 
-            async def _store_chunked_postgresql(conn: asyncpg.Connection) -> None:
+            async def _store_chunked_postgresql(conn: 'asyncpg.Connection') -> None:
                 # Step 1: Insert all embeddings into vec_context_embeddings WITH BOUNDARIES
                 # PostgreSQL uses id BIGSERIAL, context_id can repeat (1:N)
                 for chunk_emb in chunk_embeddings:
@@ -236,8 +235,8 @@ class EmbeddingRepository(BaseRepository):
 
     async def delete_all_chunks(
         self,
-        context_id: int,
-        txn: TransactionContext | None = None,
+        context_id: str,
+        txn: 'TransactionContext | None' = None,
     ) -> int:
         """Delete all chunk embeddings for a context entry.
 
@@ -298,7 +297,7 @@ class EmbeddingRepository(BaseRepository):
 
         # postgresql
 
-        async def _delete_all_chunks_postgresql(conn: asyncpg.Connection) -> int:
+        async def _delete_all_chunks_postgresql(conn: 'asyncpg.Connection') -> int:
             # Step 1: Count chunks before delete
             count: int = await conn.fetchval(
                 'SELECT COUNT(*) FROM vec_context_embeddings WHERE context_id = $1',
@@ -576,7 +575,7 @@ class EmbeddingRepository(BaseRepository):
 
         # postgresql
         async def _search_postgresql(
-            conn: asyncpg.Connection,
+            conn: 'asyncpg.Connection',
         ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             import time as time_module
 
@@ -768,7 +767,7 @@ class EmbeddingRepository(BaseRepository):
 
     async def update(
         self,
-        context_id: int,
+        context_id: str,
         chunk_embeddings: list[ChunkEmbedding],
         model: str,
     ) -> None:
@@ -790,7 +789,7 @@ class EmbeddingRepository(BaseRepository):
 
         logger.debug(f'Updated {len(chunk_embeddings)} embeddings for context {context_id}')
 
-    async def delete(self, context_id: int) -> None:
+    async def delete(self, context_id: str) -> None:
         """Delete all embeddings for a context entry.
 
         Delegates to delete_all_chunks() for proper cleanup of chunked embeddings.
@@ -800,7 +799,7 @@ class EmbeddingRepository(BaseRepository):
         """
         await self.delete_all_chunks(context_id)
 
-    async def exists(self, context_id: int) -> bool:
+    async def exists(self, context_id: str) -> bool:
         """Check if embedding exists for context entry.
 
         Args:
@@ -819,7 +818,7 @@ class EmbeddingRepository(BaseRepository):
             return await self.backend.execute_read(_exists_sqlite)
 
         # postgresql
-        async def _exists_postgresql(conn: asyncpg.Connection) -> bool:
+        async def _exists_postgresql(conn: 'asyncpg.Connection') -> bool:
             query = f'SELECT 1 FROM embedding_metadata WHERE context_id = {self._placeholder(1)} LIMIT 1'
             row = await conn.fetchrow(query, context_id)
             return row is not None
@@ -888,7 +887,7 @@ class EmbeddingRepository(BaseRepository):
             return await self.backend.execute_read(_get_stats_sqlite)
 
         # postgresql
-        async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             if thread_id:
                 query1 = f'SELECT COUNT(*) FROM context_entries WHERE thread_id = {self._placeholder(1)}'
                 total_entries = await conn.fetchval(query1, thread_id)
@@ -951,7 +950,7 @@ class EmbeddingRepository(BaseRepository):
             return await self.backend.execute_read(_get_dimension_sqlite)
 
         # postgresql
-        async def _get_dimension_postgresql(conn: asyncpg.Connection) -> int | None:
+        async def _get_dimension_postgresql(conn: 'asyncpg.Connection') -> int | None:
             row = await conn.fetchrow('SELECT dimensions FROM embedding_metadata LIMIT 1')
             return row['dimensions'] if row else None
 

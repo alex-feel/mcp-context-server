@@ -4,8 +4,6 @@ This module tests edge cases, error handling, and less common code paths
 in app/server.py to improve coverage.
 """
 
-from __future__ import annotations
-
 import base64
 from typing import Any
 
@@ -422,7 +420,7 @@ class TestUpdateContextEdgeCases:
 
         with pytest.raises(ToolError, match='not found'):
             await update_context(
-                context_id=999999,
+                context_id='0190abcdef1234567890abcd000f423f',
                 text='New text',
             )
 
@@ -467,7 +465,7 @@ class TestDeleteContextEdgeCases:
 
         # Delete mix of existing and non-existing
         delete_result = await delete_context(
-            context_ids=[existing_id, 999998, 999999],
+            context_ids=[existing_id, '0' * 32, 'f' * 32],
         )
 
         assert delete_result['success'] is True

@@ -5,8 +5,6 @@ including DISABLED_TOOLS environment variable handling and tool annotations.
 
 """
 
-from __future__ import annotations
-
 import importlib.util
 from pathlib import Path
 from typing import Any

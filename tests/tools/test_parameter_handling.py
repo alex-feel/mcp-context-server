@@ -12,8 +12,6 @@ The issue being tested:
 - These tests ensure complex parameters work as expected
 """
 
-from __future__ import annotations
-
 import base64
 import json
 from typing import Any
@@ -317,7 +315,7 @@ class TestParameterHandling:
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
         # Test with valid non-empty list
-        result = await get_context_by_ids(context_ids=[1])
+        result = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'])
         assert isinstance(result, list)
 
     @pytest.mark.asyncio

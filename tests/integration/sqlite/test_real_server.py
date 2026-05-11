@@ -5667,7 +5667,7 @@ class MCPServerIntegrationTest:
             result = await self.client.call_tool(
                 'update_context',
                 {
-                    'context_id': 999999999,  # Very unlikely to exist
+                    'context_id': '0' * 32,  # 32-char hex, never generated
                     'text': 'Updated text',
                 },
             )
@@ -5723,7 +5723,7 @@ class MCPServerIntegrationTest:
             result = await self.client.call_tool(
                 'get_context_by_ids',
                 {
-                    'context_ids': [valid_id, 999999998, 999999999],  # One valid, two invalid
+                    'context_ids': [valid_id, '0' * 32, 'f' * 32],  # One valid, two never-issued UUIDv7 hex
                 },
             )
 
@@ -8087,7 +8087,7 @@ class MCPServerIntegrationTest:
             # Send context_ids as a JSON string (simulating client bug)
             get_result = await self.client.call_tool(
                 'get_context_by_ids',
-                {'context_ids': f'[{context_id}]'},
+                {'context_ids': f'["{context_id}"]'},
             )
             get_data = self._extract_content(get_result)
             results = get_data.get('results', [])
@@ -8175,7 +8175,7 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
-    # Phase 4: Integration Test Expansion + B8
+    # Coverage of generation-first transactional store path with stub providers
 
     async def test_list_threads_with_populated_database(self) -> bool:
         """Verify list_threads returns accurate thread metadata after storing entries across multiple threads.
@@ -9513,7 +9513,7 @@ class MCPServerIntegrationTest:
             ('Middleware Deserializes Stringified Context IDs', self.test_middleware_deserializes_stringified_context_ids),
             # Summary Env Var Tests
             ('Summary Env Vars Accepted', self.test_summary_env_vars_accepted),
-            # Phase 4: Integration Test Expansion + B8
+            # Coverage of generation-first transactional store path with stub providers
             ('List Threads Populated Database', self.test_list_threads_with_populated_database),
             ('Update Triggers Embedding Regen', self.test_update_context_triggers_embedding_regeneration),
             ('Batch Store Dedup Within Batch', self.test_store_context_batch_dedup_within_batch),
@@ -9530,7 +9530,7 @@ class MCPServerIntegrationTest:
             ('Dedup Interleaving Check', self.test_store_context_dedup_interleaving_check),
             ('Batch Non-Atomic Partial', self.test_update_context_batch_non_atomic_generation_failure),
             ('Health Endpoint B8', self.test_health_endpoint_returns_ok),
-            # Batch/Non-Batch Conformance Tests (Phase 3)
+            # Batch/Non-Batch Conformance Tests
             ('Store Batch Conformance', self.test_store_batch_single_matches_store_nonbatch),
             ('Update Batch Conformance', self.test_update_batch_single_matches_update_nonbatch),
             ('Delete Batch Conformance', self.test_delete_batch_single_matches_delete_nonbatch),

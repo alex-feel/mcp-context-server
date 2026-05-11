@@ -1,6 +1,4 @@
 """Tests for logger configuration and path shortening."""
-from __future__ import annotations
-
 import logging
 import os
 

@@ -5,7 +5,6 @@ This provider uses langchain-ollama package for native async support
 and consistent interface with other LangChain providers.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any

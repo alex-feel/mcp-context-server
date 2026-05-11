@@ -5,8 +5,6 @@ Tests all MCP tool implementations including store_context, search_context,
 get_context_by_ids, delete_context, list_threads, and get_statistics.
 """
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import sqlite3
@@ -616,7 +614,12 @@ class TestGetContextByIds:
     @pytest.mark.asyncio
     async def test_get_nonexistent_contexts(self) -> None:
         """Test fetching non-existent context IDs."""
-        results = await get_context_by_ids(context_ids=[9999, 10000])
+        results = await get_context_by_ids(
+            context_ids=[
+                '0190abcdef1234567890abcd0000270f',
+                '0190abcdef1234567890abcd00002710',
+            ],
+        )
         assert results == []
 
     @pytest.mark.asyncio
@@ -626,7 +629,7 @@ class TestGetContextByIds:
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
         # Test with valid non-empty list
-        result = await get_context_by_ids(context_ids=[1])
+        result = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'])
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
@@ -714,7 +717,7 @@ class TestDeleteContext:
     @pytest.mark.asyncio
     async def test_delete_nonexistent_ids(self) -> None:
         """Test deleting non-existent IDs."""
-        result = await delete_context(context_ids=[9999, 10000])
+        result = await delete_context(context_ids=['0190abcdef1234567890abcd0000270f', '0190abcdef1234567890abcd00002710'])
 
         assert result['success'] is True
         assert result['deleted_count'] == 0
@@ -960,7 +963,7 @@ class TestContextParameter:
         await search_context(limit=50, thread_id='ctx_test', ctx=mock_ctx)
         assert mock_ctx.info.call_count == 2
 
-        await get_context_by_ids(context_ids=[1], ctx=mock_ctx)
+        await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'], ctx=mock_ctx)
         assert mock_ctx.info.call_count == 3
 
         await delete_context(thread_id='ctx_test', ctx=mock_ctx)

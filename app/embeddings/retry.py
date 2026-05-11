@@ -18,7 +18,6 @@ Retryable exceptions include:
 - Custom: EmbeddingTimeoutError, asyncio.TimeoutError
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging

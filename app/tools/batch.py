@@ -35,6 +35,9 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.errors import format_exception_message
+from app.ids import is_id_prefix
+from app.ids import normalize_id
+from app.ids import resolve_prefix
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -219,7 +222,7 @@ async def store_context_batch(
             task_names: list[str] = []
 
             # Performance optimization: pre-check for likely duplicates (read-only)
-            likely_duplicate_id: int | None = None
+            likely_duplicate_id: str | None = None
             if embedding_provider is not None or summary_provider is not None:
                 likely_duplicate_id = await repos.context.check_latest_is_duplicate(
                     thread_id=entry['thread_id'],
@@ -234,7 +237,7 @@ async def store_context_batch(
                     if has_embeddings:
                         logger.debug(
                             'Pre-check: skipping embedding generation for likely duplicate '
-                            'of context %d at index %d',
+                            'of context %s at index %d',
                             likely_duplicate_id, original_idx,
                         )
                     else:
@@ -260,7 +263,7 @@ async def store_context_batch(
                         summaries_preserved_count += 1
                         logger.debug(
                             'Pre-check: reusing existing summary for likely duplicate '
-                            'of context %d at index %d',
+                            'of context %s at index %d',
                             likely_duplicate_id, original_idx,
                         )
                     else:
@@ -511,7 +514,8 @@ async def update_context_batch(
     updates: Annotated[
         list[dict[str, Any]],
         Field(
-            description='List of update operations. Each must have context_id (int). '
+            description='List of update operations. Each must have context_id (str, accepts 32-char hex, '
+            '36-char hyphenated UUID, or 8-31 char hex prefix). '
             'Optional: text (str), metadata (dict - full replace), '
             'metadata_patch (dict - RFC 7396 merge), tags (list[str]), images (list[dict]).',
             min_length=1,
@@ -564,17 +568,27 @@ async def update_context_batch(
 
         # === PHASE 1: Validate all updates before processing ===
         validated_updates: list[dict[str, Any]] = []
-        validation_errors: list[tuple[int, int, str]] = []  # (index, context_id, error)
+        validation_errors: list[tuple[int, str, str]] = []  # (index, context_id, error)
 
         for idx, update in enumerate(updates):
             # Validate required context_id
             if 'context_id' not in update:
-                validation_errors.append((idx, 0, 'Missing required field: context_id'))
+                validation_errors.append((idx, '', 'Missing required field: context_id'))
                 continue
 
-            context_id = update['context_id']
-            if not isinstance(context_id, int) or context_id <= 0:
-                validation_errors.append((idx, 0, 'context_id must be a positive integer'))
+            context_id_raw = update['context_id']
+            if not isinstance(context_id_raw, str) or not context_id_raw.strip():
+                validation_errors.append((idx, '', 'context_id must be a non-empty string'))
+                continue
+
+            # Resolve to canonical 32-char hex (accept full or prefix)
+            try:
+                if is_id_prefix(context_id_raw):
+                    context_id = await resolve_prefix(context_id_raw, repos.context)
+                else:
+                    context_id = normalize_id(context_id_raw)
+            except ValueError as e:
+                validation_errors.append((idx, context_id_raw, f'Invalid context_id: {e}'))
                 continue
 
             # Validate mutual exclusivity of metadata and metadata_patch
@@ -659,8 +673,8 @@ async def update_context_batch(
             )
 
         # === PHASE 2: Check all entries exist (fail fast in atomic mode) ===
-        existence_errors: list[tuple[int, int, str]] = []  # (index, context_id, error)
-        entry_sources: dict[int, str] = {}  # context_id -> source
+        existence_errors: list[tuple[int, str, str]] = []  # (index, context_id, error)
+        entry_sources: dict[str, str] = {}  # context_id -> source
 
         for update in validated_updates:
             original_idx = update['index']
@@ -716,7 +730,7 @@ async def update_context_batch(
         update_embeddings: dict[int, list[ChunkEmbedding] | None] = {}
         update_summaries: dict[int, str | None] = {}
         update_clear_summaries: set[int] = set()
-        generation_errors: list[tuple[int, int, str]] = []  # (original_idx, context_id, error)
+        generation_errors: list[tuple[int, str, str]] = []  # (original_idx, context_id, error)
 
         embedding_provider = get_embedding_provider()
         summary_provider = get_summary_provider()
@@ -750,7 +764,7 @@ async def update_context_batch(
                     update_summaries[vu_idx] = None
                     update_clear_summaries.add(vu_idx)
                     logger.info(
-                        'Skipping summary for context %d at index %d: '
+                        'Skipping summary for context %s at index %d: '
                         'text length %d < min_content_length %d. Existing summary will be cleared.',
                         context_id, original_idx, len(text_content), min_content_length,
                     )
@@ -771,7 +785,7 @@ async def update_context_batch(
                 if isinstance(result, BaseException):
                     errors.append((name, result))
                     logger.error(
-                        'Generation failed for %s on context %d at index %d (retries exhausted): %s',
+                        'Generation failed for %s on context %s at index %d (retries exhausted): %s',
                         name, context_id, original_idx, result,
                     )
                 elif name == 'embedding':
@@ -1012,7 +1026,7 @@ async def update_context_batch(
 
 async def delete_context_batch(
     context_ids: Annotated[
-        list[int] | None,
+        list[str] | None,
         Field(description='Specific context IDs to delete'),
     ] = None,
     thread_ids: Annotated[
@@ -1076,6 +1090,13 @@ async def delete_context_batch(
             if older_than_days:
                 criteria_summary.append(f'older_than={older_than_days}d')
             await ctx.info(f'Batch delete with criteria: {", ".join(criteria_summary)}')
+
+        # Normalize all incoming IDs at the boundary
+        if context_ids:
+            try:
+                context_ids = [normalize_id(cid) for cid in context_ids]
+            except ValueError as e:
+                raise ToolError(f'Invalid context ID: {e}') from e
 
         repos = await ensure_repositories()
 

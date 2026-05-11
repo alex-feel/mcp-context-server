@@ -569,7 +569,7 @@ class TestExecuteUpdateInTransaction:
         """Update text field returns updated_fields with text."""
         updated_fields, summary_cleared = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text='New text',
             metadata=None,
             metadata_patch=None,
@@ -592,7 +592,7 @@ class TestExecuteUpdateInTransaction:
         """Apply metadata_patch calls patch_metadata."""
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text=None,
             metadata=None,
             metadata_patch={'key': 'value'},
@@ -614,7 +614,7 @@ class TestExecuteUpdateInTransaction:
         """Tags provided triggers replace_tags_for_context."""
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text=None,
             metadata=None,
             metadata_patch=None,
@@ -636,7 +636,7 @@ class TestExecuteUpdateInTransaction:
         """Empty images list removes all images and sets content_type to text."""
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text=None,
             metadata=None,
             metadata_patch=None,
@@ -650,8 +650,12 @@ class TestExecuteUpdateInTransaction:
         )
         assert 'images' in updated_fields
         assert 'content_type' in updated_fields
-        mock_repos.images.replace_images_for_context.assert_called_once_with(1, [], txn=mock_txn)
-        mock_repos.context.update_content_type.assert_called_once_with(1, 'text', txn=mock_txn)
+        mock_repos.images.replace_images_for_context.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', [], txn=mock_txn,
+        )
+        mock_repos.context.update_content_type.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', 'text', txn=mock_txn,
+        )
 
     @pytest.mark.asyncio
     async def test_embeddings_regeneration(
@@ -661,7 +665,7 @@ class TestExecuteUpdateInTransaction:
         chunk_embeddings = [MagicMock()]
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text='New text',
             metadata=None,
             metadata_patch=None,
@@ -674,7 +678,9 @@ class TestExecuteUpdateInTransaction:
             embedding_model='m',
         )
         assert 'embedding' in updated_fields
-        mock_repos.embeddings.delete_all_chunks.assert_called_once_with(1, txn=mock_txn)
+        mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', txn=mock_txn,
+        )
         mock_repos.embeddings.store_chunked.assert_called_once()
 
     @pytest.mark.asyncio
@@ -686,7 +692,7 @@ class TestExecuteUpdateInTransaction:
         with pytest.raises(ToolError, match='Failed to update context entry'):
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='New text',
                 metadata=None,
                 metadata_patch=None,
@@ -708,7 +714,7 @@ class TestExecuteUpdateInTransaction:
         with pytest.raises(ToolError, match='Failed to patch metadata'):
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text=None,
                 metadata=None,
                 metadata_patch={'key': 'value'},
@@ -728,7 +734,7 @@ class TestExecuteUpdateInTransaction:
         """clear_summary=True is returned as summary_cleared."""
         _, summary_cleared = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text='Short',
             metadata=None,
             metadata_patch=None,

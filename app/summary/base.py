@@ -6,7 +6,6 @@ this protocol for compatibility with the summary generation layer.
 Architecture mirrors app/embeddings/base.py for consistency.
 """
 
-from __future__ import annotations
 
 from typing import Protocol
 from typing import runtime_checkable

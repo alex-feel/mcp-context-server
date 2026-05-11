@@ -4,7 +4,6 @@ HuggingFace embedding provider using LangChain integration.
 This provider uses langchain-huggingface package for HuggingFace Hub models.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any

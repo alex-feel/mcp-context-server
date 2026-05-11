@@ -4,8 +4,6 @@ This module provides additional tests for ContextRepository to improve coverage
 of search operations, edge cases, and error handling.
 """
 
-from __future__ import annotations
-
 import json
 import sqlite3
 from collections.abc import AsyncGenerator

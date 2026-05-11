@@ -7,7 +7,6 @@ The factory uses dynamic imports to avoid loading unused dependencies,
 allowing users to install only the provider-specific packages they need.
 """
 
-from __future__ import annotations
 
 import importlib
 import logging

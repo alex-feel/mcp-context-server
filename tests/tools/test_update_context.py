@@ -33,7 +33,7 @@ def mock_context():
 def mock_repositories():
     """Create mock repository container with all necessary repositories.
 
-    Note: Phase 3 Transactional Integrity introduced backend.begin_transaction()
+    Tools wrap multi-step writes in backend.begin_transaction()
     and txn parameter to repository methods. Tests checking repository call
     arguments should use unittest.mock.ANY for the txn parameter.
 
@@ -44,7 +44,7 @@ def mock_repositories():
 
     repos = Mock()
 
-    # Mock backend with begin_transaction() support (Phase 3)
+    # Mock backend exposing begin_transaction() as an async context manager
     mock_backend = Mock()
 
     @asynccontextmanager
@@ -74,7 +74,7 @@ def mock_repositories():
     repos.images.replace_images_for_context = AsyncMock()
     repos.images.count_images_for_context = AsyncMock(return_value=0)
 
-    # Mock embeddings repository (Phase 3)
+    # Mock embeddings repository for generation-first transactional writes
     repos.embeddings = Mock()
     repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
@@ -91,7 +91,7 @@ class TestUpdateContext:
         """Test updating only text content."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text='Updated text content',
                 metadata=None,
                 tags=None,
@@ -100,15 +100,17 @@ class TestUpdateContext:
             )
 
             assert result['success'] is True
-            assert result['context_id'] == 123
+            assert result['context_id'] == '0190abcdef1234567890abcd0000007b'
             assert 'text_content' in result['updated_fields']
             assert result['message'] == 'Successfully updated 1 field(s)'
 
             # Verify repository calls
-            mock_repositories.context.check_entry_exists.assert_called_once_with(123)
+            mock_repositories.context.check_entry_exists.assert_called_once_with(
+                '0190abcdef1234567890abcd0000007b',
+            )
             from unittest.mock import ANY
             mock_repositories.context.update_context_entry.assert_called_once_with(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text_content='Updated text content',
                 metadata=None,
                 summary=None,
@@ -124,7 +126,7 @@ class TestUpdateContext:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=456,
+                context_id='0190abcdef1234567890abcd000001c8',
                 text=None,
                 metadata=metadata,
                 tags=None,
@@ -134,14 +136,14 @@ class TestUpdateContext:
 
             # Check that result is a successful response
             assert result['success'] is True
-            assert result['context_id'] == 456
+            assert result['context_id'] == '0190abcdef1234567890abcd000001c8'
             assert 'metadata' in result['updated_fields']
 
             # Verify metadata was JSON-encoded
             from unittest.mock import ANY
             expected_metadata_str = json.dumps(metadata)
             mock_repositories.context.update_context_entry.assert_called_once_with(
-                context_id=456,
+                context_id='0190abcdef1234567890abcd000001c8',
                 text_content=None,
                 metadata=expected_metadata_str,
                 summary=None,
@@ -156,7 +158,7 @@ class TestUpdateContext:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=789,
+                context_id='0190abcdef1234567890abcd00000315',
                 text=None,
                 metadata=None,
                 tags=tags,
@@ -170,7 +172,9 @@ class TestUpdateContext:
 
             # Verify tags were replaced
             from unittest.mock import ANY
-            mock_repositories.tags.replace_tags_for_context.assert_called_once_with(789, tags, txn=ANY)
+            mock_repositories.tags.replace_tags_for_context.assert_called_once_with(
+                '0190abcdef1234567890abcd00000315', tags, txn=ANY,
+            )
 
     @pytest.mark.asyncio
     async def test_update_images_with_content_type_change(self, mock_context, mock_repositories):
@@ -188,7 +192,7 @@ class TestUpdateContext:
             patch('app.tools._shared.MAX_TOTAL_SIZE_MB', 100),
         ):
             result = await update_context(
-                context_id=111,
+                context_id='0190abcdef1234567890abcd0000006f',
                 text=None,
                 metadata=None,
                 tags=None,
@@ -203,15 +207,19 @@ class TestUpdateContext:
 
             # Verify images were replaced and content_type updated
             from unittest.mock import ANY
-            mock_repositories.images.replace_images_for_context.assert_called_once_with(111, images, txn=ANY)
-            mock_repositories.context.update_content_type.assert_called_once_with(111, 'multimodal', txn=ANY)
+            mock_repositories.images.replace_images_for_context.assert_called_once_with(
+                '0190abcdef1234567890abcd0000006f', images, txn=ANY,
+            )
+            mock_repositories.context.update_content_type.assert_called_once_with(
+                '0190abcdef1234567890abcd0000006f', 'multimodal', txn=ANY,
+            )
 
     @pytest.mark.asyncio
     async def test_remove_all_images_updates_content_type(self, mock_context, mock_repositories):
         """Test that providing empty images list removes images and sets content_type to text."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=222,
+                context_id='0190abcdef1234567890abcd000000de',
                 text=None,
                 metadata=None,
                 tags=None,
@@ -226,8 +234,12 @@ class TestUpdateContext:
 
             # Verify images were cleared and content_type set to text
             from unittest.mock import ANY
-            mock_repositories.images.replace_images_for_context.assert_called_once_with(222, [], txn=ANY)
-            mock_repositories.context.update_content_type.assert_called_once_with(222, 'text', txn=ANY)
+            mock_repositories.images.replace_images_for_context.assert_called_once_with(
+                '0190abcdef1234567890abcd000000de', [], txn=ANY,
+            )
+            mock_repositories.context.update_content_type.assert_called_once_with(
+                '0190abcdef1234567890abcd000000de', 'text', txn=ANY,
+            )
 
     @pytest.mark.asyncio
     async def test_update_multiple_fields(self, mock_context, mock_repositories):
@@ -236,7 +248,7 @@ class TestUpdateContext:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=333,
+                context_id='0190abcdef1234567890abcd0000014d',
                 text='New text',
                 metadata={'key': 'value'},
                 tags=['tag1', 'tag2'],
@@ -257,7 +269,7 @@ class TestUpdateContext:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=444,
+                    context_id='0190abcdef1234567890abcd000001bc',
                     text=None,
                     metadata=None,
                     tags=None,
@@ -274,7 +286,7 @@ class TestUpdateContext:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=999,
+                    context_id='0190abcdef1234567890abcd000003e7',
                     text='Some text',
                     metadata=None,
                     tags=None,
@@ -296,7 +308,7 @@ class TestUpdateContext:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=555,
+                    context_id='0190abcdef1234567890abcd0000022b',
                     text=None,
                     metadata=None,
                     tags=None,
@@ -318,7 +330,7 @@ class TestUpdateContext:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=666,
+                    context_id='0190abcdef1234567890abcd0000029a',
                     text=None,
                     metadata=None,
                     tags=None,
@@ -348,7 +360,7 @@ class TestUpdateContext:
         ):  # 10MB limit
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=777,
+                    context_id='0190abcdef1234567890abcd00000309',
                     text=None,
                     metadata=None,
                     tags=None,
@@ -380,7 +392,7 @@ class TestUpdateContext:
             pytest.raises(ToolError, match='[Tt]otal.*size.*exceeds'),
         ):
             await update_context(
-                context_id=888,
+                context_id='0190abcdef1234567890abcd00000378',
                 text=None,
                 metadata=None,
                 tags=None,
@@ -398,7 +410,7 @@ class TestUpdateContext:
             pytest.raises(ToolError, match='Failed to update context entry'),
         ):
             await update_context(
-                context_id=999,
+                context_id='0190abcdef1234567890abcd000003e7',
                 text='Some text',
                 metadata=None,
                 tags=None,
@@ -415,7 +427,7 @@ class TestUpdateContext:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=1111,
+                context_id='0190abcdef1234567890abcd00000457',
                 text='Updated text',
                 metadata=None,
                 tags=None,
@@ -429,7 +441,9 @@ class TestUpdateContext:
 
             # Verify content_type was corrected to multimodal
             from unittest.mock import ANY
-            mock_repositories.context.update_content_type.assert_called_once_with(1111, 'multimodal', txn=ANY)
+            mock_repositories.context.update_content_type.assert_called_once_with(
+                '0190abcdef1234567890abcd00000457', 'multimodal', txn=ANY,
+            )
 
     @pytest.mark.asyncio
     async def test_exception_handling_during_update(self, mock_context, mock_repositories):
@@ -441,7 +455,7 @@ class TestUpdateContext:
             pytest.raises(ToolError, match='Failed to update context'),
         ):
             await update_context(
-                context_id=2222,
+                context_id='0190abcdef1234567890abcd000008ae',
                 text=None,
                 metadata=None,
                 tags=['tag1'],
@@ -454,7 +468,7 @@ class TestUpdateContext:
         """Test that context logging is called appropriately."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             await update_context(
-                context_id=3333,
+                context_id='0190abcdef1234567890abcd00000d05',
                 text='Test',
                 metadata=None,
                 tags=None,
@@ -463,7 +477,7 @@ class TestUpdateContext:
             )
 
             # Verify context info was logged
-            mock_context.info.assert_called_once_with('Updating context entry 3333')
+            mock_context.info.assert_called_once_with('Updating context entry 0190abcdef1234567890abcd00000d05')
 
     @pytest.mark.asyncio
     async def test_transaction_rollback_simulation(self, mock_context, mock_repositories):
@@ -486,7 +500,7 @@ class TestUpdateContext:
             pytest.raises(ToolError, match='Failed to update context'),
         ):
             await update_context(
-                context_id=4444,
+                context_id='0190abcdef1234567890abcd0000115c',
                 text='Text',
                 metadata=None,
                 tags=['tag'],
@@ -507,7 +521,7 @@ class TestUpdateContext:
             pytest.raises(ToolError, match='text cannot be empty'),
         ):
             await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text='',  # Empty string should fail in function validation
             )
 
@@ -525,7 +539,7 @@ class TestUpdateContext:
             pytest.raises(ToolError, match='text cannot be empty or contain only whitespace'),
         ):
             await update_context(
-                context_id=456,
+                context_id='0190abcdef1234567890abcd000001c8',
                 text='   \t\n  ',  # Whitespace only should fail
             )
 
@@ -534,7 +548,7 @@ class TestUpdateContext:
         """Test that single character text is valid."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=789,
+                context_id='0190abcdef1234567890abcd00000315',
                 text='x',  # Single character should pass
                 metadata=None,
                 tags=None,
@@ -543,7 +557,7 @@ class TestUpdateContext:
             )
 
             assert result['success'] is True
-            assert result['context_id'] == 789
+            assert result['context_id'] == '0190abcdef1234567890abcd00000315'
             assert 'text_content' in result['updated_fields']
 
     @pytest.mark.asyncio
@@ -564,7 +578,7 @@ class TestUpdateContext:
             patch('app.tools._shared.get_summary_provider', return_value=None),
         ):
             result = await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text=None,
                 metadata=None,
                 tags=None,
@@ -596,7 +610,7 @@ class TestUpdateContext:
             patch('app.tools._shared.get_summary_provider', return_value=None),
         ):
             result = await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text=None,
                 metadata=None,
                 tags=None,
@@ -622,7 +636,7 @@ class TestUpdateContext:
             patch('app.tools.context.generate_embeddings_with_timeout') as mock_embed,
         ):
             result = await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text='Updated text',
                 metadata=None,
                 tags=None,
@@ -654,7 +668,7 @@ class TestUpdateContext:
             ),
         ):
             result = await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text='Updated text',
                 metadata=None,
                 tags=None,
@@ -680,7 +694,7 @@ class TestUpdateContext:
             patch('app.tools.context.generate_summary_with_timeout') as mock_summary,
         ):
             result = await update_context(
-                context_id=123,
+                context_id='0190abcdef1234567890abcd0000007b',
                 text='New text without providers',
                 metadata=None,
                 tags=None,
@@ -705,7 +719,7 @@ class TestMetadataPatchIntegration:
         """Test basic metadata_patch integration with repository."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=100,
+                context_id='0190abcdef1234567890abcd00000064',
                 text=None,
                 metadata=None,
                 metadata_patch={'status': 'updated'},
@@ -720,7 +734,7 @@ class TestMetadataPatchIntegration:
             # Verify patch_metadata was called with correct parameters
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=100,
+                context_id='0190abcdef1234567890abcd00000064',
                 patch={'status': 'updated'},
                 txn=ANY,
             )
@@ -730,7 +744,7 @@ class TestMetadataPatchIntegration:
         """Test metadata_patch combined with text content update."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=200,
+                context_id='0190abcdef1234567890abcd000000c8',
                 text='New content',
                 metadata=None,
                 metadata_patch={'priority': 10},
@@ -753,7 +767,7 @@ class TestMetadataPatchIntegration:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=300,
+                    context_id='0190abcdef1234567890abcd0000012c',
                     text=None,
                     metadata={'full': 'replacement'},
                     metadata_patch={'partial': 'update'},
@@ -772,7 +786,7 @@ class TestMetadataPatchIntegration:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             # Should NOT raise 'At least one field must be provided' error
             result = await update_context(
-                context_id=400,
+                context_id='0190abcdef1234567890abcd00000190',
                 text=None,
                 metadata=None,
                 metadata_patch={'only_field': 'value'},
@@ -791,7 +805,7 @@ class TestMetadataPatchIntegration:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=500,
+                    context_id='0190abcdef1234567890abcd000001f4',
                     text=None,
                     metadata=None,
                     metadata_patch={'field': 'value'},
@@ -807,7 +821,7 @@ class TestMetadataPatchIntegration:
         """Test metadata_patch combined with tags update."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=600,
+                context_id='0190abcdef1234567890abcd00000258',
                 text=None,
                 metadata=None,
                 metadata_patch={'agent_name': 'test-agent'},
@@ -828,7 +842,7 @@ class TestMetadataPatchIntegration:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=700,
+                context_id='0190abcdef1234567890abcd000002bc',
                 text=None,
                 metadata=metadata,
                 metadata_patch=None,
@@ -849,7 +863,7 @@ class TestMetadataPatchIntegration:
         """Test metadata_patch with empty dict (should still be valid update)."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=800,
+                context_id='0190abcdef1234567890abcd00000320',
                 text=None,
                 metadata=None,
                 metadata_patch={},  # Empty patch - RFC 7396: no-op but updates timestamp
@@ -861,7 +875,7 @@ class TestMetadataPatchIntegration:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=800,
+                context_id='0190abcdef1234567890abcd00000320',
                 patch={},
                 txn=ANY,
             )
@@ -892,7 +906,7 @@ class TestMetadataPatchRFC7396Semantics:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7007,
+                context_id='0190abcdef1234567890abcd00001b5f',
                 text=None,
                 metadata=None,
                 metadata_patch=nested_patch,
@@ -904,7 +918,7 @@ class TestMetadataPatchRFC7396Semantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7007,
+                context_id='0190abcdef1234567890abcd00001b5f',
                 patch=nested_patch,
                 txn=ANY,
             )
@@ -917,7 +931,7 @@ class TestMetadataPatchRFC7396Semantics:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7013,
+                context_id='0190abcdef1234567890abcd00001b65',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': 1},
@@ -929,7 +943,7 @@ class TestMetadataPatchRFC7396Semantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7013,
+                context_id='0190abcdef1234567890abcd00001b65',
                 patch={'a': 1},
                 txn=ANY,
             )
@@ -944,7 +958,7 @@ class TestMetadataPatchRFC7396Semantics:
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7015,
+                context_id='0190abcdef1234567890abcd00001b67',
                 text=None,
                 metadata=None,
                 metadata_patch=deep_patch,
@@ -956,7 +970,7 @@ class TestMetadataPatchRFC7396Semantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7015,
+                context_id='0190abcdef1234567890abcd00001b67',
                 patch=deep_patch,
                 txn=ANY,
             )
@@ -970,7 +984,7 @@ class TestMetadataPatchRFC7396Semantics:
         """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
-                context_id=7100,
+                context_id='0190abcdef1234567890abcd00001bbc',
                 text=None,
                 metadata=None,
                 metadata_patch={'a': {'b': 'updated'}},
@@ -982,7 +996,7 @@ class TestMetadataPatchRFC7396Semantics:
             assert result['success'] is True
             from unittest.mock import ANY
             mock_repositories.context.patch_metadata.assert_called_once_with(
-                context_id=7100,
+                context_id='0190abcdef1234567890abcd00001bbc',
                 patch={'a': {'b': 'updated'}},
                 txn=ANY,
             )

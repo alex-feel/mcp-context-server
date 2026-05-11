@@ -5,8 +5,6 @@ Tests database initialization, schema creation, PRAGMA settings,
 connection management, and tag storage/retrieval operations.
 """
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +13,7 @@ import pytest
 from anyio import Path as AsyncPath
 
 from app.backends import StorageBackend
+from app.ids import generate_id
 from app.server import init_database
 
 
@@ -109,9 +108,10 @@ class TestDatabaseConnection:
         # Insert initial data
         async with manager.get_connection(allow_write=True) as conn:
             cursor = conn.cursor()
+            _new_id = generate_id()
             cursor.execute(
-                'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-                ('test', 'user', 'text'),
+                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                (_new_id, 'test', 'user', 'text'),
             )
             conn.commit()
 
@@ -120,9 +120,10 @@ class TestDatabaseConnection:
             async with manager.get_connection(allow_write=True) as conn:
                 cursor = conn.cursor()
                 # This should fail due to CHECK constraint
+                _new_id = generate_id()
                 cursor.execute(
-                    'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-                    ('test', 'invalid_source', 'text'),
+                    'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                    (_new_id, 'test', 'invalid_source', 'text'),
                 )
                 pytest.fail('Should have raised IntegrityError')
         except sqlite3.IntegrityError:
@@ -157,9 +158,10 @@ class TestDatabaseConnection:
         try:
             async with manager.get_connection(allow_write=True) as conn:
                 cursor = conn.cursor()
+                _new_id = generate_id()
                 cursor.execute(
-                    'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-                    ('test', 'invalid_source', 'text'),
+                    'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                    (_new_id, 'test', 'invalid_source', 'text'),
                 )
                 pytest.fail('Should have raised IntegrityError')
         except sqlite3.IntegrityError:
@@ -174,11 +176,12 @@ class TestTagOperations:
         """Test storing tags for a context entry."""
         # Insert a context entry
         cursor = async_test_db.cursor()
+        _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-            ('test', 'user', 'text'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            (_new_id, 'test', 'user', 'text'),
         )
-        context_id = cursor.lastrowid
+        context_id = _new_id
         async_test_db.commit()
 
         # Store tags
@@ -207,11 +210,12 @@ class TestTagOperations:
     async def test_store_tags_async_empty_list(self, async_test_db: sqlite3.Connection) -> None:
         """Test storing empty tag list does nothing."""
         cursor = async_test_db.cursor()
+        _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-            ('test', 'user', 'text'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            (_new_id, 'test', 'user', 'text'),
         )
-        context_id = cursor.lastrowid
+        context_id = _new_id
         async_test_db.commit()
 
         # Store empty tags - should do nothing
@@ -226,11 +230,12 @@ class TestTagOperations:
         """Test retrieving tags for a context entry."""
         # Insert context and tags manually
         cursor = async_test_db.cursor()
+        _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-            ('test', 'user', 'text'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            (_new_id, 'test', 'user', 'text'),
         )
-        context_id = cursor.lastrowid
+        context_id = _new_id
 
         tags = ['alpha', 'beta', 'gamma']
         for tag in tags:
@@ -255,11 +260,12 @@ class TestTagOperations:
     async def test_get_tags_async_no_tags(self, async_test_db: sqlite3.Connection) -> None:
         """Test retrieving tags for entry with no tags."""
         cursor = async_test_db.cursor()
+        _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-            ('test', 'user', 'text'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            (_new_id, 'test', 'user', 'text'),
         )
-        context_id = cursor.lastrowid
+        context_id = _new_id
         async_test_db.commit()
 
         # Retrieve tags for entry without tags
@@ -293,11 +299,12 @@ class TestDatabaseIntegrity:
         cursor = test_db.cursor()
 
         # Insert context entry
+        _new_id = generate_id()
         cursor.execute(
-            'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-            ('test', 'user', 'text'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+            (_new_id, 'test', 'user', 'text'),
         )
-        context_id = cursor.lastrowid
+        context_id = _new_id
 
         # Insert related data
         cursor.execute(
@@ -331,18 +338,20 @@ class TestDatabaseIntegrity:
         cursor = test_db.cursor()
 
         # Test invalid source
+        bad_source_id = generate_id()
         with pytest.raises(sqlite3.IntegrityError) as exc_info:
             cursor.execute(
-                'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-                ('test', 'invalid', 'text'),
+                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                (bad_source_id, 'test', 'invalid', 'text'),
             )
         assert 'CHECK constraint failed' in str(exc_info.value)
 
         # Test invalid content_type
+        bad_ctype_id = generate_id()
         with pytest.raises(sqlite3.IntegrityError) as exc_info:
             cursor.execute(
-                'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-                ('test', 'user', 'invalid'),
+                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                (bad_ctype_id, 'test', 'user', 'invalid'),
             )
         assert 'CHECK constraint failed' in str(exc_info.value)
 
@@ -356,9 +365,10 @@ class TestDatabasePerformance:
 
         # Insert test data
         for i in range(100):
+            _new_id = generate_id()
             cursor.execute(
-                'INSERT INTO context_entries (thread_id, source, content_type) VALUES (?, ?, ?)',
-                (f'thread_{i % 10}', 'user' if i % 2 == 0 else 'agent', 'text'),
+                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                (_new_id, f'thread_{i % 10}', 'user' if i % 2 == 0 else 'agent', 'text'),
             )
         test_db.commit()
 

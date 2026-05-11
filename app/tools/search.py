@@ -94,16 +94,16 @@ async def _apply_reranking(
         )
 
         # Build result lookup by ID for fast access
-        result_by_id: dict[int, dict[str, Any]] = {
-            int(r.get('id', 0)): r for r in results if r.get('id') is not None
+        result_by_id: dict[str, dict[str, Any]] = {
+            str(r.get('id', '')): r for r in results if r.get('id') is not None
         }
 
         # Merge rerank scores back into original results (inject into scores object)
         final_results: list[dict[str, Any]] = []
         for reranked_item in reranked:
             item_id = reranked_item.get('id')
-            if item_id is not None and int(item_id) in result_by_id:
-                merged = result_by_id[int(item_id)].copy()
+            if item_id is not None and str(item_id) in result_by_id:
+                merged = result_by_id[str(item_id)].copy()
                 # Inject rerank_score into scores object
                 if 'scores' in merged and isinstance(merged['scores'], dict):
                     merged['scores'] = merged['scores'].copy()
@@ -521,7 +521,7 @@ async def search_context(
             # Get normalized tags
             entry_id_raw = entry.get('id')
             if entry_id_raw is not None:
-                entry_id = int(entry_id_raw)
+                entry_id = str(entry_id_raw)
                 tags_result = await repos.tags.get_tags_for_context(entry_id)
                 entry['tags'] = tags_result
             else:
@@ -532,7 +532,7 @@ async def search_context(
 
             # Fetch images if requested and applicable
             if include_images and entry.get('content_type') == 'multimodal':
-                entry_id = int(entry.get('id', 0))
+                entry_id = str(entry.get('id', ''))
                 images_result = await repos.images.get_images_for_context(entry_id, include_data=True)
                 entry['images'] = cast(list[dict[str, str]], images_result)
 
@@ -707,11 +707,11 @@ async def semantic_search_context(
         for result in final_results:
             context_id = result.get('id')
             if context_id:
-                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                tags_result = await repos.tags.get_tags_for_context(str(context_id))
                 result['tags'] = tags_result
                 # Fetch images if requested and applicable
                 if include_images and result.get('content_type') == 'multimodal':
-                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True)
                     result['images'] = images_result
             else:
                 result['tags'] = []
@@ -952,11 +952,11 @@ async def fts_search_context(
             # Get normalized tags
             context_id = result.get('id')
             if context_id:
-                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                tags_result = await repos.tags.get_tags_for_context(str(context_id))
                 result['tags'] = tags_result
                 # Fetch images if requested and applicable
                 if include_images and result.get('content_type') == 'multimodal':
-                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True)
                     result['images'] = images_result
             else:
                 result['tags'] = []
@@ -1365,11 +1365,11 @@ async def hybrid_search_context(
         for result in final_results:
             context_id = result.get('id')
             if context_id:
-                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                tags_result = await repos.tags.get_tags_for_context(str(context_id))
                 result['tags'] = tags_result
                 # Fetch images if requested and applicable
                 if include_images and result.get('content_type') == 'multimodal':
-                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True)
                     result['images'] = images_result
             else:
                 result['tags'] = []

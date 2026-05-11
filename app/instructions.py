@@ -5,7 +5,6 @@ environment variable is not set. These instructions are sent to MCP clients
 during initialization via the MCP protocol's instructions field.
 """
 
-from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
@@ -41,7 +40,7 @@ Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up
 - **thread_id**: Groups related entries (e.g., one per knowledge base, project, session, or task). Scope searches with thread_id when working within a specific thread; omit for cross-thread knowledge discovery.
 - **source**: "user" or "agent" — filters by entry creator.
 - **text**: Prefer storing context in pure Markdown format.
-- **metadata**: JSON object for structured data. Use metadata_filters for advanced operators (gt, lt, contains, exists, etc.). Include descriptive fields (agent_name, task_name, status, project, references) for discoverability. Link entries into a knowledge graph with references. Store cross-references when creating entries: `metadata: {"references": {"context_ids": [<id_1>, <id_2>, ...]}}`. Retrieve referenced entries with `get_context_by_ids` to follow the knowledge chain.
+- **metadata**: JSON object for structured data. Use metadata_filters for advanced operators (gt, lt, contains, exists, etc.). Include descriptive fields (agent_name, task_name, status, project, references) for discoverability. Link entries into a knowledge graph with references. Store cross-references when creating entries: `metadata: {"references": {"context_ids": ["0190abcdef1234567890abcdef123456", "0190abcdef1234567890abcdef987654"]}}`. Retrieve referenced entries with `get_context_by_ids` to follow the knowledge chain.
 - **tags**: Lowercase labels for categorization (OR logic).
 
 ## Best Practices
@@ -71,7 +70,7 @@ If you have access to Skills, check their descriptions for any that relate to co
 ''').strip()
 
 
-def resolve_instructions(instructions_settings: InstructionsSettings) -> str:
+def resolve_instructions(instructions_settings: 'InstructionsSettings') -> str:
     """Resolve the effective instructions text.
 
     If MCP_SERVER_INSTRUCTIONS env var is set (including empty string),

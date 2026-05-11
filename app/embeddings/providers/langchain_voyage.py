@@ -4,7 +4,6 @@ Voyage AI embedding provider using LangChain integration.
 This provider uses langchain-voyageai package for Voyage AI's embedding API.
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any

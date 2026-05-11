@@ -13,8 +13,6 @@ Tests verify:
 - clear_summary parameter in update_context_entry
 """
 
-from __future__ import annotations
-
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
@@ -365,7 +363,7 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text=short_text,
                 ctx=mock_ctx,
             )
@@ -401,7 +399,7 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text=long_text,
                 ctx=mock_ctx,
             )

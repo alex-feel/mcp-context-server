@@ -9,8 +9,6 @@ This module tests:
 - update_context_entry with summary parameter
 """
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 
@@ -18,6 +16,7 @@ import pytest
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.ids import generate_id
 from app.migrations.summary import apply_summary_migration
 from app.repositories.context_repository import CONTEXT_ENTRY_COLUMNS
 
@@ -109,16 +108,20 @@ class TestApplySummaryMigration:
         backend = create_backend(backend_type='sqlite', db_path=str(db_path))
         await backend.initialize()
         try:
+            new_id = generate_id()
+
             # Insert entry without summary
-            def _insert(conn: sqlite3.Connection) -> int:
-                cursor = conn.execute(
-                    "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                    "VALUES ('t1', 'user', 'text', 'hello')",
+            def _insert(conn: sqlite3.Connection) -> str:
+                conn.execute(
+                    'INSERT INTO context_entries '
+                    '(id, thread_id, source, content_type, text_content) '
+                    "VALUES (?, 't1', 'user', 'text', 'hello')",
+                    (new_id,),
                 )
-                return cursor.lastrowid or 0
+                return new_id
 
             entry_id = await backend.execute_write(_insert)
-            assert entry_id > 0
+            assert len(entry_id) == 32
 
             # Verify summary is NULL
             def _check(conn: sqlite3.Connection) -> object:
@@ -149,14 +152,16 @@ class TestApplySummaryMigration:
         await backend.initialize()
         try:
             expected_summary = 'This is a test summary of the context entry.'
+            new_id = generate_id()
 
-            def _insert(conn: sqlite3.Connection) -> int:
-                cursor = conn.execute(
-                    "INSERT INTO context_entries (thread_id, source, content_type, text_content, summary) "
-                    "VALUES ('t1', 'user', 'text', 'hello world', ?)",
-                    (expected_summary,),
+            def _insert(conn: sqlite3.Connection) -> str:
+                conn.execute(
+                    'INSERT INTO context_entries '
+                    '(id, thread_id, source, content_type, text_content, summary) '
+                    "VALUES (?, 't1', 'user', 'text', 'hello world', ?)",
+                    (new_id, expected_summary),
                 )
-                return cursor.lastrowid or 0
+                return new_id
 
             entry_id = await backend.execute_write(_insert)
 
@@ -252,7 +257,7 @@ class TestStoreWithDeduplicationSummary:
             text_content='Test content for summary',
             summary='Summary of test content',
         )
-        assert context_id > 0
+        assert len(context_id) == 32
         assert was_updated is False
 
         # Verify summary was stored
@@ -273,7 +278,7 @@ class TestStoreWithDeduplicationSummary:
             content_type='text',
             text_content='Content without summary',
         )
-        assert context_id > 0
+        assert len(context_id) == 32
         assert was_updated is False
 
         entries = await repos.context.get_by_ids([context_id])

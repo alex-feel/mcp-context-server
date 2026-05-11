@@ -9,6 +9,47 @@ The MCP Context Server exposes 13 MCP tools for context management, organized in
 - **Search Tools**: `semantic_search_context`, `fts_search_context`, `hybrid_search_context`
 - **Batch Operations**: `store_context_batch`, `update_context_batch`, `delete_context_batch`
 
+## Context Identifier Format
+
+Every context entry is identified by a UUIDv7 value. The canonical public form is a 32-character lowercase hexadecimal string with no hyphens (regex `^[0-9a-f]{32}$`).
+
+Example: `0190abcdef1234567890abcdef123456`
+
+**Accepted Input Formats:**
+
+Every tool that accepts a context identifier accepts BOTH of the following at the parameter boundary:
+
+- The canonical 32-character hex form (e.g., `0190abcdef1234567890abcdef123456`)
+- The 36-character hyphenated UUID form (e.g., `0190abcd-ef12-3456-7890-abcdef123456`)
+
+Whitespace is stripped and the value is folded to lowercase before validation. Storage canonicalizes to the 32-character lowercase hex form; the `context_id` returned in tool responses is always in canonical form regardless of input format.
+
+**Prefix Lookup (single-ID parameters only):**
+
+Tool parameters that accept a single context identifier (currently `update_context.context_id`) ALSO accept a hex prefix of 8 to 31 characters. The server resolves the prefix against stored entries:
+
+- Exactly one match: resolves to that entry's full ID.
+- Zero matches: returns an error `No context entry matches prefix '<prefix>'`.
+- More than one match: returns an error `Ambiguous prefix '<prefix>' matches multiple entries`.
+
+Prefixes shorter than 8 characters or containing non-hex characters are rejected at validation.
+
+**Input Format Support by Tool:**
+
+| Parameter Kind                                                                                                       | Accepts Full UUID (32-hex / 36-hyphenated) | Accepts Prefix (8-31 hex) |
+|----------------------------------------------------------------------------------------------------------------------|--------------------------------------------|---------------------------|
+| Single-ID parameters (`update_context.context_id`)                                                                   | Yes                                        | Yes                       |
+| Bulk parameters (`get_context_by_ids.context_ids`, `delete_context.context_ids`, `delete_context_batch.context_ids`) | Yes                                        | No                        |
+
+**Bulk Parameter Example:**
+
+```python
+get_context_by_ids(context_ids=[
+    "0190abcdef1234567890abcdef123456",
+    "0190abcd-ef12-3456-7890-abcdef987654"
+])
+```
+
 ## Core Tools
 
 ### store_context
@@ -42,7 +83,7 @@ The metadata field accepts any JSON-serializable structure, making the server ad
 
 Indexed fields are configurable via `METADATA_INDEXED_FIELDS` environment variable. See [Metadata Guide](metadata-addition-updating-and-filtering.md#environment-variables) for details.
 
-**Returns:** Dictionary with success status and context_id
+**Returns:** Dictionary with success status, `thread_id`, a message, and a 32-character lowercase hex `context_id` identifying the stored entry. Example: `{"success": true, "context_id": "0190abcdef1234567890abcdef123456", "thread_id": "project-123", "message": "..."}`
 
 ### search_context
 
@@ -73,7 +114,7 @@ Search context entries with powerful filtering including metadata queries and da
 Fetch specific context entries by their IDs.
 
 **Parameters:**
-- `context_ids` (list, required): List of context entry IDs
+- `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form. Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. Prefix lookup is NOT supported for this bulk parameter; supply full IDs only.
 - `include_images` (bool, optional): Include image data (default: True)
 
 **Returns:** List of context entries with full content
@@ -83,7 +124,7 @@ Fetch specific context entries by their IDs.
 Delete context entries by IDs or thread.
 
 **Parameters:**
-- `context_ids` (list, optional): Specific IDs to delete
+- `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID IDs to delete. Both forms are accepted at the tool boundary. Prefix lookup is NOT supported for this bulk parameter; supply full IDs only.
 - `thread_id` (str, optional): Delete all entries in a thread
 
 **Returns:** Dictionary with deletion count
@@ -120,7 +161,7 @@ Get database statistics, usage metrics, and feature status.
 Update specific fields of an existing context entry.
 
 **Parameters:**
-- `context_id` (int, required): ID of the context entry to update
+- `context_id` (str, required): ID of the context entry to update. Accepts a 32-character hex UUID, a 36-character hyphenated UUID, or an 8-31 character hex prefix that uniquely identifies an entry. Prefixes shorter than 8 characters are rejected. Ambiguous prefixes (multiple matches) return an error. Whitespace is stripped and case is folded to lowercase at the boundary.
 - `text` (str, optional): New text content
 - `metadata` (dict, optional): New metadata (full replacement)
 - `metadata_patch` (dict, optional): Partial metadata update using RFC 7396 JSON Merge Patch
@@ -138,10 +179,10 @@ RFC 7396 JSON Merge Patch semantics (`metadata_patch`):
 
 ```python
 # Update single field while preserving others
-update_context(context_id=123, metadata_patch={"status": "completed"})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"status": "completed"})
 
 # Add new field and delete another
-update_context(context_id=123, metadata_patch={"reviewer": "alice", "draft": None})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"reviewer": "alice", "draft": None})
 ```
 
 **Limitations (RFC 7396):** Null values cannot be stored (null means delete key - use full replacement if needed), arrays are replaced entirely (not merged). See [Metadata Guide](metadata-addition-updating-and-filtering.md#partial-metadata-updates-metadata_patch) for details.
@@ -414,7 +455,7 @@ Update multiple context entries in a single batch operation.
 
 **Parameters:**
 - `updates` (list, required): List of update operations (max 100). Each update has:
-  - `context_id` (int, required)
+  - `context_id` (str, required): 32-character hex or 36-character hyphenated UUID. Prefix lookup is NOT supported in batch updates; supply full IDs only.
   - `text` (str, optional), `metadata` (dict, optional), `metadata_patch` (dict, optional)
   - `tags` (list, optional), `images` (list, optional)
 - `atomic` (bool, optional): If true, all succeed or all fail (default: true)
@@ -428,7 +469,7 @@ Update multiple context entries in a single batch operation.
 Delete multiple context entries by various criteria. **IRREVERSIBLE.**
 
 **Parameters:**
-- `context_ids` (list, optional): Specific context IDs to delete
+- `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID context IDs to delete. Prefix lookup is NOT supported in bulk delete; supply full IDs only.
 - `thread_ids` (list, optional): Delete all entries in these threads
 - `source` (str, optional): Filter by source ('user' or 'agent') - must combine with another criterion
 - `older_than_days` (int, optional): Delete entries older than N days

@@ -1094,12 +1094,20 @@ class SQLiteBackend:
             RuntimeError: If backend is shutting down or circuit breaker is open
 
         Example:
+            from app.ids import generate_id
+
             async with backend.begin_transaction() as txn:
                 conn = txn.connection
-                # All operations use same connection, same transaction
-                cursor = conn.execute('INSERT INTO context_entries ...')
-                context_id = cursor.lastrowid
-                conn.execute('INSERT INTO tags ...', (context_id, 'tag1'))
+                # All operations use the same connection and transaction
+                context_id = generate_id()
+                conn.execute(
+                    'INSERT INTO context_entries (id, ...) VALUES (?, ...)',
+                    (context_id, ...),
+                )
+                conn.execute(
+                    'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                    (context_id, 'tag1'),
+                )
                 # COMMIT on exit
         """
         assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'

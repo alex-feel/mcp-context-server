@@ -5,14 +5,10 @@ Tests the TagRepository class for storing, retrieving, and managing
 tags associated with context entries.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 import pytest
 
-if TYPE_CHECKING:
-    from app.backends import StorageBackend
+from app.backends import StorageBackend
 
 
 @pytest.mark.asyncio

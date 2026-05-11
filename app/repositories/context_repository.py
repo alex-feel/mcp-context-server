@@ -5,7 +5,6 @@ This module handles all database operations related to context entries,
 including CRUD operations and deduplication logic.
 """
 
-from __future__ import annotations
 
 import hashlib
 import json
@@ -18,6 +17,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from app.backends.base import StorageBackend
+from app.ids import generate_id
 from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -73,8 +73,8 @@ class ContextRepository(BaseRepository):
         text_content: str,
         metadata: str | None = None,
         summary: str | None = None,
-        txn: TransactionContext | None = None,
-    ) -> tuple[int, bool]:
+        txn: 'TransactionContext | None' = None,
+    ) -> tuple[str, bool]:
         """Store context entry with deduplication logic.
 
         Checks if the latest entry has identical thread_id, source, and text_content.
@@ -109,7 +109,7 @@ class ContextRepository(BaseRepository):
 
         if backend_type == 'sqlite':
 
-            def _store_sqlite(conn: sqlite3.Connection) -> tuple[int, bool]:
+            def _store_sqlite(conn: sqlite3.Connection) -> tuple[str, bool]:
                 cursor = conn.cursor()
 
                 # Check if the LATEST entry (by id) for this thread_id and source is a duplicate.
@@ -176,22 +176,22 @@ class ContextRepository(BaseRepository):
                     rows_affected = cursor.rowcount
                     if rows_affected == 0:
                         logger.warning(
-                            'Deduplication UPDATE affected 0 rows for context %d in thread %s',
+                            'Deduplication UPDATE affected 0 rows for context %s in thread %s',
                             existing_id, thread_id,
                         )
                     logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
                     return existing_id, True
 
-                # No duplicate - insert new entry
+                # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
+                new_id = generate_id()
                 cursor.execute(
                     f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
-                    VALUES ({self._placeholders(7)})
+                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(8)})
                     ''',
-                    (thread_id, source, content_type, text_content, metadata, summary, content_hash),
+                    (new_id, thread_id, source, content_type, text_content, metadata, summary, content_hash),
                 )
-                new_id: int = cursor.lastrowid if cursor.lastrowid is not None else 0
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
                 return new_id, False
 
@@ -201,7 +201,7 @@ class ContextRepository(BaseRepository):
 
         # PostgreSQL
         # Note: TYPE_CHECKING ensures asyncpg.Connection type is only used during type checking
-        async def _store_postgresql(conn: asyncpg.Connection) -> tuple[int, bool]:
+        async def _store_postgresql(conn: 'asyncpg.Connection') -> tuple[str, bool]:
             # Check latest entry - fetches content_hash instead of full text_content.
             # Falls back to text comparison when content_hash is NULL (pre-migration rows).
             latest_row = await conn.fetchrow(
@@ -268,20 +268,21 @@ class ContextRepository(BaseRepository):
                 rows_affected = int(result.split()[-1]) if result else 0
                 if rows_affected == 0:
                     logger.warning(
-                        'Deduplication UPDATE affected 0 rows for context %d in thread %s',
+                        'Deduplication UPDATE affected 0 rows for context %s in thread %s',
                         existing_id, thread_id,
                     )
                 logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
                 return existing_id, True
 
-            # Insert new entry with RETURNING clause
-            new_id_result = await conn.fetchval(
+            # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
+            new_id = generate_id()
+            await conn.execute(
                 f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
-                    VALUES ({self._placeholders(7)})
-                    RETURNING id
+                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(8)})
                     ''',
+                new_id,
                 thread_id,
                 source,
                 content_type,
@@ -290,7 +291,6 @@ class ContextRepository(BaseRepository):
                 summary,
                 content_hash,
             )
-            new_id = cast(int, new_id_result)
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
             return new_id, False
 
@@ -303,7 +303,7 @@ class ContextRepository(BaseRepository):
         thread_id: str,
         source: str,
         text_content: str,
-    ) -> int | None:
+    ) -> str | None:
         """Check if the latest entry matches the given content (read-only pre-check).
 
         This is a performance optimization for the embedding-first pattern.
@@ -330,7 +330,7 @@ class ContextRepository(BaseRepository):
 
         if self.backend.backend_type == 'sqlite':
 
-            def _check_sqlite(conn: sqlite3.Connection) -> int | None:
+            def _check_sqlite(conn: sqlite3.Connection) -> str | None:
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
@@ -372,12 +372,12 @@ class ContextRepository(BaseRepository):
                 )
                 if cursor.fetchone() is not None:
                     return None
-                return cast(int, candidate_id)
+                return cast(str, candidate_id)
 
             return await self.backend.execute_read(_check_sqlite)
 
         # PostgreSQL
-        async def _check_postgresql(conn: asyncpg.Connection) -> int | None:
+        async def _check_postgresql(conn: 'asyncpg.Connection') -> str | None:
             row = await conn.fetchrow(
                 f'''
                     SELECT id, content_hash, text_content FROM context_entries
@@ -420,11 +420,11 @@ class ContextRepository(BaseRepository):
             )
             if interleaving_row is not None:
                 return None
-            return cast(int, candidate_id)
+            return cast(str, candidate_id)
 
         return await self.backend.execute_read(_check_postgresql)
 
-    async def get_summary(self, context_id: int) -> str | None:
+    async def get_summary(self, context_id: str) -> str | None:
         """Get the summary for a context entry.
 
         Used during deduplication to check if a summary already exists,
@@ -456,7 +456,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_get_summary_sqlite)
 
         # PostgreSQL
-        async def _get_summary_postgresql(conn: asyncpg.Connection) -> str | None:
+        async def _get_summary_postgresql(conn: 'asyncpg.Connection') -> str | None:
             row = await conn.fetchrow(
                 f'SELECT summary FROM context_entries WHERE id = {self._placeholder(1)}',
                 context_id,
@@ -654,7 +654,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_search_sqlite)
 
         # PostgreSQL
-        async def _search_postgresql(conn: asyncpg.Connection) -> tuple[list[Any], dict[str, Any]]:
+        async def _search_postgresql(conn: 'asyncpg.Connection') -> tuple[list[Any], dict[str, Any]]:
             start_time = time_module.time()
 
             # Build query with indexed fields first for optimization
@@ -779,7 +779,7 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_search_postgresql)
 
-    async def get_by_ids(self, context_ids: list[int]) -> list[Any]:
+    async def get_by_ids(self, context_ids: list[str]) -> list[Any]:
         """Get context entries by their IDs.
 
         Args:
@@ -810,7 +810,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_fetch_sqlite)
 
         # PostgreSQL
-        async def _fetch_postgresql(conn: asyncpg.Connection) -> list[Any]:
+        async def _fetch_postgresql(conn: 'asyncpg.Connection') -> list[Any]:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'''
@@ -825,8 +825,8 @@ class ContextRepository(BaseRepository):
 
     async def delete_by_ids(
         self,
-        context_ids: list[int],
-        txn: TransactionContext | None = None,
+        context_ids: list[str],
+        txn: 'TransactionContext | None' = None,
     ) -> int:
         """Delete context entries by their IDs.
 
@@ -862,7 +862,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_delete_by_ids_sqlite)
 
         # PostgreSQL
-        async def _delete_by_ids_postgresql(conn: asyncpg.Connection) -> int:
+        async def _delete_by_ids_postgresql(conn: 'asyncpg.Connection') -> int:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
             result = await conn.execute(
                 f'DELETE FROM context_entries WHERE id IN ({placeholders})',
@@ -897,7 +897,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_delete_by_thread_sqlite)
 
         # PostgreSQL
-        async def _delete_by_thread_postgresql(conn: asyncpg.Connection) -> int:
+        async def _delete_by_thread_postgresql(conn: 'asyncpg.Connection') -> int:
             result = await conn.execute(
                 f'DELETE FROM context_entries WHERE thread_id = {self._placeholder(1)}',
                 thread_id,
@@ -909,12 +909,12 @@ class ContextRepository(BaseRepository):
 
     async def update_context_entry(
         self,
-        context_id: int,
+        context_id: str,
         text_content: str | None = None,
         metadata: str | None = None,
         summary: str | None = None,
         clear_summary: bool = False,
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> tuple[bool, list[str]]:
         """Update text content and/or metadata of a context entry.
 
@@ -997,7 +997,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_update_entry_sqlite)
 
         # PostgreSQL
-        async def _update_entry_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
+        async def _update_entry_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
             updated_fields: list[str] = []
 
             # First, check if the entry exists
@@ -1057,7 +1057,7 @@ class ContextRepository(BaseRepository):
             return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_entry_postgresql)
 
-    async def check_entry_exists(self, context_id: int) -> tuple[bool, str | None]:
+    async def check_entry_exists(self, context_id: str) -> tuple[bool, str | None]:
         """Check if a context entry exists and return its source.
 
         Args:
@@ -1083,7 +1083,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_check_exists_sqlite)
 
         # PostgreSQL
-        async def _check_exists_postgresql(conn: asyncpg.Connection) -> tuple[bool, str | None]:
+        async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, str | None]:
             row = await conn.fetchrow(
                 f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                 context_id,
@@ -1094,7 +1094,7 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_check_exists_postgresql)
 
-    async def get_content_type(self, context_id: int) -> str | None:
+    async def get_content_type(self, context_id: str) -> str | None:
         """Get the content type of a context entry.
 
         Args:
@@ -1117,7 +1117,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_get_content_type_sqlite)
 
         # PostgreSQL
-        async def _get_content_type_postgresql(conn: asyncpg.Connection) -> str | None:
+        async def _get_content_type_postgresql(conn: 'asyncpg.Connection') -> str | None:
             row = await conn.fetchrow(
                 f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}',
                 context_id,
@@ -1128,9 +1128,9 @@ class ContextRepository(BaseRepository):
 
     async def update_content_type(
         self,
-        context_id: int,
+        context_id: str,
         content_type: str,
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> bool:
         """Update the content type of a context entry.
 
@@ -1164,7 +1164,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_update_content_type_sqlite)
 
         # PostgreSQL
-        async def _update_content_type_postgresql(conn: asyncpg.Connection) -> bool:
+        async def _update_content_type_postgresql(conn: 'asyncpg.Connection') -> bool:
             content_type_placeholder = self._placeholder(1)
             id_placeholder = self._placeholder(2)
             query = (
@@ -1181,9 +1181,9 @@ class ContextRepository(BaseRepository):
 
     async def patch_metadata(
         self,
-        context_id: int,
+        context_id: str,
         patch: dict[str, Any],
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> tuple[bool, list[str]]:
         """Apply RFC 7396 JSON Merge Patch to metadata atomically.
 
@@ -1263,7 +1263,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_patch_metadata_sqlite)
 
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
-        async def _patch_metadata_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
+        async def _patch_metadata_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
             # Import settings here to avoid circular import and ensure schema is retrieved at call time
             from app.settings import get_settings
 
@@ -1345,7 +1345,7 @@ class ContextRepository(BaseRepository):
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
-    ) -> list[int]:
+    ) -> list[str]:
         """Return context entry IDs matching batch deletion criteria.
 
         Builds the same WHERE clause as delete_contexts_batch but executes
@@ -1362,7 +1362,7 @@ class ContextRepository(BaseRepository):
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _select_ids_sqlite(conn: sqlite3.Connection) -> list[int]:
+            def _select_ids_sqlite(conn: sqlite3.Connection) -> list[str]:
                 cursor = conn.cursor()
                 conditions: list[str] = []
                 params: list[Any] = []
@@ -1400,7 +1400,7 @@ class ContextRepository(BaseRepository):
 
     async def delete_contexts_batch(
         self,
-        context_ids: list[int] | None = None,
+        context_ids: list[str] | None = None,
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
@@ -1472,7 +1472,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_delete_batch_sqlite)
 
         # PostgreSQL
-        async def _delete_batch_postgresql(conn: asyncpg.Connection) -> tuple[int, list[str]]:
+        async def _delete_batch_postgresql(conn: 'asyncpg.Connection') -> tuple[int, list[str]]:
             conditions: list[str] = []
             params: list[Any] = []
 
@@ -1512,3 +1512,55 @@ class ContextRepository(BaseRepository):
             return deleted_count, criteria_used
 
         return await self.backend.execute_write(_delete_batch_postgresql, validate_connection=True)
+
+    async def find_ids_by_prefix(self, prefix: str, limit: int = 2) -> list[str]:
+        """Find context entry IDs that begin with the given prefix.
+
+        Used by the optional CLI prefix-resolution flow (`mcp-context-id-resolve`)
+        to expand a short user-supplied prefix into a full id when ambiguity is
+        unlikely. The caller decides what to do when ``limit`` rows are returned;
+        this method's contract is "return up to N matches".
+
+        Args:
+            prefix: Lowercase hex prefix (3-32 characters). Caller is responsible
+                for normalization.
+            limit: Maximum number of IDs to return. Defaults to 2 so callers can
+                detect ambiguity by checking ``len(result) > 1``.
+
+        Returns:
+            List of matching context_id strings (UUIDv7 hex, 32 chars), up to ``limit``.
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _find_sqlite(conn: sqlite3.Connection) -> list[str]:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'''
+                    SELECT id FROM context_entries
+                    WHERE id LIKE {self._placeholder(1)}
+                    ORDER BY id
+                    LIMIT {self._placeholder(2)}
+                    ''',
+                    (prefix + '%', limit),
+                )
+                return [row['id'] for row in cursor.fetchall()]
+
+            return await self.backend.execute_read(_find_sqlite)
+
+        # PostgreSQL: id is a uuid column; canonical text form contains hyphens
+        # which are absent from the user-supplied hex prefix. REPLACE() removes
+        # hyphens so LIKE matches against the 32-char hex representation.
+        async def _find_postgresql(conn: 'asyncpg.Connection') -> list[str]:
+            rows = await conn.fetch(
+                f'''
+                SELECT id FROM context_entries
+                WHERE REPLACE(CAST(id AS TEXT), '-', '') LIKE {self._placeholder(1)}
+                ORDER BY id
+                LIMIT {self._placeholder(2)}
+                ''',
+                prefix + '%',
+                limit,
+            )
+            return [row['id'] for row in rows]
+
+        return await self.backend.execute_read(_find_postgresql)

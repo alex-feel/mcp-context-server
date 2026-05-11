@@ -24,7 +24,6 @@ at runtime (not part of the prompt constants).  HumanMessage receives
 the text AS-IS, without any prefix.
 """
 
-from __future__ import annotations
 
 # Shared base requirements (DRY: used in both user and agent prompts).
 # Private constant -- not exported, used only within this module.

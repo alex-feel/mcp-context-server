@@ -12,7 +12,6 @@ Qwen3 Family Model Recommendations:
     - qwen3:32b   - Frontier-level, requires GPU with >20GB VRAM
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any

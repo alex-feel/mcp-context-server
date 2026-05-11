@@ -1,7 +1,5 @@
 """Pytest configuration for reranking tests."""
 
-from __future__ import annotations
-
 import pytest
 
 from app.settings import get_settings

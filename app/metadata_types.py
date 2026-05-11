@@ -1,6 +1,19 @@
-"""Metadata filtering types and operators for advanced search functionality."""
+"""Metadata filtering types and operators for advanced search functionality.
 
-from __future__ import annotations
+The ``references.context_ids`` metadata field stores UUIDv7 hex strings
+(32 lowercase hex characters). Filters that target this field use string
+equality or the ``array_contains`` operator with a UUIDv7 hex value, for
+example::
+
+    MetadataFilter(
+        key='references.context_ids',
+        operator='array_contains',
+        value='0190abcdef1234567890abcdef123456',
+    )
+
+The :class:`MetadataFilter` ``value`` field accepts string values, so no
+type extension is required to support UUIDv7 identifiers.
+"""
 
 from enum import StrEnum
 

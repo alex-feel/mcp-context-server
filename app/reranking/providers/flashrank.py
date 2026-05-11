@@ -5,7 +5,6 @@ This provider uses FlashRank for fast, lightweight cross-encoder reranking.
 FlashRank supports multiple models with different size/quality tradeoffs.
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging

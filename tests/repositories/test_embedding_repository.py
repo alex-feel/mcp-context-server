@@ -5,15 +5,11 @@ Tests the EmbeddingRepository class with SQLite backend using sqlite-vec
 for vector storage and search operations.
 """
 
-from __future__ import annotations
-
 import importlib.util
-from typing import TYPE_CHECKING
 
 import pytest
 
-if TYPE_CHECKING:
-    from app.backends import StorageBackend
+from app.backends import StorageBackend
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(

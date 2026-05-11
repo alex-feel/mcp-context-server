@@ -5,8 +5,6 @@ This test verifies that the metadata type definition fix allows complex
 nested JSON structures to be stored and retrieved correctly.
 """
 
-from __future__ import annotations
-
 import math
 
 import pytest
@@ -66,7 +64,7 @@ async def test_complex_nested_metadata() -> None:
     )
 
     assert result['success'] is True
-    assert result['context_id'] > 0
+    assert len(result['context_id']) == 32
 
     # Verify retrieval
     search_result = await search_context(
@@ -102,7 +100,7 @@ async def test_array_metadata() -> None:
     )
 
     assert result['success'] is True
-    assert result['context_id'] > 0
+    assert len(result['context_id']) == 32
 
     # Verify retrieval
     search_result = await search_context(

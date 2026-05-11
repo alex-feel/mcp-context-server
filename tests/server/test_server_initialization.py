@@ -4,8 +4,6 @@ Covers lines 836-907 in app/server.py for dynamic tool registration
 based on configuration settings.
 """
 
-from __future__ import annotations
-
 import os
 from pathlib import Path
 from unittest.mock import patch

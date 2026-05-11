@@ -6,8 +6,6 @@ availability of embedding providers and vector storage backends.
 P1 Priority: These functions have NO test coverage but are called during startup.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock

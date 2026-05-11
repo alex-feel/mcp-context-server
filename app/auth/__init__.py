@@ -22,7 +22,6 @@ See also:
     - FastMCP authentication docs: https://gofastmcp.com/servers/auth
 """
 
-from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
@@ -43,7 +42,7 @@ __all__ = [
 ]
 
 
-def create_auth_provider() -> AuthProvider | None:
+def create_auth_provider() -> 'AuthProvider | None':
     """Create an authentication provider based on MCP_AUTH_PROVIDER setting.
 
     Returns:

@@ -4,8 +4,6 @@ This module tests utility functions in app/server.py including
 text truncation and helper functions.
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -371,7 +369,7 @@ class TestUpdateContextEdgeCases:
         from app.server import update_context
 
         with pytest.raises(ToolError, match='not found'):
-            await update_context(context_id=999999, text='New text')
+            await update_context(context_id='0190abcdef1234567890abcd000f423f', text='New text')
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')

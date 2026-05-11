@@ -5,7 +5,6 @@ Tests complete workflows, multi-agent scenarios, concurrent operations,
 and system behavior under various conditions.
 """
 
-from __future__ import annotations
 
 import asyncio
 import base64
@@ -338,7 +337,7 @@ class TestConcurrentOperations:
             text='Initial entry',
         )
 
-        # Phase 1: Concurrent writes + reads (all writes use begin_transaction path)
+        # Concurrent writes and reads (all writes go through begin_transaction)
         results_phase1 = await asyncio.gather(
             store_context(thread_id=f'{base_thread}_1', source='user', text='Write 1'),
             store_context(thread_id=f'{base_thread}_2', source='agent', text='Write 2'),
@@ -347,13 +346,13 @@ class TestConcurrentOperations:
             return_exceptions=True,
         )
         for result in results_phase1:
-            assert not isinstance(result, Exception), f'Phase 1 failed: {result}'
+            assert not isinstance(result, Exception), f'Concurrent write/read operation failed: {result}'
 
-        # Phase 2: Delete (uses execute_write path)
+        # Delete through execute_write path
         delete_result = await delete_context(context_ids=[initial['context_id']])
         assert delete_result['success'] is True
 
-        # Phase 3: More writes after delete
+        # Writes after delete
         result_write3 = await store_context(
             thread_id=f'{base_thread}_3', source='user', text='Write 3',
         )

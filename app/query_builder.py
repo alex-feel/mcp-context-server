@@ -1,6 +1,5 @@
 """SQL query builder for metadata filtering with security validation."""
 
-from __future__ import annotations
 
 import json
 import re

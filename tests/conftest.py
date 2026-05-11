@@ -5,8 +5,6 @@ Provides reusable test fixtures including database setup, server instances,
 mock contexts, and sample test data for comprehensive testing.
 """
 
-from __future__ import annotations
-
 # ============================================================================
 # CRITICAL: These stdlib imports are safe and MUST come before the event loop
 # policy setup. They do NOT trigger httpx or langsmith imports.
@@ -187,14 +185,15 @@ os.environ['STORAGE_BACKEND'] = 'sqlite'
 
 
 # ============================================================================
-# Mock Backend Helper for Transaction Support (Phase 3 Transactional Integrity)
+# Mock Backend Helper for Transaction Support
 # ============================================================================
 def create_mock_backend_with_transaction_support() -> MagicMock:
     """Create a mock backend that supports begin_transaction() as async context manager.
 
-    This helper is needed because Phase 3 of the Transactional Integrity Fix
-    introduced backend.begin_transaction() calls in tools. Tests that mock
-    ensure_repositories() must also provide a backend that supports transactions.
+    Tools invoke ``backend.begin_transaction()`` to wrap multi-step writes in a
+    single atomic transaction. Tests that mock ``ensure_repositories()`` must
+    therefore provide a backend whose ``begin_transaction`` is callable as an
+    async context manager.
 
     Returns:
         MagicMock: A mock backend with begin_transaction() async context manager support.
@@ -468,12 +467,14 @@ def sample_multimodal_data(sample_image_data: dict[str, str]) -> dict[str, Any]:
 
 
 @pytest.fixture
-def multiple_context_entries(test_db: sqlite3.Connection) -> list[int]:
-    """Insert multiple test context entries and return their IDs.
+def multiple_context_entries(test_db: sqlite3.Connection) -> list[str]:
+    """Insert multiple test context entries and return their UUIDv7 hex IDs.
 
     Returns:
-        list[int]: List of context entry IDs created in the database
+        list[str]: List of 32-char lowercase hex UUIDv7 strings for each inserted entry.
     """
+    from app.ids import generate_id
+
     cursor = test_db.cursor()
     entries = [
         ('thread_1', 'user', 'text', 'First test entry', None),
@@ -483,17 +484,18 @@ def multiple_context_entries(test_db: sqlite3.Connection) -> list[int]:
         ('thread_3', 'user', 'text', 'Third thread start', json.dumps({'priority': 1})),
     ]
 
-    ids = []
+    ids: list[str] = []
     for thread_id, source, content_type, text, metadata in entries:
+        new_id = generate_id()
         cursor.execute(
             '''
             INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, metadata)
-            VALUES (?, ?, ?, ?, ?)
-        ''',
-            (thread_id, source, content_type, text, metadata),
+            (id, thread_id, source, content_type, text_content, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (new_id, thread_id, source, content_type, text, metadata),
         )
-        ids.append(cursor.lastrowid)
+        ids.append(new_id)
 
     # Add tags to some entries
     tags_data = [
@@ -507,8 +509,7 @@ def multiple_context_entries(test_db: sqlite3.Connection) -> list[int]:
         cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (entry_id, tag))
 
     test_db.commit()
-    valid_ids: list[int] = [id_ for id_ in ids if id_ is not None]
-    return valid_ids
+    return ids
 
 
 @pytest.fixture

@@ -4,8 +4,6 @@ Covers store_context_batch and update_context_batch summary generation
 in both atomic and non-atomic modes.
 """
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Generator
 from contextlib import asynccontextmanager
@@ -293,8 +291,8 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Updated batch summary')
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 500},
-            {'context_id': 2, 'text': 'y' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'y' * 500},
         ]
 
         with (
@@ -326,7 +324,7 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Should not appear')
 
         updates = [
-            {'context_id': 1, 'metadata': {'key': 'value'}},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'metadata': {'key': 'value'}},
         ]
 
         with (
@@ -356,7 +354,7 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=RuntimeError('Provider down'))
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
         ]
 
         with (
@@ -392,8 +390,8 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=selective_summary)
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 500},
-            {'context_id': 2, 'text': 'y' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'y' * 500},
         ]
 
         with (
@@ -539,8 +537,8 @@ class TestBatchMessageAccuracy:
         mock_summary.summarize = AsyncMock(return_value='Should not be called')
 
         updates = [
-            {'context_id': 1, 'text': 'Short text'},
-            {'context_id': 2, 'text': 'Also short'},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Short text'},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'Also short'},
         ]
 
         with (
@@ -573,8 +571,8 @@ class TestBatchMessageAccuracy:
         mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2])
 
         updates = [
-            {'context_id': 1, 'metadata': {'key': 'val1'}},
-            {'context_id': 2, 'metadata': {'key': 'val2'}},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'metadata': {'key': 'val1'}},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'metadata': {'key': 'val2'}},
         ]
 
         with (

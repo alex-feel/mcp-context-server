@@ -11,8 +11,6 @@ Key behavior under test:
 - Retry budgets are fully managed by tenacity wrappers; no re-invocation at gather level
 """
 
-from __future__ import annotations
-
 import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -27,6 +25,7 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 from app.backends.sqlite_backend import SQLiteBackend
+from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.schemas import load_schema
 from app.tools.context import store_context
@@ -331,16 +330,16 @@ class TestUpdateContextGenerationFirst:
     @pytest_asyncio.fixture
     async def setup_with_entry(
         self, tmp_path: Path,
-    ) -> AsyncGenerator[tuple[SQLiteBackend, RepositoryContainer, int], None]:
+    ) -> AsyncGenerator[tuple[SQLiteBackend, RepositoryContainer, str], None]:
         db_path = tmp_path / 'test_gen_first_update.db'
         schema_sql = load_schema('sqlite')
+        new_id = generate_id()
         with sqlite3.connect(str(db_path)) as conn:
             conn.executescript(schema_sql)
             conn.execute(
-                '''INSERT INTO context_entries
-                   (thread_id, source, text_content, content_type, metadata)
-                   VALUES (?, ?, ?, ?, ?)''',
-                ('upd-thread', 'agent', 'Original text', 'text', '{}'),
+                'INSERT INTO context_entries (id, thread_id, source, text_content, content_type, metadata) '
+                'VALUES (?, ?, ?, ?, ?, ?)',
+                (new_id, 'upd-thread', 'agent', 'Original text', 'text', '{}'),
             )
             conn.commit()
         backend = SQLiteBackend(db_path=str(db_path))
@@ -357,7 +356,7 @@ class TestUpdateContextGenerationFirst:
 
     @pytest.mark.asyncio
     async def test_embedding_fails_summary_succeeds_original_preserved(
-        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, int],
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
         """Update: embedding fails, summary succeeds -- original preserved."""
         backend, repos, entry_id = setup_with_entry
@@ -390,7 +389,7 @@ class TestUpdateContextGenerationFirst:
 
     @pytest.mark.asyncio
     async def test_summary_fails_embedding_succeeds_original_preserved(
-        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, int],
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
         """Update: summary fails, embedding succeeds -- original preserved."""
         backend, repos, entry_id = setup_with_entry
@@ -425,7 +424,7 @@ class TestUpdateContextGenerationFirst:
 
     @pytest.mark.asyncio
     async def test_both_fail_combined_error(
-        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, int],
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
         """Update: both fail -- combined error message."""
         _backend, repos, entry_id = setup_with_entry
@@ -454,7 +453,7 @@ class TestUpdateContextGenerationFirst:
 
     @pytest.mark.asyncio
     async def test_both_succeed_data_updated(
-        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, int],
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
     ) -> None:
         """Update: both succeed -- data is updated."""
         backend, repos, entry_id = setup_with_entry
@@ -644,10 +643,10 @@ class TestUpdateContextBatchGenerationFirst:
                 'app.tools.batch.generate_embeddings_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Embedding generation timed out')),
             ),
-            pytest.raises(ToolError, match='Generation failed for context 1'),
+            pytest.raises(ToolError, match='Generation failed for context 0190abcdef1234567890abcd00000001'),
         ):
             await app.server.update_context_batch(
-                updates=[{'context_id': 1, 'text': 'Updated text'}],
+                updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Updated text'}],
                 atomic=True,
             )
 
@@ -667,10 +666,10 @@ class TestUpdateContextBatchGenerationFirst:
                 'app.tools.batch.generate_summary_with_timeout',
                 new=AsyncMock(side_effect=ToolError('Summary timed out')),
             ),
-            pytest.raises(ToolError, match='Generation failed for context 1'),
+            pytest.raises(ToolError, match='Generation failed for context 0190abcdef1234567890abcd00000001'),
         ):
             await app.server.update_context_batch(
-                updates=[{'context_id': 1, 'text': 'x' * 500}],
+                updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}],
                 atomic=True,
             )
 
@@ -702,8 +701,8 @@ class TestUpdateContextBatchGenerationFirst:
         ):
             result = await app.server.update_context_batch(
                 updates=[
-                    {'context_id': 1, 'text': 'x' * 500},
-                    {'context_id': 2, 'text': 'y' * 500},
+                    {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
+                    {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'y' * 500},
                 ],
                 atomic=False,
             )
@@ -728,7 +727,7 @@ class TestUpdateContextBatchGenerationFirst:
             patch('app.tools.batch.generate_summary_with_timeout', new=mock_gen_sum),
         ):
             result = await app.server.update_context_batch(
-                updates=[{'context_id': 1, 'metadata': {'key': 'value'}}],
+                updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'metadata': {'key': 'value'}}],
                 atomic=True,
             )
 
@@ -753,7 +752,7 @@ class TestUpdateContextBatchGenerationFirst:
         ):
             # Text is short (< default min_content_length of 500)
             result = await app.server.update_context_batch(
-                updates=[{'context_id': 1, 'text': 'Short text'}],
+                updates=[{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Short text'}],
                 atomic=True,
             )
 

@@ -16,7 +16,6 @@ All functions in this module are consumed by:
 - app.tools.batch (batch CRUD operations)
 """
 
-from __future__ import annotations
 
 import asyncio
 import base64
@@ -530,8 +529,8 @@ def build_batch_update_response_message(
 
 
 async def execute_store_in_transaction(
-    repos: RepositoryContainer,
-    txn: TransactionContext,
+    repos: 'RepositoryContainer',
+    txn: 'TransactionContext',
     *,
     thread_id: str,
     source: str,
@@ -543,7 +542,7 @@ async def execute_store_in_transaction(
     validated_images: list[dict[str, str]],
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
-) -> tuple[int, bool, bool]:
+) -> tuple[str, bool, bool]:
     """Execute all store operations within an existing transaction.
 
     Performs deduplication-aware storage of a single context entry:
@@ -624,7 +623,7 @@ async def execute_store_in_transaction(
             should_store = not embedding_exists
             if not should_store:
                 logger.debug(
-                    'Skipping embedding storage for deduplicated context %d '
+                    'Skipping embedding storage for deduplicated context %s '
                     '(embeddings already exist)',
                     context_id,
                 )
@@ -643,10 +642,10 @@ async def execute_store_in_transaction(
 
 
 async def execute_update_in_transaction(
-    repos: RepositoryContainer,
-    txn: TransactionContext,
+    repos: 'RepositoryContainer',
+    txn: 'TransactionContext',
     *,
-    context_id: int,
+    context_id: str,
     text: str | None,
     metadata: dict[str, Any] | None,
     metadata_patch: dict[str, Any] | None,
@@ -671,7 +670,7 @@ async def execute_update_in_transaction(
     Args:
         repos: Repository container.
         txn: Active transaction context.
-        context_id: ID of entry to update.
+        context_id: ID (32-char canonical hex) of entry to update.
         text: New text content or None.
         metadata: Full metadata replacement or None.
         metadata_patch: Metadata merge patch or None.

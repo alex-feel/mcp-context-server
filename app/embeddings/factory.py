@@ -8,7 +8,6 @@ The factory uses dynamic imports to avoid loading unused dependencies,
 allowing users to install only the provider-specific packages they need.
 """
 
-from __future__ import annotations
 
 import importlib
 import logging
@@ -73,8 +72,8 @@ def create_embedding_provider(
     """
     if provider is None:
         settings = get_settings()
-        # Get provider from settings.embedding.provider if available (Phase 3+),
-        # otherwise default to 'ollama' for backward compatibility
+        # Prefer settings.embedding.provider when present; fall back to 'ollama'
+        # if the settings object lacks the embedding section.
         embedding_settings = getattr(settings, 'embedding', None)
         if embedding_settings is not None:
             provider_name: str = getattr(embedding_settings, 'provider', 'ollama')

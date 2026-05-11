@@ -6,8 +6,6 @@ for proper database initialization during server startup.
 P0 Priority: These functions have ZERO test coverage but are critical paths.
 """
 
-from __future__ import annotations
-
 import contextlib
 import os
 import sqlite3
@@ -183,8 +181,8 @@ class TestApplySemanticSearchMigration:
             ''')
             # Insert metadata with dimension 384 (different from configured 768)
             conn.execute('''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                VALUES ('test', 'user', 'text', 'test content')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                VALUES ('0190abcdef1234567890abcd00000001', 'test', 'user', 'text', 'test content')
             ''')
             conn.execute('''
                 INSERT INTO embedding_metadata (context_id, model_name, dimensions)

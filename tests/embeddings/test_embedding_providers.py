@@ -5,8 +5,6 @@ Integration tests with real providers should be in a separate test file
 and marked with appropriate skip markers.
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch

@@ -4,8 +4,6 @@ This module tests the MCP tool handlers in app/server.py including
 list_threads, get_statistics, search_context, and delete_context.
 """
 
-from __future__ import annotations
-
 import base64
 
 import pytest
@@ -308,7 +306,7 @@ class TestGetContextByIds:
     @pytest.mark.usefixtures('initialized_server')
     async def test_get_context_by_ids_nonexistent(self) -> None:
         """Test getting nonexistent context ID returns empty."""
-        entries = await get_context_by_ids(context_ids=[999999])
+        entries = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd000f423f'])
 
         assert entries == []
 
@@ -347,7 +345,7 @@ class TestGetContextByIds:
         existing_id = result['context_id']
 
         entries = await get_context_by_ids(
-            context_ids=[existing_id, 999998, 999999],
+            context_ids=[existing_id, '0' * 32, 'f' * 32],
         )
 
         # Should only return the existing entry

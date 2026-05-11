@@ -1,6 +1,19 @@
 -- Main context storage table
+-- NOTE on the dual key design (SQLite ONLY):
+--   - `rowid_int` is the PRIVATE INTEGER PRIMARY KEY AUTOINCREMENT (the SQLite
+--     rowid alias). It is the FTS5 external-content rowid AND the AUTOINCREMENT
+--     monotonic counter. It is NEVER exposed via MCP tool boundaries.
+--     The name is intentionally `rowid_int` (not `rowid`) because SQLite's
+--     `ROWID`/`rowid` are reserved implicit column names; a user-defined
+--     column named `rowid` would shadow the implicit one.
+--   - `id` is the PUBLIC UUIDv7 hex string (32 lowercase hex chars). It is the
+--     externally-visible primary key (via the UNIQUE constraint) and the FK
+--     target for `tags`, `image_attachments`, `embedding_metadata`, and
+--     `embedding_chunks`. PostgreSQL has no equivalent surrogate (its UUID
+--     column is the true PRIMARY KEY).
 CREATE TABLE IF NOT EXISTS context_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rowid_int INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
     thread_id TEXT NOT NULL,
     source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
     content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
@@ -19,7 +32,7 @@ CREATE INDEX IF NOT EXISTS idx_thread_source ON context_entries(thread_id, sourc
 
 CREATE TABLE IF NOT EXISTS tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context_entry_id INTEGER NOT NULL,
+    context_entry_id TEXT NOT NULL,
     tag TEXT NOT NULL,
     FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
 );
@@ -29,7 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 
 CREATE TABLE IF NOT EXISTS image_attachments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context_entry_id INTEGER NOT NULL,
+    context_entry_id TEXT NOT NULL,
     image_data BLOB NOT NULL,
     mime_type TEXT NOT NULL,
     image_metadata JSON,

@@ -9,8 +9,6 @@ database state via repository methods and asserts field-by-field equality
 (except context_id and timestamps, which legitimately differ).
 """
 
-from __future__ import annotations
-
 import base64
 import json
 from typing import Any
@@ -359,7 +357,7 @@ class TestStoreConformance:
 class TestUpdateConformance:
     """Verify update_context and update_context_batch([single]) produce identical DB state."""
 
-    async def _create_entry(self, thread_id: str) -> int:
+    async def _create_entry(self, thread_id: str) -> str:
         """Create a base entry for update testing."""
         result = await store_context(
             thread_id=thread_id, source='user', text='Original text',
@@ -502,11 +500,11 @@ class TestUpdateConformance:
     async def test_update_conformance_nonexistent_entry(self) -> None:
         """B7: Both paths reject update for non-existent context_id."""
         with pytest.raises(ToolError, match='not found'):
-            await update_context(context_id=999999, text='Updated')
+            await update_context(context_id='0190abcdef1234567890abcd000f423f', text='Updated')
 
         with pytest.raises(ToolError, match='not found'):
             await update_context_batch(
-                updates=[{'context_id': 999999, 'text': 'Updated'}],
+                updates=[{'context_id': '0190abcdef1234567890abcd000f423f', 'text': 'Updated'}],
                 atomic=True,
             )
 
@@ -634,8 +632,8 @@ class TestDeleteConformance:
     @pytest.mark.asyncio
     async def test_delete_conformance_nonexistent_id(self) -> None:
         """C4: Both paths handle non-existent IDs gracefully with deleted_count=0."""
-        nb_del = await delete_context(context_ids=[999997])
-        b_del = await delete_context_batch(context_ids=[999996])
+        nb_del = await delete_context(context_ids=['0190abcdef1234567890abcd000f423d'])
+        b_del = await delete_context_batch(context_ids=['0190abcdef1234567890abcd000f423c'])
 
         assert nb_del['deleted_count'] == 0
         assert b_del['deleted_count'] == 0

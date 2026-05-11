@@ -1,5 +1,5 @@
 """
-Tests for repository transaction support (Phase 2).
+Tests for repository transaction support via txn parameter.
 
 This module tests the transaction context parameter (txn) added to repository
 write methods, ensuring:
@@ -9,7 +9,6 @@ write methods, ensuring:
 4. Proper rollback on errors
 """
 
-from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,7 +26,7 @@ if TYPE_CHECKING:
 
 
 @pytest_asyncio.fixture
-async def backend_with_repos(temp_db_path: Path) -> AsyncGenerator[tuple[StorageBackend, RepositoryContainer], None]:
+async def backend_with_repos(temp_db_path: Path) -> 'AsyncGenerator[tuple[StorageBackend, RepositoryContainer], None]':
     """Create backend and repository container for transaction tests."""
     # Initialize database schema first
     import sqlite3 as stdlib_sqlite3
@@ -61,7 +60,7 @@ class TestContextRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_store_with_deduplication_without_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test store_with_deduplication works without transaction (backward compat)."""
         backend, repos = backend_with_repos
@@ -75,7 +74,7 @@ class TestContextRepositoryTransaction:
             txn=None,  # Explicit None for backward compatibility
         )
 
-        assert context_id > 0
+        assert len(context_id) == 32
         assert was_updated is False
 
         # Verify data was stored
@@ -86,7 +85,7 @@ class TestContextRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_store_with_deduplication_with_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test store_with_deduplication works with transaction context."""
         backend, repos = backend_with_repos
@@ -101,7 +100,7 @@ class TestContextRepositoryTransaction:
                 txn=txn,
             )
 
-            assert context_id > 0
+            assert len(context_id) == 32
             assert was_updated is False
 
         # Transaction committed - verify data persisted
@@ -112,7 +111,7 @@ class TestContextRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_delete_by_ids_with_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test delete_by_ids works with transaction context."""
         backend, repos = backend_with_repos
@@ -137,7 +136,7 @@ class TestContextRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_update_context_entry_with_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test update_context_entry works with transaction context."""
         backend, repos = backend_with_repos
@@ -172,7 +171,7 @@ class TestTagRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_store_tags_without_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test store_tags works without transaction (backward compat)."""
         backend, repos = backend_with_repos
@@ -195,7 +194,7 @@ class TestTagRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_store_tags_with_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test store_tags works with transaction context."""
         backend, repos = backend_with_repos
@@ -219,7 +218,7 @@ class TestTagRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_replace_tags_with_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test replace_tags_for_context works with transaction context."""
         backend, repos = backend_with_repos
@@ -248,7 +247,7 @@ class TestImageRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_store_images_without_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
         sample_image_data: dict[str, str],
     ) -> None:
         """Test store_images works without transaction (backward compat)."""
@@ -273,7 +272,7 @@ class TestImageRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_store_images_with_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
         sample_image_data: dict[str, str],
     ) -> None:
         """Test store_images works with transaction context."""
@@ -302,7 +301,7 @@ class TestMultiRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_atomic_context_with_tags_commit(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test atomic commit of context entry with tags."""
         backend, repos = backend_with_repos
@@ -330,7 +329,7 @@ class TestMultiRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_atomic_context_with_tags_and_images_commit(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
         sample_image_data: dict[str, str],
     ) -> None:
         """Test atomic commit of context entry with tags and images."""
@@ -365,7 +364,7 @@ class TestMultiRepositoryTransaction:
     @pytest.mark.asyncio
     async def test_transaction_rollback_on_error(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
     ) -> None:
         """Test that transaction rollback prevents partial writes."""
         backend, repos = backend_with_repos
@@ -404,7 +403,7 @@ class TestBackwardCompatibility:
     @pytest.mark.asyncio
     async def test_all_methods_work_without_txn(
         self,
-        backend_with_repos: tuple[StorageBackend, RepositoryContainer],
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
         sample_image_data: dict[str, str],
     ) -> None:
         """Comprehensive test that all modified methods work without txn parameter."""

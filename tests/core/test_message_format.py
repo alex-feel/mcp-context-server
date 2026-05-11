@@ -5,8 +5,6 @@ update_context_batch produce single-parenthetical messages instead of
 double-parenthetical "(embedding generated) (summary generated)".
 """
 
-from __future__ import annotations
-
 
 class TestStoreContextMessageFormat:
     """Tests for store_context response message construction."""

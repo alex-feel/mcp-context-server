@@ -4,7 +4,6 @@ This module provides implementations of result fusion algorithms
 for combining results from multiple search methods (FTS, semantic).
 """
 
-from __future__ import annotations
 
 import operator
 from typing import TYPE_CHECKING
@@ -20,7 +19,7 @@ def reciprocal_rank_fusion(
     semantic_results: list[dict[str, Any]],
     k: int = 60,
     limit: int = 50,
-) -> list[HybridSearchResultDict]:
+) -> 'list[HybridSearchResultDict]':
     """Combine FTS and semantic search results using Reciprocal Rank Fusion (RRF).
 
     RRF Formula: score(d) = sum(1 / (k + rank_i(d))) for each result list i
@@ -108,7 +107,7 @@ def reciprocal_rank_fusion(
     for doc in sorted_docs:
         data = doc['data']
 
-        # Build scores object (rerank_score added by _apply_reranking if enabled)
+        # Build scores object (includes rerank_score when reranking is enabled)
         scores: HybridScoresDict = {
             'rrf': doc['rrf_score'],
             'fts_rank': doc['fts_rank'],
