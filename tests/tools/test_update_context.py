@@ -15,6 +15,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 import app.server
+from app.types import MetadataDict
 
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
@@ -121,7 +122,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_update_metadata_only(self, mock_context, mock_repositories):
         """Test updating only metadata."""
-        metadata = {'status': 'completed', 'priority': 5}
+        metadata: MetadataDict = {'status': 'completed', 'priority': 5}
         mock_repositories.context.update_context_entry.return_value = (True, ['metadata'])
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
@@ -837,7 +838,7 @@ class TestMetadataPatchIntegration:
     @pytest.mark.asyncio
     async def test_metadata_patch_preserves_full_metadata_behavior(self, mock_context, mock_repositories):
         """Test that full metadata replacement still works when metadata_patch is not used."""
-        metadata = {'full': 'replacement', 'all_fields': True}
+        metadata: MetadataDict = {'full': 'replacement', 'all_fields': True}
         mock_repositories.context.update_context_entry.return_value = (True, ['metadata'])
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
@@ -902,7 +903,7 @@ class TestMetadataPatchRFC7396Semantics:
         Verifies that nested patch with null value is correctly passed to repository.
         The actual merge semantics are handled by the database layer.
         """
-        nested_patch = {'a': {'b': 'd', 'c': None}}
+        nested_patch: MetadataDict = {'a': {'b': 'd', 'c': None}}
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
@@ -954,7 +955,7 @@ class TestMetadataPatchRFC7396Semantics:
 
         Verifies that deeply nested null patch is correctly passed to repository.
         """
-        deep_patch = {'a': {'bb': {'ccc': None}}}
+        deep_patch: MetadataDict = {'a': {'bb': {'ccc': None}}}
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(

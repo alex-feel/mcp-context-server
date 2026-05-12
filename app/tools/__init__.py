@@ -143,7 +143,8 @@ def register_tool(
     Returns:
         True if tool was registered, False if disabled
     """
-    tool_name = name or func.__name__
+    func_name: str = getattr(func, '__name__', '<callable>')
+    tool_name: str = name or func_name
 
     if is_tool_disabled(tool_name):
         logger.info(f'{tool_name} not registered (in DISABLED_TOOLS)')

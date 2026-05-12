@@ -60,6 +60,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -637,7 +638,7 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
             await existing_backend.shutdown()
             # Wait for shutdown completion via event-based synchronization
             if hasattr(existing_backend, 'wait_for_shutdown_complete'):
-                await existing_backend.wait_for_shutdown_complete(timeout_seconds=2.0)
+                await cast(Any, existing_backend).wait_for_shutdown_complete(timeout_seconds=2.0)
         except Exception:
             pass
         finally:
@@ -688,7 +689,7 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
                 )
                 # Wait for shutdown completion event to ensure all background tasks terminated
                 if hasattr(cleanup_backend, 'wait_for_shutdown_complete'):
-                    await cleanup_backend.wait_for_shutdown_complete(timeout_seconds=2.0)
+                    await cast(Any, cleanup_backend).wait_for_shutdown_complete(timeout_seconds=2.0)
             except TimeoutError:
                 # Log timeout but continue cleanup to prevent test suite hang
                 import logging

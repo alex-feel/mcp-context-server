@@ -23,6 +23,7 @@ from fastmcp.exceptions import ToolError
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
+import app.startup
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly

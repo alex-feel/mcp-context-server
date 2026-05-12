@@ -58,6 +58,7 @@ class TestUpdateContextImageValidation:
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
         )
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         with pytest.raises(ToolError, match='Image 0 has empty "data" field'):
             await update_context(context_id=cid, images=[{'data': ''}])
@@ -72,6 +73,7 @@ class TestUpdateContextImageValidation:
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
         )
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         with pytest.raises(ToolError, match='Image 0 has empty "data" field'):
             await update_context(context_id=cid, images=[{'data': '   '}])
@@ -86,6 +88,7 @@ class TestUpdateContextImageValidation:
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
         )
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         valid_image = base64.b64encode(b'\x89PNG\r\n').decode()
         with pytest.raises(ToolError, match='Image 1') as exc_info:
@@ -164,10 +167,11 @@ class TestBatchImageValidation:
         )
         assert store_result['results'][0]['success'] is True
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         # get_context_by_ids returns list[ContextEntryDict]
         entries = await get_context_by_ids(context_ids=[cid], include_images=True)
-        images = entries[0].get('images', [])
+        images = entries[0].get('images') or []
         assert len(images) >= 1
         assert images[0]['mime_type'] == 'image/png'
 
@@ -187,6 +191,7 @@ class TestBatchImageValidation:
             }],
         )
         context_id = store_result['results'][0]['context_id']
+        assert context_id is not None
 
         # Update with image lacking mime_type
         valid_image = base64.b64encode(b'\x89PNG\r\n\x1a\n').decode()
@@ -200,7 +205,7 @@ class TestBatchImageValidation:
 
         # get_context_by_ids returns list[ContextEntryDict]
         entries = await get_context_by_ids(context_ids=[context_id], include_images=True)
-        images = entries[0].get('images', [])
+        images = entries[0].get('images') or []
         assert len(images) >= 1
         assert images[0]['mime_type'] == 'image/png'
 

@@ -234,9 +234,9 @@ class ImageRepository(BaseRepository):
                             'mime_type': img_row['mime_type'],
                         }
                     else:
-                        img_data = {
-                            'mime_type': img_row['mime_type'],
-                        }
+                        img_data = ImageDict(
+                            mime_type=img_row['mime_type'],
+                        )
 
                     if img_row['image_metadata']:
                         img_data['metadata'] = json.loads(img_row['image_metadata'])
@@ -272,9 +272,9 @@ class ImageRepository(BaseRepository):
                         'mime_type': img_row['mime_type'],
                     }
                 else:
-                    img_data = {
-                        'mime_type': img_row['mime_type'],
-                    }
+                    img_data = ImageDict(
+                        mime_type=img_row['mime_type'],
+                    )
 
                 if img_row['image_metadata']:
                     img_data['metadata'] = json.loads(img_row['image_metadata'])
@@ -334,9 +334,9 @@ class ImageRepository(BaseRepository):
                             'mime_type': row['mime_type'],
                         }
                     else:
-                        img_data = {
-                            'mime_type': row['mime_type'],
-                        }
+                        img_data = ImageDict(
+                            mime_type=row['mime_type'],
+                        )
 
                     if row['image_metadata']:
                         img_data['metadata'] = json.loads(row['image_metadata'])
@@ -383,9 +383,9 @@ class ImageRepository(BaseRepository):
                         'mime_type': row['mime_type'],
                     }
                 else:
-                    img_data = {
-                        'mime_type': row['mime_type'],
-                    }
+                    img_data = ImageDict(
+                        mime_type=row['mime_type'],
+                    )
 
                 if row['image_metadata']:
                     img_data['metadata'] = json.loads(row['image_metadata'])

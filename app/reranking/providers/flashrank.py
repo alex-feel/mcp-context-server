@@ -10,10 +10,25 @@ import asyncio
 import logging
 import operator
 from typing import Any
+from typing import TypedDict
 
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+class RankerKwargs(TypedDict, total=False):
+    """Keyword arguments accepted by flashrank.Ranker.__init__.
+
+    Mirrors the public signature of flashrank.Ranker.__init__
+    (model_name, cache_dir, max_length, log_level). All entries are optional
+    so callers can build the dict incrementally based on configuration.
+    """
+
+    model_name: str
+    cache_dir: str
+    max_length: int
+    log_level: str
 
 
 class FlashRankProvider:
@@ -115,7 +130,7 @@ class FlashRankProvider:
         logger.info(f'Loading FlashRank model: {self._model_name}')
 
         # Build kwargs conditionally - FlashRank doesn't accept None for cache_dir
-        ranker_kwargs: dict[str, str | int] = {
+        ranker_kwargs: RankerKwargs = {
             'model_name': self._model_name,
             'max_length': self._max_length,
         }

@@ -27,6 +27,7 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 import app.server
+from app.types import MetadataDict
 
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
 update_context = app.server.update_context
@@ -191,7 +192,7 @@ class TestMetadataPatchNestedOperations:
 
         RFC 7396: Nested objects are recursively merged.
         """
-        nested_patch = {
+        nested_patch: MetadataDict = {
             'user': {
                 'preferences': {
                     'theme': 'dark',
@@ -223,7 +224,7 @@ class TestMetadataPatchNestedOperations:
     @pytest.mark.asyncio
     async def test_patch_deeply_nested_structure(self, mock_context, mock_repositories):
         """Test patching deeply nested structures."""
-        deep_patch = {
+        deep_patch: MetadataDict = {
             'level1': {
                 'level2': {
                     'level3': {
@@ -259,7 +260,7 @@ class TestMetadataPatchMultipleFields:
     @pytest.mark.asyncio
     async def test_patch_multiple_fields(self, mock_context, mock_repositories):
         """Test patching multiple fields at once."""
-        multi_patch = {
+        multi_patch: MetadataDict = {
             'status': 'in_progress',
             'priority': 10,
             'agent_name': 'test-agent',
@@ -294,7 +295,7 @@ class TestMetadataPatchMultipleFields:
         - Existing keys are updated
         - null values delete keys
         """
-        mixed_patch = {
+        mixed_patch: MetadataDict = {
             'new_field': 'added',
             'existing_field': 'updated_value',
             'field_to_remove': None,  # RFC 7396: null means delete
@@ -397,7 +398,7 @@ class TestMetadataPatchEdgeCases:
         RFC 7396 Limitation: Arrays cannot be patched element-wise.
         The entire array is replaced.
         """
-        array_patch = {
+        array_patch: MetadataDict = {
             'tags_list': ['new', 'array', 'values'],
         }
 
@@ -665,7 +666,7 @@ class TestRFC7396DeepMergeSemantics:
         The null value in the nested patch should delete that key from the
         nested object, not from the top-level object.
         """
-        nested_patch = {
+        nested_patch: MetadataDict = {
             'a': {
                 'b': 'd',
                 'c': None,  # RFC 7396: null means delete
@@ -732,7 +733,7 @@ class TestRFC7396DeepMergeSemantics:
         The null value at depth 3 causes deletion at that level,
         but the containing objects are created/preserved.
         """
-        deep_patch = {
+        deep_patch: MetadataDict = {
             'a': {
                 'bb': {
                     'ccc': None,  # RFC 7396: null deletes at depth 3
