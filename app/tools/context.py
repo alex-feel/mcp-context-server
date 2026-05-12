@@ -312,14 +312,14 @@ async def get_context_by_ids(
         ToolError: If fetching context entries fails.
     """
     try:
-        if ctx:
-            await ctx.info(f'Fetching context entries: {context_ids}')
-
         # Normalize all incoming IDs at the boundary
         try:
             context_ids = [normalize_id(cid) for cid in context_ids]
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
+
+        if ctx:
+            await ctx.info(f'Fetching context entries: {context_ids}')
 
         # Get repositories
         repos = await ensure_repositories()
@@ -399,15 +399,15 @@ async def delete_context(
         if not context_ids and not thread_id:
             raise ToolError('Must provide either context_ids or thread_id')
 
-        if ctx:
-            await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
-
         # Normalize all incoming IDs at the boundary
         if context_ids:
             try:
                 context_ids = [normalize_id(cid) for cid in context_ids]
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
+
+        if ctx:
+            await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
 
         # Get repositories
         repos = await ensure_repositories()
@@ -535,9 +535,6 @@ async def update_context(
         if text is None and metadata is None and metadata_patch is None and tags is None and images is None:
             raise ToolError('At least one field must be provided for update')
 
-        if ctx:
-            await ctx.info(f'Updating context entry {context_id}')
-
         # Validate images early (before any operations)
         validated_images, _, _ = validate_and_normalize_images(images, error_mode='raise')
 
@@ -552,6 +549,9 @@ async def update_context(
                 context_id = normalize_id(context_id)
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
+
+        if ctx:
+            await ctx.info(f'Updating context entry {context_id}')
 
         # Check if entry exists and retrieve source (read-only, outside transaction)
         exists, entry_source = await repos.context.check_entry_exists(context_id)

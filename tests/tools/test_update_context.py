@@ -20,6 +20,8 @@ from app.types import MetadataDict
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
 update_context = app.server.update_context
+get_context_by_ids = app.server.get_context_by_ids
+delete_context = app.server.delete_context
 
 
 @pytest.fixture
@@ -479,6 +481,23 @@ class TestUpdateContext:
 
             # Verify context info was logged
             mock_context.info.assert_called_once_with('Updating context entry 0190abcdef1234567890abcd00000d05')
+
+    @pytest.mark.asyncio
+    async def test_context_logging_normalizes_id_before_emit(self, mock_context, mock_repositories):
+        """Whitespace and uppercase in context_id are folded to canonical form before ctx.info logs it."""
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+            await update_context(
+                context_id='  0190ABCDEF1234567890ABCD00000D05  ',
+                text='Test',
+                metadata=None,
+                tags=None,
+                images=None,
+                ctx=mock_context,
+            )
+
+            mock_context.info.assert_called_once_with(
+                'Updating context entry 0190abcdef1234567890abcd00000d05',
+            )
 
     @pytest.mark.asyncio
     async def test_transaction_rollback_simulation(self, mock_context, mock_repositories):
@@ -1000,4 +1019,51 @@ class TestMetadataPatchRFC7396Semantics:
                 context_id='0190abcdef1234567890abcd00001bbc',
                 patch={'a': {'b': 'updated'}},
                 txn=ANY,
+            )
+
+
+class TestContextIdLoggingNormalization:
+    """Regression guards: ctx.info must emit canonical lowercase 32-char hex IDs.
+
+    These tests pin the invariant that boundary normalization (`normalize_id`)
+    runs before any client-visible log emission referencing the ID. Whitespace
+    is stripped and uppercase A-F is folded to lowercase before the trace line
+    is sent to the FastMCP client, keeping the log consistent with the rest of
+    the storage layer.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_context_by_ids_logging_normalizes_ids_before_emit(
+        self, mock_context, mock_repositories,
+    ):
+        """Whitespace and uppercase in context_ids are folded before ctx.info logs them."""
+        mock_repositories.context.get_by_ids = AsyncMock(return_value=[])
+
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+            await get_context_by_ids(
+                context_ids=['  0190ABCDEF1234567890ABCD00000D05  '],
+                include_images=False,
+                ctx=mock_context,
+            )
+
+            mock_context.info.assert_called_once_with(
+                "Fetching context entries: ['0190abcdef1234567890abcd00000d05']",
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_context_logging_normalizes_ids_before_emit(
+        self, mock_context, mock_repositories,
+    ):
+        """Whitespace and uppercase in context_ids are folded before ctx.info logs them."""
+        mock_repositories.context.delete_by_ids = AsyncMock(return_value=1)
+
+        with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
+            await delete_context(
+                context_ids=['  0190ABCDEF1234567890ABCD00000D05  '],
+                thread_id=None,
+                ctx=mock_context,
+            )
+
+            mock_context.info.assert_called_once_with(
+                "Deleting context: ids=['0190abcdef1234567890abcd00000d05'], thread=None",
             )
