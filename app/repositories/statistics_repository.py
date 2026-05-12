@@ -81,10 +81,10 @@ class StatisticsRepository(BaseRepository):
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
                         MIN(created_at) as first_entry,
                         MAX(created_at) as last_entry,
-                        MAX(id) as last_id
+                        (array_agg(id ORDER BY id DESC))[1] as last_id
                     FROM context_entries
                     GROUP BY thread_id
-                    ORDER BY MAX(created_at) DESC, MAX(id) DESC
+                    ORDER BY MAX(created_at) DESC, (array_agg(id ORDER BY id DESC))[1] DESC
                 ''')
 
             threads: list[ThreadInfoDict] = []

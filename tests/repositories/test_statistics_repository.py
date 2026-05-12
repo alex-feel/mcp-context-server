@@ -98,6 +98,75 @@ class TestStatisticsRepository:
         assert 'thread2' in thread_ids
 
     @pytest.mark.asyncio
+    async def test_get_thread_list_last_id_format_and_ordering(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Verify last_id matches the canonical 32-char lowercase hex contract and
+        returns the chronologically latest id per thread.
+
+        The contract is documented in docs/api-reference.md (regex ^[0-9a-f]{32}$)
+        and is reflected in app/types.py ThreadInfoDict.last_id: str.
+        """
+
+        def _insert_data(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            # thread_a: three monotonic UUIDv7 ids, distinct created_at
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
+                "VALUES ('0190abcdef1234567890abcd00000001', 'thread_a', 'user', 'text', 'A1', '2026-01-01 10:00:00')",
+            )
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
+                "VALUES ('0190abcdef1234567890abcd00000005', 'thread_a', 'agent', 'text', 'A2', '2026-01-01 10:00:01')",
+            )
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
+                "VALUES ('0190abcdef1234567890abcd00000003', 'thread_a', 'user', 'text', 'A3', '2026-01-01 10:00:02')",
+            )
+            # thread_b: two ids, ordered so that the lex-max id is NOT the most recently inserted
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
+                "VALUES ('0190abcdef1234567890abcd00000099', 'thread_b', 'user', 'text', 'B1', '2026-01-01 10:00:10')",
+            )
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, created_at) '
+                "VALUES ('0190abcdef1234567890abcd00000010', 'thread_b', 'agent', 'text', 'B2', '2026-01-01 10:00:11')",
+            )
+
+        await stats_test_db.execute_write(_insert_data)
+
+        result = await stats_repo.get_thread_list()
+
+        assert len(result) == 2
+
+        thread_a = next(t for t in result if t['thread_id'] == 'thread_a')
+        thread_b = next(t for t in result if t['thread_id'] == 'thread_b')
+
+        # MAX(id) under SQLite BINARY collation = lex-max over canonical lowercase hex.
+        # thread_a ids: ...00000001, ...00000003, ...00000005 -> lex-max is ...00000005
+        # thread_b ids: ...00000010, ...00000099 -> lex-max is ...00000099
+        assert thread_a['last_id'] == '0190abcdef1234567890abcd00000005'
+        assert thread_b['last_id'] == '0190abcdef1234567890abcd00000099'
+
+        # Format invariants per docs/api-reference.md regex ^[0-9a-f]{32}$
+        for thread in result:
+            last_id = thread['last_id']
+            assert isinstance(last_id, str)
+            assert len(last_id) == 32, f'last_id must be 32-char hyphen-free hex: {last_id!r}'
+            assert last_id == last_id.lower(), f'last_id must be lowercase: {last_id!r}'
+            assert all(c in '0123456789abcdef' for c in last_id), (
+                f'last_id must contain only lowercase hex digits: {last_id!r}'
+            )
+
+        # Outer ORDER BY uses last_entry DESC tie-broken by last_id DESC.
+        # thread_b last_entry = 2026-01-01 10:00:11 > thread_a last_entry = 2026-01-01 10:00:02
+        # So thread_b must come first.
+        assert result[0]['thread_id'] == 'thread_b'
+        assert result[1]['thread_id'] == 'thread_a'
+
+    @pytest.mark.asyncio
     async def test_get_database_statistics_empty(
         self,
         stats_repo: StatisticsRepository,
@@ -765,3 +834,86 @@ class TestThreadStatisticsDetails:
 
         assert 'by_source' in result
         assert result['by_source'] == {'user': 2, 'agent': 1}
+
+
+class TestListThreadsPostgresqlSqlText:
+    """Static-text checks on the PostgreSQL branch of get_thread_list.
+
+    Asserts that the PostgreSQL branch aggregates the latest entry id via
+    ``(array_agg(id ORDER BY id DESC))[1]`` and does NOT use a ``MAX(id)``
+    aggregate. PostgreSQL provides no MAX aggregate for the ``uuid`` type
+    (see https://www.postgresql.org/docs/current/functions-aggregate.html --
+    ``uuid`` is absent from the supported MAX/MIN input types), so the
+    array_agg subscripting form is the canonical way to obtain the latest
+    UUID value while preserving the native ``uuid`` column type for the
+    asyncpg codec.
+    """
+
+    @pytest.mark.asyncio
+    async def test_postgresql_branch_uses_array_agg_not_max_id(self) -> None:
+        """The PostgreSQL branch of get_thread_list emits an array_agg-based
+        latest-id expression and does not emit ``MAX(id)``.
+
+        The check inspects the SQL string by reading the source of
+        StatisticsRepository.get_thread_list directly, so it runs without a
+        running PostgreSQL instance.
+        """
+        import inspect
+
+        from app.repositories.statistics_repository import StatisticsRepository
+
+        source = inspect.getsource(StatisticsRepository.get_thread_list)
+
+        # Locate the PostgreSQL closure within the method source. The SQLite
+        # branch precedes it and uses MAX(id), so split the source and
+        # inspect only the PostgreSQL portion.
+        marker = 'async def _list_threads_postgresql'
+        assert marker in source, (
+            'get_thread_list must contain an async _list_threads_postgresql closure'
+        )
+        pg_branch = source.split(marker, 1)[1]
+
+        # Must use the codec-preserving array_agg form per the project's
+        # asyncpg uuid type codec contract (decoder=normalize_id at
+        # app/backends/postgresql_backend.py).
+        assert 'array_agg(id ORDER BY id DESC)' in pg_branch, (
+            'PostgreSQL branch must aggregate latest id via '
+            "'(array_agg(id ORDER BY id DESC))[1]' to preserve native uuid type "
+            'so the asyncpg codec normalizes the value to 32-char lowercase hex.'
+        )
+
+        # PostgreSQL has no MAX aggregate accepting a UUID input type.
+        assert 'MAX(id)' not in pg_branch, (
+            'PostgreSQL branch must not apply MAX to the UUID id column; '
+            'PostgreSQL provides no MAX aggregate over the uuid type '
+            '(see https://www.postgresql.org/docs/current/functions-aggregate.html).'
+        )
+
+    @pytest.mark.asyncio
+    async def test_sqlite_branch_continues_to_use_max_id(self) -> None:
+        """The SQLite branch of get_thread_list uses ``MAX(id)`` on the TEXT id
+        column.
+
+        SQLite stores the id column as ``TEXT NOT NULL UNIQUE`` under the
+        project's canonical lowercase invariant; ``MAX(TEXT)`` under BINARY
+        collation is well-defined and chronologically correct for UUIDv7.
+        The two backends therefore use different aggregation strategies for
+        the latest-id expression.
+        """
+        import inspect
+
+        from app.repositories.statistics_repository import StatisticsRepository
+
+        source = inspect.getsource(StatisticsRepository.get_thread_list)
+
+        marker_sqlite = 'def _list_threads_sqlite'
+        marker_pg = 'async def _list_threads_postgresql'
+        assert marker_sqlite in source
+        assert marker_pg in source
+
+        sqlite_branch = source.split(marker_sqlite, 1)[1].split(marker_pg, 1)[0]
+
+        assert 'MAX(id) as last_id' in sqlite_branch, (
+            'SQLite branch must continue to use MAX(id) on the TEXT id column; '
+            'this is the correct and tested form for the SQLite backend.'
+        )
