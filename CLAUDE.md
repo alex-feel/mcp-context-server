@@ -5,9 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Reference
 
 ```bash
-# IMPORTANT: ALL development tasks (coding, testing, type-checking, pre-commit)
-# REQUIRE the full sync command below. Bare `uv sync` is insufficient and will
-# cause type-checker errors due to missing optional dependencies.
+# IMPORTANT: All dev tasks (code, test, type-check, pre-commit) need the full
+# sync below. Bare `uv sync` lacks optional extras and causes type-checker errors.
 
 # Build and run
 uv sync --all-extras --all-groups          # Install ALL dependencies (REQUIRED for development)
@@ -40,19 +39,17 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
    - Entry point with FastMCP instance, lifespan management, and main() function
-   - Tool implementations in `app/tools/` organized by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic tool descriptions), `_shared.py` (internal shared infrastructure: per-entry processing, image validation, generation with timeout, transaction execution, response message builders -- consumed by `context.py` and `batch.py`, not re-exported via `__init__.py`)
+   - Tools in `app/tools/` by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic descriptions), `_shared.py` (internal infra: per-entry processing, image validation, generation-with-timeout, transaction execution, response builders — used by `context.py`/`batch.py`, not re-exported via `__init__.py`)
    - Dynamic tool registration via `register_tool()` from `app/tools/__init__.py`
    - Provides `/health` endpoint for container orchestration (HTTP transport only)
    - Global state and initialization in `app/startup/` package: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`
    - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup.
-   - **Middleware** (`app/middleware/`): Schema-aware `JsonStringDeserializerMiddleware` for MCP client compatibility (FastMCP 3.1.x Middleware API). Registered via `mcp.add_middleware()` in lifespan() after all tool registrations.
-   - Both are documented in "Known Upstream Bugs and Temporary Patches" with upstream tracking and removal instructions.
+   - **Middleware** (`app/middleware/`): Schema-aware `JsonStringDeserializerMiddleware` for MCP client compatibility (FastMCP 3.1.x Middleware API). Registered via `mcp.add_middleware()` in lifespan() after all tool registrations. (Both Patches and Middleware are documented in "Known Upstream Bugs and Temporary Patches" with upstream tracking and removal instructions.)
 
 2. **Authentication Layer** (`app/auth/simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison. Configured via `MCP_AUTH_PROVIDER` and `MCP_AUTH_TOKEN`.
 
 3. **Storage Backend Layer** (`app/backends/`):
-   - **StorageBackend Protocol** (`base.py`): Database-agnostic interface (8 methods including `begin_transaction()`)
-   - **TransactionContext Protocol** (`base.py`): Provides `connection` and `backend_type` for multi-operation atomic transactions
+   - **StorageBackend / TransactionContext Protocols** (`base.py`): Database-agnostic interface (8 methods incl. `begin_transaction()`); `TransactionContext` provides `connection`/`backend_type` for multi-operation atomic transactions
    - **SQLiteBackend**: Zero-config, connection pooling, write queue, circuit breaker, single-user
    - **PostgreSQLBackend**: Async via asyncpg, connection pooling, MVCC, JSONB/GIN indexes, pgvector, Pgpool-II auto-detection (disables prepared statements)
    - **Backend Factory** (`factory.py`): Creates backend based on `STORAGE_BACKEND` env var
@@ -86,9 +83,9 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata, s
 
 **Public primary key (`context_entries.id`)**: 32-character lowercase hex UUIDv7. SQLite stores it as `TEXT NOT NULL UNIQUE`; PostgreSQL stores it as native `UUID NOT NULL PRIMARY KEY`. All foreign keys (`tags.context_entry_id`, `image_attachments.context_entry_id`, `embedding_metadata.context_id`, `embedding_chunks.context_id`, `vec_context_embeddings.context_id`) reference `context_entries(id)` as TEXT on SQLite and UUID on PostgreSQL.
 
-**SQLite `rowid_int` surrogate**: On SQLite, `context_entries` carries an additional `rowid_int INTEGER PRIMARY KEY AUTOINCREMENT` column. It is a stable INTEGER rowid that backs the FTS5 external-content table and is immune to VACUUM-time renumbering; it is never exposed at the MCP tool boundary. PostgreSQL has no equivalent surrogate -- the native `UUID` PRIMARY KEY has stable storage independent of physical row layout.
+**SQLite `rowid_int` surrogate**: On SQLite, `context_entries` carries an extra `rowid_int INTEGER PRIMARY KEY AUTOINCREMENT` — a stable INTEGER rowid backing the FTS5 external-content table, immune to VACUUM renumbering; never exposed at the MCP boundary. PostgreSQL has no equivalent — its native `UUID` PRIMARY KEY has stable storage independent of physical row layout.
 
-**Embedding chunk and vec0 INTEGER bridge (preserved)**: The project's chunking-layer architecture maintains a 1:N context-to-embedding mapping via `embedding_chunks` with INTEGER rowid bridges to vec0. The columns `embedding_chunks.id`, `embedding_chunks.vec_rowid`, and `vec_context_embeddings.id` remain INTEGER/BIGSERIAL; only the outer `context_id` foreign key is TEXT/UUID.
+**Embedding chunk and vec0 INTEGER bridge (preserved)**: Chunking maintains a 1:N context-to-embedding mapping via `embedding_chunks` with INTEGER rowid bridges to vec0. Columns `embedding_chunks.id`, `embedding_chunks.vec_rowid`, `vec_context_embeddings.id` stay INTEGER/BIGSERIAL; only the outer `context_id` FK is TEXT/UUID.
 
 **Performance**: WAL mode, 256MB mmap, compound index (thread_id, source). Indexed metadata: `status`, `agent_name`, `task_name`, `project`, `report_type`. See "Metadata Field Indexing by Backend" for per-backend details.
 
@@ -98,7 +95,7 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata, s
 
 **FTS modes**: `match` (default, stemming), `prefix` (autocomplete), `phrase` (exact order), `boolean` (AND/OR/NOT). SQLite: FTS5 with BM25, Porter stemmer. PostgreSQL: tsvector/tsquery with ts_rank, 29 languages.
 
-**Hybrid search**: RRF formula `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Adaptive FTS mode: queries with `HYBRID_FTS_OR_THRESHOLD` (default 4) or more significant terms switch from AND to OR for improved recall.
+**Hybrid search**: RRF formula `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Adaptive FTS: queries with ≥ `HYBRID_FTS_OR_THRESHOLD` (default 4) significant terms switch from AND to OR for better recall.
 
 **Response**: `results` (array), `count` (int), `stats` (only when `explain_query=True`).
 
@@ -163,7 +160,7 @@ Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `a
 
 uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context` (server entry points to `app.server:main`), `mcp-context-server-migrate` (database migration CLI, entry point `app.cli.migrate:main`). Python 3.12+. Optional extras: `embeddings-ollama`, `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`, `summary-ollama`, `summary-openai`, `summary-anthropic`, `reranking`, `langsmith`.
 
-The `mcp-context-server-migrate` console script ships alongside the server. It migrates integer-keyed context databases to the UUIDv7-keyed schema. It is invoked manually on a backup of the source database, accepts `--source-url`/`--target-url`/`--dry-run`/`--report PATH`, and supports SQLite -> SQLite, PostgreSQL -> PostgreSQL, and cross-backend runs. See [`docs/migration-v2-to-v3.md`](docs/migration-v2-to-v3.md) for the full step-by-step guide.
+The `mcp-context-server-migrate` console script ships alongside the server and migrates integer-keyed context databases to the UUIDv7 schema. Invoked manually on a backup of the source DB; accepts `--source-url`/`--target-url`/`--dry-run`/`--report PATH`; supports SQLite→SQLite, PostgreSQL→PostgreSQL, and cross-backend runs. See [`docs/migration-v2-to-v3.md`](docs/migration-v2-to-v3.md) for the full step-by-step guide.
 
 [Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker images (amd64/arm64): default Ollama variant and `ollama-openai` variant.
 
@@ -182,17 +179,13 @@ When changing core functionality, update the corresponding doc before committing
 
 The `uv.lock` file is a UNIVERSAL resolution containing ALL dependencies across ALL optional groups and extras. At install time, `uv sync` with selective flags installs only the relevant subset.
 
-**Three defense layers**: Pre-commit `uv-lock` hook (local), `uv lock --check` (CI early step), `uv sync --locked` (CI install).
-
-**Every CI workflow** (`test.yml`, `lint.yml`) MUST run `uv lock --check` then `uv sync --locked --all-extras --all-groups`:
+**Three defense layers**: (1) Pre-commit `uv-lock` hook (local); (2) `uv lock --check` (CI early step); (3) `uv sync --locked --all-extras --all-groups` (CI install). Every CI workflow (`test.yml`, `lint.yml`) MUST run both CI steps:
 
 ```yaml
-# CORRECT: CI workflow pattern
+# CORRECT
 - run: uv lock --check
 - run: uv sync --locked --all-extras --all-groups
-```
 
-```yaml
 # WRONG: Explicit listing misses extras when new ones are added
 - run: uv sync --locked --dev --extra embeddings-ollama --extra reranking
 ```
@@ -251,7 +244,7 @@ export STORAGE_BACKEND=postgresql
 uv run mcp-context-server  # Auto-initializes schema, enables pgvector
 ```
 
-**Optional: PostgreSQL 18+ `DEFAULT uuidv7()`.** Users on PostgreSQL 18 or later MAY optionally set `id UUID PRIMARY KEY DEFAULT uuidv7()` for server-side UUID generation (`ALTER TABLE context_entries ALTER COLUMN id SET DEFAULT uuidv7();`). This is a pure operator-side optimization and is NOT required: the application generates UUIDs Python-side via `app/ids.py` regardless of the column default, and the migration CLI uses deterministic Python-side generation anchored to each row's `created_at`. PostgreSQL 17 and earlier do not have the `uuidv7()` function.
+**Optional: PostgreSQL 18+ `DEFAULT uuidv7()`.** On PG18+, you MAY set `id UUID PRIMARY KEY DEFAULT uuidv7()` (`ALTER TABLE context_entries ALTER COLUMN id SET DEFAULT uuidv7();`) for server-side generation. Pure operator-side optimization, NOT required: the app generates UUIDs Python-side via `app/ids.py` regardless of column default, and the migration CLI uses deterministic Python-side generation anchored to each row's `created_at`. PG17 and earlier lack `uuidv7()`.
 
 ### Supabase
 `STORAGE_BACKEND=postgresql` + `POSTGRESQL_CONNECTION_STRING`. Session Pooler for IPv4. "getaddrinfo failed" = switch from Direct to Session Pooler.
@@ -284,7 +277,7 @@ Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in 
 | Local build (variant equivalent) | `*.ollama-openai.local.yml`  | `mcp-context-server`                                        | `build`       | Yes (with SUMMARY_EXTRA=summary-openai)         |
 | Local build (provider-specific)  | `*.openai.yml`               | `mcp-context-server`                                        | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
 
-**Extensibility rule:** When adding new provider combinations -- if a GHCR image is published for the combination, create both `*.{providers}.yml` (GHCR pull) and `*.{providers}.local.yml` (local build). If no GHCR image exists, create only `*.{providers}.yml` (local build, no `.local` variant needed).
+**Extensibility rule:** Adding a provider combination — if a GHCR image is published, create both `*.{providers}.yml` (GHCR pull) and `*.{providers}.local.yml` (local build); if no GHCR image, create only `*.{providers}.yml` (local build, no `.local` variant needed).
 
 ### Docker-Compose Environment Variable Policy
 
@@ -352,7 +345,7 @@ Use `Field(alias='ENV_VAR_NAME')`.
 
 `get_settings()` is `@lru_cache`-decorated — a process-lifetime singleton. Once called, env var changes are ignored.
 
-**In tests**, use `get_settings.cache_clear()` to invalidate the cache when environment variables change between operations:
+**In tests**, use `get_settings.cache_clear()` to invalidate the cache when env vars change between operations:
 
 ```python
 from app.settings import get_settings
@@ -360,7 +353,7 @@ monkeypatch.setenv('SOME_SETTING', 'new-value')
 get_settings.cache_clear()  # Next call creates fresh AppSettings
 ```
 
-For test modules that modify settings across multiple tests, use an autouse fixture (established pattern from `tests/reranking/conftest.py`):
+For modules that modify settings across multiple tests, use an autouse fixture (established pattern from `tests/reranking/conftest.py`):
 
 ```python
 @pytest.fixture(autouse=True)
@@ -368,11 +361,11 @@ def clear_settings_cache() -> None:
     get_settings.cache_clear()
 ```
 
-**Anti-pattern: Premature `get_settings()` in subprocess scripts.** `tests/run_server.py` configures environment via `os.environ` (intentional — it's an env configurator, not a settings consumer). Call `get_settings.cache_clear()` after all `os.environ` modifications before launching the server, or utility functions like `is_ollama_model_available()` will cache stale defaults.
+**Anti-pattern: Premature `get_settings()` in subprocess scripts.** `tests/run_server.py` configures environment via `os.environ` (intentional — it's an env configurator, not a settings consumer). Call `get_settings.cache_clear()` after all `os.environ` modifications before launching the server, or utilities like `is_ollama_model_available()` will cache stale defaults.
 
 ### Per-test environment overrides for module-level `settings` bindings
 
-Tool modules cache `settings = get_settings()` at import time (e.g., `app/tools/context.py:60`). For tests that need to flip an env-driven setting per test, three lines are required:
+Tool modules cache `settings = get_settings()` at import time (e.g., `app/tools/context.py:60`). To flip an env-driven setting per test, three lines are required:
 
 ```python
 import app.tools.context as context_module
@@ -382,15 +375,13 @@ get_settings.cache_clear()
 monkeypatch.setattr(context_module, 'settings', get_settings())
 ```
 
-The `monkeypatch.setattr` step refreshes the module-level binding to pick up the new singleton instance. Without it, the module retains a reference to the pre-cache-clear singleton. This pattern is established and works correctly; refactoring 15+ modules to call `get_settings()` inside each tool function would be YAGNI for this issue.
+The `monkeypatch.setattr` step refreshes the module-level binding to the new singleton; without it the module retains the pre-cache-clear reference. Established pattern — refactoring 15+ modules to call `get_settings()` inside each tool function would be YAGNI.
 
 ### Settings Class Architecture
 
 **AppSettings must NEVER contain settings fields directly** — it only composes nested settings classes.
 
-When adding new settings:
-1. Add to an **existing** settings class if it EXACTLY matches the domain/purpose
-2. Create a **new** settings class if no existing class is appropriate — even for a single setting
+When adding new settings: (1) add to an **existing** class if it EXACTLY matches the domain/purpose; (2) otherwise create a **new** class — even for a single setting.
 
 ```python
 # WRONG: Adding directly to AppSettings
@@ -431,29 +422,25 @@ async def my_tool(
     return {'success': True, 'context_id': '0190abcdef1234567890abcdef123456'}
 ```
 
-**Steps**: 1) Add to `app/tools/<domain>.py` 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py` 3) Export from `__init__.py` 4) Register in `app/server.py` lifespan() 5) Add TypedDict to `app/types.py` 6) Add tests + real server tests in `tests/integration/sqlite/test_real_server.py` 7) Update `server.json` if new env vars 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py` 9) For store/update operations, use shared functions from `app/tools/_shared.py` (image validation, generation with timeout, transaction execution, response builders) to maintain behavioral parity with existing tools
+**Steps**: 1) Add to `app/tools/<domain>.py`; 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py`; 3) Export from `__init__.py`; 4) Register in `app/server.py` lifespan(); 5) Add TypedDict to `app/types.py`; 6) Add tests + real server tests in `tests/integration/sqlite/test_real_server.py`; 7) Update `server.json` if new env vars; 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py`; 9) For store/update operations, use shared functions from `app/tools/_shared.py` (image validation, generation-with-timeout, transaction execution, response builders) for behavioral parity with existing tools
 
 **Annotation categories**: READ_ONLY (readOnlyHint=True), ADDITIVE (destructiveHint=False), UPDATE (destructiveHint=True, idempotentHint=False), DELETE (destructiveHint=True, idempotentHint=True)
 
 ### Adding New Providers (Embeddings/Reranking/Summary)
 
-All three layers use identical patterns:
-1. Create provider class in `app/<layer>/providers/` implementing the Protocol
-2. Add to `PROVIDER_MODULES` and `PROVIDER_CLASSES` dicts in factory.py
-3. Add install instructions to `PROVIDER_INSTALL_INSTRUCTIONS`
-4. Add optional dependency group in `pyproject.toml`
+All three layers use identical patterns: 1) Create provider class in `app/<layer>/providers/` implementing the Protocol; 2) Add to `PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts in `factory.py`; 3) Add install instructions to `PROVIDER_INSTALL_INSTRUCTIONS`; 4) Add optional dependency group in `pyproject.toml`.
 
 ### Generation-First Transactional Integrity
 
-**CRITICAL**: When generation is enabled and fails, NO data is saved — transaction rolls back. Flow: generate embeddings/summaries OUTSIDE transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops in a single atomic `begin_transaction()`. All repository write methods accept optional `txn: TransactionContext`. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` in `app/tools/_shared.py` are the single sources of truth for timeout/semaphore, used by `store_context`, `update_context`, `store_context_batch`, `update_context_batch`. Each `gather` result is independently inspected — failed generation raises (or collected in non-atomic batch mode) without cancelling the other task.
+**CRITICAL**: When generation is enabled and fails, NO data is saved — transaction rolls back. Flow: generate embeddings/summaries OUTSIDE the transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops in a single atomic `begin_transaction()`. All repo write methods accept optional `txn: TransactionContext`. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` in `app/tools/_shared.py` are the single sources of truth for timeout/semaphore — used by `store_context`, `update_context`, `store_context_batch`, `update_context_batch`. Each `gather` result is inspected independently — failed generation raises (or is collected in non-atomic batch mode) without cancelling the other task.
 
-**NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embedding generation fails, or `ENABLE_SUMMARY_GENERATION=true` and summary generation fails, the entry MUST NOT be saved. There is no "store without embeddings" or "store without summary" fallback when generation is enabled. This is non-negotiable mandatory behavior. The only way to skip generation is to explicitly disable it via `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`. Only the user can make this decision.
+**NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embeddings fail, or `ENABLE_SUMMARY_GENERATION=true` and summary fails, the entry MUST NOT be saved. No "store without embeddings"/"store without summary" fallback exists when generation is enabled — non-negotiable mandatory behavior. Skipping requires the user to explicitly set `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`. Only the user can make this decision.
 
 ### Deduplication Behavior (store_context)
 
-Deduplication serves as **retry protection**: when an MCP client retransmits the same message (network glitch, timeout retry), the server updates the existing entry instead of creating duplicates. This is distinct from a **new conversational turn**, where a user intentionally sends identical text after an agent has responded -- in that case, a new entry must be created to preserve chronological ordering.
+Deduplication is **retry protection**: when an MCP client retransmits the same message (network glitch, timeout retry), the server updates the existing entry instead of creating a duplicate. This differs from a **new conversational turn** — where a user intentionally sends identical text after an agent has responded — which must be inserted as a new entry to preserve chronological ordering.
 
-**Interleaving check**: Before deduplicating, the server verifies that no opposite-source entries (agent entries for user source, user entries for agent source) were created after the candidate duplicate. If such entries exist, the message represents a new conversational turn and is inserted as a new entry. This uses `id > candidate_id` comparison (immune to clock skew) with the existing `idx_thread_source` index.
+**Interleaving check**: Before deduplicating, the server verifies no opposite-source entries (agent entries for user source, user entries for agent source) were created after the candidate duplicate. If any exist, the message is a new turn and is inserted as a new entry. Uses `id > candidate_id` comparison (immune to clock skew) with the existing `idx_thread_source` index.
 
 When deduplication proceeds (same `thread_id + source + text_content` as the latest entry, with no interleaving):
 
