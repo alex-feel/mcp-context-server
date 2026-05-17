@@ -727,6 +727,7 @@ class TestSchemaDetection:
         stats = run_migration_sqlite_to_sqlite(options)
         assert stats.errors
         assert any('already contains' in e for e in stats.errors)
+        assert any('Recovery' in e for e in stats.errors)
 
 
 # ---------------------------------------------------------------------------

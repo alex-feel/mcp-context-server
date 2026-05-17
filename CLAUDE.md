@@ -163,7 +163,7 @@ Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `a
 
 uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context` (server entry points to `app.server:main`), `mcp-context-server-migrate` (database migration CLI, entry point `app.cli.migrate:main`). Python 3.12+. Optional extras: `embeddings-ollama`, `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`, `summary-ollama`, `summary-openai`, `summary-anthropic`, `reranking`, `langsmith`.
 
-The `mcp-context-server-migrate` console script ships alongside the server. It migrates integer-keyed context databases to the UUIDv7-keyed schema. It is invoked manually on a backup of the source database, accepts `--source-url`/`--target-url`/`--dry-run`/`--report PATH`, and supports SQLite -> SQLite, PostgreSQL -> PostgreSQL, and cross-backend runs. See [`docs/MIGRATION-v2-to-v3.md`](docs/MIGRATION-v2-to-v3.md) for the full step-by-step guide.
+The `mcp-context-server-migrate` console script ships alongside the server. It migrates integer-keyed context databases to the UUIDv7-keyed schema. It is invoked manually on a backup of the source database, accepts `--source-url`/`--target-url`/`--dry-run`/`--report PATH`, and supports SQLite -> SQLite, PostgreSQL -> PostgreSQL, and cross-backend runs. See [`docs/migration-v2-to-v3.md`](docs/migration-v2-to-v3.md) for the full step-by-step guide.
 
 [Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker images (amd64/arm64): default Ollama variant and `ollama-openai` variant.
 

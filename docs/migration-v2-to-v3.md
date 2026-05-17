@@ -116,6 +116,36 @@ If the CLI prints `source database file does not exist: <path>`, the path passed
 
 The CLI refuses to write to a non-empty SQLite target. If you see `target database already contains context_entries rows: <path>`, delete the target file (or specify a different `--target-url`) and rerun.
 
+### Recovering From an Interrupted Migration
+
+The CLI does not currently support resume-from-checkpoint. If a migration is interrupted mid-run (Ctrl+C, process kill, machine power loss, network drop on PostgreSQL), the source database is unaffected -- it was opened read-only -- and the target database is left in one of two recoverable states described below.
+
+The recovery procedure is the same in both cases: delete the target database and rerun the same `mcp-context-server-migrate` command. The source is unchanged, so a fresh run reads the same input data and produces the same target. Note that the lower 74 random bits of each UUIDv7 will differ from any prior interrupted run, but the embedded millisecond timestamps and the row-by-row chronological ordering are identical, which is the only property the server depends on.
+
+**State 1: Empty or schema-only target.**
+
+The data-copy transaction rolled back. The target file (SQLite) or database (PostgreSQL) may contain the empty schema (tables defined but no rows) or may not exist at all, depending on how far the CLI got before the interrupt. Recovery:
+
+- SQLite: `rm /path/to/target.db` -- then rerun. Alternatively, pass a different `--target-url` to the rerun.
+- PostgreSQL: `DROP DATABASE new_db; CREATE DATABASE new_db;` -- then rerun. Alternatively, point `--target-url` at a different empty database.
+
+**State 2: Data committed but FTS index stale (SQLite only).**
+
+There is a narrow window after the main data transaction commits but before the FTS5 rebuild commits. If the interrupt happens inside that window, the target contains all migrated rows but its `context_entries_fts` virtual table is stale or empty. This is intentional: the FTS rebuild runs outside the main data transaction so that a failing FTS rebuild does not destroy the row data. Two recovery options:
+
+- Clean rerun: `rm /path/to/target.db` and rerun the CLI. This is the simplest option and is always correct.
+- In-place FTS rebuild: run the SQLite shell command below to re-index the existing target without redoing the row copy:
+
+  ```bash
+  sqlite3 /path/to/target.db "INSERT INTO context_entries_fts(context_entries_fts) VALUES('rebuild')"
+  ```
+
+  This is the same idempotent rebuild directive that the CLI itself issues, so running it manually is safe.
+
+PostgreSQL does not have a State 2 equivalent. Its `text_search_vector` column is a generated column maintained by the row INSERT, so a successful main transaction also produces a complete tsvector index.
+
+**Preflight tip.** If you want to verify a migration will succeed before committing to a real run, pass `--dry-run` on a first invocation. The dry run reads the source, builds the integer-to-UUIDv7 mapping, and computes target rows in memory; it does NOT INSERT into the target. On SQLite, the target schema is still persisted by the dry-run path (because schema creation runs outside the data transaction), so a subsequent real run against the same target path will be rejected by the empty-target gate -- delete or rename the target before the real run. PostgreSQL dry runs leave the target database empty.
+
 ### Cross-Backend Vector Embedding Warning
 
 If you ran a cross-backend migration (SQLite to PostgreSQL or vice versa) and saw the warning `cross-backend migration drops vector embeddings; re-embed the target after migration`, your target database contains all rows and metadata but no vector embeddings. To restore embeddings:

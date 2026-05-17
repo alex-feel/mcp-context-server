@@ -1031,7 +1031,10 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
 
     if not options.dry_run and target_already_has_data_sqlite(target_address):
         stats.errors.append(
-            f'target database already contains context_entries rows: {target_address}',
+            f'target database already contains context_entries rows: {target_address}. '
+            f'Recovery: if a prior run was interrupted, delete the target file and rerun; '
+            f'the source database is unchanged. See the Recovering From an Interrupted Migration '
+            f'section of docs/migration-v2-to-v3.md.',
         )
         return stats
 
@@ -1169,7 +1172,12 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
         if not options.dry_run and await _target_pg_has_data(target_conn):
-            stats.errors.append('target PostgreSQL database already contains context_entries rows')
+            stats.errors.append(
+                'target PostgreSQL database already contains context_entries rows. '
+                'Recovery: if a prior run was interrupted, drop and recreate the target database '
+                '(or pass a different --target-url) and rerun; the source database is unchanged. '
+                'See the Recovering From an Interrupted Migration section of docs/migration-v2-to-v3.md.',
+            )
             return stats
 
         id_column_type = await source_conn.fetchval(
@@ -1327,7 +1335,12 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
             return stats
 
         if not options.dry_run and await _target_pg_has_data(target_conn):
-            stats.errors.append('target PostgreSQL database already contains context_entries rows')
+            stats.errors.append(
+                'target PostgreSQL database already contains context_entries rows. '
+                'Recovery: if a prior run was interrupted, drop and recreate the target database '
+                '(or pass a different --target-url) and rerun; the source database is unchanged. '
+                'See the Recovering From an Interrupted Migration section of docs/migration-v2-to-v3.md.',
+            )
             return stats
 
         cursor = source.execute(
@@ -1416,7 +1429,10 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
     _, target_address = parse_backend_url(options.target_url)
     if not options.dry_run and target_already_has_data_sqlite(target_address):
         stats.errors.append(
-            f'target database already contains context_entries rows: {target_address}',
+            f'target database already contains context_entries rows: {target_address}. '
+            f'Recovery: if a prior run was interrupted, delete the target file and rerun; '
+            f'the source database is unchanged. See the Recovering From an Interrupted Migration '
+            f'section of docs/migration-v2-to-v3.md.',
         )
         return stats
 

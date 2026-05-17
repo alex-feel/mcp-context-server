@@ -8,6 +8,11 @@
 
 A high-performance Model Context Protocol (MCP) server providing persistent multimodal context storage for LLM agents. Built with FastMCP, this server enables seamless context sharing across multiple agents working on the same task through thread-based scoping.
 
+> [!WARNING]
+> **Upgrading from v2.x?** Version 3.x.x uses a new database schema with UUIDv7 primary keys. Existing v2.x databases require a one-time data migration before they can be used with v3.x.x. The opt-in CLI `mcp-context-server-migrate` ships with the server.
+>
+> **See the [Migration Guide](docs/migration-v2-to-v3.md) before upgrading.** Fresh installations are unaffected.
+
 ## Key Features
 
 - **Multimodal Context Storage**: Store and retrieve both text and images
@@ -65,14 +70,6 @@ For comprehensive metadata filtering including 16 operators, nested JSON paths, 
 The server supports multiple database backends, selectable via the `STORAGE_BACKEND` environment variable. SQLite (default) provides zero-configuration local storage perfect for single-user deployments. PostgreSQL offers high-performance capabilities with 10x+ write throughput for multi-user and high-traffic deployments.
 
 For detailed configuration instructions including PostgreSQL setup with Docker, Supabase integration, connection methods, and troubleshooting, see the [Database Backends Guide](docs/database-backends.md).
-
-## Migrating Existing Databases
-
-For users whose existing context databases were created with the integer primary-key layout and need to be re-keyed to UUIDv7, the project ships an opt-in CLI named `mcp-context-server-migrate`. The CLI is invoked manually against a backup of the source database; it is not run automatically by the server.
-
-The CLI accepts a SQLite filesystem path, a `sqlite:///` URL, or a `postgresql://` URL for both `--source-url` and `--target-url`, and supports same-backend and cross-backend migrations. Optional flags include `--dry-run` (run migration logic without writing to the target) and `--report PATH` (write a JSON run report).
-
-For the full step-by-step guide including prerequisites, expected behavior, and troubleshooting, see the [Migration Guide](docs/MIGRATION-v2-to-v3.md).
 
 ## API Reference
 
