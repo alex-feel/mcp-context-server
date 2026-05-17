@@ -655,6 +655,13 @@
           "name": "SEARCH_TRUNCATION_LENGTH"
         },
         {
+          "description": "Whether get_context_by_ids includes the summary field in each returned entry. Tri-state: when false (default), the summary key is omitted entirely (consumers reading entry.get('summary') receive None -- the conventional Python signal for 'feature disabled'); when true with a stored non-empty summary, the value is returned verbatim; when true but the stored summary is NULL or empty, the value is normalized to an empty string '' (signaling 'feature on, no data yet'). The text_content field always contains the full untruncated text regardless of this toggle. Does not affect search tools, which always emit summary as a string.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY"
+        },
+        {
           "description": "Enable text chunking for embedding generation (default: true)",
           "isRequired": false,
           "format": "boolean",
@@ -1595,6 +1602,13 @@
           "format": "number",
           "isSecret": false,
           "name": "SEARCH_TRUNCATION_LENGTH"
+        },
+        {
+          "description": "Whether get_context_by_ids includes the summary field in each returned entry. Tri-state: when false (default), the summary key is omitted entirely (consumers reading entry.get('summary') receive None -- the conventional Python signal for 'feature disabled'); when true with a stored non-empty summary, the value is returned verbatim; when true but the stored summary is NULL or empty, the value is normalized to an empty string '' (signaling 'feature on, no data yet'). The text_content field always contains the full untruncated text regardless of this toggle. Does not affect search tools, which always emit summary as a string.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY"
         },
         {
           "description": "Enable text chunking for embedding generation (default: true)",

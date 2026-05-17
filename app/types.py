@@ -38,7 +38,7 @@ class ContextEntryDict(TypedDict, total=False):
     content_type: str
     text_content: str | None
     metadata: MetadataDict | None
-    summary: str | None
+    summary: str  # Conditional presence handled by TypedDict(total=False); absence == "feature disabled"
     created_at: str
     updated_at: str
     tags: list[str]

@@ -232,6 +232,8 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:0.6b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (500*; text shorter than this skips summary (truncated preview is sufficient); 0 = always generate), `SUMMARY_PROMPT`
 
+**Retrieval**: `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` (false*; tri-state on `get_context_by_ids`: when false (default), the `summary` key is omitted entirely so `entry.get('summary')` returns `None` ("feature disabled"); when true with a stored non-empty summary, the value is returned verbatim; when true but DB summary is NULL/empty, normalized to `''` ("feature on, no data yet"). `text_content` always contains the full untruncated text.)
+
 **Provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, and metadata indexing vars**: See `app/settings.py` for complete list with defaults and descriptions.
 
 *\* = default value*
@@ -368,6 +370,20 @@ def clear_settings_cache() -> None:
 
 **Anti-pattern: Premature `get_settings()` in subprocess scripts.** `tests/run_server.py` configures environment via `os.environ` (intentional — it's an env configurator, not a settings consumer). Call `get_settings.cache_clear()` after all `os.environ` modifications before launching the server, or utility functions like `is_ollama_model_available()` will cache stale defaults.
 
+### Per-test environment overrides for module-level `settings` bindings
+
+Tool modules cache `settings = get_settings()` at import time (e.g., `app/tools/context.py:60`). For tests that need to flip an env-driven setting per test, three lines are required:
+
+```python
+import app.tools.context as context_module
+from app.settings import get_settings
+monkeypatch.setenv('SETTING_NAME', 'new-value')
+get_settings.cache_clear()
+monkeypatch.setattr(context_module, 'settings', get_settings())
+```
+
+The `monkeypatch.setattr` step refreshes the module-level binding to pick up the new singleton instance. Without it, the module retains a reference to the pre-cache-clear singleton. This pattern is established and works correctly; refactoring 15+ modules to call `get_settings()` inside each tool function would be YAGNI for this issue.
+
 ### Settings Class Architecture
 
 **AppSettings must NEVER contain settings fields directly** — it only composes nested settings classes.
@@ -389,7 +405,7 @@ class AppSettings(CommonSettings):
     my_feature: MyFeatureSettings = Field(default_factory=MyFeatureSettings)
 ```
 
-Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `TransportSettings`, `AuthSettings`, `InstructionsSettings`, `OllamaSettings`, `StorageSettings` (extends `BaseSettings`), `EmbeddingSettings`, `SummarySettings`, `SemanticSearchSettings`, `FtsSettings`, `HybridSearchSettings`, `SearchSettings`, `ChunkingSettings`, `RerankingSettings`, `FtsPassageSettings`, `LangSmithSettings`.
+Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `TransportSettings`, `AuthSettings`, `InstructionsSettings`, `OllamaSettings`, `StorageSettings` (extends `BaseSettings`), `EmbeddingSettings`, `SummarySettings`, `SemanticSearchSettings`, `FtsSettings`, `HybridSearchSettings`, `SearchSettings`, `RetrievalSettings`, `ChunkingSettings`, `RerankingSettings`, `FtsPassageSettings`, `LangSmithSettings`.
 
 ### FASTMCP_* Env Var Governance
 

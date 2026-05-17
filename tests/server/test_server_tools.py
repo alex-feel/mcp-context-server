@@ -5,6 +5,7 @@ list_threads, get_statistics, search_context, and delete_context.
 """
 
 import base64
+from typing import cast
 
 import pytest
 
@@ -352,6 +353,172 @@ class TestGetContextByIds:
         assert len(entries) == 1
         entry = dict(entries[0])
         assert entry['id'] == existing_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_get_context_by_ids_omits_summary_by_default(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """By default, get_context_by_ids must NOT include the summary key."""
+        import app.tools.context as context_module
+        from app.settings import get_settings
+        monkeypatch.delenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', raising=False)
+        get_settings.cache_clear()
+        # Refresh the module-level binding to pick up the new setting
+        monkeypatch.setattr(context_module, 'settings', get_settings())
+        assert context_module.settings.retrieval.include_summary is False
+
+        result = await store_context(
+            thread_id='retrieval_default_thread',
+            source='user',
+            text='Default-omit-summary test',
+        )
+        context_id = result['context_id']
+
+        entries = await get_context_by_ids(context_ids=[context_id])
+        assert len(entries) == 1
+        entry = dict(entries[0])
+        assert 'summary' not in entry
+        # All other fields must still be present
+        assert entry['id'] == context_id
+        assert entry['text_content'] == 'Default-omit-summary test'
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_get_context_by_ids_omits_summary_when_explicit_false(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Explicit GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=false must omit summary."""
+        import app.tools.context as context_module
+        from app.settings import get_settings
+        monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'false')
+        get_settings.cache_clear()
+        monkeypatch.setattr(context_module, 'settings', get_settings())
+
+        result = await store_context(
+            thread_id='retrieval_explicit_false_thread',
+            source='user',
+            text='Explicit-false-summary test',
+        )
+        context_id = result['context_id']
+
+        entries = await get_context_by_ids(context_ids=[context_id])
+        assert len(entries) == 1
+        assert 'summary' not in dict(entries[0])
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_get_context_by_ids_includes_summary_when_explicit_true(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=true: summary key present, empty string when DB NULL.
+
+        Verifies the second leg of the tri-state contract: when the toggle is enabled
+        AND the stored summary is NULL (no provider configured in the test env),
+        the wire value MUST be normalized to an empty string ''. This mirrors
+        the search-tools contract and provides an explicit "feature on, no data yet"
+        signal distinct from the "feature disabled" key-omission.
+        """
+        import app.tools.context as context_module
+        from app.settings import get_settings
+        monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'true')
+        get_settings.cache_clear()
+        monkeypatch.setattr(context_module, 'settings', get_settings())
+
+        result = await store_context(
+            thread_id='retrieval_explicit_true_thread',
+            source='user',
+            text='Explicit-true-summary test',
+        )
+        context_id = result['context_id']
+
+        entries = await get_context_by_ids(context_ids=[context_id])
+        assert len(entries) == 1
+        entry = dict(entries[0])
+        assert 'summary' in entry, 'summary key MUST be present when toggle is enabled'
+        # No summary provider in test env => DB row has NULL summary => normalize to ''.
+        assert isinstance(entry['summary'], str), (
+            f'summary must be a string when present, got {type(entry["summary"]).__name__}'
+        )
+        assert entry['summary'] == '', (
+            f'NULL DB summary must normalize to empty string, got {entry["summary"]!r}'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_get_context_by_ids_summary_passes_through_when_stored(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=true: stored non-empty summary returned verbatim.
+
+        Verifies the third leg of the tri-state contract: when the toggle is enabled
+        AND the database has a non-empty summary string, the value is surfaced
+        verbatim (no normalization, no transformation).
+        """
+        import app.tools.context as context_module
+        from app.settings import get_settings
+        from app.startup import ensure_repositories
+        monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'true')
+        get_settings.cache_clear()
+        monkeypatch.setattr(context_module, 'settings', get_settings())
+
+        store_result = await store_context(
+            thread_id='retrieval_summary_passthrough_thread',
+            source='user',
+            text='Pass-through summary test',
+        )
+        context_id = store_result['context_id']
+
+        # Inject a non-empty summary directly via the repository, bypassing the
+        # (absent) summary provider. This simulates the production state where
+        # generation succeeded and the DB row holds a real LLM-produced summary.
+        repos = await ensure_repositories()
+        injected_summary = 'Manually injected summary for test'
+        success, updated_fields = await repos.context.update_context_entry(
+            context_id=context_id,
+            summary=injected_summary,
+        )
+        assert success, f'Failed to inject summary; updated_fields={updated_fields}'
+        assert 'summary' in updated_fields, f'summary not in updated_fields: {updated_fields}'
+
+        entries = await get_context_by_ids(context_ids=[context_id])
+        assert len(entries) == 1
+        entry = dict(entries[0])
+        assert 'summary' in entry, 'summary key MUST be present when toggle is enabled'
+        assert entry['summary'] == injected_summary, (
+            f'Expected verbatim pass-through {injected_summary!r}, got {entry["summary"]!r}'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_get_context_by_ids_other_fields_unaffected(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Strip must not affect id, text_content, metadata, tags, or content_type."""
+        import app.tools.context as context_module
+        from app.settings import get_settings
+        monkeypatch.delenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', raising=False)
+        get_settings.cache_clear()
+        monkeypatch.setattr(context_module, 'settings', get_settings())
+
+        result = await store_context(
+            thread_id='retrieval_other_fields_thread',
+            source='agent',
+            text='Other fields untouched',
+            tags=['retrieval-test'],
+            metadata={'k': 'v'},
+        )
+        context_id = result['context_id']
+
+        entries = await get_context_by_ids(context_ids=[context_id])
+        entry = dict(entries[0])
+        assert entry['id'] == context_id
+        assert entry['source'] == 'agent'
+        assert entry['text_content'] == 'Other fields untouched'
+        entry_tags = cast(list[str], entry['tags'])
+        assert 'retrieval-test' in entry_tags
+        assert entry['metadata'] == {'k': 'v'}
+        assert 'summary' not in entry
 
 
 class TestDeleteContext:

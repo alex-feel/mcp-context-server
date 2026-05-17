@@ -129,6 +129,12 @@ For detailed embedding setup and provider selection, see the [Semantic Search Gu
 
 For detailed summary setup and provider selection, see the [Summary Generation Guide](summary-generation.md).
 
+## Retrieval Settings
+
+| Variable                              | Type    | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+|---------------------------------------|---------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY`  | boolean | `false` | Whether `get_context_by_ids` includes the `summary` field in each returned entry. Tri-state contract: when `false` (default), the `summary` key is omitted entirely so consumers reading `entry.get('summary')` receive `None` -- the conventional Python signal for "feature disabled"; when `true` with a stored non-empty summary, the value is returned verbatim; when `true` but the stored summary is NULL or empty, the value is normalized to `''` (empty string) signaling "feature on, no data yet". The `text_content` field always contains the full untruncated text regardless of this toggle. Does not affect search tools, which always emit `summary` as a string. |
+
 ## Semantic Search Settings
 
 | Variable                 | Type    | Default | Description                                                                           |

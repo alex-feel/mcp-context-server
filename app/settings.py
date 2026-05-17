@@ -788,6 +788,29 @@ class SearchSettings(CommonSettings):
     )
 
 
+class RetrievalSettings(CommonSettings):
+    """Retrieval-tool response-shape configuration.
+
+    Settings that govern the response shape of by-ID retrieval tools
+    (currently `get_context_by_ids`). Distinct from SearchSettings,
+    which governs search tools' truncation and ranking behavior.
+
+    This class is the home for future per-tool response-shape toggles
+    targeting retrieval-by-ID tools.
+    """
+
+    include_summary: bool = Field(
+        default=False,
+        alias='GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY',
+        description='Whether get_context_by_ids includes the summary field in each '
+                    'returned entry. Default false: the tool already returns the full '
+                    'text_content, so the AI-generated summary is redundant and inflates '
+                    'token usage. Set true to include the summary anyway. Does not affect '
+                    'search tools, which always return summary because they truncate '
+                    'text_content.',
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage-related settings with environment variable mapping."""
 
@@ -1019,6 +1042,7 @@ class AppSettings(CommonSettings):
     fts: FtsSettings = Field(default_factory=lambda: FtsSettings())
     hybrid_search: HybridSearchSettings = Field(default_factory=lambda: HybridSearchSettings())
     fts_passage: FtsPassageSettings = Field(default_factory=lambda: FtsPassageSettings())
+    retrieval: RetrievalSettings = Field(default_factory=lambda: RetrievalSettings())
 
     # Embedding and processing settings
     embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())

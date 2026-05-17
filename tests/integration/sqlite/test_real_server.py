@@ -6,6 +6,7 @@ verifying all 8 tools work correctly via FastMCP client.
 
 import asyncio
 import base64
+import contextlib
 import importlib.util
 import os
 import sqlite3
@@ -19,6 +20,7 @@ from typing import Any
 import pytest
 from anyio import Path as AsyncPath
 from fastmcp import Client
+from fastmcp.client.transports import PythonStdioTransport
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(
@@ -7360,13 +7362,17 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
-    async def test_store_context_with_summary_field(self) -> bool:
-        """Test that stored context entries expose the summary field in API responses.
+    async def test_get_context_by_ids_omits_summary_by_default(self) -> bool:
+        """Test that get_context_by_ids omits the summary field by default.
+
+        Default configuration (GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY unset) means
+        the get_context_by_ids tool MUST NOT return a `summary` key, because
+        the tool already returns the full untruncated text_content.
 
         Returns:
             bool: True if test passed.
         """
-        test_name = 'store_context_with_summary_field'
+        test_name = 'get_context_by_ids_omits_summary_by_default'
         assert self.client is not None  # Type guard for Pyright
         try:
             summary_thread = f'{self.test_thread_id}_summary_field'
@@ -7390,7 +7396,7 @@ class MCPServerIntegrationTest:
 
             context_id = store_data['context_id']
 
-            # Retrieve via get_context_by_ids - should include summary field
+            # Retrieve via get_context_by_ids - should OMIT summary field by default
             get_result = await self.client.call_tool(
                 'get_context_by_ids',
                 {'context_ids': [context_id]},
@@ -7405,18 +7411,12 @@ class MCPServerIntegrationTest:
 
             entry = results[0]
 
-            # Verify summary field is present in the response (None without provider)
-            if 'summary' not in entry:
-                self.test_results.append(
-                    (test_name, False, 'summary field missing from get_context_by_ids response'),
-                )
-                return False
-
-            # Without a summary provider, summary should be None
-            if entry['summary'] is not None:
+            # Verify summary field is OMITTED in the default configuration
+            if 'summary' in entry:
                 self.test_results.append(
                     (test_name, False,
-                     f'Expected summary=None without provider, got {entry["summary"]!r}'),
+                     ('summary field unexpectedly present in get_context_by_ids response '
+                      '(default config should omit it)')),
                 )
                 return False
 
@@ -7430,13 +7430,155 @@ class MCPServerIntegrationTest:
 
             self.test_results.append(
                 (test_name, True,
-                 'summary field present in API response (None without provider)'),
+                 'summary field correctly omitted from get_context_by_ids response by default'),
             )
             return True
 
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
+
+    async def test_get_context_by_ids_includes_summary_when_enabled(self) -> bool:
+        """Verify GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=true causes end-to-end empty-string normalization.
+
+        Spawns a short-lived secondary server subprocess with the env var set
+        and observes the wire payload. The third leg of the tri-state contract
+        (verbatim pass-through with a real stored summary) is exercised by the
+        in-process unit test
+        tests/server/test_server_tools.py::TestGetContextByIds
+        ::test_get_context_by_ids_summary_passes_through_when_stored.
+
+        Subprocess environment plumbing:
+            The MCP SDK helper mcp.client.stdio.get_default_environment() applies
+            an OS-variable whitelist (PATH, SYSTEMROOT, ..., on Windows; HOME,
+            LOGNAME, ..., on POSIX) when env=None is passed to the transport.
+            Constructing Client(str(wrapper_script)) implicitly delegates to this
+            whitelist, so application-specific env vars (DB_PATH, MCP_TEST_MODE,
+            GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY) DO NOT reach the subprocess. This
+            test builds the env dict explicitly via PythonStdioTransport(env=...)
+            using the same safe_keys whitelist plus the four app-specific vars,
+            ensuring the subprocess actually runs with the toggle enabled.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'get_context_by_ids_includes_summary_when_enabled'
+
+        wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
+        tmp_dir = Path(tempfile.mkdtemp(prefix='mcp_summary_opt_in_'))
+        tmp_db = tmp_dir / 'summary_opt_in.db'
+
+        # Initialize schema (mirrors _initialize_database for primary server)
+        from app.schemas import load_schema
+        schema_sql = load_schema('sqlite')
+        with sqlite3.connect(str(tmp_db)) as init_conn:
+            init_conn.executescript(schema_sql)
+            init_conn.commit()
+
+        # Explicit env whitelist mirroring mcp.client.stdio.get_default_environment().
+        # The MCP SDK uses this exact list when env=None; we replicate it so the
+        # subprocess can still locate Python, system DLLs, temp dirs, etc.
+        if sys.platform == 'win32':
+            safe_keys = (
+                'APPDATA', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA',
+                'PATH', 'PATHEXT', 'PROCESSOR_ARCHITECTURE',
+                'SYSTEMDRIVE', 'SYSTEMROOT', 'TEMP', 'USERNAME', 'USERPROFILE',
+            )
+        else:
+            safe_keys = ('HOME', 'LOGNAME', 'SHELL', 'TERM', 'USER')
+
+        subprocess_env: dict[str, str] = {
+            key: os.environ[key] for key in safe_keys if key in os.environ
+        }
+        # Application-specific overrides REQUIRED by the secondary server.
+        subprocess_env['DB_PATH'] = str(tmp_db)
+        subprocess_env['MCP_TEST_MODE'] = '1'
+        subprocess_env['STORAGE_BACKEND'] = 'sqlite'
+        subprocess_env['GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY'] = 'true'
+
+        transport = PythonStdioTransport(
+            script_path=str(wrapper_script),
+            env=subprocess_env,
+        )
+        secondary_client: Client[Any] = Client(transport)
+        try:
+            await secondary_client.__aenter__()
+            await secondary_client.ping()
+
+            store_result = await secondary_client.call_tool(
+                'store_context',
+                {
+                    'thread_id': 'summary_opt_in_thread',
+                    'source': 'agent',
+                    'text': 'Opt-in summary inclusion test',
+                    'metadata': {'test_type': 'summary_opt_in'},
+                },
+            )
+            store_data = self._extract_content(store_result)
+            if not store_data.get('success'):
+                self.test_results.append((test_name, False, f'Failed to store: {store_data}'))
+                return False
+            context_id = store_data['context_id']
+
+            get_result = await secondary_client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            get_data = self._extract_content(get_result)
+            results = get_data.get('results', [])
+            if len(results) != 1:
+                self.test_results.append((test_name, False, f'Expected 1 result, got {len(results)}'))
+                return False
+
+            entry = results[0]
+            # Sanity: core fields preserved
+            if entry.get('id') != context_id:
+                self.test_results.append(
+                    (test_name, False, f'Expected id={context_id}, got {entry.get("id")!r}'),
+                )
+                return False
+            if entry.get('text_content') != 'Opt-in summary inclusion test':
+                self.test_results.append(
+                    (test_name, False, f'text_content mismatch: {entry.get("text_content")!r}'),
+                )
+                return False
+
+            # Tri-state assertion (second leg): toggle=true + no provider -> '' on the wire.
+            if 'summary' not in entry:
+                self.test_results.append(
+                    (test_name, False,
+                     'summary key MUST be present on the wire when GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=true'),
+                )
+                return False
+            if entry['summary'] != '':
+                self.test_results.append(
+                    (test_name, False,
+                     f'NULL DB summary must normalize to empty string end-to-end, got {entry["summary"]!r}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True,
+                 ('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=true: summary key present and == "" on the wire '
+                  '(second leg of tri-state contract verified end-to-end).')),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await secondary_client.__aexit__(None, None, None)
+            # Best-effort cleanup (use anyio.Path for async-safe filesystem ops).
+            # NOTE: env_snapshot / restoration loop removed -- this test never
+            # mutates os.environ anymore (subprocess env is passed explicitly
+            # via PythonStdioTransport).
+            async_tmp_db = AsyncPath(tmp_db)
+            async_tmp_dir = AsyncPath(tmp_dir)
+            with contextlib.suppress(Exception):
+                await async_tmp_db.unlink(missing_ok=True)
+                await async_tmp_dir.rmdir()
 
     async def test_search_context_summary_display(self) -> bool:
         """Test that search_context handles search display formatting correctly.
@@ -7624,22 +7766,17 @@ class MCPServerIntegrationTest:
                 )
                 return False
 
-            # Without summary provider, summary should be None for all entries
+            # Default config should OMIT summary from get_context_by_ids response
             for entry in results:
-                if 'summary' not in entry:
+                if 'summary' in entry:
                     self.test_results.append(
                         (test_name, False,
-                         'summary field missing from batch-stored entry'),
-                    )
-                    return False
-                if entry['summary'] is not None:
-                    self.test_results.append(
-                        (test_name, False,
-                         f'Expected summary=None without provider, got {entry["summary"]!r}'),
+                         ('summary field unexpectedly present in batch-stored entry '
+                          '(default config should omit it)')),
                     )
                     return False
 
-            # Test update_context_batch also preserves summary field
+            # Test update_context_batch also omits summary field
             updates = [
                 {'context_id': context_ids[0], 'text': 'Updated batch text one'},
             ]
@@ -7655,7 +7792,7 @@ class MCPServerIntegrationTest:
                 )
                 return False
 
-            # Re-retrieve and verify summary is still None after update
+            # Re-retrieve and verify summary is still omitted after update
             get_updated = await self.client.call_tool(
                 'get_context_by_ids',
                 {'context_ids': [context_ids[0]]},
@@ -7670,23 +7807,18 @@ class MCPServerIntegrationTest:
                 )
                 return False
 
-            if 'summary' not in updated_results[0]:
+            if 'summary' in updated_results[0]:
                 self.test_results.append(
                     (test_name, False,
-                     'summary field missing after batch update'),
-                )
-                return False
-
-            if updated_results[0]['summary'] is not None:
-                self.test_results.append(
-                    (test_name, False,
-                     f'Expected summary=None after update, got {updated_results[0]["summary"]!r}'),
+                     ('summary field unexpectedly present after batch update '
+                      '(default config should omit it)')),
                 )
                 return False
 
             self.test_results.append(
                 (test_name, True,
-                 'Batch store and update correctly include summary field (None without provider)'),
+                 ('Batch store and update correctly omit summary field from '
+                  'get_context_by_ids response by default')),
             )
             return True
 
@@ -9503,7 +9635,8 @@ class MCPServerIntegrationTest:
             ('Batch Operations Atomic Rollback', self.test_batch_operations_atomic_rollback),
             ('Batch Operations Non-Atomic Partial', self.test_batch_operations_non_atomic_partial),
             # Summary Field Tests
-            ('Store Context With Summary Field', self.test_store_context_with_summary_field),
+            ('Get Context By IDs Omits Summary By Default', self.test_get_context_by_ids_omits_summary_by_default),
+            ('Get Context By IDs Includes Summary When Enabled', self.test_get_context_by_ids_includes_summary_when_enabled),
             ('Search Context Summary Display', self.test_search_context_summary_display),
             ('Batch Store Summary Field', self.test_batch_store_summary_field),
             # Generation-First Pattern Tests

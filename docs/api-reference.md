@@ -117,7 +117,11 @@ Fetch specific context entries by their IDs.
 - `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form. Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. Prefix lookup is NOT supported for this bulk parameter; supply full IDs only.
 - `include_images` (bool, optional): Include image data (default: True)
 
-**Returns:** List of context entries with full content
+**Returns:** List of context entries with full untruncated `text_content`. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, and `updated_at`. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
+
+- When disabled (the default), the `summary` key is omitted entirely; consumers reading `entry.get('summary')` will receive `None`, which is the conventional Python signal for "feature disabled, no value to surface".
+- When enabled and the stored summary is a non-empty string, the value is returned verbatim.
+- When enabled but the stored summary is `NULL` or empty (e.g., generation was skipped because text was shorter than `SUMMARY_MIN_CONTENT_LENGTH`, or no provider is configured), the value is normalized to an empty string `''`. This mirrors the search-tool contract (search tools always emit `summary` as a string, never `None`) and provides an explicit "feature on, no data yet" signal distinct from the "feature disabled" `None`.
 
 ### delete_context
 

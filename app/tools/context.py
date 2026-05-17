@@ -306,7 +306,20 @@ async def get_context_by_ids(
 
     Returns:
         List of ContextEntryDict with id, thread_id, source, text_content, metadata,
-        tags, images, created_at, updated_at fields.
+        tags, images, created_at, updated_at fields. The summary field follows a
+        tri-state contract controlled by GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY:
+
+        - When disabled (the default), the summary key is omitted entirely; consumers
+          reading entry.get('summary') will receive None, which is the conventional
+          Python signal for "feature disabled, no value to surface".
+        - When enabled and the stored summary is a non-empty string, the value is
+          returned verbatim.
+        - When enabled but the stored summary is NULL or empty (e.g., generation was
+          skipped because text was shorter than SUMMARY_MIN_CONTENT_LENGTH, or no
+          provider is configured), the value is normalized to an empty string ''.
+          This mirrors the search-tool contract (search tools always emit summary as
+          a string, never None) and provides an explicit "feature on, no data yet"
+          signal distinct from the "feature disabled" None.
 
     Raises:
         ToolError: If fetching context entries fails.
@@ -327,10 +340,26 @@ async def get_context_by_ids(
         # Fetch context entries using repository
         rows = await repos.context.get_by_ids(context_ids)
         entries: list[ContextEntryDict] = []
+        include_summary = settings.retrieval.include_summary
 
         for row in rows:
             # Create entry dict with proper typing for dynamic fields
             entry = cast(ContextEntryDict, dict(row))
+
+            if include_summary:
+                # Mirror search-tool normalization (app/tools/search.py:140-145):
+                # surface an empty string for the "feature ON but no data yet" state.
+                # Tri-state contract:
+                #   include_summary=False (default)              -> key omitted (consumers see entry.get('summary') == None)
+                #   include_summary=True  + stored non-empty str -> verbatim stored string
+                #   include_summary=True  + DB NULL/empty        -> '' (explicit signal "feature on, no data yet")
+                summary = entry.get('summary')
+                if isinstance(summary, str) and summary.strip():
+                    entry['summary'] = summary
+                else:
+                    entry['summary'] = ''
+            else:
+                entry.pop('summary', None)
 
             # Parse JSON metadata - database stores as JSON string
             metadata_raw = entry.get('metadata')
