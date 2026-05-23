@@ -4,6 +4,7 @@ This module provides type definitions to replace explicit Any usage
 and ensure strict type safety throughout the codebase.
 """
 
+from typing import NotRequired
 from typing import TypedDict
 
 # JSON value types - recursive union for JSON-like data structures
@@ -93,6 +94,182 @@ class ThreadListDict(TypedDict):
 
     threads: list[ThreadInfoDict]
     total_threads: int
+
+
+# Statistics TypedDicts (for get_statistics tool response)
+
+
+class ConnectionMetricsDict(TypedDict, total=False):
+    """Type definition for backend connection metrics.
+
+    Shape varies by backend; the only fields guaranteed across backends are
+    ``backend_type`` and ``pool_size``. SQLite adds active_readers,
+    writer_busy, write_queue_size, circuit_breaker_state, total_writes,
+    total_reads, failed_writes, failed_reads. PostgreSQL adds pool_idle,
+    pool_free, total_queries, failed_queries. Treated as an open-shape
+    dict; per-backend keys are documented here for reference only.
+    """
+
+    backend_type: str
+    pool_size: int
+
+
+class MostActiveThreadDict(TypedDict):
+    """One row of ``most_active_threads`` in the stats response."""
+
+    thread_id: str
+    count: int
+
+
+class TopTagDict(TypedDict):
+    """One row of ``top_tags`` in the stats response."""
+
+    tag: str
+    count: int
+
+
+class SemanticSearchStatsDict(TypedDict, total=False):
+    """Type definition for the ``semantic_search`` sub-block in get_statistics.
+
+    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
+    appear only when ``available is True``; when ``available is False`` an
+    optional ``message`` field carries the degradation reason.
+
+    The field name ``embedding_count`` refers to the number of stored
+    embedding rows on disk (one row per text chunk, since the storage layer
+    persists one embedding vector per chunk). The text chunks themselves
+    are NOT persisted; chunking is a transient pre-processing step purely
+    for embedding quality.
+    """
+
+    enabled: bool
+    available: bool
+    backend: str
+    model: str
+    dimensions: int
+    context_count: int  # COUNT(*) from embedding_metadata (entry count)
+    embedding_count: int  # SUM(chunk_count) from embedding_metadata (stored embedding rows)
+    average_chunks_per_entry: float
+    coverage_percentage: float
+    message: str  # Present when available is False
+
+
+class FtsStatsDict(TypedDict, total=False):
+    """Type definition for the ``fts`` sub-block in get_statistics.
+
+    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
+    appear only when ``available is True``; when ``available is False`` an
+    optional ``message`` field carries the degradation reason.
+    """
+
+    enabled: bool
+    available: bool
+    language: str
+    backend: str
+    engine: str
+    indexed_entries: int
+    coverage_percentage: float
+    message: str  # Present when available is False
+
+
+class ChunkingStatsDict(TypedDict):
+    """Type definition for the ``chunking`` sub-block in get_statistics.
+
+    All fields ALWAYS present (no conditional shape).
+    """
+
+    enabled: bool
+    available: bool
+    chunk_size: int
+    chunk_overlap: int
+    aggregation: str
+
+
+class RerankingStatsDict(TypedDict, total=False):
+    """Type definition for the ``reranking`` sub-block in get_statistics.
+
+    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
+    appear only when ``available is True``; when ``available is False`` an
+    optional ``message`` field carries the degradation reason.
+    """
+
+    enabled: bool
+    available: bool
+    provider: str
+    model: str
+    message: str  # Present when available is False
+
+
+class SummaryStatsDict(TypedDict, total=False):
+    """Type definition for the ``summary`` sub-block in get_statistics.
+
+    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
+    appear only when ``available is True``; when ``available is False`` an
+    optional ``message`` field carries the degradation reason.
+    """
+
+    enabled: bool
+    available: bool
+    provider: str
+    model: str
+    summary_count: int
+    coverage_percentage: float
+    min_content_length: int
+    message: str  # Present when available is False
+
+
+class CompressionStatsDict(TypedDict, total=False):
+    """Type definition for the ``compression`` sub-block in get_statistics.
+
+    ``enabled`` and ``available`` are ALWAYS present. The remaining fields
+    appear only when ``available is True``; when ``available is False`` an
+    optional ``message`` field carries the degradation reason. Values
+    originate from the singleton ``compression_metadata`` row (DB-truth)
+    except ``max_concurrent`` which comes from runtime settings.
+    """
+
+    enabled: bool
+    available: bool
+    provider: str
+    bits: int
+    variant: str
+    seed: int
+    dim: int
+    max_concurrent: int
+    message: str  # Present when available is False
+
+
+class StatisticsResponseDict(TypedDict):
+    """Type definition for the get_statistics tool response.
+
+    Top-level fields come from
+    ``StatisticsRepository.get_database_statistics``; sub-blocks
+    (``semantic_search``, ``fts``, ``chunking``, ``reranking``,
+    ``summary``, ``compression``) are added by
+    ``app.tools.discovery.get_statistics`` and are always present.
+
+    ``database_size_mb`` is present only when DB_PATH is set and exists on
+    disk.
+    """
+
+    total_entries: int
+    by_source: dict[str, int]
+    by_content_type: dict[str, int]
+    total_images: int
+    unique_tags: int
+    total_threads: int
+    avg_entries_per_thread: float
+    most_active_threads: list[MostActiveThreadDict]
+    top_tags: list[TopTagDict]
+    backend: str
+    database_size_mb: NotRequired[float]  # Only when DB_PATH provided
+    connection_metrics: ConnectionMetricsDict
+    semantic_search: SemanticSearchStatsDict
+    fts: FtsStatsDict
+    chunking: ChunkingStatsDict
+    reranking: RerankingStatsDict
+    summary: SummaryStatsDict
+    compression: CompressionStatsDict
 
 
 class ImageDict(TypedDict, total=False):

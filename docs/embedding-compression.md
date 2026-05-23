@@ -25,6 +25,8 @@ The compressed subsystem reuses the existing chunking pipeline and storage backe
 
 When compression is enabled, the embedding write path stores one bit-packed payload per chunk in `vec_context_embeddings_compressed`. The legacy fp32 `vec_context_embeddings` table is removed by the schema migration and is not maintained in parallel. The 1:N chunk-to-context mapping is preserved exactly as in the fp32 path (one `embedding_chunks` row per chunk; one `vec_context_embeddings_compressed` row per chunk; outer `context_id` foreign key references `context_entries.id`).
 
+`embedding_chunks` rows are retained across the `--compress` migration even though the compressed read path scores payloads directly. `--decompress` depends on them for reversibility: the decode loop in `app/cli/migrate_compression.py` joins each compressed payload back to its `embedding_chunks` row by `(context_id, chunk_index)` so the recreated fp32 row can be linked through the same `vec_rowid` bridge. Dropping `embedding_chunks` during compression would make decompression impossible without a full re-embed.
+
 The compressed table schema:
 
 | Column         | SQLite type | PostgreSQL type | Notes                                                   |
@@ -129,6 +131,57 @@ For a fresh installation:
 3. Start the server. The migration loader creates `vec_context_embeddings_compressed` and `compression_metadata`; the validator inserts the singleton row with the active seed (default `0`); subsequent stores use the compressed write path.
 
 For an existing installation with fp32 data, follow the [Migration CLI](#migration-cli) section below before changing the env vars.
+
+## Observability
+
+Three observation surfaces let operators verify the active compression configuration without inspecting the database directly.
+
+### Startup log line
+
+Immediately after the bootstrap validator confirms the persisted `compression_metadata` row matches the runtime `CompressionSettings`, the server lifespan emits a single INFO log line announcing the active configuration. When `ENABLE_EMBEDDING_COMPRESSION=true` and a provenance row exists, the message takes the form:
+
+```text
+Embedding compression enabled with provider: turboquant (bits=4, variant=ip, dim=1024, seed=0, max_concurrent=4)
+```
+
+The values for `provider`, `bits`, `variant`, `dim`, and `seed` are read from the singleton `compression_metadata` row (database-of-record), so the line reflects what the data was encoded with rather than the raw env vars. `max_concurrent` comes from the runtime `CompressionSettings` because the semaphore is a process-local resource, not a property of the stored payloads. When `ENABLE_EMBEDDING_COMPRESSION=false`, the lifespan instead emits:
+
+```text
+Embedding compression disabled (ENABLE_EMBEDDING_COMPRESSION=false)
+```
+
+The line is emitted at INFO level, sibling to the existing announcements for embedding generation, reranking, chunking, and summary; enable INFO logging (`LOG_LEVEL=INFO`) to surface it at startup.
+
+### `get_statistics` `compression` block
+
+The `get_statistics` MCP tool returns a top-level `compression` sub-block alongside the other feature blocks (semantic_search, fts, chunking, reranking, summary). When `ENABLE_EMBEDDING_COMPRESSION=true` and the provenance row has been bootstrapped, the block has the shape:
+
+```json
+{
+  "enabled": true,
+  "available": true,
+  "provider": "turboquant",
+  "bits": 4,
+  "variant": "ip",
+  "seed": 0,
+  "dim": 1024,
+  "max_concurrent": 4
+}
+```
+
+`provider`, `bits`, `variant`, `seed`, and `dim` come from the singleton `compression_metadata` row; `max_concurrent` comes from the runtime `CompressionSettings`. When `ENABLE_EMBEDDING_COMPRESSION=false`, the block collapses to `{"enabled": false, "available": false}`. When compression is enabled but the provenance row has not yet been bootstrapped (rare; the validator normally raises before this point), the block reports `{"enabled": true, "available": false, "message": "Compression enabled but provenance not bootstrapped"}`.
+
+### `compression_metadata` provenance row
+
+The authoritative record of the active compression configuration lives in the singleton `compression_metadata` table (one row, `id = 1`). The startup log line and the `get_statistics` `compression` block both source their `provider`, `bits`, `variant`, `seed`, and `dim` values from this row. Operators who need to inspect the persisted provenance directly can read it with a single SQL query against the configured database:
+
+```sql
+SELECT provider, bits, variant, seed, dim, created_at
+FROM compression_metadata
+WHERE id = 1;
+```
+
+The same row drives the seed-locked invariant: every subsequent startup compares the runtime `CompressionSettings` against these persisted values and refuses to start when they disagree. See [Singleton provenance: `compression_metadata`](#singleton-provenance-compression_metadata) for the schema definition and the seed-locking semantics.
 
 ## Variant Matrix
 

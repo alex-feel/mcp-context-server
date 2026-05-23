@@ -7,7 +7,7 @@ This module contains tools for discovering and analyzing stored context:
 """
 
 import logging
-from typing import Any
+from typing import cast
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
@@ -18,6 +18,7 @@ from app.startup import DB_PATH
 from app.startup import ensure_backend
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
+from app.types import StatisticsResponseDict
 from app.types import ThreadListDict
 
 logger = logging.getLogger(__name__)
@@ -61,20 +62,23 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
         raise ToolError(f'Failed to list threads: {format_exception_message(e)}') from e
 
 
-async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
+async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
     """Get server statistics for monitoring and debugging.
 
     Use for: capacity planning, debugging performance issues, verifying search status.
 
     Returns:
-        Dict with total_contexts (int), total_threads (int), total_images (int),
-        total_tags (int), database_size_mb (float), connection_metrics (dict),
-        semantic_search (dict with enabled, available, model, dimensions, embedding_count,
-        coverage_percentage), fts (dict with enabled, available, language, backend,
-        engine, indexed_entries, coverage_percentage), chunking (dict with enabled,
-        chunk_size, chunk_overlap, aggregation), reranking (dict with enabled,
-        available, provider, model), summary (dict with enabled, available,
-        provider, model, summary_count, coverage_percentage, min_content_length).
+        StatisticsResponseDict with total_entries (int), total_threads (int),
+        total_images (int), unique_tags (int), database_size_mb (float),
+        connection_metrics (dict), semantic_search (dict with enabled,
+        available, model, dimensions, embedding_count, coverage_percentage),
+        fts (dict with enabled, available, language, backend, engine,
+        indexed_entries, coverage_percentage), chunking (dict with enabled,
+        chunk_size, chunk_overlap, aggregation), reranking (dict with
+        enabled, available, provider, model), summary (dict with enabled,
+        available, provider, model, summary_count, coverage_percentage,
+        min_content_length), compression (dict with enabled, available,
+        provider, bits, variant, seed, dim, max_concurrent).
 
     Raises:
         ToolError: If retrieving statistics fails.
@@ -212,7 +216,51 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
                 'available': False,
             }
 
-        return stats
+        # Add compression configuration block. Sources provider/bits/variant/
+        # seed/dim from the singleton compression_metadata row (DB-truth);
+        # max_concurrent from runtime settings. read_compression_metadata
+        # returns None gracefully when the table is absent (pre-bootstrap)
+        # on both backends, so the call is safe unconditionally.
+        try:
+            from app.compression.provenance import read_compression_metadata
+
+            if settings.compression.enabled:
+                db_meta = await read_compression_metadata(manager)
+                if db_meta is not None:
+                    stats['compression'] = {
+                        'enabled': True,
+                        'available': True,
+                        'provider': db_meta.provider,
+                        'bits': db_meta.bits,
+                        'variant': db_meta.variant,
+                        'seed': db_meta.seed,
+                        'dim': db_meta.dim,
+                        'max_concurrent': settings.compression.max_concurrent,
+                    }
+                else:
+                    stats['compression'] = {
+                        'enabled': True,
+                        'available': False,
+                        'message': 'Compression enabled but provenance not bootstrapped',
+                    }
+            else:
+                stats['compression'] = {
+                    'enabled': False,
+                    'available': False,
+                }
+        except Exception as e:  # pragma: no cover -- defensive fallback
+            logger.warning(f'Failed to read compression metadata for statistics: {e}')
+            stats['compression'] = {
+                'enabled': settings.compression.enabled,
+                'available': False,
+                'message': 'Failed to read compression metadata',
+            }
+
+        # stats is built incrementally as a plain dict so each sub-block
+        # assignment stays readable; StatisticsResponseDict declares the
+        # contract consumers see. The cast at the boundary applies the
+        # typed contract without forcing per-block TypedDict locals.
+        return cast(StatisticsResponseDict, stats)
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:

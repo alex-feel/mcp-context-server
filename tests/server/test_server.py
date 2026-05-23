@@ -940,9 +940,14 @@ class TestGetStatistics:
     @pytest.mark.asyncio
     async def test_statistics_summary_enabled_unavailable(self) -> None:
         """Test summary section when enabled but provider not initialized."""
+        from typing import Any
+        from typing import cast
+
         stats = await get_statistics()
         assert 'summary' in stats
-        summary_info = stats['summary']
+        # SummaryStatsDict declares all fields total=False; cast so per-key
+        # indexing reads as a runtime structural assertion.
+        summary_info = cast(dict[str, Any], stats['summary'])
         assert summary_info['enabled'] is True
         assert summary_info['available'] is False
         assert 'message' in summary_info

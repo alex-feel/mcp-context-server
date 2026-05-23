@@ -1058,6 +1058,22 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, f'Failed to get statistics: {stats_data}'))
                 return False
 
+            # The response MUST include the compression sub-block alongside
+            # semantic_search/fts/chunking/reranking/summary so MCP clients
+            # can verify the active compression configuration at runtime.
+            if 'compression' not in stats_data:
+                self.test_results.append(
+                    (test_name, False, 'missing compression sub-block in stats response'),
+                )
+                return False
+            compression_block = stats_data['compression']
+            if 'enabled' not in compression_block:
+                self.test_results.append(
+                    (test_name, False,
+                     f'compression block missing enabled key: {compression_block}'),
+                )
+                return False
+
             # Store a new context
             result = await self.client.call_tool(
                 'store_context',
@@ -1095,6 +1111,34 @@ class MCPServerIntegrationTest:
             new_count = new_stats_data.get('total_entries', 0)
             old_images = stats_data.get('total_images', 0)
             new_images = new_stats_data.get('total_images', 0)
+
+            # When compression is enabled AND a context was just stored that
+            # produced embeddings, the semantic_search counts must reflect
+            # the stored rows. The chunk total comes from
+            # embedding_metadata.chunk_count -- the single source-of-truth
+            # populated by every write path (fp32 + compressed) on both
+            # backends. The compressed write path does NOT populate
+            # embedding_chunks (SQLite) and PostgreSQL drops
+            # vec_context_embeddings during the compression migration; any
+            # nonzero count here proves embedding_metadata is the source.
+            new_compression = new_stats_data.get('compression', {})
+            new_semantic = new_stats_data.get('semantic_search', {})
+            if (
+                new_compression.get('enabled')
+                and new_compression.get('available')
+                and new_semantic.get('available')
+            ):
+                semantic_embedding_count = new_semantic.get('embedding_count', 0)
+                semantic_avg_chunks = new_semantic.get('average_chunks_per_entry', 0.0)
+                if semantic_embedding_count <= 0 or semantic_avg_chunks <= 0.0:
+                    self.test_results.append(
+                        (test_name, False,
+                         ('Under compression the stats response shows '
+                          f'embedding_count={semantic_embedding_count}, '
+                          f'average_chunks_per_entry={semantic_avg_chunks} -- '
+                          'embedding_metadata.chunk_count was not the source')),
+                    )
+                    return False
 
             if new_count > old_count and new_images > old_images:
                 self.test_results.append(

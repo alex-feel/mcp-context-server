@@ -352,6 +352,10 @@ class TestLifespanErrorHandling:
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
+        # Disable compression so the lifespan inline INFO log skips the
+        # provenance read against the mock backend (mock_backend.execute_read
+        # returns MagicMock which cannot be awaited).
+        mock_settings.compression.enabled = False
 
         # Store and restore globals
         original_backend = app.startup._backend
@@ -422,6 +426,9 @@ class TestLifespanErrorHandling:
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
+        # Disable compression so the lifespan inline INFO log skips the
+        # provenance read against the mock backend.
+        mock_settings.compression.enabled = False
 
         # Store and restore globals
         original_backend = app.startup._backend
@@ -487,6 +494,9 @@ class TestLifespanErrorHandling:
         mock_settings.semantic_search.enabled = False
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
+        # Disable compression so the lifespan inline INFO log skips the
+        # provenance read against the mock backend.
+        mock_settings.compression.enabled = False
 
         original_backend = app.startup._backend
         original_repos = app.startup._repositories
@@ -557,6 +567,9 @@ class TestLifespanErrorHandling:
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
+        # Disable compression so the lifespan inline INFO log skips the
+        # provenance read against the mock backend.
+        mock_settings.compression.enabled = False
 
         original_backend = app.startup._backend
         original_repos = app.startup._repositories

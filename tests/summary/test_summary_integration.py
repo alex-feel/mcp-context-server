@@ -617,6 +617,9 @@ class TestSummaryLifespan:
         mock_settings.hybrid_search.enabled = False
         mock_settings.summary.generation_enabled = True
         mock_settings.summary.provider = 'ollama'
+        # Disable compression so the lifespan inline INFO log skips the
+        # provenance read against the mock backend.
+        mock_settings.compression.enabled = False
 
         original_backend = app.startup.get_backend()
         original_repos = app.startup.get_repositories()
@@ -684,6 +687,9 @@ class TestSummaryLifespan:
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.summary.generation_enabled = False
+        # Disable compression so the lifespan inline INFO log skips the
+        # provenance read against the mock backend.
+        mock_settings.compression.enabled = False
 
         original_backend = app.startup.get_backend()
         original_repos = app.startup.get_repositories()

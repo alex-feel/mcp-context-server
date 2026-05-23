@@ -1716,6 +1716,13 @@ class EmbeddingRepository(BaseRepository):
     async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:
         """Get embedding statistics including chunk information.
 
+        The chunk-count source is ``embedding_metadata.chunk_count`` (summed)
+        on BOTH backends, regardless of compression mode. This is the single
+        source-of-truth populated by every write path (fp32 SQLite, fp32
+        PostgreSQL, compressed SQLite, compressed PostgreSQL), so the
+        reported chunk total stays correct whether compressed payloads or
+        fp32 vectors are stored on disk.
+
         Args:
             thread_id: Optional filter by thread
 
@@ -1746,17 +1753,20 @@ class EmbeddingRepository(BaseRepository):
 
                 embedding_count = cursor.fetchone()[0]
 
-                # Get total chunk count from embedding_chunks table
+                # Chunk total is the sum of embedding_metadata.chunk_count,
+                # the single source-of-truth populated by every write path
+                # (fp32 + compressed) so the value stays correct in every
+                # backend/compression-mode combination.
                 if thread_id:
                     query3 = f'''
-                        SELECT COUNT(*)
-                        FROM embedding_chunks ec
-                        JOIN context_entries ce ON ec.context_id = ce.id
+                        SELECT COALESCE(SUM(em.chunk_count), 0)
+                        FROM embedding_metadata em
+                        JOIN context_entries ce ON em.context_id = ce.id
                         WHERE ce.thread_id = {self._placeholder(1)}
                     '''
                     cursor = conn.execute(query3, (thread_id,))
                 else:
-                    cursor = conn.execute('SELECT COUNT(*) FROM embedding_chunks')
+                    cursor = conn.execute('SELECT COALESCE(SUM(chunk_count), 0) FROM embedding_metadata')
 
                 total_chunks = cursor.fetchone()[0]
 
@@ -1793,17 +1803,24 @@ class EmbeddingRepository(BaseRepository):
             else:
                 embedding_count = await conn.fetchval('SELECT COUNT(*) FROM embedding_metadata')
 
-            # Get total chunk count from vec_context_embeddings (1:N relationship)
+            # Chunk total is the sum of embedding_metadata.chunk_count,
+            # the single source-of-truth populated by every write path
+            # (fp32 + compressed). On PostgreSQL the compression migration
+            # drops vec_context_embeddings, so reading the count from
+            # embedding_metadata is the only query that succeeds in both
+            # compression-enabled and compression-disabled deployments.
             if thread_id:
                 query3 = f'''
-                        SELECT COUNT(*)
-                        FROM vec_context_embeddings ve
-                        JOIN context_entries ce ON ve.context_id = ce.id
+                        SELECT COALESCE(SUM(em.chunk_count), 0)
+                        FROM embedding_metadata em
+                        JOIN context_entries ce ON em.context_id = ce.id
                         WHERE ce.thread_id = {self._placeholder(1)}
                     '''
                 total_chunks = await conn.fetchval(query3, thread_id)
             else:
-                total_chunks = await conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings')
+                total_chunks = await conn.fetchval(
+                    'SELECT COALESCE(SUM(chunk_count), 0) FROM embedding_metadata',
+                )
 
             coverage_percentage = (embedding_count / total_entries * 100) if total_entries > 0 else 0.0
             average_chunks = round(total_chunks / embedding_count, 2) if embedding_count > 0 else 0.0

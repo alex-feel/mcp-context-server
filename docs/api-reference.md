@@ -159,6 +159,7 @@ Get database statistics, usage metrics, and feature status.
 - Chunking configuration (enabled, available, chunk size, overlap, aggregation)
 - Reranking status (enabled, available, provider, model)
 - Summary generation status (enabled, available, provider, model, summary count, coverage, min content length)
+- Compression status (enabled, available, provider, bits, variant, seed, dim, max_concurrent) — present when `ENABLE_EMBEDDING_COMPRESSION=true`; reduced to `{enabled: false, available: false}` shape when disabled.
 
 ### update_context
 

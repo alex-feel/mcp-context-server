@@ -305,11 +305,15 @@ def force_compression_off(monkeypatch: pytest.MonkeyPatch) -> Generator[None, No
     # bindings" section documents this pattern.
     fresh = get_settings()
     import app.migrations.compression as _compression_migration_module
+    import app.server as _server_module
     import app.tools._shared as _shared_module
     import app.tools.context as _context_module
+    import app.tools.discovery as _discovery_module
     monkeypatch.setattr(_context_module, 'settings', fresh)
     monkeypatch.setattr(_shared_module, 'settings', fresh)
     monkeypatch.setattr(_compression_migration_module, 'settings', fresh)
+    monkeypatch.setattr(_server_module, 'settings', fresh)
+    monkeypatch.setattr(_discovery_module, 'settings', fresh)
     try:
         yield
     finally:
