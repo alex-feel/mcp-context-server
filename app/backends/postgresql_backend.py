@@ -520,22 +520,36 @@ class PostgreSQLBackend:
                 'reset': _reset_connection,  # Health check before pool return
             }
 
-            # Add server-side TCP keepalive via GUC parameters (SECONDARY mechanism)
-            # These are effective for direct PostgreSQL connections but silently ignored
-            # by Supavisor/PgBouncer. The PRIMARY mechanism is client-side setsockopt
+            # Build server_settings sent in the PostgreSQL startup packet so
+            # session-level parameters are set in a single round-trip and
+            # persist for the connection's lifetime (asyncpg-recommended over
+            # per-connection ``SET`` callbacks).
+            #
+            # search_path is always populated to enforce the operator contract
+            # documented in docs/embedding-compression.md: bare table names
+            # resolve to ``POSTGRESQL_SCHEMA`` without per-operator ``?options=``
+            # configuration. When ``POSTGRESQL_SCHEMA=public`` (the default)
+            # this resolves to ``"public", public`` which is a benign no-op.
+            # Double-quoting the schema name is safe for mixed-case or
+            # reserved identifiers.
+            #
+            # TCP keepalive GUCs are SECONDARY: effective for direct PostgreSQL
+            # connections but silently ignored by Supavisor/PgBouncer. The
+            # PRIMARY TCP keepalive mechanism is client-side setsockopt
             # configured in _init_connection above.
+            server_settings: dict[str, str] = {
+                'search_path': f'"{settings.storage.postgresql_schema}", public',
+            }
             tcp_idle_guc = settings.storage.postgresql_tcp_keepalives_idle_s
             tcp_interval_guc = settings.storage.postgresql_tcp_keepalives_interval_s
             tcp_count_guc = settings.storage.postgresql_tcp_keepalives_count
-            if tcp_idle_guc > 0 or tcp_interval_guc > 0 or tcp_count_guc > 0:
-                server_settings: dict[str, str] = {}
-                if tcp_idle_guc > 0:
-                    server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
-                if tcp_interval_guc > 0:
-                    server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
-                if tcp_count_guc > 0:
-                    server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
-                pool_kwargs['server_settings'] = server_settings
+            if tcp_idle_guc > 0:
+                server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
+            if tcp_interval_guc > 0:
+                server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
+            if tcp_count_guc > 0:
+                server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
+            pool_kwargs['server_settings'] = server_settings
 
             # Add connection recycling settings if configured (0 means disabled)
             if settings.storage.postgresql_max_inactive_lifetime_s > 0:

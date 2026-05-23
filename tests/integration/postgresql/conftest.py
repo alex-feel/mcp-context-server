@@ -122,28 +122,58 @@ def _free_port() -> int:
 def _wait_for_health(timeout_s: float = 60.0) -> None:
     """Poll ``docker compose ps`` until the postgres-test container is healthy.
 
+    Surfaces ``docker compose ps`` ``stderr`` in the final ``TimeoutError``
+    so bring-up failures are visible to the developer/CI. Wraps each
+    ``subprocess.run`` in a 5s timeout so the polling loop cannot stall on
+    a hung Docker daemon (mirrors the established :func:`_force_cleanup`
+    pattern at the symmetric teardown boundary).
+
     Args:
         timeout_s: Maximum wait time in seconds.
 
     Raises:
         TimeoutError: When the container does not become healthy in time.
+            The error message includes the most recent ``docker compose ps``
+            stderr and stdout to aid bring-up debugging.
     """
     deadline = time.time() + timeout_s
+    last_result: subprocess.CompletedProcess[str] | None = None
     while time.time() < deadline:
-        result = subprocess.run(
-            [
-                'docker', 'compose',
-                '-p', PROJECT_NAME,
-                '-f', str(COMPOSE_FILE),
-                'ps', '--format', '{{.Health}}',
-            ],
-            capture_output=True, text=True, check=False,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    'docker', 'compose',
+                    '-p', PROJECT_NAME,
+                    '-f', str(COMPOSE_FILE),
+                    'ps', '--format', '{{.Health}}',
+                ],
+                capture_output=True, text=True, check=False, timeout=5,
+            )
+        except subprocess.TimeoutExpired as exc:
+            warnings.warn(
+                f'docker compose ps for {PROJECT_NAME} timed out after 5s: {exc!r}',
+                stacklevel=2,
+            )
+            time.sleep(1.0)
+            continue
+        last_result = result
         if 'healthy' in result.stdout:
             return
         time.sleep(1.0)
+
+    stderr_hint = (
+        last_result.stderr.strip()
+        if last_result and last_result.stderr
+        else '(no stderr captured)'
+    )
+    stdout_hint = (
+        last_result.stdout.strip()
+        if last_result and last_result.stdout
+        else '(no stdout captured)'
+    )
     raise TimeoutError(
-        f'PostgreSQL container did not become healthy within {timeout_s}s',
+        f'PostgreSQL container did not become healthy within {timeout_s}s. '
+        f'Last `docker compose ps` stderr: {stderr_hint}; stdout: {stdout_hint}',
     )
 
 
@@ -214,11 +244,14 @@ async def pg_non_default_schema_db(pg_test_url: str) -> AsyncIterator[str]:
 
     The fixture creates a fresh database, installs pgvector inside it,
     creates the ``mcp_test`` schema, and yields the connection string.
-    Tests that consume this fixture are expected to set ``search_path``
-    on every connection they create (helper available via
-    ``apply_non_default_search_path``); the production
-    ``PostgreSQLBackend`` does not yet install a per-connection
-    ``init=`` hook for ``search_path``.
+    Tests that consume this fixture exercise the production schema
+    routing automatically because :class:`PostgreSQLBackend` sets
+    ``search_path`` on every pool connection via
+    ``asyncpg.create_pool(server_settings={'search_path': ...})``.
+    Ad-hoc ``asyncpg.connect()`` calls inside the fixture's own setup
+    phase (database creation, schema creation) still need explicit
+    ``search_path`` configuration; use
+    :func:`apply_non_default_search_path` for those callsites.
 
     The database is dropped at teardown so the fixture is self-cleaning
     and does not interact with the singleton ``compression_metadata``
@@ -260,11 +293,11 @@ async def pg_non_default_schema_db(pg_test_url: str) -> AsyncIterator[str]:
 async def apply_non_default_search_path(conn: asyncpg.Connection) -> None:
     """Set ``search_path`` on ``conn`` to the non-default schema first.
 
-    Helper for tests using ``pg_non_default_schema_db``. Production
-    code may eventually install this via an ``asyncpg.create_pool``
-    ``init=`` hook; this helper exists to make the operator's
-    ``search_path`` contract explicit at test boundaries until that
-    upgrade lands.
+    Helper for ad-hoc ``asyncpg.connect()`` callsites in tests that
+    need to operate on tables in the non-default schema BEFORE the
+    production pool (which sets ``search_path`` automatically via
+    ``server_settings``) is initialized. Pool-routed connections do
+    not need this helper.
     """
     await conn.execute(
         f'SET search_path = {_NON_DEFAULT_SCHEMA}, public',
