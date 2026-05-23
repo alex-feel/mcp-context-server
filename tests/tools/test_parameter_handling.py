@@ -219,7 +219,7 @@ class TestParameterHandling:
             include_images=True,
         )
         assert len(fetched) == 1
-        entry: dict[str, Any] = dict(fetched[0])
+        entry: dict[str, Any] = {**fetched[0]}
 
         assert set(entry['tags']) == set(tags)
         assert entry['metadata'] == metadata
@@ -928,7 +928,7 @@ class TestParameterInteractions:
             context_ids=[result['context_id']],
             include_images=True,
         )
-        entry: dict[str, Any] = dict(fetched[0])
+        entry: dict[str, Any] = {**fetched[0]}
         assert entry['metadata'] == metadata
         assert len(entry['images']) == 2
 

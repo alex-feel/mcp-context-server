@@ -207,10 +207,11 @@ class TestContextEntryModel:
     def test_summary_field_defaults_to_none(self) -> None:
         """Test summary field defaults to None."""
         from app.models import ContextEntry
+        from app.models import SourceType
 
         entry = ContextEntry(
             thread_id='t1',
-            source='user',
+            source=SourceType.USER,
             text_content='hello',
         )
         assert entry.summary is None
@@ -218,10 +219,11 @@ class TestContextEntryModel:
     def test_summary_field_accepts_string(self) -> None:
         """Test summary field accepts a string value."""
         from app.models import ContextEntry
+        from app.models import SourceType
 
         entry = ContextEntry(
             thread_id='t1',
-            source='user',
+            source=SourceType.USER,
             text_content='hello',
             summary='A brief summary.',
         )

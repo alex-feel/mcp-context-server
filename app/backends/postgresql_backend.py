@@ -19,6 +19,7 @@ from enum import Enum
 from typing import Any
 from typing import TypeVar
 from typing import cast
+from typing import overload
 from urllib.parse import quote
 
 import asyncpg
@@ -727,6 +728,24 @@ class PostgreSQLBackend:
             await self.circuit_breaker.record_failure()
             return False
 
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        validate_connection: bool = False,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        validate_connection: bool = False,
+        **kwargs: Any,
+    ) -> T: ...
+
     async def execute_write(
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
@@ -839,6 +858,22 @@ class PostgreSQLBackend:
         self.metrics.last_error = str(last_error)
         self.metrics.last_error_time = time.time()
         raise last_error or Exception('Max retries exceeded for write operation')
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
 
     async def execute_read(
         self,

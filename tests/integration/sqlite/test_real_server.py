@@ -9842,7 +9842,9 @@ async def test_store_context_max_size_image(tmp_path: Path) -> None:
                 if content and hasattr(content[0], 'text'):
                     import json
 
-                    data = json.loads(content[0].text)
+                    text_value = content[0].text
+                    assert isinstance(text_value, str | bytes | bytearray)
+                    data = json.loads(text_value)
                 else:
                     data = {'error': 'No content in result'}
             else:

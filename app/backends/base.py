@@ -15,6 +15,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any
 from typing import Protocol
 from typing import TypeVar
+from typing import overload
 from typing import runtime_checkable
 
 T = TypeVar('T')
@@ -231,6 +232,22 @@ class StorageBackend(Protocol):
         """
         ...
 
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
     async def execute_write(
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
@@ -300,6 +317,22 @@ class StorageBackend(Protocol):
             context_id = await backend.execute_write(insert_context, 'Hello', 'thread-123')
         """
         ...
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
 
     async def execute_read(
         self,

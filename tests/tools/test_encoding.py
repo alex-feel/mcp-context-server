@@ -15,6 +15,7 @@ import pytest
 import app.tools
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from app.types import MetadataDict
 
 # Get the actual async functions from app.tools
 store_context = app.tools.store_context
@@ -267,7 +268,7 @@ class TestUTF8Encoding:
     @pytest.mark.asyncio
     async def test_metadata_with_unicode(self) -> None:
         """Test storing and retrieving metadata with Unicode values."""
-        metadata = {
+        metadata: MetadataDict = {
             'title': '测试标题',
             'description': 'وصف الاختبار',
             'tags': ['тег1', 'タグ2', '태그3'],
@@ -281,7 +282,7 @@ class TestUTF8Encoding:
                 thread_id='test-thread',
                 source='user',
                 text='Test content',
-                metadata=metadata,  # type: ignore[arg-type]
+                metadata=metadata,
             )
 
         assert result['success'] is True

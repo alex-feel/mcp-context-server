@@ -100,7 +100,7 @@ class TestStoreContextEdgeCases:
         # Verify unicode is preserved
         entries = await get_context_by_ids(context_ids=[result['context_id']])
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] is not None
         assert 'Unicode test' in entry['text_content']
 
@@ -120,7 +120,7 @@ class TestStoreContextEdgeCases:
         # Verify full text is stored
         entries = await get_context_by_ids(context_ids=[result['context_id']])
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert len(entry['text_content']) == 10000
 
     @pytest.mark.asyncio
@@ -333,7 +333,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify text changed but tags unchanged
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] == 'Updated text'
         assert 'tag1' in entry['tags']
 
@@ -359,7 +359,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify tags changed but text unchanged
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] == 'Original text'
         assert 'new_tag1' in entry['tags']
         assert 'new_tag2' in entry['tags']
@@ -387,7 +387,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify metadata changed but text unchanged
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] == 'Original text'
         assert entry['metadata']['new_key'] == 'new_value'
 
@@ -413,7 +413,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify tags are cleared
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['tags'] == []
 
     @pytest.mark.asyncio
@@ -499,7 +499,7 @@ class TestGetContextByIdsEdgeCases:
         )
 
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio
@@ -523,7 +523,7 @@ class TestGetContextByIdsEdgeCases:
         entries = await get_context_by_ids(context_ids=[context_id])
 
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['metadata'] == complex_metadata
 
 
@@ -603,7 +603,7 @@ class TestStoreContextWithImages:
             context_ids=[result['context_id']],
             include_images=True,
         )
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio

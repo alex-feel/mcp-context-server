@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import TypeVar
 from typing import cast
+from typing import overload
 from typing import override
 
 from app.settings import get_settings
@@ -989,6 +990,22 @@ class SQLiteBackend:
                 'Direct write connections not allowed. Use execute_write() method or set allow_write=True.',
             )
 
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
     async def execute_write(
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
@@ -1032,6 +1049,22 @@ class SQLiteBackend:
 
         # Wait for result
         return await future
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
 
     async def execute_read(
         self,

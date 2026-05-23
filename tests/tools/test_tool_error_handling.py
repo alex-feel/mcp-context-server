@@ -882,22 +882,29 @@ class TestJSONErrorConsistency:
         This test validates business logic error consistency.
         """
         _ = mock_server_dependencies  # Fixture needed for mocking
-        # All tools should raise ToolError for business logic failures
-        tools_and_errors = [
-            (store_context, {'thread_id': '', 'source': 'user', 'text': 'test'}),  # Empty after strip
-            (update_context, {'context_id': '0190abcdef1234567890abcd00000001', 'text': ''}),  # Empty text
-            (delete_context, {}),  # No parameters provided
-        ]
 
-        for tool_func, params in tools_and_errors:
-            with pytest.raises(ToolError) as exc_info:
-                await tool_func(**params)
+        # All tools should raise ToolError for business logic failures.
+        # Each call is unrolled so static type checkers bind to the specific
+        # overload of the called tool, rather than a union over all three tools.
+        async def _invoke_tools() -> list[ToolError]:
+            errors: list[ToolError] = []
+            with pytest.raises(ToolError) as exc_info_store:
+                await store_context(thread_id='', source='user', text='test')  # Empty after strip
+            errors.append(exc_info_store.value)
+            with pytest.raises(ToolError) as exc_info_update:
+                await update_context(context_id='0190abcdef1234567890abcd00000001', text='')  # Empty text
+            errors.append(exc_info_update.value)
+            with pytest.raises(ToolError) as exc_info_delete:
+                await delete_context()  # No parameters provided
+            errors.append(exc_info_delete.value)
+            return errors
 
+        for error in await _invoke_tools():
             # All errors should be ToolError instances
-            assert isinstance(exc_info.value, ToolError)
+            assert isinstance(error, ToolError)
 
             # All error messages should be strings
-            error_msg = str(exc_info.value)
+            error_msg = str(error)
             assert isinstance(error_msg, str)
 
             # All error messages should be non-empty
