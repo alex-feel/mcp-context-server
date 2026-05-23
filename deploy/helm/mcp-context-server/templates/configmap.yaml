@@ -97,5 +97,14 @@ data:
   SUMMARY_RETRY_BASE_DELAY_S: {{ .Values.search.summary.retryBaseDelay | quote }}
   SUMMARY_MAX_CONCURRENT: {{ .Values.search.summary.maxConcurrent | quote }}
   {{- end }}
+  # Embedding compression (default ON; see docs/embedding-compression.md)
+  ENABLE_EMBEDDING_COMPRESSION: {{ .Values.compression.enabled | quote }}
+  {{- if .Values.compression.enabled }}
+  COMPRESSION_PROVIDER: {{ .Values.compression.provider | quote }}
+  COMPRESSION_BITS: {{ .Values.compression.bits | quote }}
+  COMPRESSION_VARIANT: {{ .Values.compression.variant | quote }}
+  COMPRESSION_SEED: {{ .Values.compression.seed | quote }}
+  COMPRESSION_MAX_CONCURRENT: {{ .Values.compression.maxConcurrent | quote }}
+  {{- end }}
   # Search default sort
   SEARCH_DEFAULT_SORT_BY: {{ .Values.search.defaultSortBy | quote }}

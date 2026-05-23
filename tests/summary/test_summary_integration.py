@@ -77,14 +77,14 @@ def reset_summary_state() -> Generator[None, None, None]:
     """Reset global summary state between tests."""
     original_summary_provider = app.startup.get_summary_provider()
     original_embedding_provider = app.startup.get_embedding_provider()
-    shared_tools._summary_semaphore = None
+    shared_tools._reset_summary_semaphore()
 
     try:
         yield
     finally:
         set_summary_provider(original_summary_provider)
         set_embedding_provider(original_embedding_provider)
-        shared_tools._summary_semaphore = None
+        shared_tools._reset_summary_semaphore()
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')

@@ -66,6 +66,7 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
    - **Embeddings** (`app/embeddings/`): Ollama, OpenAI, Azure, HuggingFace, Voyage. Retry via tenacity (`retry.py`). Context limits (`context_limits.py`). LangSmith tracing (`tracing.py`).
    - **Reranking** (`app/reranking/`): FlashRank (default, 34MB model, ONNX inference offloaded to thread pool).
    - **Summary** (`app/summary/`): Ollama, OpenAI, Anthropic. Retry via tenacity. Context limits (`context_limits.py`). Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
+   - **Compression** (`app/compression/`): TurboQuant (default ON in v3.0.0; set ENABLE_EMBEDDING_COMPRESSION=false to opt out). Pydantic v2 boundary types + frozen-slotted dataclasses for hot-path values; `app/compression/providers/turboquant/_types.py` defines a discriminated `MSEPayload | IPPayload` union with `from_bytes`/`to_bytes` and same-variant `concat` classmethods, plus a module-level dispatcher `payload_from_bytes(blob)` that reads the variant code byte and delegates to the right subtype. Provider factory (`PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts) mirrors the other provider layers; the cached compression provider lives in `app/compression/factory.py` as `get_cached_compression_provider()` and is used by both the encode and the compressed read paths. Bootstrap-only startup validator (`app/startup/compression_validator.py`) enforces the seed-locked invariant against the singleton `compression_metadata` table; provenance helpers live in `app/compression/provenance.py`. CPU-bound concurrency via a dedicated `_compression_semaphore` in `app/tools/_shared.py` acquired INSIDE `_encode_one` so each encode holds at most one permit (separate from the I/O-bound embedding/summary semaphores). Compressed read path: `EmbeddingRepository.search_compressed()` dispatched from `search()` when `settings.compression.enabled` is true; backend-agnostic linear scan with per-context aggregation; candidate payloads are decoded via `payload_from_bytes` and combined with the subtype's `concat` classmethod so the TurboQuant provider is invoked exactly once per query batch. Compressed write path wired through the existing chunked write flow; one bit-packed payload per chunk in `vec_context_embeddings_compressed`. See `docs/embedding-compression.md` for the full user-facing reference.
 
 7. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain's `RecursiveCharacterTextSplitter`). `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
 
@@ -88,6 +89,8 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata, s
 **Embedding chunk and vec0 INTEGER bridge (preserved)**: Chunking maintains a 1:N context-to-embedding mapping via `embedding_chunks` with INTEGER rowid bridges to vec0. Columns `embedding_chunks.id`, `embedding_chunks.vec_rowid`, `vec_context_embeddings.id` stay INTEGER/BIGSERIAL; only the outer `context_id` FK is TEXT/UUID.
 
 **Performance**: WAL mode, 256MB mmap, compound index (thread_id, source). Indexed metadata: `status`, `agent_name`, `task_name`, `project`, `report_type`. See "Metadata Field Indexing by Backend" for per-backend details.
+
+**Optional compressed embedding storage**: When `ENABLE_EMBEDDING_COMPRESSION=true`, the fp32 `vec_context_embeddings` table is REPLACED by `vec_context_embeddings_compressed` (BLOB on SQLite, BYTEA on PostgreSQL) plus a singleton `compression_metadata(id INTEGER PRIMARY KEY CHECK (id = 1), provider, bits, variant, seed, dim, created_at)` provenance row. The `CHECK (id = 1)` singleton pattern is intentional: the rotation seed is load-bearing and the SQL-layer constraint prevents accidental duplicate-row insertion. On PostgreSQL, `idx_vec_context_embeddings_hnsw` is dropped during `--compress` migration and recreated during `--decompress`. Compressed payloads have no fixed width; size depends on `dim`, `bits`, and `variant`. The wire format uses a 4-byte magic prefix, a 1-byte variant code, and per-variant header fields; the IP variant includes an explicit 1-byte `mse_bits` field that the decoder reads directly, so future encoders can choose a different inner-MSE bit width without ambiguity. See `docs/embedding-compression.md`.
 
 ### Search Tools
 
@@ -227,6 +230,8 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **Retrieval**: `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` (false*; tri-state on `get_context_by_ids`: when false (default), the `summary` key is omitted entirely so `entry.get('summary')` returns `None` ("feature disabled"); when true with a stored non-empty summary, the value is returned verbatim; when true but DB summary is NULL/empty, normalized to `''` ("feature on, no data yet"). `text_content` always contains the full untruncated text.)
 
+**Compression** (default ON in v3.0.0): `ENABLE_EMBEDDING_COMPRESSION` (true*; set false to opt out and keep fp32 storage), `COMPRESSION_PROVIDER` (turboquant*), `COMPRESSION_BITS` (4*; range 2-4), `COMPRESSION_VARIANT` (ip*/mse), `COMPRESSION_SEED` (0*; load-bearing and immutable after first compressed row is written), `COMPRESSION_MAX_CONCURRENT` (min(cpu_count, 4)*; range 1-32). Full reference: `docs/embedding-compression.md`.
+
 **Provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, and metadata indexing vars**: See `app/settings.py` for complete list with defaults and descriptions.
 
 *\* = default value*
@@ -309,6 +314,14 @@ uv run python -c "from app.startup import init_database; import asyncio; asyncio
 ## Code Quality Standards
 
 Ruff (127 chars, single quotes), mypy/pyright strict for `app/`.
+
+## Documentation Style
+
+Markdown files under `docs/` and the top-level `README.md` / `CLAUDE.md` use **one paragraph per physical line**. Do NOT hard-wrap prose at 70 / 80 / 100 columns. Tables, bullet/numbered list items, code blocks, headings, and YAML/JSON blocks retain their natural line breaks.
+
+Rationale: hard-wrapped prose forces every minor edit to reflow neighboring lines, polluting diffs and making line-anchored `grep` results misleading. One paragraph per line keeps `git diff` minimal (a wording change touches exactly one line), keeps `grep -n` results pointing at the start of the relevant paragraph, and matches the convention already used by the majority of the project's prose paragraphs.
+
+Existing files that violate this convention are normalized incrementally during related work. When you touch a paragraph for a content reason, normalize it to one line as part of the same edit; do not perform standalone reflow sweeps. The narrow hard-wrap section in `docs/embedding-compression.md` (PostgreSQL `search_path` contract) was reflowed as part of the v3.0.0 default-ON compression documentation refresh.
 
 ## GitHub Actions Security Policy
 
@@ -458,6 +471,12 @@ The `store_context_batch` tool uses the same dedup logic (calls `store_with_dedu
 **Update**: Partial updates (only provided fields). Immutable: `id`, `thread_id`, `source`, `created_at`. Auto-managed: `content_type`, `updated_at`. Tags/images: replacement (not merge). Transaction-wrapped.
 
 **Batch**: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries). `atomic=true` (default): all-or-nothing. `atomic=false`: independent processing with per-entry results. Batch and non-batch tools share per-entry processing logic (image validation, transaction execution, response message building) via `app/tools/_shared.py` to guarantee behavioral parity.
+
+### Compression Seed-Locked Invariant
+
+`COMPRESSION_SEED` has default `0` in v3.0.0. The startup validator (`app/startup/compression_validator.py`) inserts a singleton row into `compression_metadata` on the first start using the active runtime configuration and treats the DB as the source of truth thereafter. Subsequent starts where the runtime `CompressionSettings` disagrees with the persisted `(provider, bits, variant, seed, dim)` row raise `ConfigurationError` (exit 78); the supervisor will NOT auto-restart, so the misconfiguration surfaces loudly instead of producing silently corrupted search results.
+
+In multi-pod Kubernetes deployments all pods MUST inherit the SAME `COMPRESSION_SEED`. Use a ConfigMap-bound env var so every pod resolves to the identical value. Changing the seed AFTER any compressed data has been stored will corrupt every decode/search operation; there is no recovery path besides restoring from backup. The Helm chart ships an active compression block (`enabled: true`, `seed: 0`) in both `deploy/helm/mcp-context-server/values-sqlite.yaml` and `values-postgresql.yaml`; the PostgreSQL profile additionally documents the multi-pod ConfigMap discipline inline, including the requirement that every pod inherit the same seed via the chart's ConfigMap template. Set `compression.enabled: false` in your Helm values to opt out on a given deployment. See `docs/embedding-compression.md` for the full reference.
 
 ### Known Upstream Bugs and Temporary Patches
 

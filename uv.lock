@@ -1068,6 +1068,7 @@ dependencies = [
     { name = "anyio" },
     { name = "asyncpg" },
     { name = "fastmcp" },
+    { name = "numpy" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
@@ -1158,6 +1159,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
+    { name = "threadpoolctl" },
     { name = "types-jsonschema" },
 ]
 
@@ -1191,6 +1193,7 @@ requires-dist = [
     { name = "langchain-voyageai", marker = "extra == 'embeddings-all'", specifier = ">=0.3.0" },
     { name = "langchain-voyageai", marker = "extra == 'embeddings-voyage'", specifier = ">=0.3.0" },
     { name = "langsmith", marker = "extra == 'langsmith'", specifier = ">=0.6.3" },
+    { name = "numpy", specifier = ">=2.4.1" },
     { name = "numpy", marker = "extra == 'embeddings-all'", specifier = ">=2.4.1" },
     { name = "numpy", marker = "extra == 'embeddings-azure'", specifier = ">=2.4.1" },
     { name = "numpy", marker = "extra == 'embeddings-huggingface'", specifier = ">=2.4.1" },
@@ -1228,6 +1231,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
     { name = "pytest-cov", specifier = ">=6.1.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
+    { name = "threadpoolctl", specifier = ">=3.0" },
     { name = "types-jsonschema", specifier = ">=4.23.0" },
 ]
 
@@ -2030,6 +2034,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0a/d4/2b0cd0fe285e14b36db076e78c93766ff1d529d70408bd1d2a5a84f1d929/tenacity-9.1.2.tar.gz", hash = "sha256:1169d376c297e7de388d18b4481760d478b0e99a777cad3a9c86e556f4b697cb", size = 48036 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/30/643397144bfbfec6f6ef821f36f33e57d35946c44a2352d3c9f0ae847619/tenacity-9.1.2-py3-none-any.whl", hash = "sha256:f77bf36710d8b73a50b2dd155c97b870017ad21afe6ab300326b0371b3b05138", size = 28248 },
+]
+
+[[package]]
+name = "threadpoolctl"
+version = "3.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/4d/08c89e34946fce2aec4fbb45c9016efd5f4d7f24af8e5d93296e935631d8/threadpoolctl-3.6.0.tar.gz", hash = "sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e", size = 21274 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/d5/f9a850d79b0851d1d4ef6456097579a9005b31fea68726a4ae5f2d82ddd9/threadpoolctl-3.6.0-py3-none-any.whl", hash = "sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb", size = 18638 },
 ]
 
 [[package]]

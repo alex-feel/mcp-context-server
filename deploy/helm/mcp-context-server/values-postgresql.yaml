@@ -26,3 +26,23 @@ search:
 
 ollama:
   enabled: false
+
+# Embedding compression (default ON in v3.0.0; see docs/embedding-compression.md).
+# COMPRESSION_SEED is load-bearing and IMMUTABLE after the first server start.
+# Pick a non-negative integer and keep it stable for the lifetime of this
+# database; a mismatch refuses startup with exit 78.
+# Set compression.enabled: false to opt out and use fp32 storage.
+#
+# IMPORTANT for multi-pod deployments: every pod that connects to the same
+# database MUST inherit the SAME COMPRESSION_SEED. Define the value once here
+# (or in a ConfigMap) so that every replica resolves to the identical seed;
+# do NOT set the seed via per-pod env vars or per-pod overrides. This file is
+# the canonical source of truth because the chart's ConfigMap template pulls
+# .Values.compression.seed verbatim into every pod's env.
+compression:
+  enabled: true
+  provider: turboquant
+  bits: 4
+  variant: ip
+  seed: 0
+  maxConcurrent: 4

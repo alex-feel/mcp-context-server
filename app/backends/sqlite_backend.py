@@ -622,7 +622,7 @@ class SQLiteBackend:
 
     async def _ensure_writer_connection(self) -> sqlite3.Connection:
         """Ensure writer connection exists and is healthy."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _get_writer() -> sqlite3.Connection:
             with self._pool_lock:
@@ -635,7 +635,7 @@ class SQLiteBackend:
 
     async def _get_reader_connection(self) -> sqlite3.Connection:
         """Get a reader connection from the pool."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _get_reader() -> sqlite3.Connection:
             # For concurrent operations, always create isolated connections
@@ -790,7 +790,7 @@ class SQLiteBackend:
         """Execute a write request with retry logic."""
         assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         last_error = None
 
         for attempt in range(self.retry_config.max_retries):
@@ -881,7 +881,7 @@ class SQLiteBackend:
 
     async def _perform_health_check(self) -> None:
         """Perform health check on all connections."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _check() -> None:
             with self._pool_lock:
@@ -975,11 +975,11 @@ class SQLiteBackend:
                 writer = await self._ensure_writer_connection()
                 try:
                     yield writer
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     await loop.run_in_executor(None, writer.commit)
                     self.circuit_breaker.record_success()
                 except Exception:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     await loop.run_in_executor(None, writer.rollback)
                     self.circuit_breaker.record_failure()
                     raise
@@ -1057,7 +1057,7 @@ class SQLiteBackend:
             synchronously in a thread executor to avoid blocking the event loop.
         """
         async with self.get_connection(readonly=True) as conn:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             def _execute() -> T:
                 # Cast to sync callable since SQLiteBackend only uses sync operations
@@ -1124,7 +1124,7 @@ class SQLiteBackend:
         # Acquire writer lock to ensure exclusive access
         async with self._writer_lock:
             writer = await self._ensure_writer_connection()
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Create transaction context
             txn_context = SQLiteTransactionContext(_connection=writer)

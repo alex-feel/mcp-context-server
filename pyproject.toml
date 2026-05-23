@@ -18,6 +18,7 @@ dependencies = [
     "anyio==4.12.1",
     "tenacity==9.1.2",
     "uuid_utils>=0.14.1,<0.15.0",
+    "numpy>=2.4.1",
 ]
 
 [build-system]
@@ -143,6 +144,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "asyncpg-stubs>=0.31.1",
     "types-jsonschema>=4.23.0",
+    "threadpoolctl>=3.0",
 ]
 
 [tool.ruff]
@@ -322,6 +324,7 @@ module = [
   'langsmith.*',
   'onnxruntime',
   'onnxruntime.*',
+  'threadpoolctl',
 ]
 ignore_missing_imports = true
 follow_imports = 'skip'
@@ -413,6 +416,7 @@ markers = [
     "performance: marks tests as performance tests",
     "requires_chunking: marks tests requiring langchain-text-splitters",
     "requires_flashrank: marks tests requiring flashrank",
+    "requires_docker_postgres: marks tests requiring a docker-compose PostgreSQL container (skipped when docker is unavailable)",
 ]
 
 [tool.coverage.run]

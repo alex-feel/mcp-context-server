@@ -662,12 +662,41 @@ class TestChunkingMigrationSQLFiles:
         assert 'chunk_start' not in sql_content.lower(), 'chunk_start should NOT be in SQLite migration'
         assert 'chunk_end' not in sql_content.lower(), 'chunk_end should NOT be in SQLite migration'
 
-    def test_postgresql_sql_schema_templating(self) -> None:
-        """Verify PostgreSQL SQL uses {SCHEMA} templating."""
-        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+    def test_postgresql_sql_uses_bare_tables_and_current_schema(self) -> None:
+        """Verify PostgreSQL chunking SQL uses BARE table names and
+        ``current_schema()`` for catalog filters.
+
+        BARE table/index DDL relies on the operator's ``search_path``
+        configuration (``$POSTGRESQL_SCHEMA, public``). Idempotency-
+        check filters against ``information_schema`` and ``pg_indexes``
+        use ``current_schema()`` so the check inspects the same schema
+        the migration writes to. This matches the BARE-table convention
+        established by ``app/schemas/postgresql_schema.sql`` and the
+        read path in ``app/repositories/embedding_repository.py``.
+        """
+        migration_path = (
+            Path(__file__).parent.parent.parent
+            / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+        )
         sql_content = migration_path.read_text(encoding='utf-8')
 
-        assert '{SCHEMA}' in sql_content, 'PostgreSQL migration should use {SCHEMA} templating'
+        # Strip SQL comments before asserting absence of {SCHEMA}: the
+        # header comment legitimately references the placeholder in
+        # prose explaining the BARE-DDL convention. Only active DDL
+        # lines are part of the contract.
+        sql_no_comments = '\n'.join(
+            line for line in sql_content.splitlines()
+            if not line.strip().startswith('--')
+        )
+        assert '{SCHEMA}' not in sql_no_comments, (
+            'Chunking migration must use BARE table names; '
+            '{SCHEMA} substitution was dropped to align with the '
+            'project-wide bare-DDL convention.'
+        )
+        assert 'current_schema()' in sql_content, (
+            'Chunking migration idempotency-check filters must use '
+            'current_schema() to introspect the resolved schema.'
+        )
 
     def test_both_sql_files_are_idempotent(self) -> None:
         """Verify both SQL files use IF NOT EXISTS / IF EXISTS patterns."""

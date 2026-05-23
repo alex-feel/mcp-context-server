@@ -1,5 +1,6 @@
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -1030,6 +1031,75 @@ class StorageSettings(BaseSettings):
         return int(self.pool_connection_timeout_s * 1000)
 
 
+class CompressionSettings(CommonSettings):
+    """Embedding compression settings.
+
+    Carries configuration for the TurboQuant embedding compression
+    subsystem. The runtime storage and search paths consult these
+    settings when ``ENABLE_EMBEDDING_COMPRESSION`` is true; a startup
+    validator enforces the seed-locked invariant against the
+    ``compression_metadata`` table.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        alias='ENABLE_EMBEDDING_COMPRESSION',
+        description='Enable TurboQuant embedding compression at storage time. '
+                    'Default true. fp32 embeddings are replaced with bit-packed '
+                    'compressed payloads (~8x storage reduction at the default '
+                    'bits=4). Set ENABLE_EMBEDDING_COMPRESSION=false to disable '
+                    'compression and keep fp32 storage.',
+    )
+
+    provider: Literal['turboquant'] = Field(
+        default='turboquant',
+        alias='COMPRESSION_PROVIDER',
+        description='Compression provider. v3.0.0 supports only turboquant.',
+    )
+
+    bits: int = Field(
+        default=4,
+        ge=2,
+        le=4,
+        alias='COMPRESSION_BITS',
+        description='Bits per coordinate. 2 = 16x compression, 3 = ~11x, 4 = 8x. '
+                    'Default 4 = ~8x with high recall. The lower bound of 2 is '
+                    "required by variant='ip' (the inner-product variant reserves "
+                    'one bit for the QJL sign).',
+    )
+
+    variant: Literal['mse', 'ip'] = Field(
+        default='ip',
+        alias='COMPRESSION_VARIANT',
+        description="'ip' (default): Algorithm 2 with QJL, unbiased inner-product "
+                    "estimator. 'mse': Algorithm 1, L2-optimal reconstruction.",
+    )
+
+    seed: int = Field(
+        default=0,
+        ge=0,
+        alias='COMPRESSION_SEED',
+        description='Rotation matrix seed. Load-bearing invariant: rotations are '
+                    'deterministic given the seed; changing the seed AFTER any '
+                    'compressed data has been stored will corrupt all decode/search '
+                    'operations. Default 0. Pick any stable non-negative integer '
+                    'and keep it constant for the lifetime of the database; the '
+                    'value is persisted in compression_metadata at first startup '
+                    'and validated on each subsequent start (exit 78 on mismatch).',
+    )
+
+    max_concurrent: int = Field(
+        default_factory=lambda: min(os.cpu_count() or 4, 4),
+        ge=1,
+        le=32,
+        alias='COMPRESSION_MAX_CONCURRENT',
+        description='Max concurrent CPU-bound compression operations. Separate '
+                    'from I/O-bound EMBEDDING_MAX_CONCURRENT and '
+                    'SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4) keeps GIL '
+                    'contention bounded.',
+    )
+
+
 class AppSettings(CommonSettings):
     # Core settings
     logging: LoggingSettings = Field(default_factory=lambda: LoggingSettings())
@@ -1049,6 +1119,9 @@ class AppSettings(CommonSettings):
     summary: SummarySettings = Field(default_factory=lambda: SummarySettings())
     chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
     reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
+
+    # Embedding compression settings
+    compression: CompressionSettings = Field(default_factory=lambda: CompressionSettings())
 
     # Shared Ollama settings
     ollama: OllamaSettings = Field(default_factory=lambda: OllamaSettings())

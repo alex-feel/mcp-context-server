@@ -20,7 +20,6 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends import create_backend
 from app.repositories.fts_repository import FtsRepository
 from app.settings import get_settings
 
@@ -29,9 +28,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-# Database path for backward compatibility mode
-DB_PATH = settings.storage.db_path
 
 
 @dataclass
@@ -97,12 +93,13 @@ def estimate_migration_time(records_count: int) -> int:
     return 1200  # 20 minutes for very large datasets
 
 
-async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'RepositoryContainer | None' = None) -> None:
+async def apply_fts_migration(backend: StorageBackend, repos: 'RepositoryContainer | None' = None) -> None:
     """Apply full-text search migration if enabled, with language-aware tokenizer selection.
 
     Args:
-        backend: Optional backend to use. If None, creates temporary backend.
-        repos: Optional repository container. If None, creates temporary one.
+        backend: Storage backend instance.
+        repos: Optional repository container. If None, creates a transient
+            :class:`FtsRepository` around ``backend`` for migration use.
 
     This function applies the FTS migration (FTS5 for SQLite, tsvector for PostgreSQL)
     when ENABLE_FTS=true. For SQLite, it selects the appropriate tokenizer based on
@@ -119,16 +116,8 @@ async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'Rep
         logger.debug('FTS disabled (ENABLE_FTS=false), skipping migration')
         return
 
-    # Determine backend type and get manager
-    own_backend = False
-    if backend is not None:
-        manager = backend
-        backend_type = backend.backend_type
-    else:
-        manager = create_backend(backend_type=None, db_path=DB_PATH)
-        await manager.initialize()
-        backend_type = manager.backend_type
-        own_backend = True
+    manager = backend
+    backend_type = backend.backend_type
 
     # Create repository if not provided
     fts_repo = repos.fts if repos else None
@@ -142,8 +131,6 @@ async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'Rep
         if fts_exists:
             # FTS exists - check if tokenizer/language matches current settings
             await _check_and_migrate_fts_if_needed(fts_repo, backend_type)
-            if own_backend:
-                await manager.shutdown()
             return
 
         # FTS doesn't exist - apply initial migration
@@ -152,9 +139,6 @@ async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'Rep
     except Exception as e:
         # FTS migration failure should be logged but not fatal
         logger.warning(f'FTS migration may have already been applied or failed: {e}')
-    finally:
-        if own_backend:
-            await manager.shutdown()
 
 
 async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type: str) -> None:

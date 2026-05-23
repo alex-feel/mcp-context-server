@@ -14,8 +14,12 @@
 --
 -- This function replaces the shallow || - pattern which only handles top-level keys.
 -- The new implementation correctly handles deeply nested structures.
--- SET search_path for security (CVE-2018-1058 mitigation)
--- NOTE: Schema is templated and replaced during migration (see server.py)
+-- Function definition (line 19) and the recursive self-reference
+-- (line 65) remain schema-qualified for CVE-2018-1058 mitigation
+-- (function search-path hardening). No table or index DDL in this
+-- file; the migration loader (apply_jsonb_merge_patch_migration in
+-- app/migrations/semantic.py) substitutes {SCHEMA} only for the two
+-- FUNCTION sites.
 CREATE OR REPLACE FUNCTION {SCHEMA}.jsonb_merge_patch(
     target jsonb,
     patch jsonb

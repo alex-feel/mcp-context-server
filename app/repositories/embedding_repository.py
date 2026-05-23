@@ -7,6 +7,7 @@ across both SQLite (sqlite-vec) and PostgreSQL (pgvector) backends.
 """
 
 
+import asyncio
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -22,21 +23,142 @@ if TYPE_CHECKING:
     import asyncpg
 
     from app.backends.base import TransactionContext
+    from app.compression.types import CompressionMetadata
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level cache for the compression provenance metadata only.
+# Compression provenance is immutable post-bootstrap (validator-enforced
+# invariant), so caching it once per process is safe. The metadata is
+# bound to a specific StorageBackend, so its cache must live next to
+# the repository that consumes it. The cached compression provider
+# itself lives in :mod:`app.compression.factory` so the encode and
+# search paths share one singleton. A non-reentrant asyncio.Lock,
+# constructed at module import time, serializes first-time concurrent
+# callers so they observe the same instance.
+_compression_metadata: 'CompressionMetadata | None' = None
+_compression_metadata_init_lock: asyncio.Lock = asyncio.Lock()
+
+
+async def _get_cached_compression_metadata(
+    backend: StorageBackend,
+) -> 'CompressionMetadata':
+    """Return the singleton provenance row, caching it on first call.
+
+    Args:
+        backend: Storage backend used to read the row on cache miss.
+
+    Returns:
+        The cached :class:`CompressionMetadata` row.
+
+    Raises:
+        RuntimeError: If the provenance row is missing. The startup
+            validator would normally insert it; absence here indicates the
+            validator was bypassed or the database is corrupted.
+    """
+    global _compression_metadata
+    if _compression_metadata is not None:
+        return _compression_metadata
+    async with _compression_metadata_init_lock:
+        if _compression_metadata is None:
+            from app.compression.provenance import read_compression_metadata
+            meta = await read_compression_metadata(backend)
+            if meta is None:
+                raise RuntimeError(
+                    'compression_metadata row is missing; ensure the server '
+                    'started with ENABLE_EMBEDDING_COMPRESSION=true so the '
+                    'startup validator bootstrapped the provenance row.',
+                )
+            _compression_metadata = meta
+    return _compression_metadata
+
+
+def _reset_compression_cache() -> None:
+    """Clear the module-level metadata cache and inner LRU factories.
+
+    Tests that switch compression configuration between cases call this
+    to avoid leaking metadata state across the process. In addition to
+    clearing the local metadata singleton, this function:
+
+    1. Delegates the cached-provider reset to
+       :func:`app.compression.factory.reset_cached_compression_provider`
+       so both the encode (write) path in :mod:`app.tools._shared` and
+       the search (read) path in this module observe a fresh provider
+       on the next call.
+    2. Invalidates every ``@lru_cache``-decorated factory inside the
+       TurboQuant subpackage so a follow-up call with different
+       ``(dim, bits, seed, variant)`` constructs fresh rotations,
+       codebooks, and quantizers.
+
+    The inner caches are imported lazily inside the function body to keep
+    numpy out of the import graph for installations that skipped the
+    compression extra.
+    """
+    global _compression_metadata
+    _compression_metadata = None
+
+    # Delegate provider-cache reset to the factory module so all
+    # consumers share one truth source.
+    from app.compression import reset_cached_compression_provider
+    reset_cached_compression_provider()
+
+    # Lazy module imports: the compression extra is optional; this
+    # function MUST remain importable even when numpy is absent. Module
+    # imports (not symbol imports) avoid the type-checker's private-usage
+    # warning for the inner ``_get_cached_*`` factories while still
+    # giving us access to their ``.cache_clear()`` method via getattr,
+    # which is opaque to private-name analysis.
+    try:
+        from app.compression.providers.turboquant import _codebook as _codebook_mod
+        from app.compression.providers.turboquant import _qjl as _qjl_mod
+        from app.compression.providers.turboquant import _rotation as _rotation_mod
+        from app.compression.providers.turboquant import encoder as _encoder_mod
+    except ImportError:
+        # Compression extra not installed; nothing inner-cached to clear.
+        return
+
+    # Each inner factory exposes the standard functools.lru_cache.cache_clear
+    # callable; reflective access avoids type-checker noise around the
+    # leading-underscore naming of the encoder-internal factories.
+    for module, attr_name in (
+        (_rotation_mod, '_get_cached_rotation'),
+        (_qjl_mod, '_get_cached_qjl_impl'),
+        (_encoder_mod, '_get_mse_quantizer'),
+        (_encoder_mod, '_get_ip_quantizer'),
+        (_codebook_mod, 'get_codebook'),
+    ):
+        factory = getattr(module, attr_name, None)
+        if factory is not None and hasattr(factory, 'cache_clear'):
+            factory.cache_clear()
+
+
+__all__ = [
+    'ChunkEmbedding',
+    'EmbeddingRepository',
+    'MetadataFilterValidationError',
+    '_reset_compression_cache',
+]
 
 
 @dataclass
 class ChunkEmbedding:
     """Embedding data for a single chunk with boundary information.
 
-    This dataclass bundles embedding vector with its character boundaries
-    in the original document, enabling chunk-aware reranking.
+    This dataclass bundles the embedding vector with its character boundaries
+    in the original document, enabling chunk-aware reranking. When embedding
+    compression is enabled the optional ``payload`` field carries the
+    provider-encoded bytes that the compressed write path persists to the
+    ``vec_context_embeddings_compressed`` table; the fp32 write path ignores
+    it.
 
     Attributes:
         embedding: The embedding vector for this chunk.
         start_index: Character offset where chunk starts in original document.
         end_index: Character offset where chunk ends in original document.
+        payload: Optional compressed payload bytes produced by the active
+            compression provider's ``encode_sync`` method. ``None`` when
+            compression is disabled.
 
     Example:
         >>> chunk_emb = ChunkEmbedding(
@@ -49,6 +171,7 @@ class ChunkEmbedding:
     embedding: list[float]
     start_index: int
     end_index: int
+    payload: bytes | None = None
 
 
 class MetadataFilterValidationError(Exception):
@@ -132,6 +255,11 @@ class EmbeddingRepository(BaseRepository):
         stored in a single transaction - either all succeed or all fail.
         Chunk boundaries are stored for chunk-aware reranking.
 
+        When ``settings.compression.enabled`` is true the call is routed to
+        the compressed write path which persists provider-encoded payload
+        bytes into ``vec_context_embeddings_compressed`` instead of the
+        fp32 ``vec_context_embeddings`` table.
+
         Args:
             context_id: ID of the context entry
             chunk_embeddings: List of ChunkEmbedding objects (embedding + boundaries)
@@ -148,6 +276,17 @@ class EmbeddingRepository(BaseRepository):
         """
         if not chunk_embeddings:
             raise ValueError('chunk_embeddings list cannot be empty')
+
+        # Branch on compression toggle. The compressed path expects the
+        # caller (via generate_compression_with_timeout in app.tools._shared)
+        # to have populated ChunkEmbedding.payload with provider-encoded
+        # bytes.
+        from app.settings import get_settings
+        if get_settings().compression.enabled:
+            await self._store_chunked_compressed(
+                context_id, chunk_embeddings, model, txn=txn, upsert=upsert,
+            )
+            return
 
         # Defense-in-depth: if upsert enabled, delete existing embeddings first
         # This ensures idempotency - calling multiple times produces same result
@@ -233,6 +372,200 @@ class EmbeddingRepository(BaseRepository):
                 await self.backend.execute_write(cast(Any, _store_chunked_postgresql))
             logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (PostgreSQL)')
 
+    async def _store_chunked_compressed(
+        self,
+        context_id: str,
+        chunk_embeddings: list[ChunkEmbedding],
+        model: str,
+        txn: 'TransactionContext | None' = None,
+        *,
+        upsert: bool = False,
+    ) -> None:
+        """Persist compressed chunk payloads to vec_context_embeddings_compressed.
+
+        Requires every ``ChunkEmbedding`` to carry a non-None ``payload``;
+        the caller (``generate_compression_with_timeout`` in
+        ``app.tools._shared``) populates it before invoking the transaction.
+
+        Args:
+            context_id: ID of the context entry.
+            chunk_embeddings: Compressed-payload chunks (payload is
+                non-None for every element).
+            model: Embedding model name (recorded in embedding_metadata).
+            txn: Optional transaction context for atomic multi-repository
+                operations.
+            upsert: If True, delete existing compressed rows for the context
+                before writing the new ones (defense-in-depth idempotency).
+
+        Raises:
+            ValueError: If any chunk lacks the required ``payload`` bytes
+                or if the chunk list is empty.
+        """
+        if not chunk_embeddings:
+            raise ValueError('chunk_embeddings list cannot be empty')
+
+        missing_payload = [
+            i for i, c in enumerate(chunk_embeddings) if c.payload is None
+        ]
+        if missing_payload:
+            raise ValueError(
+                'compressed store path requires payload bytes on every '
+                f'ChunkEmbedding; missing at indices: {missing_payload}',
+            )
+
+        if upsert:
+            deleted = await self._delete_all_chunks_compressed(context_id, txn=txn)
+            if deleted > 0:
+                logger.debug(
+                    'UPSERT mode: deleted %d compressed chunks for context %s',
+                    deleted, context_id,
+                )
+
+        chunk_count = len(chunk_embeddings)
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
+
+            def _store_compressed_sqlite(conn: sqlite3.Connection) -> None:
+                for i, chunk in enumerate(chunk_embeddings):
+                    conn.execute(
+                        'INSERT INTO vec_context_embeddings_compressed '
+                        '(context_id, chunk_index, start_index, end_index, payload) '
+                        'VALUES (?, ?, ?, ?, ?)',
+                        (
+                            context_id,
+                            i,
+                            chunk.start_index,
+                            chunk.end_index,
+                            chunk.payload,
+                        ),
+                    )
+                # embedding_metadata stays the source-of-truth for chunk_count
+                # and model so existing dedup/exists logic keeps working
+                # unchanged.
+                conn.execute(
+                    'INSERT INTO embedding_metadata '
+                    '(context_id, model_name, dimensions, chunk_count, '
+                    'created_at, updated_at) '
+                    'VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+                    (
+                        context_id,
+                        model,
+                        len(chunk_embeddings[0].embedding),
+                        chunk_count,
+                    ),
+                )
+
+            if txn:
+                _store_compressed_sqlite(cast(sqlite3.Connection, txn.connection))
+            else:
+                await self.backend.execute_write(_store_compressed_sqlite)
+            logger.debug(
+                f'Stored {chunk_count} compressed chunks for context '
+                f'{context_id} (SQLite)',
+            )
+            return
+
+        # postgresql
+        async def _store_compressed_pg(conn: 'asyncpg.Connection') -> None:
+            for i, chunk in enumerate(chunk_embeddings):
+                await conn.execute(
+                    'INSERT INTO vec_context_embeddings_compressed '
+                    '(context_id, chunk_index, start_index, end_index, payload) '
+                    'VALUES ($1, $2, $3, $4, $5)',
+                    context_id,
+                    i,
+                    chunk.start_index,
+                    chunk.end_index,
+                    chunk.payload,
+                )
+            await conn.execute(
+                'INSERT INTO embedding_metadata '
+                '(context_id, model_name, dimensions, chunk_count, '
+                'created_at, updated_at) '
+                'VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+                context_id,
+                model,
+                len(chunk_embeddings[0].embedding),
+                chunk_count,
+            )
+
+        if txn:
+            await _store_compressed_pg(cast('asyncpg.Connection', txn.connection))
+        else:
+            await self.backend.execute_write(cast(Any, _store_compressed_pg))
+        logger.debug(
+            f'Stored {chunk_count} compressed chunks for context '
+            f'{context_id} (PostgreSQL)',
+        )
+
+    async def _delete_all_chunks_compressed(
+        self,
+        context_id: str,
+        txn: 'TransactionContext | None' = None,
+    ) -> int:
+        """Delete compressed chunk rows + embedding_metadata for a context.
+
+        Args:
+            context_id: ID of the context entry.
+            txn: Optional transaction context for atomic multi-repository
+                operations.
+
+        Returns:
+            Number of compressed chunk rows deleted.
+        """
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+
+        if backend_type == 'sqlite':
+
+            def _delete_compressed_sqlite(conn: sqlite3.Connection) -> int:
+                cursor = conn.execute(
+                    'SELECT COUNT(*) FROM vec_context_embeddings_compressed '
+                    'WHERE context_id = ?',
+                    (context_id,),
+                )
+                n = int(cursor.fetchone()[0])
+                if n == 0:
+                    return 0
+                conn.execute(
+                    'DELETE FROM vec_context_embeddings_compressed '
+                    'WHERE context_id = ?',
+                    (context_id,),
+                )
+                conn.execute(
+                    'DELETE FROM embedding_metadata WHERE context_id = ?',
+                    (context_id,),
+                )
+                return n
+
+            if txn:
+                return _delete_compressed_sqlite(cast(sqlite3.Connection, txn.connection))
+            return await self.backend.execute_write(_delete_compressed_sqlite)
+
+        # postgresql
+        async def _delete_compressed_pg(conn: 'asyncpg.Connection') -> int:
+            count = await conn.fetchval(
+                'SELECT COUNT(*) FROM vec_context_embeddings_compressed '
+                'WHERE context_id = $1',
+                context_id,
+            )
+            if count == 0:
+                return 0
+            await conn.execute(
+                'DELETE FROM vec_context_embeddings_compressed '
+                'WHERE context_id = $1',
+                context_id,
+            )
+            await conn.execute(
+                'DELETE FROM embedding_metadata WHERE context_id = $1',
+                context_id,
+            )
+            return int(count)
+
+        if txn:
+            return await _delete_compressed_pg(cast('asyncpg.Connection', txn.connection))
+        return await self.backend.execute_write(cast(Any, _delete_compressed_pg))
+
     async def delete_all_chunks(
         self,
         context_id: str,
@@ -243,6 +576,10 @@ class EmbeddingRepository(BaseRepository):
         Used before re-embedding when content is updated.
         For SQLite, also cleans up embedding_chunks mapping table.
 
+        When ``settings.compression.enabled`` is true the call is routed to
+        the compressed cleanup path which targets
+        ``vec_context_embeddings_compressed`` instead of the fp32 tables.
+
         Args:
             context_id: ID of the context entry
             txn: Optional transaction context for atomic multi-repository operations.
@@ -252,6 +589,12 @@ class EmbeddingRepository(BaseRepository):
         Returns:
             Number of chunk embeddings deleted
         """
+        # Branch on compression toggle (mirrors the store_chunked branch so
+        # cleanup, upsert, and full delete paths all reach the right table).
+        from app.settings import get_settings
+        if get_settings().compression.enabled:
+            return await self._delete_all_chunks_compressed(context_id, txn=txn)
+
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
         if backend_type == 'sqlite':
@@ -365,6 +708,27 @@ class EmbeddingRepository(BaseRepository):
         Returns:
             Tuple of (search results list, statistics dictionary)
         """
+        # Dispatch to the compressed read path when the bootstrap-only
+        # toggle is on. Settings are read once per process (CLAUDE.md
+        # "Settings Singleton Caching") so this branch is stable for the
+        # lifetime of the running server.
+        from app.settings import get_settings
+        if get_settings().compression.enabled:
+            return await self.search_compressed(
+                query_embedding=query_embedding,
+                limit=limit,
+                offset=offset,
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                tags=tags,
+                start_date=start_date,
+                end_date=end_date,
+                metadata=metadata,
+                metadata_filters=metadata_filters,
+                explain_query=explain_query,
+            )
+
         if self.backend.backend_type == 'sqlite':
 
             def _search_sqlite(
@@ -764,6 +1128,526 @@ class EmbeddingRepository(BaseRepository):
             return results, stats
 
         return await self.backend.execute_read(_search_postgresql)
+
+    async def search_compressed(
+        self,
+        query_embedding: list[float],
+        limit: int = 20,
+        offset: int = 0,
+        thread_id: str | None = None,
+        source: Literal['user', 'agent'] | None = None,
+        content_type: Literal['text', 'multimodal'] | None = None,
+        tags: list[str] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
+        explain_query: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """KNN search over compressed embeddings (TurboQuant payloads).
+
+        Algorithm:
+            1. Resolve the singleton provenance row + cached provider.
+            2. Filter ``context_entries`` exactly as :meth:`search` does to
+               narrow the candidate set.
+            3. Read the matching rows from
+               ``vec_context_embeddings_compressed``.
+            4. For ``variant='ip'`` use the provider's unbiased
+               inner-product estimator; convert to a distance via
+               ``distance = -ip`` so smaller-is-better matches the existing
+               result ordering.
+            5. For ``variant='mse'`` decode each payload and compute the L2
+               distance to the query.
+            6. Aggregate per ``context_id`` (MIN distance per context,
+               matches the best-chunk-per-context semantics of the fp32
+               read path).
+            7. Sort ASC by distance, slice ``[offset : offset + limit]``,
+               hydrate from ``context_entries``.
+
+        Return shape is IDENTICAL to :meth:`search` so the calling tool
+        layer needs no compression-specific branching.
+
+        Args:
+            query_embedding: Query vector for similarity search.
+            limit: Maximum number of results to return.
+            offset: Number of results to skip (pagination).
+            thread_id: Optional filter by thread.
+            source: Optional filter by source type.
+            content_type: Filter by content type (text or multimodal).
+            tags: Filter by any of these tags (OR logic).
+            start_date: Filter by created_at >= date (ISO 8601 format).
+            end_date: Filter by created_at <= date (ISO 8601 format).
+            metadata: Simple metadata filters (key=value equality).
+            metadata_filters: Advanced metadata filters with operators.
+            explain_query: If True, include query execution plan in stats.
+
+        Returns:
+            Tuple of (search results list, statistics dictionary). Each
+            result carries ``distance``, ``matched_chunk_start``,
+            ``matched_chunk_end`` plus the standard ``context_entries``
+            columns.
+
+        Raises:
+            RuntimeError: If the singleton compression provenance row is
+                missing or the query embedding length does not match the
+                stored compression dimension.
+        """
+        import time as time_module
+
+        import numpy as np
+
+        from app.compression import get_cached_compression_provider
+
+        provider = await get_cached_compression_provider()
+        comp_meta = await _get_cached_compression_metadata(self.backend)
+        variant = comp_meta.variant
+
+        if len(query_embedding) != comp_meta.dim:
+            raise RuntimeError(
+                f'query_embedding length {len(query_embedding)} does not '
+                f'match compression metadata dim {comp_meta.dim}',
+            )
+
+        start_time = time_module.time()
+        query_matrix = np.asarray([query_embedding], dtype=np.float32)
+
+        # Compute filter count for the stats dict in the same way the fp32
+        # search does so external observers see a consistent shape.
+        filter_count = 0
+        if thread_id:
+            filter_count += 1
+        if source:
+            filter_count += 1
+        if content_type:
+            filter_count += 1
+        normalized_tags: list[str] = []
+        if tags:
+            normalized_tags = [t.strip().lower() for t in tags if t.strip()]
+            if normalized_tags:
+                filter_count += 1
+        if start_date:
+            filter_count += 1
+        if end_date:
+            filter_count += 1
+
+        # Build the candidate-id query against context_entries reusing the
+        # same building blocks as :meth:`search` (tags, dates, metadata).
+        if self.backend.backend_type == 'sqlite':
+
+            def _candidates_sqlite(
+                conn: sqlite3.Connection,
+            ) -> tuple[list[str], int, str | None]:
+                conditions: list[str] = []
+                params: list[Any] = []
+                metadata_filter_count = 0
+
+                if thread_id:
+                    conditions.append('thread_id = ?')
+                    params.append(thread_id)
+                if source:
+                    conditions.append('source = ?')
+                    params.append(source)
+                if content_type:
+                    conditions.append('content_type = ?')
+                    params.append(content_type)
+                if normalized_tags:
+                    placeholders = ','.join(['?' for _ in normalized_tags])
+                    conditions.append(
+                        'id IN (SELECT DISTINCT context_entry_id '
+                        f'FROM tags WHERE tag IN ({placeholders}))',
+                    )
+                    params.extend(normalized_tags)
+                if start_date:
+                    conditions.append('created_at >= datetime(?)')
+                    params.append(start_date)
+                if end_date:
+                    conditions.append('created_at <= datetime(?)')
+                    params.append(end_date)
+
+                if metadata or metadata_filters:
+                    from pydantic import ValidationError
+
+                    from app.metadata_types import MetadataFilter
+                    from app.query_builder import MetadataQueryBuilder
+
+                    builder = MetadataQueryBuilder(backend_type='sqlite')
+                    if metadata:
+                        for key, value in metadata.items():
+                            try:
+                                builder.add_simple_filter(key, value)
+                                metadata_filter_count += 1
+                            except ValueError as e:
+                                logger.warning(
+                                    'Invalid simple metadata filter key=%s: %s',
+                                    key, e,
+                                )
+                    if metadata_filters:
+                        errs: list[str] = []
+                        for filter_dict in metadata_filters:
+                            try:
+                                spec = MetadataFilter(**filter_dict)
+                                builder.add_advanced_filter(spec)
+                                metadata_filter_count += 1
+                            except (ValidationError, ValueError) as e:
+                                errs.append(
+                                    f'Invalid metadata filter {filter_dict}: {e}',
+                                )
+                            except Exception as e:
+                                errs.append(
+                                    f'Unexpected error in metadata filter '
+                                    f'{filter_dict}: {e}',
+                                )
+                                logger.error(
+                                    'Unexpected error processing metadata filter: %s',
+                                    e,
+                                )
+                        if errs:
+                            raise MetadataFilterValidationError(
+                                'Metadata filter validation failed', errs,
+                            )
+
+                    clause, mparams = builder.build_where_clause()
+                    if clause:
+                        conditions.append(clause)
+                        params.extend(mparams)
+
+                where_clause = (
+                    f'WHERE {" AND ".join(conditions)}' if conditions else ''
+                )
+                cand_sql = f'SELECT id FROM context_entries {where_clause}'
+                cursor = conn.execute(cand_sql, params)
+                cand_ids = [str(row[0]) for row in cursor.fetchall()]
+
+                plan: str | None = None
+                if explain_query:
+                    cursor = conn.execute(
+                        f'EXPLAIN QUERY PLAN {cand_sql}', params,
+                    )
+                    plan_rows = cursor.fetchall()
+                    formatted: list[str] = []
+                    for row in plan_rows:
+                        row_dict = dict(row)
+                        formatted.append(
+                            f"id:{row_dict.get('id', '?')} "
+                            f"parent:{row_dict.get('parent', '?')} "
+                            f"notused:{row_dict.get('notused', '?')} "
+                            f"detail:{row_dict.get('detail', '?')}",
+                        )
+                    plan = '\n'.join(formatted)
+                return cand_ids, metadata_filter_count, plan
+
+            candidate_ids, meta_count, query_plan = await self.backend.execute_read(
+                _candidates_sqlite,
+            )
+        else:
+            async def _candidates_pg(
+                conn: 'asyncpg.Connection',
+            ) -> tuple[list[str], int, str | None]:
+                conditions: list[str] = ['1=1']
+                params: list[Any] = []
+                position = 1
+                metadata_filter_count = 0
+
+                if thread_id:
+                    conditions.append(f'ce.thread_id = ${position}')
+                    params.append(thread_id)
+                    position += 1
+                if source:
+                    conditions.append(f'ce.source = ${position}')
+                    params.append(source)
+                    position += 1
+                if content_type:
+                    conditions.append(f'ce.content_type = ${position}')
+                    params.append(content_type)
+                    position += 1
+                if normalized_tags:
+                    placeholders = ','.join(
+                        f'${position + i}' for i in range(len(normalized_tags))
+                    )
+                    conditions.append(
+                        'ce.id IN (SELECT DISTINCT context_entry_id '
+                        f'FROM tags WHERE tag IN ({placeholders}))',
+                    )
+                    params.extend(normalized_tags)
+                    position += len(normalized_tags)
+                if start_date:
+                    conditions.append(f'ce.created_at >= ${position}')
+                    params.append(self._parse_date_for_postgresql(start_date))
+                    position += 1
+                if end_date:
+                    conditions.append(f'ce.created_at <= ${position}')
+                    params.append(self._parse_date_for_postgresql(end_date))
+                    position += 1
+
+                if metadata or metadata_filters:
+                    from pydantic import ValidationError
+
+                    from app.metadata_types import MetadataFilter
+                    from app.query_builder import MetadataQueryBuilder
+
+                    builder = MetadataQueryBuilder(
+                        backend_type='postgresql',
+                        param_offset=len(params),
+                    )
+                    if metadata:
+                        for key, value in metadata.items():
+                            try:
+                                builder.add_simple_filter(key, value)
+                                metadata_filter_count += 1
+                            except ValueError as e:
+                                logger.warning(
+                                    'Invalid simple metadata filter key=%s: %s',
+                                    key, e,
+                                )
+                    if metadata_filters:
+                        errs: list[str] = []
+                        for filter_dict in metadata_filters:
+                            try:
+                                spec = MetadataFilter(**filter_dict)
+                                builder.add_advanced_filter(spec)
+                                metadata_filter_count += 1
+                            except (ValidationError, ValueError) as e:
+                                errs.append(
+                                    f'Invalid metadata filter {filter_dict}: {e}',
+                                )
+                            except Exception as e:
+                                errs.append(
+                                    f'Unexpected error in metadata filter '
+                                    f'{filter_dict}: {e}',
+                                )
+                                logger.error(
+                                    'Unexpected error processing metadata filter: %s',
+                                    e,
+                                )
+                        if errs:
+                            raise MetadataFilterValidationError(
+                                'Metadata filter validation failed', errs,
+                            )
+                    clause, mparams = builder.build_where_clause()
+                    if clause:
+                        # Match the alias prefix the fp32 PG path uses so
+                        # the WHERE clause references the JOIN target.
+                        conditions.append(clause.replace('metadata', 'ce.metadata'))
+                        params.extend(mparams)
+                        position += len(mparams)
+
+                where_clause = ' AND '.join(conditions)
+                cand_sql = (
+                    f'SELECT ce.id FROM context_entries ce WHERE {where_clause}'
+                )
+                rows = await conn.fetch(cand_sql, *params)
+                cand_ids = [str(row['id']) for row in rows]
+
+                plan: str | None = None
+                if explain_query:
+                    plan_rows = await conn.fetch(
+                        f'EXPLAIN {cand_sql}', *params,
+                    )
+                    plan = '\n'.join(str(row[0]) for row in plan_rows)
+                return cand_ids, metadata_filter_count, plan
+
+            candidate_ids, meta_count, query_plan = await self.backend.execute_read(
+                cast(Any, _candidates_pg),
+            )
+
+        filter_count += meta_count
+
+        if not candidate_ids:
+            stats: dict[str, Any] = {
+                'execution_time_ms': round((time_module.time() - start_time) * 1000, 2),
+                'filters_applied': filter_count,
+                'rows_returned': 0,
+                'backend': self.backend.backend_type,
+            }
+            if explain_query and query_plan is not None:
+                stats['query_plan'] = query_plan
+            return [], stats
+
+        # Read compressed rows for the candidate context_ids.
+        if self.backend.backend_type == 'sqlite':
+
+            def _read_compressed_sqlite(
+                conn: sqlite3.Connection,
+            ) -> list[tuple[str, int, int, int, bytes]]:
+                placeholders = ','.join('?' for _ in candidate_ids)
+                cursor = conn.execute(
+                    'SELECT context_id, chunk_index, start_index, end_index, '
+                    f'payload FROM vec_context_embeddings_compressed '
+                    f'WHERE context_id IN ({placeholders})',
+                    candidate_ids,
+                )
+                return [
+                    (str(r[0]), int(r[1]), int(r[2]), int(r[3]), bytes(r[4]))
+                    for r in cursor.fetchall()
+                ]
+
+            payload_rows = await self.backend.execute_read(_read_compressed_sqlite)
+        else:
+            async def _read_compressed_pg(
+                conn: 'asyncpg.Connection',
+            ) -> list[tuple[str, int, int, int, bytes]]:
+                rows = await conn.fetch(
+                    'SELECT context_id, chunk_index, start_index, end_index, '
+                    'payload FROM vec_context_embeddings_compressed '
+                    'WHERE context_id = ANY($1::uuid[])',
+                    candidate_ids,
+                )
+                return [
+                    (
+                        str(r['context_id']),
+                        int(r['chunk_index']),
+                        int(r['start_index']),
+                        int(r['end_index']),
+                        bytes(r['payload']),
+                    )
+                    for r in rows
+                ]
+
+            payload_rows = await self.backend.execute_read(cast(Any, _read_compressed_pg))
+
+        if not payload_rows:
+            stats = {
+                'execution_time_ms': round((time_module.time() - start_time) * 1000, 2),
+                'filters_applied': filter_count,
+                'rows_returned': 0,
+                'backend': self.backend.backend_type,
+            }
+            if explain_query and query_plan is not None:
+                stats['query_plan'] = query_plan
+            return [], stats
+
+        # Decode every stored payload bytes via the wire-format dispatcher
+        # and concatenate same-variant payloads into ONE synthetic payload
+        # so the provider's scoring call runs exactly ONCE per query
+        # instead of ONCE per candidate row. This collapses the hot-path
+        # from O(N) provider invocations to O(1) and lets the provider's
+        # vectorized GEMM dominate the cost profile.
+        # Distance polarity convention (matches the fp32 read path):
+        #   smaller distance = closer / more similar.
+        # For variant='ip' the IP estimate is negated so a larger IP
+        # (more similar) maps to a smaller distance.
+        from app.compression.providers.turboquant._types import IPPayload
+        from app.compression.providers.turboquant._types import MSEPayload
+        from app.compression.providers.turboquant._types import payload_from_bytes
+
+        decoded_payloads: list[MSEPayload | IPPayload] = [
+            payload_from_bytes(payload_bytes)
+            for _, _, _, _, payload_bytes in payload_rows
+        ]
+
+        distances: list[float] = []
+        if variant == 'ip':
+            ip_subtypes: list[IPPayload] = []
+            for p in decoded_payloads:
+                if not isinstance(p, IPPayload):
+                    raise RuntimeError(
+                        f'Compression metadata variant=ip but stored payload is '
+                        f'{type(p).__name__}; storage corruption suspected',
+                    )
+                ip_subtypes.append(p)
+            combined_ip = IPPayload.concat(ip_subtypes)
+            # estimate_inner_product_sync returns shape (nq, n_total). With
+            # nq=1 this slices to a 1-D array of length n_total in the order
+            # of payload_rows (concat preserves input order).
+            ip_estimates = provider.estimate_inner_product_sync(
+                combined_ip.to_bytes(), query_matrix,
+            )
+            distances = [-float(x) for x in ip_estimates[0].tolist()]
+        else:  # variant == 'mse'
+            mse_subtypes: list[MSEPayload] = []
+            for p in decoded_payloads:
+                if not isinstance(p, MSEPayload):
+                    raise RuntimeError(
+                        f'Compression metadata variant=mse but stored payload is '
+                        f'{type(p).__name__}; storage corruption suspected',
+                    )
+                mse_subtypes.append(p)
+            combined_mse = MSEPayload.concat(mse_subtypes)
+            # decode_sync returns (n_total, d); compute L2 distance to the
+            # single query vector in one vectorized pass.
+            decoded_matrix = provider.decode_sync(combined_mse.to_bytes())
+            diff = decoded_matrix - query_matrix[0]
+            distances = [float(x) for x in np.linalg.norm(diff, axis=1).tolist()]
+
+        # Aggregate per context_id (best/min distance per context).
+        best_by_context: dict[str, tuple[float, int, int]] = {}
+        for (context_id, _chunk_index, start_index, end_index, _payload), dist in zip(
+            payload_rows, distances, strict=True,
+        ):
+            current = best_by_context.get(context_id)
+            if current is None or dist < current[0]:
+                best_by_context[context_id] = (dist, start_index, end_index)
+
+        # Sort and paginate.
+        ranked = sorted(
+            best_by_context.items(), key=lambda kv: kv[1][0],
+        )
+        page = ranked[offset : offset + limit]
+        if not page:
+            stats = {
+                'execution_time_ms': round((time_module.time() - start_time) * 1000, 2),
+                'filters_applied': filter_count,
+                'rows_returned': 0,
+                'backend': self.backend.backend_type,
+            }
+            if explain_query and query_plan is not None:
+                stats['query_plan'] = query_plan
+            return [], stats
+
+        page_ids = [cid for cid, _ in page]
+
+        # Hydrate the result rows from context_entries.
+        if self.backend.backend_type == 'sqlite':
+
+            def _hydrate_sqlite(
+                conn: sqlite3.Connection,
+            ) -> dict[str, dict[str, Any]]:
+                placeholders = ','.join('?' for _ in page_ids)
+                cursor = conn.execute(
+                    'SELECT id, thread_id, source, content_type, text_content, '
+                    'metadata, summary, created_at, updated_at FROM context_entries '
+                    f'WHERE id IN ({placeholders})',
+                    page_ids,
+                )
+                return {str(dict(r)['id']): dict(r) for r in cursor.fetchall()}
+
+            hydrated = await self.backend.execute_read(_hydrate_sqlite)
+        else:
+            async def _hydrate_pg(
+                conn: 'asyncpg.Connection',
+            ) -> dict[str, dict[str, Any]]:
+                rows = await conn.fetch(
+                    'SELECT id, thread_id, source, content_type, text_content, '
+                    'metadata, summary, created_at, updated_at FROM context_entries '
+                    'WHERE id = ANY($1::uuid[])',
+                    page_ids,
+                )
+                return {str(dict(r)['id']): dict(r) for r in rows}
+
+            hydrated = await self.backend.execute_read(cast(Any, _hydrate_pg))
+
+        results: list[dict[str, Any]] = []
+        for context_id, (dist, start_index, end_index) in page:
+            row = hydrated.get(context_id)
+            if row is None:
+                # Compressed row points at a context_id that vanished
+                # between the candidate scan and the hydration query
+                # (concurrent deletion). Skip rather than fabricate a row.
+                continue
+            row['distance'] = dist
+            row['matched_chunk_start'] = start_index
+            row['matched_chunk_end'] = end_index
+            results.append(row)
+
+        stats = {
+            'execution_time_ms': round((time_module.time() - start_time) * 1000, 2),
+            'filters_applied': filter_count,
+            'rows_returned': len(results),
+            'backend': self.backend.backend_type,
+        }
+        if explain_query and query_plan is not None:
+            stats['query_plan'] = query_plan
+        return results, stats
 
     async def update(
         self,

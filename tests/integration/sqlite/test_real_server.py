@@ -9867,6 +9867,161 @@ async def test_store_context_max_size_image(tmp_path: Path) -> None:
                 os.environ[key] = value
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
+    """End-to-end compression round-trip against a real SQLite-backed server.
+
+    The test starts the server with ENABLE_EMBEDDING_COMPRESSION=true and
+    ENABLE_EMBEDDING_GENERATION=false, stores a single context entry via
+    the MCP store_context tool, then inspects the SQLite file directly to
+    verify:
+
+    1. vec_context_embeddings_compressed contains zero rows (no embeddings
+       are produced because EMBEDDING_GENERATION is disabled), but the
+       table exists.
+    2. The legacy vec_context_embeddings table does NOT exist (the
+       migration dropped it).
+    3. The singleton compression_metadata row exists with the env-derived
+       provenance values.
+    4. get_context_by_ids returns the stored entry, proving the read path
+       still works with compression enabled.
+
+    EMBEDDING_GENERATION is disabled so the test does not depend on
+    Ollama; the compressed write path is exercised by the unit suite at
+    ``tests/repositories/test_embedding_repository_compressed.py``.
+
+    Args:
+        tmp_path: Pytest fixture providing temporary directory.
+
+    Raises:
+        RuntimeError: If MCP_TEST_MODE is not set (session fixture failed).
+    """
+    if not os.environ.get('MCP_TEST_MODE'):
+        raise RuntimeError(
+            'MCP_TEST_MODE not set! Global test fixture may have failed.',
+        )
+
+    temp_db = tmp_path / 'test_compression_round_trip.db'
+
+    original_env: dict[str, str | None] = {
+        key: os.environ.get(key) for key in (
+            'DB_PATH', 'MCP_TEST_MODE', 'ENABLE_SEMANTIC_SEARCH',
+            'ENABLE_FTS', 'ENABLE_HYBRID_SEARCH',
+            'ENABLE_EMBEDDING_GENERATION', 'ENABLE_SUMMARY_GENERATION',
+            'ENABLE_EMBEDDING_COMPRESSION', 'COMPRESSION_BITS',
+            'COMPRESSION_VARIANT', 'COMPRESSION_SEED',
+            'COMPRESSION_MAX_CONCURRENT',
+        )
+    }
+
+    server_env = {
+        **os.environ,
+        'DB_PATH': str(temp_db),
+        'MCP_TEST_MODE': '1',
+        'ENABLE_SEMANTIC_SEARCH': 'false',
+        'ENABLE_FTS': 'false',
+        'ENABLE_HYBRID_SEARCH': 'false',
+        # Embedding generation off keeps the test independent of Ollama;
+        # the compression migration and bootstrap validator still run.
+        'ENABLE_EMBEDDING_GENERATION': 'false',
+        'ENABLE_SUMMARY_GENERATION': 'false',
+        'ENABLE_EMBEDDING_COMPRESSION': 'true',
+        'COMPRESSION_BITS': '4',
+        'COMPRESSION_VARIANT': 'ip',
+        'COMPRESSION_SEED': '42',
+        'COMPRESSION_MAX_CONCURRENT': '2',
+    }
+    # Also mutate parent os.environ so any in-process helpers see the
+    # compression toggle (e.g., when the wrapper imports app.settings).
+    os.environ.update(server_env)
+
+    wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
+
+    from app.schemas import load_schema
+
+    schema_sql = load_schema('sqlite')
+    with sqlite3.connect(str(temp_db)) as conn:
+        conn.executescript(schema_sql)
+        conn.execute('PRAGMA foreign_keys = ON')
+        conn.execute('PRAGMA journal_mode = WAL')
+        conn.commit()
+
+    try:
+        # Pass env explicitly via PythonStdioTransport so the spawned
+        # subprocess receives our compression configuration. FastMCP's
+        # Client(str) shortcut does not propagate the parent env.
+        from fastmcp.client.transports import PythonStdioTransport
+        transport = PythonStdioTransport(
+            script_path=str(wrapper_script),
+            env=server_env,
+        )
+        client: Client[Any] = Client(transport)
+        async with client:
+            await client.ping()
+
+            store_result = await client.call_tool(
+                'store_context',
+                {
+                    'thread_id': f'compression_rt_{int(time.time())}',
+                    'source': 'agent',
+                    'text': 'Compressed-path round trip entry',
+                    'tags': ['compression', 'round-trip'],
+                },
+            )
+
+            content_obj: dict[str, Any] | None = None
+            if hasattr(store_result, 'structured_content'):
+                content_obj = store_result.structured_content
+            assert content_obj is not None, 'store_context returned no structured content'
+            assert content_obj.get('success') is True, content_obj
+            context_id = content_obj.get('context_id')
+            assert context_id, content_obj
+
+            with sqlite3.connect(str(temp_db)) as conn:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='vec_context_embeddings_compressed'",
+                ).fetchone()
+                assert row is not None, 'compressed vector table missing'
+
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='vec_context_embeddings'",
+                ).fetchone()
+                assert row is None, 'fp32 vec_context_embeddings still exists'
+
+                prov = conn.execute(
+                    'SELECT provider, bits, variant, seed FROM compression_metadata '
+                    'WHERE id = 1',
+                ).fetchone()
+                assert prov is not None, 'compression_metadata row missing'
+                assert prov[0] == 'turboquant'
+                assert int(prov[1]) == 4
+                assert prov[2] == 'ip'
+                assert int(prov[3]) == 42
+
+            get_result = await client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            get_content: dict[str, Any] | None = None
+            if hasattr(get_result, 'structured_content'):
+                get_content = get_result.structured_content
+            assert get_content is not None
+            results = get_content.get('result') or get_content.get('results')
+            assert results, get_content
+            assert results[0]['id'] == context_id
+            assert 'Compressed-path round trip entry' in results[0]['text_content']
+
+    finally:
+        for key, value in original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 if __name__ == '__main__':
     # Allow running directly
     async def main() -> None:

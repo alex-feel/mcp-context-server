@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 
 @contextmanager
 def env_var(key: str, value: str | None) -> Generator[None, None, None]:
@@ -155,9 +157,9 @@ class TestTracedEmbeddingWrapperBehavior:
                 # When tracing enabled + langsmith available, decorator returns a wrapper
                 assert decorated is not original_func
 
-    def test_wrapper_extracts_provider_metadata(self) -> None:
+    @pytest.mark.asyncio
+    async def test_wrapper_extracts_provider_metadata(self) -> None:
         """Verify wrapper extracts ls_provider and ls_model_name from provider instance."""
-        import asyncio
         import importlib
         import sys
 
@@ -196,9 +198,7 @@ class TestTracedEmbeddingWrapperBehavior:
                 mock_provider._model = 'text-embedding-3-small'
 
                 # Call the wrapper to trigger traceable() invocation with metadata
-                asyncio.get_event_loop().run_until_complete(
-                    decorated(mock_provider, 'test text'),
-                )
+                await decorated(mock_provider, 'test text')
 
         # Verify traceable was called with correct metadata
         assert captured_kwargs.get('run_type') == 'embedding'

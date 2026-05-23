@@ -148,10 +148,11 @@ PostgreSQL does not have a State 2 equivalent. Its `text_search_vector` column i
 
 ### Cross-Backend Vector Embedding Warning
 
-If you ran a cross-backend migration (SQLite to PostgreSQL or vice versa) and saw the warning `cross-backend migration drops vector embeddings; re-embed the target after migration`, your target database contains all rows and metadata but no vector embeddings. To restore embeddings:
+If you ran a cross-backend migration (SQLite to PostgreSQL or vice versa) and saw the warning `cross-backend migration drops vector embeddings; re-embed the target after migration`, your target database contains all rows and metadata but no vector embeddings. To restore embeddings, in order of preference:
 
-- Re-store the affected entries (each successful store triggers embedding generation when generation is enabled), OR
-- Run `mcp-context-server` against the target with `ENABLE_EMBEDDING_GENERATION=true`. The embedding pipeline fills in missing embeddings for entries that lack them.
+- **Recommended:** Run `mcp-context-server-migrate --source-url <target-url> --embed-missing` against the target database. The `--embed-missing` flag invokes the configured embedding provider (`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`) for every entry that lacks an `embedding_metadata` row. When `ENABLE_EMBEDDING_COMPRESSION=true` is set (the default in v3.0.0), the new embeddings land directly in `vec_context_embeddings_compressed`; otherwise they land in `vec_context_embeddings`. Run with `--dry-run` first to count missing entries without calling the provider. See the [Backfilling missing embeddings](embedding-compression.md#backfilling-missing-embeddings) section of the Embedding Compression Guide for details.
+- Re-store the affected entries via the live server (each successful `store_context` call triggers embedding generation when generation is enabled), OR
+- Run `mcp-context-server` against the target with `ENABLE_EMBEDDING_GENERATION=true` and trigger any operation that touches the affected entries.
 
 ### Second-Precision Source Data
 
@@ -176,6 +177,89 @@ A one-liner SQLite sanity check that confirms the `id` column is TEXT in the tar
 ```bash
 python -c "import sqlite3; c = sqlite3.connect('target.db'); rows = c.execute(\"SELECT typeof(id) FROM context_entries LIMIT 1\").fetchall(); assert rows and rows[0][0] == 'text', rows"
 ```
+
+## Compressing an Existing Database
+
+If you want to enable the optional `ENABLE_EMBEDDING_COMPRESSION` feature on a database that already contains fp32 embeddings, run the `mcp-context-server-migrate` CLI with the `--compress` flag. This step is independent of the v2-to-v3 schema migration described above: if your database came from a v2 installation, run the v2-to-v3 migration first, then optionally run `--compress` on the resulting v3 database.
+
+For background on what compression does, how it is configured, and the multi-pod seed-locked invariant, see the [Embedding Compression Guide](embedding-compression.md).
+
+### Backup Required
+
+> [!WARNING]
+> The `--compress` flag is destructive: it permanently drops the `vec_context_embeddings` fp32 table and replaces it with `vec_context_embeddings_compressed`. The original fp32 vectors are NOT recoverable from the compressed payload (the compression is lossy by design). **Back up your database before running the CLI.**
+>
+> - SQLite: take a filesystem copy of the `.db` file.
+> - PostgreSQL: run `pg_dump` to a portable archive.
+
+### Dry Run First
+
+Always run `--dry-run` before the real execution to preview the operation:
+
+```bash
+mcp-context-server-migrate \
+  --source-url sqlite:////path/to/db.sqlite \
+  --compress \
+  --dry-run
+```
+
+The dry run prints the BACKUP REQUIRED warning, the source URL (with credentials masked), the row count, the destination table name, the singleton provenance values that will be recorded, and an estimated execution time computed from a probe batch. No writes are issued.
+
+### Execute the Compression
+
+After verifying the dry-run plan, export the compression env vars and re-run without `--dry-run`:
+
+```bash
+# All four export lines are optional in v3.0.0; the values shown are the defaults.
+# Override only if you intentionally want a different configuration.
+# export ENABLE_EMBEDDING_COMPRESSION=true
+# export COMPRESSION_BITS=4
+# export COMPRESSION_VARIANT=ip
+# export COMPRESSION_SEED=0  # immutable after first compressed row is written
+
+mcp-context-server-migrate \
+  --source-url sqlite:////path/to/db.sqlite \
+  --compress
+```
+
+The CLI streams fp32 rows in batches of 10 000, encodes each batch through the compression provider, and INSERTs each batch into `vec_context_embeddings_compressed`. The singleton `compression_metadata` INSERT and the source table DROP run LAST, all inside the same single atomic transaction. Peak working set is bounded by `O(batch_size * dim * 4)` bytes for the fp32 read window (approximately 40 MB at the default `batch_size=10000` and `dim=1024`), independent of total row count. On PostgreSQL the `idx_vec_context_embeddings_hnsw` HNSW index is dropped before the source table. If any step fails before COMMIT, the entire transaction rolls back end-to-end: no partial state, no resume marker, and the source `vec_context_embeddings` table remains intact.
+
+Top-K recall against fp32 ground truth is at least `0.85` per query at the default configuration (the project's regression gate; measured recall is `1.0` on the test corpus).
+
+### After Compression
+
+Start the server with the same compression env vars exported. The server reads the seed from the `compression_metadata` row and serves search through the compressed read path. A mismatch between the env vars and the stored row raises `ConfigurationError` (exit 78) and refuses startup.
+
+### Reversing the Compression
+
+The `--decompress` flag reverses the operation, decoding the compressed payload back to fp32 and recreating the fp32 vec table. Reconstruction is **lossy**: the decoded vectors approximate the original MSE component (for `variant='mse'`) and cannot perfectly reconstruct the inner-product information (for `variant='ip'`). Use it only when you intend to abandon compression on a given database.
+
+`--decompress` follows the same streaming + single-transaction shape as `--compress`: compressed rows are read in batches of 10 000, decoded per batch, and INSERTed into the recreated `vec_context_embeddings` table. The source compressed table DROP and (on PostgreSQL) HNSW index recreation run LAST inside the same atomic transaction. The same peak-memory bound and the same all-or-nothing rollback contract apply.
+
+Unset `ENABLE_EMBEDDING_COMPRESSION` first so the post-decompression startup validator does not reject the disabled state:
+
+```bash
+unset ENABLE_EMBEDDING_COMPRESSION
+
+mcp-context-server-migrate \
+  --source-url sqlite:////path/to/db.sqlite \
+  --decompress
+```
+
+On PostgreSQL the `idx_vec_context_embeddings_hnsw` HNSW index is recreated after the fp32 table is rebuilt.
+
+### Cross-Backend Note
+
+The compression CLI is single-backend. If you are migrating from SQLite to PostgreSQL (or vice versa), run the v2-to-v3 cross-backend migration first, then run `--compress` on the target.
+
+### Idempotency
+
+Running `--compress` against an already-compressed database is a no-op: the CLI detects the singleton `compression_metadata` row, prints an informational message, and exits successfully. The same applies to `--decompress` when there is no compression to undo.
+
+### Further Reading
+
+- Feature reference: [Embedding Compression Guide](embedding-compression.md)
+- Configuration: [Environment Variables Reference](environment-variables.md#embedding-compression-settings)
 
 ## Reverting
 

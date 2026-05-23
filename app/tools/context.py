@@ -47,6 +47,7 @@ from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
+from app.tools._shared import generate_compression_with_timeout
 from app.tools._shared import generate_embeddings_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
@@ -223,6 +224,11 @@ async def store_context(
                     f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
                 )
                 raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
+
+        # Compress embeddings OUTSIDE the DB transaction (mirrors the
+        # generation-first invariant): on failure the entry is not saved.
+        # No-op when ENABLE_EMBEDDING_COMPRESSION=false.
+        chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
@@ -638,6 +644,11 @@ async def update_context(
                     f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
                 )
                 raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
+
+            # Compress regenerated embeddings OUTSIDE the DB transaction
+            # (generation-first invariant). No-op when compression is
+            # disabled.
+            chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend

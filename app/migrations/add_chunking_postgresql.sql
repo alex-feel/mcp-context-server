@@ -7,7 +7,13 @@
 -- `context_id`'s type).
 -- Includes chunk boundaries for chunk-aware reranking.
 -- NOTE: This migration is idempotent (safe to run multiple times)
--- NOTE: Schema is templated and replaced during migration
+-- NOTE: Table and index DDL uses BARE names; idempotency-check filters
+-- on information_schema and pg_indexes use current_schema() so the
+-- check inspects whatever schema search_path resolves to. Operators
+-- with a non-default POSTGRESQL_SCHEMA must configure search_path so
+-- the migration creates tables in the intended schema. The migration
+-- loader (app/migrations/chunking.py) no longer substitutes {SCHEMA}
+-- for this file.
 
 -- Step 1: Check if migration already applied by checking for 'id' column
 -- The DO block ensures idempotency - if id column exists, skip schema changes
@@ -18,32 +24,32 @@ BEGIN
     -- Check if 'id' column already exists (migration already applied)
     SELECT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_schema = '{SCHEMA}'
+        WHERE table_schema = current_schema()
           AND table_name = 'vec_context_embeddings'
           AND column_name = 'id'
     ) INTO id_exists;
 
     IF NOT id_exists THEN
         -- Step 2: Drop existing PRIMARY KEY constraint on context_id
-        ALTER TABLE {SCHEMA}.vec_context_embeddings
+        ALTER TABLE vec_context_embeddings
             DROP CONSTRAINT IF EXISTS vec_context_embeddings_pkey;
 
         -- Step 3: Add id BIGSERIAL column as new primary key
         -- This enables multiple rows per context_id (1:N relationship)
-        ALTER TABLE {SCHEMA}.vec_context_embeddings
+        ALTER TABLE vec_context_embeddings
             ADD COLUMN id BIGSERIAL;
 
         -- Step 4: Add chunk boundary columns for chunk-aware reranking
         -- start_index: Character offset where chunk starts in original document
         -- end_index: Character offset where chunk ends in original document
-        ALTER TABLE {SCHEMA}.vec_context_embeddings
+        ALTER TABLE vec_context_embeddings
             ADD COLUMN start_index INTEGER NOT NULL DEFAULT 0;
 
-        ALTER TABLE {SCHEMA}.vec_context_embeddings
+        ALTER TABLE vec_context_embeddings
             ADD COLUMN end_index INTEGER NOT NULL DEFAULT 0;
 
         -- Step 5: Create new PRIMARY KEY on id
-        ALTER TABLE {SCHEMA}.vec_context_embeddings
+        ALTER TABLE vec_context_embeddings
             ADD PRIMARY KEY (id);
 
         -- Step 6: Create index for context_id (UUID) lookups
@@ -51,21 +57,21 @@ BEGIN
         -- B-tree index on UUID column works identically to BIGINT
         -- (PostgreSQL handles native uuid type natively).
         CREATE INDEX IF NOT EXISTS idx_vec_embeddings_context_id
-            ON {SCHEMA}.vec_context_embeddings(context_id);
+            ON vec_context_embeddings(context_id);
 
         RAISE NOTICE 'Chunking migration: vec_context_embeddings schema updated (1:N with boundaries)';
     ELSE
         -- If id exists but start_index doesn't, add boundary columns only
         IF NOT EXISTS (
             SELECT 1 FROM information_schema.columns
-            WHERE table_schema = '{SCHEMA}'
+            WHERE table_schema = current_schema()
               AND table_name = 'vec_context_embeddings'
               AND column_name = 'start_index'
         ) THEN
-            ALTER TABLE {SCHEMA}.vec_context_embeddings
+            ALTER TABLE vec_context_embeddings
                 ADD COLUMN start_index INTEGER NOT NULL DEFAULT 0;
 
-            ALTER TABLE {SCHEMA}.vec_context_embeddings
+            ALTER TABLE vec_context_embeddings
                 ADD COLUMN end_index INTEGER NOT NULL DEFAULT 0;
 
             RAISE NOTICE 'Chunking migration: chunk boundary columns added';
@@ -81,11 +87,11 @@ DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_indexes
-        WHERE schemaname = '{SCHEMA}'
+        WHERE schemaname = current_schema()
         AND indexname = 'idx_vec_context_embeddings_hnsw'
     ) THEN
         CREATE INDEX idx_vec_context_embeddings_hnsw
-        ON {SCHEMA}.vec_context_embeddings
+        ON vec_context_embeddings
         USING hnsw (embedding vector_l2_ops)
         WITH (m = 16, ef_construction = 64);
         RAISE NOTICE 'Chunking migration: HNSW index created';
@@ -96,5 +102,5 @@ END $$;
 
 -- Step 8: Add chunk_count column to embedding_metadata
 -- This tracks how many chunks exist for each context_id
-ALTER TABLE {SCHEMA}.embedding_metadata
+ALTER TABLE embedding_metadata
     ADD COLUMN IF NOT EXISTS chunk_count INTEGER NOT NULL DEFAULT 1;

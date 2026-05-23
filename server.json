@@ -954,6 +954,50 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_SERVER_INSTRUCTIONS"
+        },
+        {
+          "description": "Enable TurboQuant embedding compression at storage time. Default true. When true (default), fp32 embeddings are replaced with bit-packed compressed payloads (~8x storage reduction at default bits=4). Set to false to opt out and keep fp32 storage.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_COMPRESSION",
+          "default": "true"
+        },
+        {
+          "description": "Compression provider. Currently only 'turboquant' is supported.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_PROVIDER"
+        },
+        {
+          "description": "Bits per coordinate for compression: 2 (16x), 3 (~11x), 4 (8x). Default 4. Lower bound 2 required by the inner-product variant.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_BITS"
+        },
+        {
+          "description": "Compression variant. 'ip' (default) uses Algorithm 2 with QJL for unbiased inner-product estimation. 'mse' uses Algorithm 1 (L2-optimal reconstruction).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_VARIANT"
+        },
+        {
+          "description": "Rotation matrix seed. Default 0. Pick any stable non-negative integer; the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_SEED",
+          "default": "0"
+        },
+        {
+          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_MAX_CONCURRENT"
         }
       ]
     },
@@ -1903,6 +1947,50 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_SERVER_INSTRUCTIONS"
+        },
+        {
+          "description": "Enable TurboQuant embedding compression at storage time. Default true. When true (default), fp32 embeddings are replaced with bit-packed compressed payloads (~8x storage reduction at default bits=4). Set to false to opt out and keep fp32 storage.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_COMPRESSION",
+          "default": "true"
+        },
+        {
+          "description": "Compression provider. Currently only 'turboquant' is supported.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_PROVIDER"
+        },
+        {
+          "description": "Bits per coordinate for compression: 2 (16x), 3 (~11x), 4 (8x). Default 4. Lower bound 2 required by the inner-product variant.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_BITS"
+        },
+        {
+          "description": "Compression variant. 'ip' (default) uses Algorithm 2 with QJL for unbiased inner-product estimation. 'mse' uses Algorithm 1 (L2-optimal reconstruction).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_VARIANT"
+        },
+        {
+          "description": "Rotation matrix seed. Default 0. Pick any stable non-negative integer; the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_SEED",
+          "default": "0"
+        },
+        {
+          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_MAX_CONCURRENT"
         }
       ]
     }

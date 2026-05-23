@@ -26,6 +26,7 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Semantic Search**: Optional vector similarity search for meaning-based retrieval with cross-encoder reranking
 - **Hybrid Search**: Optional combined FTS + semantic search using Reciprocal Rank Fusion (RRF) with cross-encoder reranking
 - **Cross-Encoder Reranking**: Automatic result refinement using FlashRank cross-encoder models for improved search precision (enabled by default)
+- **Embedding Compression (default ON)**: Reduces embedding storage by approximately 8x out of the box in v3.0.0. Bit-packed compressed vectors keep semantic and hybrid search working without changes to the tool surface, and the read path bypasses the pgvector >2000-dimension HNSW limit. Set `ENABLE_EMBEDDING_COMPRESSION=false` to opt out and keep fp32 storage. See the [Embedding Compression Guide](docs/embedding-compression.md)
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
 - **High Performance**: WAL mode (SQLite) / MVCC (PostgreSQL), strategic indexing, and async operations
 - **MCP Standard Compliance**: Works with Claude Code, LangGraph, and any MCP-compatible client

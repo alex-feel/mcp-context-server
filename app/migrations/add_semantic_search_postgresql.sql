@@ -38,9 +38,11 @@ WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS idx_embedding_metadata_model
 ON embedding_metadata(model_name);
 
--- Trigger to automatically update updated_at timestamp
--- SET search_path for security (CVE-2018-1058 mitigation)
--- NOTE: Schema is templated and replaced during migration (see server.py)
+-- Trigger to automatically update updated_at timestamp.
+-- Function definition and trigger's EXECUTE FUNCTION reference remain
+-- schema-qualified for CVE-2018-1058 mitigation (function search-path
+-- hardening). Table and index DDL above is BARE; the migration loader
+-- substitutes {SCHEMA} only for the FUNCTION sites in this file.
 CREATE OR REPLACE FUNCTION {SCHEMA}.update_embedding_metadata_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN

@@ -48,36 +48,78 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # ---------------------------------------------------------------------------
-# Concurrency limiters for embedding/summary generation
+# Concurrency limiters for embedding / summary / compression generation
 # ---------------------------------------------------------------------------
+#
+# All three semaphores are constructed at module import time. asyncio.Semaphore
+# has been parameterless (no ``loop`` argument) since Python 3.10, so its
+# construction does NOT require a running event loop. Constructing at module
+# scope is simpler than the prior lazy-init helpers and gives every caller a
+# stable reference for the lifetime of the process.
+#
+# The three semaphores are intentionally separate because:
+#   * ``_embedding_semaphore``: bounds outbound HTTP concurrency to the
+#     embedding provider.
+#   * ``_summary_semaphore``: bounds outbound HTTP concurrency to the summary
+#     provider.
+#   * ``_compression_semaphore``: bounds CPU-bound encoding offloaded via
+#     ``asyncio.to_thread``; contention is for the GIL / CPU, not the event
+#     loop, so a separate budget applies.
 
-# Concurrency limiter for embedding generation to prevent provider overload.
-# Initialized lazily on first use to ensure correct event loop binding.
-_embedding_semaphore: asyncio.Semaphore | None = None
+_embedding_semaphore: asyncio.Semaphore = asyncio.Semaphore(
+    settings.embedding.max_concurrent,
+)
+_summary_semaphore: asyncio.Semaphore = asyncio.Semaphore(
+    settings.summary.max_concurrent,
+)
+_compression_semaphore: asyncio.Semaphore = asyncio.Semaphore(
+    settings.compression.max_concurrent,
+)
 
-# Concurrency limiter for summary generation to prevent provider overload.
-# Initialized lazily on first use to ensure correct event loop binding.
-_summary_semaphore: asyncio.Semaphore | None = None
 
+def _reset_embedding_semaphore() -> None:
+    """Rebind the embedding semaphore against the current settings value.
 
-def _get_embedding_semaphore() -> asyncio.Semaphore:
-    """Get or create the embedding concurrency semaphore.
-
-    Returns:
-        asyncio.Semaphore configured with EMBEDDING_MAX_CONCURRENT limit.
+    Test fixtures that mutate ``settings.embedding.max_concurrent`` between
+    cases call this to ensure the next ``async with _embedding_semaphore``
+    block uses the freshly configured limit.
     """
     global _embedding_semaphore
-    if _embedding_semaphore is None:
-        _embedding_semaphore = asyncio.Semaphore(settings.embedding.max_concurrent)
-    return _embedding_semaphore
+    _embedding_semaphore = asyncio.Semaphore(settings.embedding.max_concurrent)
 
 
-def _get_summary_semaphore() -> asyncio.Semaphore:
-    """Get or create the summary concurrency semaphore."""
+def _reset_summary_semaphore() -> None:
+    """Rebind the summary semaphore against the current settings value.
+
+    Test fixtures that mutate ``settings.summary.max_concurrent`` between
+    cases call this to ensure the next ``async with _summary_semaphore``
+    block uses the freshly configured limit.
+    """
     global _summary_semaphore
-    if _summary_semaphore is None:
-        _summary_semaphore = asyncio.Semaphore(settings.summary.max_concurrent)
-    return _summary_semaphore
+    _summary_semaphore = asyncio.Semaphore(settings.summary.max_concurrent)
+
+
+def _reset_compression_semaphore() -> None:
+    """Rebind the compression semaphore against the current settings value.
+
+    Test fixtures that mutate ``settings.compression.max_concurrent``
+    between cases call this to ensure the next
+    ``async with _compression_semaphore`` block uses the freshly
+    configured limit.
+    """
+    global _compression_semaphore
+    _compression_semaphore = asyncio.Semaphore(settings.compression.max_concurrent)
+
+
+# Explicit re-export so type checkers do NOT flag the reset helpers as unused.
+# These are called only by test fixtures that need to rebind the module-level
+# semaphores against patched ``settings.*.max_concurrent`` values between
+# cases; production code uses the semaphores directly without rebinding.
+_RESET_HELPERS_EXPORT = (
+    _reset_embedding_semaphore,
+    _reset_summary_semaphore,
+    _reset_compression_semaphore,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +209,7 @@ async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | 
 
     total_timeout = compute_embedding_total_timeout()
     try:
-        async with _get_embedding_semaphore():
+        async with _embedding_semaphore:
             return await asyncio.wait_for(
                 _generate_embeddings_for_text(text),
                 timeout=total_timeout,
@@ -177,6 +219,87 @@ async def generate_embeddings_with_timeout(text: str) -> list[ChunkEmbedding] | 
             f'Embedding generation exceeded total timeout ({total_timeout:.0f}s). '
             f'This may indicate the embedding provider is overloaded or unreachable.',
         ) from None
+
+
+async def generate_compression_with_timeout(
+    chunk_embeddings: list[ChunkEmbedding] | None,
+) -> list[ChunkEmbedding] | None:
+    """Compress each chunk's embedding into a bytes payload.
+
+    Runs OUTSIDE any DB transaction, preserving the generation-first
+    transactional-integrity invariant: when compression fails the storage
+    write does not happen and the entry is not persisted.
+
+    When ENABLE_EMBEDDING_COMPRESSION is false this is a no-op that returns
+    the input unchanged so callers can wire the helper unconditionally.
+    When true it calls the active provider's ``encode_sync`` for each chunk
+    inside a worker thread (``asyncio.to_thread``) bounded by the
+    compression semaphore, returning a fresh ``ChunkEmbedding`` list with
+    the ``payload`` field populated.
+
+    Args:
+        chunk_embeddings: Embeddings returned by
+            :func:`generate_embeddings_with_timeout`. ``None`` is passed
+            through unchanged (no embeddings to compress).
+
+    Returns:
+        The same list of ``ChunkEmbedding`` objects when compression is
+        disabled or ``chunk_embeddings is None``; a fresh list with
+        ``payload`` populated otherwise.
+
+    Raises:
+        ToolError: If compression provider construction or any encode call
+            fails. The transactional write is aborted by the propagating
+            exception.
+    """
+    if not settings.compression.enabled:
+        return chunk_embeddings
+
+    if chunk_embeddings is None:
+        return None
+
+    # Defer provider import until enabled to keep numpy out of the import
+    # graph for installations that skipped the compression extra. The
+    # cached helper unifies provider construction across read (search)
+    # and write (encode) paths: both reuse the same rotation matrix and
+    # codebook arrays per process.
+    from app.compression import get_cached_compression_provider
+
+    try:
+        provider = await get_cached_compression_provider()
+    except Exception as e:
+        raise ToolError(
+            f'Compression provider initialization failed: '
+            f'{format_exception_message(e)}',
+        ) from e
+
+    async def _encode_one(chunk: ChunkEmbedding) -> ChunkEmbedding:
+        # Local import keeps numpy out of the hot import graph; this branch
+        # only executes when compression is enabled (extra installed).
+        import numpy as np
+
+        vector = np.asarray([chunk.embedding], dtype=np.float32)
+        # Acquire one semaphore permit per encode call so the configured
+        # COMPRESSION_MAX_CONCURRENT limit governs in-flight CPU work
+        # accurately. Wrapping the outer asyncio.gather() would let an
+        # N-chunk batch run all N encodes under one permit, bypassing
+        # the bound. Mirrors the established embedding/summary semaphore
+        # pattern.
+        async with _compression_semaphore:
+            try:
+                payload_bytes = await asyncio.to_thread(provider.encode_sync, vector)
+            except Exception as e:
+                raise ToolError(
+                    f'Compression encode failed: {format_exception_message(e)}',
+                ) from e
+        return ChunkEmbedding(
+            embedding=chunk.embedding,
+            start_index=chunk.start_index,
+            end_index=chunk.end_index,
+            payload=payload_bytes,
+        )
+
+    return await asyncio.gather(*[_encode_one(c) for c in chunk_embeddings])
 
 
 async def generate_summary_with_timeout(text: str, source: str) -> str | None:
@@ -207,7 +330,7 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
     total_timeout = compute_summary_total_timeout()
     try:
         logger.info('Generating summary: text_len=%d', len(text))
-        async with _get_summary_semaphore():
+        async with _summary_semaphore:
             result = await asyncio.wait_for(
                 summary_provider.summarize(text, source),
                 timeout=total_timeout,

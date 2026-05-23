@@ -49,6 +49,7 @@ from app.migrations import ProviderCheckResult
 
 # Import migration functions from the migrations package
 from app.migrations import apply_chunking_migration
+from app.migrations import apply_compression_migration
 from app.migrations import apply_content_hash_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
@@ -77,14 +78,14 @@ from app.startup import set_embedding_provider
 from app.startup import set_repositories
 from app.startup import set_reranking_provider
 from app.startup import set_summary_provider
+from app.startup.compression_validator import validate_compression_provenance
 
+# Import validation utilities from startup (for internal use)
 # Backward compatibility re-exports for validation utilities
 # Tests and external code may import these from app.server
 from app.startup.validation import truncate_text
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
-
-# Import validation utilities from startup (for internal use)
 from app.startup.validation import validate_pool_timeout_for_embedding
 
 # Import tool functions and registration helpers from app.tools
@@ -223,14 +224,24 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_summary_migration(backend=backend)
         # 9) Apply content_hash column migration (deduplication optimization)
         await apply_content_hash_migration(backend=backend)
-        # 10) Validate pool timeout for embedding operations (PostgreSQL only)
+        # 10) Apply compression migration: REPLACES fp32 vec table with compressed
+        # storage when ENABLE_EMBEDDING_COMPRESSION=true; no-op when disabled.
+        # Must run before validate_compression_provenance because the validator
+        # reads from the compression_metadata table created here.
+        await apply_compression_migration(backend=backend)
+        # 11) Validate pool timeout for embedding operations (PostgreSQL only)
         if backend.backend_type == 'postgresql':
             validate_pool_timeout_for_embedding()
-        # 11) Initialize repositories with the backend
+        # 12) Validate compression provenance: bootstrap-or-validate the
+        # singleton seed/bits/variant/provider/dim row. Raises
+        # ConfigurationError(exit 78) on bootstrap-missing-seed or env/DB
+        # mismatch; the supervisor does not auto-restart.
+        await validate_compression_provenance(backend=backend)
+        # 13) Initialize repositories with the backend
         repos = RepositoryContainer(backend)
         set_repositories(repos)
 
-        # 12) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
+        # 14) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
         # Additive tools (create new entries)
         register_tool(mcp, store_context)
         register_tool(mcp, store_context_batch)
@@ -249,11 +260,11 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, delete_context)
         register_tool(mcp, delete_context_batch)
 
-        # 13) Propagate LangSmith settings to os.environ BEFORE embedding provider init
+        # 15) Propagate LangSmith settings to os.environ BEFORE embedding provider init
         # This enables LangSmith SDK auto-detection when users configure via .env file
         propagate_langsmith_settings()
 
-        # 14) Initialize embedding generation if enabled (BEFORE semantic search)
+        # 16) Initialize embedding generation if enabled (BEFORE semantic search)
         # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
         # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
         if settings.embedding.generation_enabled:
@@ -327,7 +338,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_embedding_provider(None)
             logger.info('Embedding generation disabled (ENABLE_EMBEDDING_GENERATION=false)')
 
-        # 15) Initialize reranking provider if enabled
+        # 17) Initialize reranking provider if enabled
         # Reranking improves search precision by re-scoring results with a cross-encoder
         if settings.reranking.enabled:
             try:
@@ -367,7 +378,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_reranking_provider(None)
             logger.info('Reranking disabled (ENABLE_RERANKING=false)')
 
-        # 16) Initialize chunking service if enabled
+        # 18) Initialize chunking service if enabled
         # Chunking splits long documents into smaller pieces for better semantic search quality
         if settings.chunking.enabled:
             try:
@@ -400,7 +411,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_chunking_service(None)
             logger.info('Chunking disabled (ENABLE_CHUNKING=false)')
 
-        # 17) Initialize summary provider if enabled
+        # 19) Initialize summary provider if enabled
         if settings.summary.generation_enabled:
             # Step 1: Check provider-specific dependencies based on SUMMARY_PROVIDER
             from app.migrations import check_summary_provider_dependencies
@@ -463,10 +474,10 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_summary_provider(None)
             logger.info('Summary generation disabled (ENABLE_SUMMARY_GENERATION=false)')
 
-        # 18) Pre-warm Ollama models (load into memory for instant first-request response)
+        # 20) Pre-warm Ollama models (load into memory for instant first-request response)
         await prewarm_ollama_models()
 
-        # 19) Register semantic search tool if enabled AND embedding provider is available
+        # 21) Register semantic search tool if enabled AND embedding provider is available
         # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
         if settings.semantic_search.enabled:
             if get_embedding_provider() is not None:
@@ -483,7 +494,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('semantic_search_context not registered (feature disabled)')
 
-        # 20) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 22) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.fts.enabled:
             # Generate backend-specific FTS description for AI agents
@@ -506,7 +517,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('fts_search_context not registered (feature disabled)')
 
-        # 21) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 23) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.hybrid_search.enabled:
             semantic_available_for_hybrid = (
                 settings.semantic_search.enabled and get_embedding_provider() is not None
@@ -532,7 +543,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Hybrid search disabled (ENABLE_HYBRID_SEARCH=false)')
             logger.info('hybrid_search_context not registered (feature disabled)')
 
-        # 22) Register schema-aware JSON string deserializer middleware
+        # 24) Register schema-aware JSON string deserializer middleware
         # Handles client serialization issues where list/dict params arrive as JSON strings
         # Must run AFTER all tool registrations so schema map includes all tools
         all_tools = await mcp.list_tools(run_middleware=False)

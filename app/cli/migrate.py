@@ -1150,6 +1150,190 @@ async def _target_pg_has_data(conn: 'asyncpg.Connection[asyncpg.Record]') -> boo
     return int(count or 0) > 0
 
 
+async def copy_embedding_metadata_pg(
+    source: 'asyncpg.Connection[asyncpg.Record]',
+    target: 'asyncpg.Connection[asyncpg.Record]',
+    id_mapping: Mapping[int, str],
+    stats: MigrationStats,
+    dry_run: bool,
+) -> None:
+    """Copy ``embedding_metadata`` rows from a PostgreSQL source to a PostgreSQL target.
+
+    Mirrors :func:`copy_embedding_metadata` (the SQLite path) but uses
+    asyncpg placeholders, native UUID binding, and asyncpg's ``fetch``
+    cursor. The source ``context_id`` is a BIGINT (integer-keyed v2
+    schema); the target ``context_id`` is a UUID (v3 schema). Mapping
+    is applied via ``id_mapping``.
+
+    Args:
+        source: asyncpg connection to the PostgreSQL source database.
+        target: asyncpg connection to the PostgreSQL target database.
+        id_mapping: BIGINT-to-UUID mapping built from the source
+            ``context_entries.id`` -> ``created_at`` rows.
+        stats: Mutated to record ``embedding_metadata_migrated`` and
+            warnings.
+        dry_run: When True, skip INSERTs (counters still increment).
+    """
+    has_chunk_count_src = await source.fetchval(
+        '''
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'embedding_metadata' AND column_name = 'chunk_count'
+        )
+        ''',
+    )
+    src_columns = ['context_id', 'model_name', 'dimensions', 'created_at', 'updated_at']
+    if has_chunk_count_src:
+        src_columns.append('chunk_count')
+    select_sql = f'SELECT {", ".join(src_columns)} FROM embedding_metadata ORDER BY context_id ASC'
+    rows = await source.fetch(select_sql)
+
+    has_chunk_count_tgt = await target.fetchval(
+        '''
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'embedding_metadata' AND column_name = 'chunk_count'
+        )
+        ''',
+    )
+    tgt_columns = ['context_id', 'model_name', 'dimensions', 'created_at', 'updated_at']
+    if has_chunk_count_tgt:
+        tgt_columns.append('chunk_count')
+    # First column is cast to ::uuid; remaining columns use unadorned $N.
+    placeholders = ['$1::uuid'] + [f'${i + 2}' for i in range(len(tgt_columns) - 1)]
+    insert_sql = (
+        f'INSERT INTO embedding_metadata ({", ".join(tgt_columns)}) '
+        f'VALUES ({", ".join(placeholders)})'
+    )
+
+    inserted = 0
+    for row in rows:
+        source_id = int(row['context_id'])
+        mapped = id_mapping.get(source_id)
+        if mapped is None:
+            stats.warnings.append(
+                f'embedding_metadata row references missing context_id={source_id}; skipped',
+            )
+            continue
+        params: list[object] = [
+            mapped,
+            row['model_name'],
+            row['dimensions'],
+            row['created_at'],
+            row['updated_at'],
+        ]
+        if has_chunk_count_tgt:
+            params.append(row['chunk_count'] if has_chunk_count_src else 1)
+        if not dry_run:
+            await target.execute(insert_sql, *params)
+        inserted += 1
+    stats.embedding_metadata_migrated = inserted
+
+
+async def copy_vec_embeddings_pg(
+    source: 'asyncpg.Connection[asyncpg.Record]',
+    target: 'asyncpg.Connection[asyncpg.Record]',
+    id_mapping: Mapping[int, str],
+    stats: MigrationStats,
+    dry_run: bool,
+) -> None:
+    """Copy ``vec_context_embeddings`` rows from a PostgreSQL source to a PostgreSQL target.
+
+    Only ``context_id`` is remapped (BIGINT -> UUID). The ``embedding``
+    pgvector column is copied verbatim; the source must have pgvector
+    installed and the target must have ``vec_context_embeddings``
+    initialized. Probes both source and target for the chunking
+    migration's ``start_index``/``end_index`` columns (added by
+    ``add_chunking_postgresql.sql``); when present on both sides, the
+    columns are copied through.
+
+    Args:
+        source: asyncpg connection to the PostgreSQL source database.
+        target: asyncpg connection to the PostgreSQL target database.
+        id_mapping: BIGINT-to-UUID mapping built from the source
+            ``context_entries.id`` -> ``created_at`` rows.
+        stats: Mutated to record ``vec_rows_migrated`` and warnings.
+        dry_run: When True, skip INSERTs (counters still increment).
+    """
+    target_table_exists = await target.fetchval(
+        '''
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = 'vec_context_embeddings'
+        )
+        ''',
+    )
+    if not target_table_exists:
+        stats.warnings.append(
+            'target PostgreSQL database has no vec_context_embeddings table; '
+            'fp32 vec rows not copied (initialize the target schema first)',
+        )
+        return
+
+    has_boundaries_src = await source.fetchval(
+        '''
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'vec_context_embeddings' AND column_name = 'start_index'
+        )
+        ''',
+    )
+    has_boundaries_tgt = await target.fetchval(
+        '''
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'vec_context_embeddings' AND column_name = 'start_index'
+        )
+        ''',
+    )
+
+    if has_boundaries_src and has_boundaries_tgt:
+        select_sql = (
+            'SELECT context_id, embedding, start_index, end_index '
+            'FROM vec_context_embeddings ORDER BY context_id ASC'
+        )
+        insert_sql = (
+            'INSERT INTO vec_context_embeddings '
+            '(context_id, embedding, start_index, end_index) '
+            'VALUES ($1::uuid, $2, $3, $4)'
+        )
+    else:
+        select_sql = (
+            'SELECT context_id, embedding FROM vec_context_embeddings '
+            'ORDER BY context_id ASC'
+        )
+        insert_sql = (
+            'INSERT INTO vec_context_embeddings (context_id, embedding) '
+            'VALUES ($1::uuid, $2)'
+        )
+        if has_boundaries_src and not has_boundaries_tgt:
+            stats.warnings.append(
+                'source has start_index/end_index columns but target does not; '
+                'chunk boundaries not copied (run the chunking migration on the target first)',
+            )
+
+    rows = await source.fetch(select_sql)
+    inserted = 0
+    for row in rows:
+        source_id = int(row['context_id'])
+        mapped = id_mapping.get(source_id)
+        if mapped is None:
+            stats.warnings.append(
+                f'vec_context_embeddings row references missing context_id={source_id}; skipped',
+            )
+            continue
+        if not dry_run:
+            if has_boundaries_src and has_boundaries_tgt:
+                await target.execute(
+                    insert_sql,
+                    mapped, row['embedding'], row['start_index'], row['end_index'],
+                )
+            else:
+                await target.execute(insert_sql, mapped, row['embedding'])
+        inserted += 1
+    stats.vec_rows_migrated = inserted
+
+
 async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     """Drive a PostgreSQL-to-PostgreSQL migration.
 
@@ -1291,6 +1475,19 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                         img['created_at'],
                     )
                 stats.images_migrated += 1
+
+            # ----- FIX: embeddings copy (was silently dropped before v3) -----
+            # Copy embedding_metadata + vec_context_embeddings to restore
+            # the embedding state in the target database. PostgreSQL has
+            # no embedding_chunks table; the 1:N relationship lives in
+            # vec_context_embeddings.id (BIGSERIAL PK) plus context_id
+            # (UUID FK).
+            await copy_embedding_metadata_pg(
+                source_conn, target_conn, id_mapping, stats, options.dry_run,
+            )
+            await copy_vec_embeddings_pg(
+                source_conn, target_conn, id_mapping, stats, options.dry_run,
+            )
 
             if not options.dry_run:
                 await target_conn.execute('COMMIT')
@@ -1533,7 +1730,11 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog='mcp-context-server-migrate',
-        description='Migrate an integer-keyed MCP context database to the UUIDv7 schema.',
+        description=(
+            'Migrate an integer-keyed MCP context database to the UUIDv7 '
+            'schema, or compress/decompress an existing UUIDv7 database '
+            'with TurboQuant embedding compression.'
+        ),
     )
     parser.add_argument(
         '--source-url',
@@ -1542,8 +1743,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         '--target-url',
-        required=True,
-        help='Target database URL or filesystem path. The target must be empty or non-existent.',
+        required=False,
+        default=None,
+        help=(
+            'Target database URL or filesystem path. Required for the v2->v3 '
+            'migration; ignored when --compress or --decompress is set.'
+        ),
     )
     parser.add_argument(
         '--dry-run',
@@ -1556,6 +1761,46 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar='PATH',
         help='Write a JSON migration report to PATH.',
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        '--compress',
+        action='store_true',
+        help=(
+            'Compress an existing database with fp32 embeddings. Requires '
+            'ENABLE_EMBEDDING_COMPRESSION=true in the environment. Reads '
+            'from --source-url; --target-url is ignored. Use --dry-run to '
+            'preview. May be combined with --embed-missing to also backfill '
+            'entries lacking embeddings (compress runs first, then backfill).'
+        ),
+    )
+    mode_group.add_argument(
+        '--decompress',
+        action='store_true',
+        help=(
+            'Decompress a database with compressed embeddings back to fp32 '
+            '(lossy reconstruction). Requires ENABLE_EMBEDDING_COMPRESSION '
+            'to be unset or false. Reads from --source-url; --target-url is '
+            'ignored. Use --dry-run to preview.'
+        ),
+    )
+    # --embed-missing is intentionally OUTSIDE mode_group: Shape gamma
+    # allows composition with --compress (one-shot compress+backfill) AND
+    # standalone operation (fp32-only backfill or compressed-only backfill,
+    # depending on the env var state).
+    parser.add_argument(
+        '--embed-missing',
+        action='store_true',
+        help=(
+            'Generate embeddings for context_entries rows that lack an '
+            'embedding_metadata row, calling the configured embedding '
+            'provider (EMBEDDING_PROVIDER, EMBEDDING_MODEL). Works '
+            'standalone (against the existing storage layout) or composed '
+            'with --compress (compress first, then backfill into the '
+            'compressed table). Reads from --source-url; --target-url is '
+            'ignored. Use --dry-run to preview the missing-entry count '
+            'without calling the provider.'
+        ),
     )
     return parser
 
@@ -1604,14 +1849,48 @@ def main(argv: list[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+    # Single-backend in-place operations: --compress, --decompress,
+    # --embed-missing. All three dispatch on --source-url alone;
+    # --target-url is ignored. Composition rule: --compress and
+    # --embed-missing can be combined (--compress runs first, then
+    # --embed-missing against the compressed layout). --compress and
+    # --decompress are mutually exclusive (enforced by argparse
+    # mode_group). Imported lazily so callers running the v2->v3
+    # migration do not pay the compression/numpy import cost.
+    if args.compress:
+        from app.cli.migrate_compression import run_compress
+        rc = run_compress(args.source_url, dry_run=args.dry_run)
+        if rc != 0:
+            return rc
+        if args.embed_missing:
+            from app.cli.migrate_embeddings import run_embed_missing
+            return run_embed_missing(args.source_url, dry_run=args.dry_run)
+        return 0
+    if args.decompress:
+        from app.cli.migrate_compression import run_decompress
+        return run_decompress(args.source_url, dry_run=args.dry_run)
+    if args.embed_missing:
+        from app.cli.migrate_embeddings import run_embed_missing
+        return run_embed_missing(args.source_url, dry_run=args.dry_run)
+
+    if not args.target_url:
+        logger.error(
+            '--target-url is required for the v2->v3 migration. '
+            'Pass --compress or --decompress to run a compression operation '
+            'against the source database in-place.',
+        )
+        return 1
+
     options = MigrationOptions(
         source_url=args.source_url,
         target_url=args.target_url,
         dry_run=args.dry_run,
         report_path=args.report,
     )
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
     try:
         src_kind, _ = parse_backend_url(options.source_url)

@@ -125,7 +125,8 @@ class TestResetConnectionRollback:
     before other reset operations to ensure transaction cleanup on connection return.
     """
 
-    def test_reset_connection_issues_rollback_first(self) -> None:
+    @pytest.mark.asyncio
+    async def test_reset_connection_issues_rollback_first(self) -> None:
         """Verify _reset_connection issues ROLLBACK before SELECT 1 and RESET ALL.
 
         The callback should execute operations in this order:
@@ -150,16 +151,14 @@ class TestResetConnectionRollback:
 
         # The test validates the expected order when the callback runs
         # Since we can't easily extract the nested callback, we test the expected behavior
-        import asyncio
-
-        async def simulate_reset_callback():
+        async def simulate_reset_callback() -> None:
             """Simulate what _reset_connection should do."""
             # Based on the implemented code in postgresql_backend.py
             await mock_conn.execute('ROLLBACK')
             await mock_conn.fetchval('SELECT 1')
             await mock_conn.execute('RESET ALL')
 
-        asyncio.get_event_loop().run_until_complete(simulate_reset_callback())
+        await simulate_reset_callback()
 
         # Verify call order: ROLLBACK first, then SELECT 1, then RESET ALL
         mock_conn.execute.assert_has_calls([

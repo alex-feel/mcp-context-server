@@ -1,0 +1,21 @@
+name: mcp-context-server-test-pg
+
+services:
+  postgres-test:
+    image: pgvector/pgvector:pg18-trixie
+    environment:
+      POSTGRES_USER: mcp_test
+      POSTGRES_PASSWORD: mcp_test
+      POSTGRES_DB: mcp_test
+    ports:
+      - "${MCP_PG_TEST_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    tmpfs:
+      - /var/lib/postgresql
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d:ro

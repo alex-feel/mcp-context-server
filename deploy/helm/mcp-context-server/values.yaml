@@ -152,6 +152,20 @@ search:
   # Default sort order for search results
   defaultSortBy: relevance  # Only 'relevance' supported in current version
 
+# Embedding compression (default ON; ~8x storage reduction).
+# COMPRESSION_SEED is load-bearing and IMMUTABLE after the first server start.
+# Pick a non-negative integer and keep it stable for the lifetime of this
+# database; mismatching env vs DB seed refuses startup with exit 78.
+# Set compression.enabled: false to opt out and use fp32 storage.
+# See docs/embedding-compression.md for the full reference.
+compression:
+  enabled: true
+  provider: turboquant
+  bits: 4
+  variant: ip
+  seed: 0
+  maxConcurrent: 4
+
 # Ollama sidecar configuration (used when search.semantic.provider=ollama or search.summary.provider=ollama)
 ollama:
   enabled: false

@@ -17,15 +17,11 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends import create_backend
 from app.errors import format_exception_message
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-# Database path for backward compatibility mode
-DB_PATH = settings.storage.db_path
 
 
 async def _check_chunking_migration_applied_postgresql(conn: asyncpg.Connection) -> bool:
@@ -107,7 +103,7 @@ def _check_embedding_metadata_exists_sqlite(conn: sqlite3.Connection) -> bool:
     return cursor.fetchone() is not None
 
 
-async def apply_chunking_migration(backend: StorageBackend | None = None) -> None:
+async def apply_chunking_migration(backend: StorageBackend) -> None:
     """Apply chunking migration for 1:N embedding relationship.
 
     This migration:
@@ -116,7 +112,7 @@ async def apply_chunking_migration(backend: StorageBackend | None = None) -> Non
     3. Adds chunk_count to embedding_metadata
 
     Args:
-        backend: Optional backend to use. If None, creates temporary backend.
+        backend: Storage backend instance.
 
     Raises:
         RuntimeError: If migration execution fails.
@@ -130,12 +126,7 @@ async def apply_chunking_migration(backend: StorageBackend | None = None) -> Non
     if not settings.semantic_search.enabled:
         return
 
-    # Determine backend type
-    if backend is not None:
-        backend_type = backend.backend_type
-    else:
-        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
-        backend_type = temp_backend.backend_type
+    backend_type = backend.backend_type
 
     # Select migration file based on backend type
     migration_filename = ('add_chunking_postgresql.sql' if backend_type == 'postgresql'
@@ -150,17 +141,7 @@ async def apply_chunking_migration(backend: StorageBackend | None = None) -> Non
 
     try:
         migration_sql_template = migration_path.read_text(encoding='utf-8')
-
-        if backend is not None:
-            await _apply_chunking_migration_with_backend(backend, migration_sql_template)
-        else:
-            # Backward compatibility: create temporary backend
-            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
-            await temp_manager.initialize()
-            try:
-                await _apply_chunking_migration_with_backend(temp_manager, migration_sql_template)
-            finally:
-                await temp_manager.shutdown()
+        await _apply_chunking_migration_with_backend(backend, migration_sql_template)
     except Exception as e:
         logger.error(f'Failed to apply chunking migration: {e}')
         raise RuntimeError(f'Chunking migration failed: {format_exception_message(e)}') from e
@@ -174,7 +155,11 @@ async def _apply_chunking_migration_with_backend(
 
     Args:
         manager: The backend to use for migration
-        migration_sql_template: The migration SQL template with {SCHEMA} placeholder
+        migration_sql_template: The migration SQL template. Chunking
+            migration uses BARE table names and current_schema()
+            filters; the loader does not substitute {SCHEMA} for this
+            migration. Operators with a non-default POSTGRESQL_SCHEMA
+            configure search_path on their connection pool.
     """
     if manager.backend_type == 'postgresql':
         # Check if already applied
@@ -187,9 +172,10 @@ async def _apply_chunking_migration_with_backend(
             logger.info('Chunking migration: already applied for PostgreSQL, skipping SQL execution')
             return
 
-        # Template the migration SQL with configured schema
-        schema = settings.storage.postgresql_schema
-        migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
+        # Migration SQL uses BARE table names; idempotency-check
+        # filters use current_schema() to introspect the resolved
+        # schema. No template substitution required.
+        migration_sql = migration_sql_template
 
         # Get migration timeout from settings
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s

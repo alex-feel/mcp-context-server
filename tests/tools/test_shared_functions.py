@@ -8,7 +8,6 @@ Contains:
 - New tests for build_batch_store_response_message, build_batch_update_response_message
 """
 
-import asyncio
 import base64
 from typing import cast
 from unittest.mock import AsyncMock
@@ -40,7 +39,8 @@ _ChunkEmbeddingList = list[ChunkEmbedding]
 class TestTransactionHeartbeat:
     """Test in-transaction heartbeat helper."""
 
-    def test_heartbeat_executes_select_1(self) -> None:
+    @pytest.mark.asyncio
+    async def test_heartbeat_executes_select_1(self) -> None:
         """Verify transaction_heartbeat sends SELECT 1 for PostgreSQL transactions."""
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock()
@@ -49,18 +49,19 @@ class TestTransactionHeartbeat:
         type(mock_txn).backend_type = PropertyMock(return_value='postgresql')
         type(mock_txn).connection = PropertyMock(return_value=mock_conn)
 
-        asyncio.get_event_loop().run_until_complete(transaction_heartbeat(mock_txn))
+        await transaction_heartbeat(mock_txn)
 
         mock_conn.execute.assert_called_once_with('SELECT 1')
 
-    def test_heartbeat_noop_for_sqlite(self) -> None:
+    @pytest.mark.asyncio
+    async def test_heartbeat_noop_for_sqlite(self) -> None:
         """Verify transaction_heartbeat is a no-op for SQLite transactions."""
         mock_conn = MagicMock()
         mock_txn = MagicMock()
         type(mock_txn).backend_type = PropertyMock(return_value='sqlite')
         type(mock_txn).connection = PropertyMock(return_value=mock_conn)
 
-        asyncio.get_event_loop().run_until_complete(transaction_heartbeat(mock_txn))
+        await transaction_heartbeat(mock_txn)
 
         mock_conn.execute.assert_not_called()
 

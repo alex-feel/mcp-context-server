@@ -47,6 +47,7 @@ from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
+from app.tools._shared import generate_compression_with_timeout
 from app.tools._shared import generate_embeddings_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
@@ -315,6 +316,27 @@ async def store_context_batch(
             else:
                 entry_embeddings.setdefault(ve_idx, None)
                 if ve_idx not in entry_summaries:
+                    entry_summaries[ve_idx] = None
+
+                # Compress embeddings OUTSIDE the DB transaction (mirrors
+                # the generation-first invariant). No-op when
+                # ENABLE_EMBEDDING_COMPRESSION=false. In atomic mode a
+                # failure aborts the whole batch; in non-atomic mode this
+                # entry is marked failed and processing continues.
+                try:
+                    entry_embeddings[ve_idx] = await generate_compression_with_timeout(
+                        entry_embeddings.get(ve_idx),
+                    )
+                except ToolError as compress_err:
+                    if atomic:
+                        raise ToolError(
+                            f'Compression failed at index {original_idx}: '
+                            f'{compress_err}. No data was saved.',
+                        ) from compress_err
+                    generation_errors.append(
+                        (original_idx, f'Compression failed: {compress_err}'),
+                    )
+                    entry_embeddings[ve_idx] = None
                     entry_summaries[ve_idx] = None
 
         # In non-atomic mode, add generation errors to results and filter
@@ -814,6 +836,28 @@ async def update_context_batch(
             else:
                 update_embeddings.setdefault(vu_idx, None)
                 if vu_idx not in update_summaries:
+                    update_summaries[vu_idx] = None
+
+                # Compress regenerated embeddings OUTSIDE the DB transaction
+                # (generation-first invariant). No-op when compression is
+                # disabled. Atomic mode aborts the batch; non-atomic marks
+                # this entry failed and continues.
+                try:
+                    update_embeddings[vu_idx] = await generate_compression_with_timeout(
+                        update_embeddings.get(vu_idx),
+                    )
+                except ToolError as compress_err:
+                    if atomic:
+                        raise ToolError(
+                            f'Compression failed for context {context_id} at '
+                            f'index {original_idx}: {compress_err}. '
+                            f'No data was modified.',
+                        ) from compress_err
+                    generation_errors.append(
+                        (original_idx, context_id,
+                         f'Compression failed: {compress_err}'),
+                    )
+                    update_embeddings[vu_idx] = None
                     update_summaries[vu_idx] = None
 
         # In non-atomic mode, add generation errors to results and filter

@@ -47,6 +47,7 @@ from app.repositories import RepositoryContainer
 from app.reranking import RerankingProvider
 from app.services import ChunkingService
 from app.settings import get_settings
+from app.startup.compression_validator import validate_compression_provenance
 from app.summary import SummaryProvider
 
 logger = logging.getLogger(__name__)
@@ -486,4 +487,6 @@ __all__ = [
     'RerankingProvider',
     'ChunkingService',
     'SummaryProvider',
+    # Compression validator
+    'validate_compression_provenance',
 ]
