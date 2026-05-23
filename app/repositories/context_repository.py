@@ -1409,10 +1409,14 @@ class ContextRepository(BaseRepository):
 
         At least one criterion must be provided. Criteria can be combined
         for more targeted deletion. Cascading delete removes associated
-        tags and images. On PostgreSQL, embeddings are also removed via CASCADE.
-        On SQLite, vec0 virtual table rows (vec_context_embeddings) are not
-        covered by CASCADE and require explicit cleanup via the embedding
-        repository.
+        tags and images. On PostgreSQL, embedding rows are removed via
+        ON DELETE CASCADE on the surviving embedding table for the active
+        compression mode (fp32 ``vec_context_embeddings`` when compression
+        is disabled; compressed ``vec_context_embeddings_compressed`` when
+        enabled). On SQLite the vec0 virtual table is NOT covered by
+        CASCADE and requires explicit cleanup via the embedding repository;
+        the compressed ``vec_context_embeddings_compressed`` table IS covered
+        by CASCADE on SQLite (it is a standard table, not a virtual one).
 
         Args:
             context_ids: Specific context entry IDs to delete

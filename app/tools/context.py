@@ -450,8 +450,13 @@ async def delete_context(
         deleted = 0
 
         if context_ids:
-            # Delete embeddings first (explicit cleanup)
-            if settings.semantic_search.enabled:
+            # Delete embeddings first (explicit cleanup).
+            # Gate on embedding generation OR compression: either toggle
+            # being true implies embedding rows MAY exist on disk and the
+            # explicit cleanup SHOULD run. ``settings.semantic_search.enabled``
+            # only controls ``semantic_search_context`` tool registration --
+            # NOT whether embeddings exist -- so it is the wrong gate.
+            if settings.embedding.generation_enabled or settings.compression.enabled:
                 for context_id in context_ids:
                     try:
                         await repos.embeddings.delete(context_id)
@@ -463,8 +468,10 @@ async def delete_context(
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
-            # Get all context IDs in thread for embedding cleanup
-            if settings.semantic_search.enabled:
+            # Get all context IDs in thread for embedding cleanup.
+            # Gate matches the context_ids branch above: see comment there
+            # for why semantic_search.enabled is NOT the correct gate.
+            if settings.embedding.generation_enabled or settings.compression.enabled:
                 try:
                     # Get all context IDs in this thread
                     results = await repos.context.search_contexts(
