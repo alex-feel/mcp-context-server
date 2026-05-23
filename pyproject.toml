@@ -19,6 +19,7 @@ dependencies = [
     "tenacity==9.1.2",
     "uuid_utils>=0.14.1,<0.15.0",
     "numpy>=2.4.1",
+    "threadpoolctl>=3.5",
 ]
 
 [build-system]
@@ -144,7 +145,6 @@ dev = [
     "pytest-timeout>=2.4.0",
     "asyncpg-stubs>=0.31.1",
     "types-jsonschema>=4.23.0",
-    "threadpoolctl>=3.0",
 ]
 
 [tool.ruff]
@@ -155,6 +155,10 @@ src = ["app"]
 target-version = "py312"
 line-length = 127
 extend-include = ["tests/**/*.py"]
+
+[tool.ruff.lint]
+# Ignore specific rules
+ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Per-file ignores:
 # - app/server.py: DOC201, DOC501 required - FastMCP tools use inline JSON structures instead of formal docstring sections.
 #   app/server.py: E402 required - config_logger() MUST be called BEFORE importing app.backends (which triggers
@@ -168,10 +172,6 @@ extend-include = ["tests/**/*.py"]
 # - tests/run_server.py: E402 required - sys.path setup MUST precede project imports
 #   (from tests.helpers) since run_server.py is executed as a subprocess.
 extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "tests/run_server.py" = ["E402"], "app/instructions.py" = ["E501", "W293"], "app/summary/instructions.py" = ["E501", "W293"] }
-
-[tool.ruff.lint]
-# Ignore specific rules
-ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Enable rule groups
 select = [
     "FAST",  # FastAPI

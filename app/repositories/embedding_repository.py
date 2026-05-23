@@ -1546,10 +1546,12 @@ class EmbeddingRepository(BaseRepository):
                     )
                 ip_subtypes.append(p)
             combined_ip = IPPayload.concat(ip_subtypes)
-            # estimate_inner_product_sync returns shape (nq, n_total). With
+            # estimate_inner_product returns shape (nq, n_total). With
             # nq=1 this slices to a 1-D array of length n_total in the order
-            # of payload_rows (concat preserves input order).
-            ip_estimates = provider.estimate_inner_product_sync(
+            # of payload_rows (concat preserves input order). The async
+            # wrapper offloads the GEMM via asyncio.to_thread so the event
+            # loop stays responsive for multi-tenant HTTP/SSE transports.
+            ip_estimates = await provider.estimate_inner_product(
                 combined_ip.to_bytes(), query_matrix,
             )
             distances = [-float(x) for x in ip_estimates[0].tolist()]
@@ -1563,9 +1565,11 @@ class EmbeddingRepository(BaseRepository):
                     )
                 mse_subtypes.append(p)
             combined_mse = MSEPayload.concat(mse_subtypes)
-            # decode_sync returns (n_total, d); compute L2 distance to the
-            # single query vector in one vectorized pass.
-            decoded_matrix = provider.decode_sync(combined_mse.to_bytes())
+            # decode returns (n_total, d); compute L2 distance to the
+            # single query vector in one vectorized pass. The async wrapper
+            # offloads work via asyncio.to_thread so the event loop stays
+            # responsive for multi-tenant HTTP/SSE transports.
+            decoded_matrix = await provider.decode(combined_mse.to_bytes())
             diff = decoded_matrix - query_matrix[0]
             distances = [float(x) for x in np.linalg.norm(diff, axis=1).tolist()]
 

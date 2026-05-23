@@ -119,3 +119,25 @@ class CompressionProvider(Protocol):
             Float32 array of reconstructed vectors.
         """
         ...
+
+    async def estimate_inner_product(
+        self,
+        payload: bytes,
+        queries: NDArray[np.float32],
+    ) -> NDArray[np.float32]:
+        """Async wrapper around :meth:`estimate_inner_product_sync`.
+
+        Offloads the GEMM into a worker thread via
+        :func:`asyncio.to_thread` so callers inside an active event loop
+        (notably :meth:`EmbeddingRepository.search_compressed`) do not
+        block other concurrent MCP requests.
+
+        Args:
+            payload: Compressed payload from :meth:`encode_sync`
+                (n database rows).
+            queries: Query matrix of shape ``(nq, d)``.
+
+        Returns:
+            Estimate matrix of shape ``(nq, n)``.
+        """
+        ...

@@ -14,6 +14,7 @@ from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
+from threadpoolctl import threadpool_limits
 
 from app.compression.providers.turboquant import decoder
 from app.compression.providers.turboquant import encoder
@@ -111,22 +112,33 @@ class TurboQuantProvider:
     def encode_sync(self, vectors: NDArray[np.float32]) -> bytes:
         """Encode vectors and return a serialized payload.
 
+        Pins BLAS threads to 2 for the GEMM call so that concurrent
+        encodes (bounded by ``COMPRESSION_MAX_CONCURRENT`` in production
+        and by CLI batch execution in :mod:`app.cli.migrate_compression`)
+        do not oversubscribe CPU on multi-core hosts. The
+        ``with threadpool_limits(...)`` block is scoped to this method;
+        upstream BLAS thread counts are restored on exit.
+
         Args:
             vectors: Float32 array of shape ``(n, d)``.
 
         Returns:
             Serialized payload bytes.
         """
-        payload = encoder.encode(
-            vectors,
-            bits=self._bits,
-            variant=self._variant,
-            seed=self._seed,
-        )
+        with threadpool_limits(limits=2, user_api='blas'):
+            payload = encoder.encode(
+                vectors,
+                bits=self._bits,
+                variant=self._variant,
+                seed=self._seed,
+            )
         return payload.to_bytes()
 
     def decode_sync(self, payload: bytes) -> NDArray[np.float32]:
         """Deserialize a payload and reconstruct vectors.
+
+        Pins BLAS threads to 2 so concurrent decodes do not oversubscribe
+        CPU; same rationale as :meth:`encode_sync`.
 
         Args:
             payload: Bytes produced by :meth:`encode_sync`.
@@ -135,7 +147,8 @@ class TurboQuantProvider:
             Reconstructed float32 vectors.
         """
         decoded_payload = payload_from_bytes(payload)
-        return decoder.decode(decoded_payload)
+        with threadpool_limits(limits=2, user_api='blas'):
+            return decoder.decode(decoded_payload)
 
     def estimate_inner_product_sync(
         self,
@@ -143,6 +156,12 @@ class TurboQuantProvider:
         queries: NDArray[np.float32],
     ) -> NDArray[np.float32]:
         """Estimate inner products between DB rows and queries.
+
+        Pins BLAS threads to 2 so concurrent estimates do not
+        oversubscribe CPU; same rationale as :meth:`encode_sync`. The
+        thread pin applies inside the worker thread when this method is
+        invoked from :meth:`estimate_inner_product` via
+        :func:`asyncio.to_thread`.
 
         Args:
             payload: Bytes produced by :meth:`encode_sync`.
@@ -152,7 +171,8 @@ class TurboQuantProvider:
             Float32 array of shape ``(nq, n_rows)``.
         """
         decoded_payload = payload_from_bytes(payload)
-        return decoder.estimate_inner_product(decoded_payload, queries)
+        with threadpool_limits(limits=2, user_api='blas'):
+            return decoder.estimate_inner_product(decoded_payload, queries)
 
     async def encode(self, vectors: NDArray[np.float32]) -> bytes:
         """Async wrapper around :meth:`encode_sync` via :func:`asyncio.to_thread`.
@@ -175,3 +195,26 @@ class TurboQuantProvider:
             Reconstructed float32 vectors.
         """
         return await asyncio.to_thread(self.decode_sync, payload)
+
+    async def estimate_inner_product(
+        self,
+        payload: bytes,
+        queries: NDArray[np.float32],
+    ) -> NDArray[np.float32]:
+        """Async wrapper around :meth:`estimate_inner_product_sync`.
+
+        Offloads the GEMM into a worker thread via
+        :func:`asyncio.to_thread` so callers inside an active event loop
+        (notably :meth:`EmbeddingRepository.search_compressed`) do not
+        block other concurrent MCP requests. The BLAS thread pin lives
+        inside :meth:`estimate_inner_product_sync` itself, so this
+        wrapper inherits the same protection without duplicating the pin.
+
+        Args:
+            payload: Bytes produced by :meth:`encode_sync`.
+            queries: Query matrix of shape ``(nq, d)``.
+
+        Returns:
+            Float32 array of shape ``(nq, n_rows)``.
+        """
+        return await asyncio.to_thread(self.estimate_inner_product_sync, payload, queries)

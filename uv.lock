@@ -1073,6 +1073,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
     { name = "tenacity" },
+    { name = "threadpoolctl" },
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
@@ -1159,7 +1160,6 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
-    { name = "threadpoolctl" },
     { name = "types-jsonschema" },
 ]
 
@@ -1216,6 +1216,7 @@ requires-dist = [
     { name = "sqlite-vec", marker = "extra == 'embeddings-openai'", specifier = ">=0.1.6" },
     { name = "sqlite-vec", marker = "extra == 'embeddings-voyage'", specifier = ">=0.1.6" },
     { name = "tenacity", specifier = "==9.1.2" },
+    { name = "threadpoolctl", specifier = ">=3.5" },
     { name = "typing-extensions", specifier = "==4.15.0" },
     { name = "uuid-utils", specifier = ">=0.14.1,<0.15.0" },
 ]
@@ -1231,7 +1232,6 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=1.0.0" },
     { name = "pytest-cov", specifier = ">=6.1.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
-    { name = "threadpoolctl", specifier = ">=3.0" },
     { name = "types-jsonschema", specifier = ">=4.23.0" },
 ]
 
