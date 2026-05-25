@@ -334,6 +334,14 @@ For context storage and update tools, see the counterpart skill (`context-preser
 - Specify `thread_id` to search within the current session
 - **Truncated text, summaries, and metadata are for RELEVANCE ASSESSMENT only -- not for understanding substance.** Summaries are AI-generated approximations that may omit critical conditions, caveats, or nuances present in the full text. Do not draw definitive conclusions about what an entry says, recommends, or decides from search results alone -- always retrieve full content via `get_context_by_ids` before reasoning about an entry's actual content.
 
+## Truncation Discipline (ABSOLUTE)
+
+Truncated text, summaries, and metadata returned by ALL search tools (`search_context`, `hybrid_search_context`, `semantic_search_context`, `fts_search_context`) are FOR RELEVANCE ASSESSMENT ONLY. Substance MUST come from `get_context_by_ids` full retrieval.
+
+This is an ABSOLUTE rule with NO exception. Search-result summaries are AI-generated approximations that MAY omit critical conditions, caveats, or nuance present in the full text. Drawing conclusions about what an entry says, recommends, or decides from search results alone -- before retrieving the full text via `get_context_by_ids` -- is the failure mode this rule prevents.
+
+This applies to every search tool, every result field (text, summary, metadata, tags), and every downstream consumer. Reasoning about an entry's substance from any source other than `get_context_by_ids` full retrieval is a PROTOCOL VIOLATION.
+
 ## Score Fields Reference
 
 Each search tool returns a `scores` object with different fields:
@@ -631,21 +639,7 @@ get_context_by_ids(context_ids=[3349, 3352])
 
 - Research plans reference prior research you need to understand
 - Validation reports reference implementations you need to verify
-- You see a chain of work and need the full picture
-
-## Pattern 6 - User Request Resolution (Reference Mode)
-
-Use when your task prompt contains a context-server reference instead of the full user message text (e.g., "USER REQUEST (large message -- retrieve from context-server): context_id=12345"):
-
-1. **Identify reference-mode prompt:** Look for context_id and retrieval instructions in your task
-2. **Retrieve full content immediately:**
-   ```text
-   get_context_by_ids(context_ids=[<context_id>])
-   ```
-3. **Verify completeness:** Ensure the retrieved text is the complete, untruncated user message
-4. **Proceed with full content:** Begin your assigned task only after reading the complete user message
-
-**CRITICAL:** Never work from the reference metadata alone (size, format descriptors). The reference block is a POINTER, not a summary. Always resolve the pointer to full content before analysis.
+- You see a chain of work and need the full picture, including the full user intent
 
 </patterns>
 
