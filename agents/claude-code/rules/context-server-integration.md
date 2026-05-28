@@ -22,26 +22,25 @@ If these skills are already loaded in your context (via your agent frontmatter `
 
 User messages are the authoritative source of truth and override orchestrator summaries, agent reports, and your own memory when conflicts arise. User messages are IMMUTABLE -- never update, rewrite, or delete them, even when they contain errors. For discrepancy-handling details, see the retrieval skill's orchestrator-verification section.
 
-## User Message Relay Protocol
+## User Message Relay Protocol (ID-First)
 
-When launching subagents (via the Task or Agent tool) whose work depends on the user request, you MUST pass the user message in one of two modes:
+When launching subagents (via the Task or Agent tool) whose work depends on the user request, you MUST relay the user message using one of two modes, chosen by a deterministic predicate on `context_id` availability. Message SIZE is IRRELEVANT to mode selection.
 
-- **Mode 1 -- INLINE (default):** For moderate messages (guidance: under approximately 2000 tokens / 40 lines), include the full verbatim text under a `USER REQUEST:` marker:
-
-  ```text
-  USER REQUEST: [verbatim user message]
-  ```
-
-- **Mode 2 -- REFERENCE (large messages):** Use a reference block with explicit retrieval instructions, passing the `context_id` emitted by the hook:
+- **Default Mode -- REFERENCE (context_id only):** This is the ALWAYS-PREFERRED mode regardless of message size. Use it whenever the UserPromptSubmit hook has emitted a `context_id` for the current user message. The Reference Block contains EXACTLY this one line and nothing else (no retrieval instructions, no CRITICAL reminders, no size annotations, no format descriptors):
 
   ```text
-  USER REQUEST (large message -- retrieve from context-server):
-  Context ID: [context_id from hook additionalContext]
-  Retrieve the FULL user message using: get_context_by_ids([<context_id>])
-  CRITICAL: You MUST retrieve and read the COMPLETE user message before starting work.
+  USER REQUEST CONTEXT ID: [context_id from hook]
   ```
 
-**Prohibitions (both modes):** MUST NOT summarize, paraphrase, condense, compress, or select "relevant" portions; MUST NOT extract quotes, evidence, or excerpts; MUST NOT describe intent or problem in your own words; MUST NOT add domain, technology, or problem qualifiers. Pass the complete message. **Fallback:** if the context server is unavailable, use Mode 1 INLINE regardless of size. When a subagent receives a Mode 2 reference block, it resolves the pointer per the retrieval skill's Pattern 6 (User Request Resolution) before starting work.
+- **Fallback Mode -- INLINE (verbatim text):** Use ONLY when the `context_id` is unavailable -- the UserPromptSubmit hook did not emit one (hook failure or upstream error), or the context-server is unreachable at message-store time. Include the full verbatim text under a `USER REQUEST:` marker:
+
+  ```text
+  USER REQUEST: [verbatim user message text]
+  ```
+
+**Prohibitions (both modes):** MUST NOT summarize, paraphrase, condense, compress, or select "relevant" portions; MUST NOT extract quotes, evidence, or excerpts; MUST NOT describe intent or problem in your own words; MUST NOT add domain, technology, or problem qualifiers. Relay the complete message (REFERENCE) or its complete verbatim text (INLINE). When a subagent receives a Reference Block, it resolves the pointer per the retrieval skill's Pattern 6 (User Request Resolution) before starting work.
+
+**Image Path Relay (extension to BOTH modes):** Images attached via the terminal are NOT stored in the context-server; subagents can only analyze them by reading the absolute paths directly with the `Read` tool. Whenever the task involves visual analysis, the orchestrator MUST forward image paths verbatim: in Fallback (INLINE) mode the paths flow naturally with the verbatim text; in Default (REFERENCE) mode the orchestrator MUST append an explicit `IMAGE PATHS` block after the Reference Block, because image paths cannot be retrieved from the context-server. The orchestrator MUST NOT summarize, describe, interpret, or redact image contents or paths.
 
 ## Subagent Context Requirements
 
@@ -49,7 +48,7 @@ When launching subagents via the Task or Agent tool, the task description MUST i
 
 1. **Thread ID** -- enforced by a PreToolUse blocker
 2. **Timezone / date context** -- enforced by a PreToolUse blocker
-3. **User original request** -- per the Relay Protocol above (Mode 1 or Mode 2)
+3. **User original request** -- per the Relay Protocol above (Default REFERENCE pointer, or INLINE fallback when no `context_id`)
 4. **Relevant context IDs** -- so the subagent can retrieve prior work via `get_context_by_ids`
 
 Items 1 and 2 are hook-enforced: if missing, the tool call is blocked with guidance via stderr -- revise the task description and retry. Items 3 and 4 are your responsibility.
