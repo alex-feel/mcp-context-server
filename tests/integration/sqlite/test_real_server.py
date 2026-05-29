@@ -1058,6 +1058,34 @@ class MCPServerIntegrationTest:
                 self.test_results.append((test_name, False, f'Failed to get statistics: {stats_data}'))
                 return False
 
+            # avg_entries_per_thread MUST serialize as a JSON number, never a
+            # string. A regression here would surface as the PostgreSQL Decimal
+            # serialization crash ("'X.00' is not of type 'number'").
+            avg_entries = stats_data.get('avg_entries_per_thread')
+            if not isinstance(avg_entries, (int, float)) or isinstance(avg_entries, bool):
+                self.test_results.append(
+                    (test_name, False,
+                     f'avg_entries_per_thread must be a JSON number, got {avg_entries!r}'),
+                )
+                return False
+
+            # When embeddings_size_mb is reported it MUST be a non-negative
+            # number, carry the estimated flag, and appear alongside
+            # database_size_mb (it is reported immediately after it).
+            if 'embeddings_size_mb' in stats_data:
+                emb_size = stats_data['embeddings_size_mb']
+                if not isinstance(emb_size, (int, float)) or isinstance(emb_size, bool) or emb_size < 0:
+                    self.test_results.append(
+                        (test_name, False,
+                         f'embeddings_size_mb must be a non-negative number, got {emb_size!r}'),
+                    )
+                    return False
+                if not isinstance(stats_data.get('embeddings_size_estimated'), bool):
+                    self.test_results.append(
+                        (test_name, False, 'embeddings_size_estimated must be present and boolean'),
+                    )
+                    return False
+
             # The response MUST include the compression sub-block alongside
             # semantic_search/fts/chunking/reranking/summary so MCP clients
             # can verify the active compression configuration at runtime.

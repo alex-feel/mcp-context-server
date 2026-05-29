@@ -195,3 +195,25 @@ async def test_semantic_search_embedding_count_field_name_preserved(
         'for persisted embedding rows. Chunks are transient and not '
         f"persisted. Found 'total_chunks' in semantic block: {semantic}"
     )
+
+
+@pytest.mark.asyncio
+async def test_embeddings_size_reported_when_generation_or_compression_enabled(
+    fresh_backend: StorageBackend,
+) -> None:
+    """Gating regression: embeddings_size_mb is gated on generation OR compression.
+
+    The field is reported whenever ``embedding.generation_enabled`` (default
+    True) or ``compression.enabled`` is set, NOT tied to
+    ``semantic_search.enabled``. It is a non-negative float carrying a boolean
+    estimated flag, reported alongside ``database_size_mb``.
+    """
+    del fresh_backend  # Implicit via set_backend
+    stats = cast(dict[str, Any], await discovery_module.get_statistics(ctx=None))
+
+    assert 'embeddings_size_mb' in stats
+    assert isinstance(stats['embeddings_size_mb'], float)
+    assert stats['embeddings_size_mb'] >= 0.0
+    assert 'embeddings_size_estimated' in stats
+    assert isinstance(stats['embeddings_size_estimated'], bool)
+    assert 'database_size_mb' in stats

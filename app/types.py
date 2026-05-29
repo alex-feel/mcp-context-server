@@ -248,8 +248,14 @@ class StatisticsResponseDict(TypedDict):
     ``summary``, ``compression``) are added by
     ``app.tools.discovery.get_statistics`` and are always present.
 
-    ``database_size_mb`` is present only when DB_PATH is set and exists on
-    disk.
+    ``database_size_mb`` reflects the whole database on PostgreSQL
+    (``pg_database_size``) and the on-disk database file on SQLite. It is
+    omitted only for in-memory or missing-file SQLite databases.
+
+    ``embeddings_size_mb`` reflects the active vector payload table and is not
+    byte-comparable across backends (on-disk relation size including indexes on
+    PostgreSQL; raw payload bytes or an fp32 estimate on SQLite). When the
+    SQLite figure is the fp32 estimate, ``embeddings_size_estimated`` is True.
     """
 
     total_entries: int
@@ -262,7 +268,10 @@ class StatisticsResponseDict(TypedDict):
     most_active_threads: list[MostActiveThreadDict]
     top_tags: list[TopTagDict]
     backend: str
-    database_size_mb: NotRequired[float]  # Only when DB_PATH provided
+    database_size_mb: NotRequired[float]  # Whole DB on PostgreSQL; on-disk file on SQLite
+    # Embedding vector payload size (not byte-comparable across backends)
+    embeddings_size_mb: NotRequired[float]
+    embeddings_size_estimated: NotRequired[bool]  # True only for the SQLite fp32 estimate
     connection_metrics: ConnectionMetricsDict
     semantic_search: SemanticSearchStatsDict
     fts: FtsStatsDict

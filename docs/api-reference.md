@@ -152,7 +152,8 @@ Get database statistics, usage metrics, and feature status.
 - Breakdown by source and content type
 - Total images count
 - Unique tags count
-- Database size in MB
+- Database size in MB (`database_size_mb`) — whole database via `pg_database_size(current_database())` on PostgreSQL; on-disk database file size on SQLite (excludes the `-wal`/`-shm` sidecars, so it can transiently under-report under WAL mode). Omitted for in-memory or missing-file SQLite databases.
+- Embeddings storage size in MB (`embeddings_size_mb`, with the boolean `embeddings_size_estimated`) — size of the active vector payload table (`vec_context_embeddings_compressed` when compression is enabled, otherwise `vec_context_embeddings`). Present when embedding generation or compression is enabled. NOT byte-comparable across backends: on PostgreSQL it is the on-disk relation size including indexes (`pg_total_relation_size`); on SQLite it is the exact compressed payload bytes when compression is enabled, or a deterministic fp32 estimate when it is not. `embeddings_size_estimated` is `true` only for the SQLite fp32 estimate.
 - Connection metrics
 - Semantic search status (enabled, available, model, dimensions, embedding count, coverage)
 - Full-text search status (enabled, available, language, backend, engine, indexed entries, coverage)

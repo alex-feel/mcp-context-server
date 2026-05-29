@@ -93,6 +93,20 @@ async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
         # Use statistics repository to get database stats
         stats = await repos.statistics.get_database_statistics(DB_PATH)
 
+        # Add embeddings storage size immediately after total database size.
+        # Gated on embedding generation OR compression (NOT semantic_search.enabled),
+        # so the field still appears in compression-on / semantic-search-off
+        # deployments. Degrades to 0.0 if the sub-block computation fails.
+        if settings.embedding.generation_enabled or settings.compression.enabled:
+            try:
+                embeddings_size_mb, embeddings_size_estimated = await repos.embeddings.get_embeddings_size()
+                stats['embeddings_size_mb'] = embeddings_size_mb
+                stats['embeddings_size_estimated'] = embeddings_size_estimated
+            except Exception as e:
+                logger.warning(f'Failed to get embeddings size: {e}')
+                stats['embeddings_size_mb'] = 0.0
+                stats['embeddings_size_estimated'] = False
+
         # Ensure backend for metrics
         manager = await ensure_backend()
 

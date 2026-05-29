@@ -134,7 +134,7 @@ For an existing installation with fp32 data, follow the [Migration CLI](#migrati
 
 ## Observability
 
-Three observation surfaces let operators verify the active compression configuration without inspecting the database directly.
+Four observation surfaces let operators verify the active compression configuration and measure embedding storage without inspecting the database directly.
 
 ### Startup log line
 
@@ -182,6 +182,18 @@ WHERE id = 1;
 ```
 
 The same row drives the seed-locked invariant: every subsequent startup compares the runtime `CompressionSettings` against these persisted values and refuses to start when they disagree. See [Singleton provenance: `compression_metadata`](#singleton-provenance-compression_metadata) for the schema definition and the seed-locking semantics.
+
+### Embedding storage size in `get_statistics`
+
+The `get_statistics` MCP tool reports the storage occupied by embedding vectors via two top-level keys, `embeddings_size_mb` and `embeddings_size_estimated`, displayed immediately after the total `database_size_mb`. They are gated on embedding generation OR compression being enabled (`ENABLE_EMBEDDING_GENERATION=true` or `ENABLE_EMBEDDING_COMPRESSION=true`), NOT on `ENABLE_SEMANTIC_SEARCH`, so the size still surfaces in compression-on / semantic-search-off deployments. The figure covers only the active vector payload table: `vec_context_embeddings_compressed` when compression is enabled, otherwise the fp32 `vec_context_embeddings`. Computation degrades to `0.0` (with a warning) if the active table is missing, so a failure here never breaks the rest of the statistics response.
+
+The value is NOT byte-comparable across backends:
+
+- **PostgreSQL** reports the on-disk relation size INCLUDING indexes, via `pg_total_relation_size(to_regclass(...))`. The `to_regclass` call NULL-guards a dropped table (the compression migration drops `vec_context_embeddings` on PostgreSQL), so a missing table yields `0` rather than an `UndefinedTableError`. `embeddings_size_estimated` is always `false` on PostgreSQL.
+- **SQLite, compression enabled** reports the exact raw compressed payload bytes, `SUM(LENGTH(payload))` over `vec_context_embeddings_compressed`. The computation is intentionally `dbstat`-free (the bundled SQLite build does not compile the `dbstat` virtual table). `embeddings_size_estimated` is `false`.
+- **SQLite, compression disabled** reports a deterministic fp32 estimate, `SUM(chunk_count * dimensions * 4)` over `embedding_metadata` (four bytes per float). This is the only case where `embeddings_size_estimated` is `true`.
+
+The companion `database_size_mb` key is likewise per-backend: on PostgreSQL it is the whole database via `pg_database_size(current_database())` (the local `DB_PATH` is irrelevant to a remote database and is never file-stat'd); on SQLite it is the on-disk database file size, which excludes the `-wal`/`-shm` sidecars and can therefore transiently under-report under WAL mode. The key is omitted for in-memory or missing-file SQLite databases.
 
 ## Variant Matrix
 

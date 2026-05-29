@@ -7,7 +7,13 @@ database statistics and thread information retrieval.
 import json
 import sqlite3
 from collections.abc import AsyncGenerator
+from collections.abc import Awaitable
+from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
+from typing import TypeVar
+from typing import cast
 
 import pytest
 import pytest_asyncio
@@ -17,7 +23,10 @@ from app.backends.base import StorageBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.statistics_repository import StatisticsRepository
+from app.repositories.statistics_repository import _to_float
 from app.schemas import load_schema
+
+T = TypeVar('T')
 
 
 @pytest_asyncio.fixture
@@ -917,3 +926,227 @@ class TestListThreadsPostgresqlSqlText:
             'SQLite branch must continue to use MAX(id) on the TEXT id column; '
             'this is the correct and tested form for the SQLite backend.'
         )
+
+
+class _PgStubConnection:
+    """Async stub of an asyncpg connection for the PostgreSQL statistics paths.
+
+    Dispatches on the SQL text so each query in ``get_database_statistics`` and
+    ``get_tag_statistics`` receives a realistic value. The numeric aggregates
+    (``AVG(...)``) return ``decimal.Decimal`` exactly as asyncpg maps PostgreSQL
+    ``NUMERIC`` results; the count aggregates and ``pg_database_size`` return
+    native ``int``. ``fetchrow``/``fetch`` return mappings, matching the
+    ``row['column']`` access the production closures perform.
+    """
+
+    def __init__(self, avg_value: Decimal | None) -> None:
+        self._avg_value = avg_value
+
+    async def fetchrow(self, query: str, *_args: object) -> dict[str, object] | None:
+        normalized = ' '.join(query.split())
+        if 'AVG(entry_count)' in normalized or 'AVG(tag_count)' in normalized:
+            return {'avg_entries': self._avg_value, 'avg_tags': self._avg_value}
+        if 'pg_database_size' in normalized:
+            return {'db_size': 8192}
+        if 'COUNT(DISTINCT thread_id)' in normalized:
+            return {'count': 2}
+        if 'COUNT(DISTINCT tag)' in normalized:
+            return {'count': 3}
+        if 'COUNT(*)' in normalized:
+            return {'count': 20}
+        raise AssertionError(f'Unexpected fetchrow query: {normalized}')
+
+    async def fetch(self, query: str, *_args: object) -> list[dict[str, object]]:
+        normalized = ' '.join(query.split())
+        if 'GROUP BY source' in normalized:
+            return [{'source': 'user', 'count': 12}, {'source': 'agent', 'count': 8}]
+        if 'GROUP BY content_type' in normalized:
+            return [{'content_type': 'text', 'count': 20}]
+        if 'GROUP BY thread_id' in normalized:
+            return [{'thread_id': 't1', 'count': 12}, {'thread_id': 't2', 'count': 8}]
+        if 'GROUP BY tag' in normalized:
+            return [{'tag': 'python', 'count': 5}, {'tag': 'sqlite', 'count': 3}]
+        raise AssertionError(f'Unexpected fetch query: {normalized}')
+
+
+class _PgStubBackend:
+    """Minimal ``StorageBackend`` stub routing through the PostgreSQL code path.
+
+    ``backend_type == 'postgresql'`` selects the PostgreSQL branch of every
+    statistics method, and ``execute_read`` awaits the production async closure
+    with a :class:`_PgStubConnection`. This exercises the real ``_to_float``
+    coercion on a ``decimal.Decimal`` aggregate without a live PostgreSQL
+    instance, reproducing the asyncpg ``Decimal`` serialization defect that a
+    SQLite-only test cannot reach (SQLite computes ``AVG`` as a native float).
+    """
+
+    backend_type = 'postgresql'
+
+    def __init__(self, avg_value: Decimal | None) -> None:
+        self._conn = _PgStubConnection(avg_value)
+
+    async def execute_read(self, operation: Callable[[Any], Awaitable[T]]) -> T:
+        return await operation(self._conn)
+
+
+class TestToFloatHelper:
+    """Unit tests for the ``_to_float`` aggregate-normalization helper."""
+
+    def test_decimal_converts_to_native_float(self) -> None:
+        result = _to_float(Decimal('10.00'))
+        assert type(result) is float
+        assert result == 10.0
+
+    def test_zero_decimal_preserved_as_float(self) -> None:
+        result = _to_float(Decimal(0))
+        assert type(result) is float
+        assert result == 0.0
+
+    def test_none_converts_to_default_zero(self) -> None:
+        result = _to_float(None)
+        assert type(result) is float
+        assert result == 0.0
+
+    def test_float_passes_through_rounded(self) -> None:
+        # round(float, 2) uses Python's round-half-to-even with binary float
+        # representation; 1.235 is stored as 1.2349999... so it rounds to 1.23.
+        result = _to_float(1.235)
+        assert type(result) is float
+        assert result == round(1.235, 2)
+
+    def test_float_two_decimal_places_preserved(self) -> None:
+        result = _to_float(5.5)
+        assert type(result) is float
+        assert result == 5.5
+
+    def test_int_converts_to_float(self) -> None:
+        result = _to_float(7)
+        assert type(result) is float
+        assert result == 7.0
+
+
+@pytest.mark.asyncio
+class TestPostgresqlDecimalRegression:
+    """Regression guard for the PostgreSQL asyncpg ``Decimal`` serialization defect.
+
+    asyncpg maps PostgreSQL ``AVG()`` to ``decimal.Decimal``, which serializes to
+    a JSON string (e.g. ``"10.00"``) and fails the MCP ``number`` output schema.
+    Driving the PostgreSQL branch through a stub backend that returns ``Decimal``
+    asserts the repository emits a native ``float`` for ``avg_entries_per_thread``
+    and ``avg_tags_per_entry``. This reproduces the reported symptom that a
+    SQLite-only test cannot reach.
+    """
+
+    async def test_avg_entries_per_thread_is_native_float(self) -> None:
+        repo = StatisticsRepository(cast(StorageBackend, _PgStubBackend(Decimal('10.00'))))
+        stats = await repo.get_database_statistics()
+        avg = stats['avg_entries_per_thread']
+        assert not isinstance(avg, Decimal)
+        assert not isinstance(avg, str)
+        assert type(avg) is float
+        assert avg == 10.0
+
+    async def test_avg_tags_per_entry_is_native_float(self) -> None:
+        repo = StatisticsRepository(cast(StorageBackend, _PgStubBackend(Decimal('3.50'))))
+        stats = await repo.get_tag_statistics()
+        avg = stats['avg_tags_per_entry']
+        assert not isinstance(avg, Decimal)
+        assert not isinstance(avg, str)
+        assert type(avg) is float
+        assert avg == 3.5
+
+    async def test_null_avg_entries_returns_zero_float(self) -> None:
+        repo = StatisticsRepository(cast(StorageBackend, _PgStubBackend(None)))
+        stats = await repo.get_database_statistics()
+        avg = stats['avg_entries_per_thread']
+        assert type(avg) is float
+        assert avg == 0.0
+
+    async def test_null_avg_tags_returns_zero_float(self) -> None:
+        repo = StatisticsRepository(cast(StorageBackend, _PgStubBackend(None)))
+        stats = await repo.get_tag_statistics()
+        avg = stats['avg_tags_per_entry']
+        assert type(avg) is float
+        assert avg == 0.0
+
+
+@pytest.mark.asyncio
+class TestPostgresqlDatabaseSize:
+    """Guard that PostgreSQL ``database_size_mb`` is a native float from pg_database_size.
+
+    The PostgreSQL branch queries ``pg_database_size(current_database())`` and
+    must convert the ``bigint`` byte count to a native ``float`` MB value. The
+    local ``db_path`` argument is irrelevant to a PostgreSQL database and must
+    not be file-stat'd.
+    """
+
+    async def test_database_size_mb_is_native_float(self) -> None:
+        repo = StatisticsRepository(cast(StorageBackend, _PgStubBackend(Decimal('10.00'))))
+        stats = await repo.get_database_statistics()
+        assert 'database_size_mb' in stats
+        size = stats['database_size_mb']
+        assert type(size) is float
+        # 8192 bytes / (1024 * 1024) rounded to 2 dp.
+        assert size == round(8192 / (1024 * 1024), 2)
+
+    async def test_local_db_path_ignored_on_postgresql(self, tmp_path: Path) -> None:
+        # A bogus local path must not influence the PostgreSQL size, which comes
+        # solely from pg_database_size.
+        bogus = tmp_path / 'not_a_pg_database.db'
+        bogus.write_bytes(b'x' * (5 * 1024 * 1024))
+        repo = StatisticsRepository(cast(StorageBackend, _PgStubBackend(Decimal('10.00'))))
+        stats = await repo.get_database_statistics(db_path=bogus)
+        assert stats['database_size_mb'] == round(8192 / (1024 * 1024), 2)
+
+
+@pytest.mark.asyncio
+class TestSqliteTruthinessAlignment:
+    """Guard that the SQLite avg aggregates are native floats, including zero.
+
+    SQLite computes ``AVG`` in Python as a native float, so the ``_to_float``
+    wrap is idempotent. These tests confirm the alignment to ``0.0`` (rather than
+    an int ``0`` from a truthiness ``else 0``) on an empty database and a native
+    float on a populated database.
+    """
+
+    async def test_empty_avg_entries_per_thread_is_zero_float(
+        self, stats_repo: StatisticsRepository,
+    ) -> None:
+        stats = await stats_repo.get_database_statistics()
+        avg = stats['avg_entries_per_thread']
+        assert type(avg) is float
+        assert avg == 0.0
+
+    async def test_empty_avg_tags_per_entry_is_zero_float(
+        self, stats_repo: StatisticsRepository,
+    ) -> None:
+        stats = await stats_repo.get_tag_statistics()
+        avg = stats['avg_tags_per_entry']
+        assert type(avg) is float
+        assert avg == 0.0
+
+    async def test_populated_avg_entries_per_thread_is_native_float(
+        self, stats_test_db: StorageBackend, stats_repo: StatisticsRepository,
+    ) -> None:
+        def _insert_data(conn: sqlite3.Connection) -> None:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd0000aa01', 't1', 'user', 'text', 'A')",
+            )
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd0000aa02', 't1', 'agent', 'text', 'B')",
+            )
+            cursor.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES ('0190abcdef1234567890abcd0000aa03', 't2', 'user', 'text', 'C')",
+            )
+
+        await stats_test_db.execute_write(_insert_data)
+
+        stats = await stats_repo.get_database_statistics()
+        avg = stats['avg_entries_per_thread']
+        assert type(avg) is float
+        # 3 entries across 2 threads -> average 1.5.
+        assert avg == 1.5

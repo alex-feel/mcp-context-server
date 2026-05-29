@@ -1836,6 +1836,82 @@ class EmbeddingRepository(BaseRepository):
 
         return await self.backend.execute_read(_get_stats_postgresql)
 
+    async def get_embeddings_size(self) -> tuple[float, bool]:
+        """Get the storage size of embedding vector payloads in megabytes.
+
+        The returned size covers only the vector payload table that is active
+        for the current compression mode: ``vec_context_embeddings_compressed``
+        when compression is enabled, otherwise ``vec_context_embeddings``.
+
+        The number is NOT byte-comparable across backends. On PostgreSQL it is
+        the on-disk relation size including indexes (``pg_total_relation_size``).
+        On SQLite it is the exact compressed payload bytes (``SUM(LENGTH(payload))``)
+        when compression is enabled, or a deterministic fp32 estimate
+        (``SUM(chunk_count * dimensions * 4)``) when it is not.
+
+        Any failure (for example a missing table) is logged and reported as a
+        zero size so that statistics never fail because of this sub-block.
+
+        Returns:
+            Tuple of (size in megabytes rounded to two places, estimated flag).
+            The estimated flag is ``True`` only for the SQLite fp32 estimate.
+        """
+        try:
+            backend_type = self.backend.backend_type
+            if backend_type == 'sqlite':
+                return await self._get_embeddings_size_sqlite()
+            if backend_type == 'postgresql':
+                return await self._get_embeddings_size_postgresql()
+            logger.warning('Unknown backend type %r; embeddings_size_mb reported as 0.0', backend_type)
+        except Exception as e:
+            logger.warning('Failed to compute embeddings size: %s', e)
+        return 0.0, False
+
+    async def _get_embeddings_size_sqlite(self) -> tuple[float, bool]:
+        """Get embedding payload size for SQLite (dbstat-free)."""
+        from app.settings import get_settings
+
+        if get_settings().compression.enabled:
+            # Exact compressed payload bytes.
+            def _read_compressed_size(conn: sqlite3.Connection) -> int:
+                cursor = conn.execute(
+                    'SELECT COALESCE(SUM(LENGTH(payload)), 0) AS size_bytes FROM vec_context_embeddings_compressed',
+                )
+                return int(cursor.fetchone()['size_bytes'])
+
+            size_bytes = await self.backend.execute_read(_read_compressed_size)
+            return round(float(size_bytes) / (1024 * 1024), 2), False
+
+        # Deterministic fp32 estimate: chunks * dimensions * 4 bytes per float.
+        def _read_estimate_size(conn: sqlite3.Connection) -> int:
+            cursor = conn.execute(
+                'SELECT COALESCE(SUM(chunk_count * dimensions * 4), 0) AS size_bytes FROM embedding_metadata',
+            )
+            return int(cursor.fetchone()['size_bytes'])
+
+        size_bytes = await self.backend.execute_read(_read_estimate_size)
+        return round(float(size_bytes) / (1024 * 1024), 2), True
+
+    async def _get_embeddings_size_postgresql(self) -> tuple[float, bool]:
+        """Get embedding payload size for PostgreSQL (on-disk relation size)."""
+        from app.settings import get_settings
+
+        active_table = (
+            'vec_context_embeddings_compressed' if get_settings().compression.enabled else 'vec_context_embeddings'
+        )
+
+        # to_regclass returns NULL for a missing table, avoiding UndefinedTableError
+        # (the compression migration drops vec_context_embeddings on PostgreSQL).
+        async def _read_relation_size(conn: 'asyncpg.Connection') -> int:
+            row = await conn.fetchrow(
+                'SELECT COALESCE(pg_total_relation_size(to_regclass($1)), 0) AS size_bytes',
+                active_table,
+            )
+            return int(row['size_bytes']) if row else 0
+
+        size_bytes = await self.backend.execute_read(_read_relation_size)
+        return round(float(size_bytes) / (1024 * 1024), 2), False
+
     async def get_table_dimension(self) -> int | None:
         """Get the dimension of the existing vector table.
 
