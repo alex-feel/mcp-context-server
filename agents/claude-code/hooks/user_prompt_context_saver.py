@@ -20,6 +20,7 @@ Trigger: UserPromptSubmit
 """
 
 import asyncio
+import contextlib
 import ctypes
 import importlib.util
 import io
@@ -126,6 +127,94 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'fail_mode': 'warn',  # 'silent', 'warn', or 'error'
     },
 }
+
+
+def _persist_user_prompt_context_id(session_id: str, context_ids: list[int]) -> None:
+    """Persist stored user-message context_id(s) to AEGIS runtime files.
+
+    Side-effect-only helper used by orchestrator_sequencing_enforcement.py to:
+    1. Append the context_id to the per-session observed_report_ids JSON file
+       (so the orchestrator's `USER REQUEST CONTEXT ID: [N]` references pass
+       the prompt_id_reference_validity validator).
+    2. Write the FIRST stored context_id as plain text to a per-session sidecar
+       file (so the verbatim_relay_check rule can detect when a context_id is
+       available).
+
+    Wrapped in a single try/except so the hook's existing reliability guarantee
+    is preserved: any failure here is silently logged and does NOT alter the
+    hook's stdout / exit status.
+
+    Args:
+        session_id: Claude Code session_id (extracted from input_data).
+        context_ids: List of stored context IDs (single entry for non-chunked,
+            multiple for chunked storage).
+    """
+    if not context_ids:
+        return
+    try:
+        runtime_dir = Path(os.path.expanduser('~/.claude/aegis/runtime'))
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        observed_ids_file = runtime_dir / f'observed_report_ids_{session_id}.json'
+        sidecar_file = runtime_dir / f'last_user_prompt_context_id_{session_id}'
+
+        # Step 1: read existing observed-IDs list, merge new IDs, write atomically.
+        existing_ids: set[int] = set()
+        try:
+            if observed_ids_file.exists():
+                loaded = json.loads(observed_ids_file.read_text(encoding='utf-8'))
+                if isinstance(loaded, dict):
+                    loaded_typed = cast(dict[str, Any], loaded)
+                    raw_ids_value = cast(list[Any] | None, loaded_typed.get('report_ids'))
+                    if isinstance(raw_ids_value, list):
+                        for item in raw_ids_value:
+                            if isinstance(item, int):
+                                existing_ids.add(item)
+                            elif isinstance(item, str) and item.isdigit():
+                                existing_ids.add(int(item))
+        except Exception:
+            existing_ids = set()
+        merged = sorted(existing_ids | {int(cid) for cid in context_ids})
+
+        # Atomic write of observed-IDs file (tempfile + os.replace).
+        fd1, tmp_obs_str = tempfile.mkstemp(
+            prefix=observed_ids_file.name + '.',
+            suffix='.tmp',
+            dir=str(runtime_dir),
+        )
+        try:
+            with os.fdopen(fd1, 'w', encoding='utf-8') as f:
+                json.dump({'report_ids': merged}, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_obs_str, str(observed_ids_file))
+        except Exception:
+            with contextlib.suppress(Exception):
+                Path(tmp_obs_str).unlink(missing_ok=True)
+            raise
+
+        # Step 2: write the first context_id to the sidecar (plain text).
+        fd2, tmp_side_str = tempfile.mkstemp(
+            prefix=sidecar_file.name + '.',
+            suffix='.tmp',
+            dir=str(runtime_dir),
+        )
+        try:
+            with os.fdopen(fd2, 'w', encoding='utf-8') as f:
+                f.write(str(int(context_ids[0])))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_side_str, str(sidecar_file))
+        except Exception:
+            with contextlib.suppress(Exception):
+                Path(tmp_side_str).unlink(missing_ok=True)
+            raise
+    except Exception:
+        # Silent failure: preserve existing hook reliability guarantee.
+        with contextlib.suppress(Exception):
+            log_always(
+                f'Failed to persist user-message context_id(s) to AEGIS runtime: {context_ids}',
+                level='WARN',
+            )
 
 
 def _get_log_file() -> Path:
@@ -1736,6 +1825,15 @@ def main() -> None:
                         sys.stdout.write(json.dumps(hook_output))
                         sys.stdout.flush()
                         log_always(f'Output chunk context_ids={chunk_ids} via additionalContext')
+
+                        # Persist user-message context_ids to AEGIS runtime files so
+                        # downstream hooks recognise legitimate REFERENCE-mode citations.
+                        session_id_value = str(input_data.get('session_id', '')) or 'unknown'
+                        try:
+                            chunk_ids_typed: list[int] = [int(cid) for cid in chunk_ids]
+                        except (TypeError, ValueError):
+                            chunk_ids_typed = []
+                        _persist_user_prompt_context_id(session_id_value, chunk_ids_typed)
             else:
                 log_always('SUCCESS: Context stored successfully')
 
@@ -1752,6 +1850,15 @@ def main() -> None:
                         sys.stdout.write(json.dumps(hook_output))
                         sys.stdout.flush()
                         log_always(f'Output context_id={context_id} via additionalContext')
+
+                        # Persist user-message context_id to AEGIS runtime files so
+                        # downstream hooks recognise legitimate REFERENCE-mode citations.
+                        session_id_value = str(input_data.get('session_id', '')) or 'unknown'
+                        try:
+                            single_id = int(context_id)
+                            _persist_user_prompt_context_id(session_id_value, [single_id])
+                        except (TypeError, ValueError):
+                            pass
 
         except Exception as e:
             # Log the error for debugging with full traceback, then suppress as designed
