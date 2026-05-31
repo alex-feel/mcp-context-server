@@ -110,9 +110,20 @@ For most use cases, two steps are sufficient:
 ### Step 1: Search for Relevant Context
 
 ```text
-search_context(thread_id="session-id", source="user", limit=10)
-search_context(thread_id="session-id", source="agent", limit=30)
+search_context(
+    thread_id="session-id",
+    source="user",
+    limit=10,
+)
+search_context(
+    thread_id="session-id",
+    source="agent",
+    limit=30,
+    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
+)
 ```
+
+By default, `source=agent` retrieval EXCLUDES entries with `status: void` -- those entries are explicitly marked as VOID / off-topic / created-in-error by their producing agent (or by a remediation step) and would otherwise pollute Round-0 discovery. The `status != "void"` filter is more permissive than `status = "done"` -- it preserves `pending` entries for legitimate research-continuation tracking. To opt-in to a VOID audit (e.g., investigating a prior derailment), explicitly drop the `metadata_filters` parameter.
 
 Browse truncated previews to identify entries relevant to your task.
 
@@ -222,10 +233,15 @@ When working in git worktree environments, use appropriate query patterns based 
 Always use `thread_id` filter for current session context:
 
 ```text
-search_context(thread_id="session-uuid", source="agent", limit=30)
+search_context(
+    thread_id="session-uuid",
+    source="agent",
+    limit=30,
+    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
+)
 ```
 
-This is the default pattern for all retrieval steps.
+This is the default pattern for all retrieval steps. The `status != "void"` filter is applied by default to exclude VOID / off-topic / created-in-error entries from `source=agent` retrieval.
 
 ### Cross-Session, Same-Worktree Queries
 
@@ -234,7 +250,8 @@ When searching across sessions within the same worktree:
 ```text
 search_context(
   metadata={"project": "canonical-name", "worktree_id": "current-worktree"},
-  limit=10
+  metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
+  limit=10,
 )
 ```
 
@@ -245,8 +262,16 @@ Use this pattern to find historical work in the same worktree but different sess
 When searching across all worktrees of the same project:
 
 ```text
-search_context(metadata={"project": "canonical-name"}, limit=20)
-hybrid_search_context(query="...", metadata={"project": "canonical-name"})
+search_context(
+    metadata={"project": "canonical-name"},
+    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
+    limit=20,
+)
+hybrid_search_context(
+    query="...",
+    metadata={"project": "canonical-name"},
+    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
+)
 ```
 
 Use this pattern to find work across all worktrees of the repository.
@@ -577,7 +602,7 @@ For clean agent-to-agent transitions in orchestrated workflows:
 Use for the default retrieval workflow (finding context by source and metadata):
 
 1. Use `search_context` with `thread_id` and `source="user"` (Step 1)
-2. Use `search_context` with `thread_id` and `source="agent"` (Step 2)
+2. Use `search_context` with `thread_id`, `source="agent"`, and the default `metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}]` to exclude VOID / off-topic entries (Step 2). Drop the filter only when explicitly auditing VOID entries.
 3. Browse truncated previews to identify ALL relevant entries
 4. Use `get_context_by_ids` to retrieve full content of selected entries (Step 3)
 
