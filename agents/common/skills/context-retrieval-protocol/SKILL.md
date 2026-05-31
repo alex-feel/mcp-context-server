@@ -110,20 +110,9 @@ For most use cases, two steps are sufficient:
 ### Step 1: Search for Relevant Context
 
 ```text
-search_context(
-    thread_id="session-id",
-    source="user",
-    limit=10,
-)
-search_context(
-    thread_id="session-id",
-    source="agent",
-    limit=30,
-    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
-)
+search_context(thread_id="session-id", source="user", limit=10)
+search_context(thread_id="session-id", source="agent", limit=30)
 ```
-
-By default, `source=agent` retrieval EXCLUDES entries with `status: void` -- those entries are explicitly marked as VOID / off-topic / created-in-error by their producing agent (or by a remediation step) and would otherwise pollute Round-0 discovery. The `status != "void"` filter is more permissive than `status = "done"` -- it preserves `pending` entries for legitimate research-continuation tracking. To opt-in to a VOID audit (e.g., investigating a prior derailment), explicitly drop the `metadata_filters` parameter.
 
 Browse truncated previews to identify entries relevant to your task.
 
@@ -233,15 +222,10 @@ When working in git worktree environments, use appropriate query patterns based 
 Always use `thread_id` filter for current session context:
 
 ```text
-search_context(
-    thread_id="session-uuid",
-    source="agent",
-    limit=30,
-    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
-)
+search_context(thread_id="session-uuid", source="agent", limit=30)
 ```
 
-This is the default pattern for all retrieval steps. The `status != "void"` filter is applied by default to exclude VOID / off-topic / created-in-error entries from `source=agent` retrieval.
+This is the default pattern for all retrieval steps.
 
 ### Cross-Session, Same-Worktree Queries
 
@@ -250,8 +234,7 @@ When searching across sessions within the same worktree:
 ```text
 search_context(
   metadata={"project": "canonical-name", "worktree_id": "current-worktree"},
-  metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
-  limit=10,
+  limit=10
 )
 ```
 
@@ -262,16 +245,8 @@ Use this pattern to find historical work in the same worktree but different sess
 When searching across all worktrees of the same project:
 
 ```text
-search_context(
-    metadata={"project": "canonical-name"},
-    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
-    limit=20,
-)
-hybrid_search_context(
-    query="...",
-    metadata={"project": "canonical-name"},
-    metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}],
-)
+search_context(metadata={"project": "canonical-name"}, limit=20)
+hybrid_search_context(query="...", metadata={"project": "canonical-name"})
 ```
 
 Use this pattern to find work across all worktrees of the repository.
@@ -336,7 +311,7 @@ These patterns are generic and apply to any environment with multi-agent coordin
 
 **Note:** Not all tools listed below may be available in your environment. Tool availability depends on server configuration and how the server is connected to your MCP client. Use the tools that are available to you. If a recommended tool is unavailable, use an alternative from this table.
 
-For context storage and update tools, see the counterpart skill (`context-preservation-protocol`).
+The tools below cover retrieval. For storage and update operations, the context server exposes a parallel set of tools (for example `store_context` and `update_context`) -- consult the storage section of the server's own documentation.
 
 | Tool                      | Status           | Returns                           | Use For                                                |
 |---------------------------|------------------|-----------------------------------|--------------------------------------------------------|
@@ -394,7 +369,7 @@ Each search tool returns a `scores` object with different fields:
 
 ## Metadata Filtering
 
-For the complete list of metadata fields and allowed values, see `context-preservation-protocol` skill (both skills are always loaded together).
+When filtering search results, use the metadata fields documented by the context server itself. Common fields include `agent_name`, `task_name`, `status`, `project`, `report_type`, `technologies`, and `references` (an object that may contain a `context_ids` array). The filter operators supported by the server's search API include direct equality (via the `metadata` parameter) and the `metadata_filters` advanced operators such as `eq`, `ne`, `gt`, `lt`, `contains`, `array_contains`, `starts_with`, `exists`, and similar comparators.
 
 **Quick Reference for Filtering:**
 
@@ -602,7 +577,7 @@ For clean agent-to-agent transitions in orchestrated workflows:
 Use for the default retrieval workflow (finding context by source and metadata):
 
 1. Use `search_context` with `thread_id` and `source="user"` (Step 1)
-2. Use `search_context` with `thread_id`, `source="agent"`, and the default `metadata_filters=[{"key": "status", "operator": "ne", "value": "void"}]` to exclude VOID / off-topic entries (Step 2). Drop the filter only when explicitly auditing VOID entries.
+2. Use `search_context` with `thread_id` and `source="agent"` (Step 2)
 3. Browse truncated previews to identify ALL relevant entries
 4. Use `get_context_by_ids` to retrieve full content of selected entries (Step 3)
 

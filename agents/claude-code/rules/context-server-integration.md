@@ -4,14 +4,9 @@
 
 When MCP Context Server tools are available (any `mcp__context-server__*` tool in your tools list), you MUST follow this rule. If no context-server tools are present, this rule is inactive.
 
-## Mandatory Skill Delegation
+## Core Operating Principles
 
-For ALL context-server operations (retrieval, search, storage, metadata, update/revision, scoped retrieval, references navigation, continuity, pre-compaction patterns), you MUST follow these skills as the authoritative source of truth:
-
-- **Retrieval:** `context-retrieval-protocol` skill -- thread ID acquisition, project name derivation, retrieval sequences, hybrid/semantic/FTS search, scoped retrieval (`context_scope`), references navigation, revision context detection, worktree-aware queries, and continuity patterns.
-- **Preservation:** `context-preservation-protocol` skill -- storage patterns, metadata schema (including the "task subject vs execution tools" distinction for the `technologies` field), `store_context` vs `update_context` strategy, handoff reports, and continuity patterns.
-
-If these skills are already loaded in your context (via your agent frontmatter `skills:` field or a slash-command invocation), treat them as active. If not, invoke them explicitly via the Skill tool before performing any context-server operation. **Rule vs skill precedence:** if this rule appears to contradict a skill, the SKILL WINS.
+For ALL context-server operations (retrieval, search, storage, metadata, update/revision, scoped retrieval, references navigation, continuity, pre-compaction patterns), apply these principles directly. Where your environment provides skills, tutorials, or other operational guidance, treat that guidance as the practical embodiment of these principles; this rule supplies the invariants those guides must respect.
 
 ## Environment-Specific Facts
 
@@ -20,27 +15,28 @@ If these skills are already loaded in your context (via your agent frontmatter `
 
 ## User Message Authority
 
-User messages are the authoritative source of truth and override orchestrator summaries, agent reports, and your own memory when conflicts arise. User messages are IMMUTABLE -- never update, rewrite, or delete them, even when they contain errors. For discrepancy-handling details, see the retrieval skill's orchestrator-verification section.
+User messages are the authoritative source of truth and override orchestrator summaries, agent reports, and your own memory when conflicts arise. User messages are IMMUTABLE -- never update, rewrite, or delete them, even when they contain errors. When you detect a discrepancy between an orchestrator's task and the user's stated requirements (retrieved verbatim from the context server), the user-message wording wins; the orchestrator's framing is corrected, not the user's words.
 
-## User Message Relay Protocol (ID-First)
+## User Message Relay Protocol
 
-When launching subagents (via the Task or Agent tool) whose work depends on the user request, you MUST relay the user message using one of two modes, chosen by a deterministic predicate on `context_id` availability. Message SIZE is IRRELEVANT to mode selection.
+When launching subagents (via the Task or Agent tool) whose work depends on the user request, you MUST pass the user message in one of two modes:
 
-- **Default Mode -- REFERENCE (context_id only):** This is the ALWAYS-PREFERRED mode regardless of message size. Use it whenever the UserPromptSubmit hook has emitted a `context_id` for the current user message. The Reference Block contains EXACTLY this one line and nothing else (no retrieval instructions, no CRITICAL reminders, no size annotations, no format descriptors):
-
-  ```text
-  USER REQUEST CONTEXT ID: [context_id from hook]
-  ```
-
-- **Fallback Mode -- INLINE (verbatim text):** Use ONLY when the `context_id` is unavailable -- the UserPromptSubmit hook did not emit one (hook failure or upstream error), or the context-server is unreachable at message-store time. Include the full verbatim text under a `USER REQUEST:` marker:
+- **Mode 1 -- INLINE (default):** For moderate messages (guidance: under approximately 2000 tokens / 40 lines), include the full verbatim text under a `USER REQUEST:` marker:
 
   ```text
-  USER REQUEST: [verbatim user message text]
+  USER REQUEST: [verbatim user message]
   ```
 
-**Prohibitions (both modes):** MUST NOT summarize, paraphrase, condense, compress, or select "relevant" portions; MUST NOT extract quotes, evidence, or excerpts; MUST NOT describe intent or problem in your own words; MUST NOT add domain, technology, or problem qualifiers. Relay the complete message (REFERENCE) or its complete verbatim text (INLINE). When a subagent receives a Reference Block, it resolves the pointer per the retrieval skill's Pattern 6 (User Request Resolution) before starting work.
+- **Mode 2 -- REFERENCE (large messages):** Use a reference block with explicit retrieval instructions, passing the `context_id` emitted by the hook:
 
-**Image Path Relay (extension to BOTH modes):** Images attached via the terminal are NOT stored in the context-server; subagents can only analyze them by reading the absolute paths directly with the `Read` tool. Whenever the task involves visual analysis, the orchestrator MUST forward image paths verbatim: in Fallback (INLINE) mode the paths flow naturally with the verbatim text; in Default (REFERENCE) mode the orchestrator MUST append an explicit `IMAGE PATHS` block after the Reference Block, because image paths cannot be retrieved from the context-server. The orchestrator MUST NOT summarize, describe, interpret, or redact image contents or paths.
+  ```text
+  USER REQUEST (large message -- retrieve from context-server):
+  Context ID: [context_id from hook additionalContext]
+  Retrieve the FULL user message using: get_context_by_ids([<context_id>])
+  CRITICAL: You MUST retrieve and read the COMPLETE user message before starting work.
+  ```
+
+**Prohibitions (both modes):** MUST NOT summarize, paraphrase, condense, compress, or select "relevant" portions; MUST NOT extract quotes, evidence, or excerpts; MUST NOT describe intent or problem in your own words; MUST NOT add domain, technology, or problem qualifiers. Pass the complete message. **Fallback:** if the context server is unavailable, use Mode 1 INLINE regardless of size. When a subagent receives a Mode 2 reference block, it MUST resolve the pointer FIRST -- retrieve the full verbatim user message via `get_context_by_ids([<context_id>])`, read it in full, and only then begin work. Acting on the reference pointer without retrieving the underlying message is a PROTOCOL VIOLATION.
 
 ## Subagent Context Requirements
 
@@ -48,7 +44,7 @@ When launching subagents via the Task or Agent tool, the task description MUST i
 
 1. **Thread ID** -- enforced by a PreToolUse blocker
 2. **Timezone / date context** -- enforced by a PreToolUse blocker
-3. **User original request** -- per the Relay Protocol above (Default REFERENCE pointer, or INLINE fallback when no `context_id`)
+3. **User original request** -- per the Relay Protocol above (Mode 1 or Mode 2)
 4. **Relevant context IDs** -- so the subagent can retrieve prior work via `get_context_by_ids`
 
 Items 1 and 2 are hook-enforced: if missing, the tool call is blocked with guidance via stderr -- revise the task description and retry. Items 3 and 4 are your responsibility.
@@ -62,4 +58,4 @@ Before context compaction, preserve (priority-ordered):
 - **Current task state** -- what is active and what remains
 - **User decisions** -- explicit choices made during this session
 
-Do NOT attempt to preserve full content already stored in the context server -- use context IDs for retrieval after compaction. For detailed continuity patterns, follow the continuity sections of both skills.
+Do NOT attempt to preserve full content already stored in the context server -- use context IDs for retrieval after compaction. After any context window reset or compaction event, re-retrieve the highest-priority items above via `get_context_by_ids` before continuing work.

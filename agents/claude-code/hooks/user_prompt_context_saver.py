@@ -20,7 +20,6 @@ Trigger: UserPromptSubmit
 """
 
 import asyncio
-import contextlib
 import ctypes
 import importlib.util
 import io
@@ -127,139 +126,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         'fail_mode': 'warn',  # 'silent', 'warn', or 'error'
     },
 }
-
-
-def _persist_user_prompt_context_id(
-    session_id: str,
-    context_ids: list[int],
-    user_prompt: str,
-) -> None:
-    """Persist stored user-message context_id(s) and verbatim text to AEGIS runtime files.
-
-    Side-effect-only helper used by orchestrator_sequencing_enforcement.py to:
-    1. Append the context_id to the per-session observed_report_ids JSON file
-       (so the orchestrator's `USER REQUEST CONTEXT ID: [N]` references pass
-       the prompt_id_reference_validity validator).
-    2. Write the FIRST stored context_id as plain text to a per-session sidecar
-       file (so the verbatim_relay_check rule can detect when a context_id is
-       available).
-    3. Write the verbatim user prompt text to a per-session sidecar file
-       (`last_user_prompt_text_{session_id}`) so the verbatim_relay_check rule
-       can perform Option D's text-fragment match without round-tripping
-       through the context-server at hook time.
-
-    Reliability hardening: each attempt is wrapped in a retry loop with one
-    retry attempt and a 50 ms backoff between attempts. On persistent failure
-    (both attempts raise), the failure is logged via `log_always(level='ERROR')`
-    -- never raised. The function's contract is silent-side-effect-only so the
-    hook's existing reliability guarantee (never break Claude Code workflow)
-    is preserved.
-
-    Args:
-        session_id: Claude Code session_id (extracted from input_data).
-        context_ids: List of stored context IDs (single entry for non-chunked,
-            multiple for chunked storage).
-        user_prompt: The verbatim user prompt text (for the text sidecar).
-    """
-    if not context_ids:
-        return
-
-    last_err: Exception | None = None
-    for attempt in range(2):  # 1 try + 1 retry
-        try:
-            runtime_dir = Path(os.path.expanduser('~/.claude/aegis/runtime'))
-            runtime_dir.mkdir(parents=True, exist_ok=True)
-            observed_ids_file = runtime_dir / f'observed_report_ids_{session_id}.json'
-            sidecar_file = runtime_dir / f'last_user_prompt_context_id_{session_id}'
-            text_sidecar_file = runtime_dir / f'last_user_prompt_text_{session_id}'
-
-            # Step 1: read existing observed-IDs list, merge new IDs, write atomically.
-            existing_ids: set[int] = set()
-            try:
-                if observed_ids_file.exists():
-                    loaded = json.loads(observed_ids_file.read_text(encoding='utf-8'))
-                    if isinstance(loaded, dict):
-                        loaded_typed = cast(dict[str, Any], loaded)
-                        raw_ids_value = cast(list[Any] | None, loaded_typed.get('report_ids'))
-                        if isinstance(raw_ids_value, list):
-                            for item in raw_ids_value:
-                                if isinstance(item, int):
-                                    existing_ids.add(item)
-                                elif isinstance(item, str) and item.isdigit():
-                                    existing_ids.add(int(item))
-            except Exception:
-                existing_ids = set()
-            merged = sorted(existing_ids | {int(cid) for cid in context_ids})
-
-            # Atomic write of observed-IDs file (tempfile + os.replace).
-            fd1, tmp_obs_str = tempfile.mkstemp(
-                prefix=observed_ids_file.name + '.',
-                suffix='.tmp',
-                dir=str(runtime_dir),
-            )
-            try:
-                with os.fdopen(fd1, 'w', encoding='utf-8') as f:
-                    json.dump({'report_ids': merged}, f, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_obs_str, str(observed_ids_file))
-            except Exception:
-                with contextlib.suppress(Exception):
-                    Path(tmp_obs_str).unlink(missing_ok=True)
-                raise
-
-            # Step 2: write the first context_id to the sidecar (plain text).
-            fd2, tmp_side_str = tempfile.mkstemp(
-                prefix=sidecar_file.name + '.',
-                suffix='.tmp',
-                dir=str(runtime_dir),
-            )
-            try:
-                with os.fdopen(fd2, 'w', encoding='utf-8') as f:
-                    f.write(str(int(context_ids[0])))
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_side_str, str(sidecar_file))
-            except Exception:
-                with contextlib.suppress(Exception):
-                    Path(tmp_side_str).unlink(missing_ok=True)
-                raise
-
-            # Step 3: write the verbatim user prompt text to the per-session sidecar
-            # so the verbatim_relay_check rule can perform Option D's text-fragment
-            # match without round-tripping through the context-server at hook time.
-            fd3, tmp_text_str = tempfile.mkstemp(
-                prefix=text_sidecar_file.name + '.',
-                suffix='.tmp',
-                dir=str(runtime_dir),
-            )
-            try:
-                with os.fdopen(fd3, 'w', encoding='utf-8') as f:
-                    f.write(user_prompt)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_text_str, str(text_sidecar_file))
-            except Exception:
-                with contextlib.suppress(Exception):
-                    Path(tmp_text_str).unlink(missing_ok=True)
-                raise
-            return  # success on first or retry attempt
-        except Exception as e:
-            last_err = e
-            if attempt == 0:
-                time.sleep(0.05)  # 50 ms backoff before single retry
-                continue
-
-    # Persistent failure: log via log_always ERROR; never raise. Use the
-    # existing diagnostic channel so the message reaches the hook log alongside
-    # all other ERROR-level diagnostics in this module.
-    with contextlib.suppress(Exception):
-        log_always(
-            f'Failed to persist user-message context_id(s) to AEGIS runtime after retry: '
-            f'{context_ids}. Last error: '
-            f'{type(last_err).__name__ if last_err else "Unknown"}: {last_err}',
-            level='ERROR',
-        )
 
 
 def _get_log_file() -> Path:
@@ -1854,49 +1720,10 @@ def main() -> None:
                 else:
                     log_always(f'SUCCESS: All {total_chunks} chunks stored successfully')
 
-                # Output chunk IDs via additionalContext for orchestrator reference.
-                #
-                # Extract per-chunk context_ids from the `results` array returned by
-                # `_store_chunks_single_connection` (the dict has key `results`, NOT
-                # `chunk_ids`). Each entry is the raw CallToolResult from
-                # `client.call_tool('store_context', ...)`. FastMCP exposes the
-                # context_id either as `result.structured_content['context_id']`
-                # (canonical) or directly on the dict shape after `.structured_content`
-                # extraction. Handle both shapes defensively, mirroring the
-                # extraction in `_store_single_context_async` (lines 762-767).
+                # Output chunk IDs via additionalContext for orchestrator reference
                 if config.get('output_context_id', True):
-                    chunk_ids: list[int] = []
-                    results_list = cast(list[Any], result.get('results', []))
-                    for entry_any in results_list:
-                        if isinstance(entry_any, dict) and 'error' in cast(dict[str, Any], entry_any):
-                            continue
-                        candidate: Any = None
-                        structured: Any = getattr(cast(Any, entry_any), 'structured_content', None)
-                        if isinstance(structured, dict):
-                            candidate = cast(dict[str, Any], structured).get('context_id')
-                        if candidate is None and isinstance(entry_any, dict):
-                            entry_typed = cast(dict[str, Any], entry_any)
-                            nested: Any = entry_typed.get('structured_content')
-                            if isinstance(nested, dict):
-                                candidate = cast(dict[str, Any], nested).get('context_id')
-                            if candidate is None:
-                                candidate = entry_typed.get('context_id')
-                        if candidate is None:
-                            continue
-                        try:
-                            chunk_ids.append(int(candidate))
-                        except (TypeError, ValueError):
-                            continue
+                    chunk_ids = result.get('chunk_ids', [])
                     if chunk_ids:
-                        # Persist FIRST so the sidecar / observed-IDs files are durable
-                        # on disk before the orchestrator can see additionalContext
-                        # referencing these IDs. Closes the persist/emit race window
-                        # at source: downstream readers (validate_agent_invocation,
-                        # orchestrator_sequencing_enforcement) can rely on the files
-                        # being present whenever the upstream prompt mentions an ID.
-                        session_id_value = str(input_data.get('session_id', '')) or 'unknown'
-                        _persist_user_prompt_context_id(session_id_value, chunk_ids, str(prompt))
-
                         hook_output: dict[str, Any] = {
                             'hookSpecificOutput': {
                                 'hookEventName': 'UserPromptSubmit',
@@ -1912,19 +1739,10 @@ def main() -> None:
             else:
                 log_always('SUCCESS: Context stored successfully')
 
-                # Output context_id via additionalContext for orchestrator reference.
-                # Persist FIRST so the sidecar / observed-IDs files are durable on disk
-                # before the orchestrator can see additionalContext referencing the ID.
+                # Output context_id via additionalContext for orchestrator reference
                 if config.get('output_context_id', True):
                     context_id = result.get('context_id')
                     if context_id is not None:
-                        session_id_value = str(input_data.get('session_id', '')) or 'unknown'
-                        try:
-                            single_id = int(context_id)
-                            _persist_user_prompt_context_id(session_id_value, [single_id], str(prompt))
-                        except (TypeError, ValueError):
-                            pass
-
                         hook_output = {
                             'hookSpecificOutput': {
                                 'hookEventName': 'UserPromptSubmit',

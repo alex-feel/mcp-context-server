@@ -32,7 +32,7 @@ The thread ID is used as `thread_id` for context server queries. Obtain it using
 
 **Note:** Not all tools listed below may be available in your environment. Tool availability depends on server configuration and how the server is connected to your MCP client. Use the tools that are available to you. If a recommended tool is unavailable, use an alternative from this table.
 
-For context retrieval and search tools, see the counterpart skill (`context-retrieval-protocol`).
+The tools below cover storage and update. For retrieval and search operations, the context server exposes a parallel set of tools (for example `search_context`, `get_context_by_ids`, `hybrid_search_context`, `semantic_search_context`, and `fts_search_context`) -- consult the retrieval section of the server's own documentation.
 
 | Tool                   | Status           | Use For                                              |
 |------------------------|------------------|------------------------------------------------------|
@@ -445,7 +445,7 @@ This ensures your work is documented, preserved, and **retrievable by other agen
 
 ## Context Continuity Patterns
 
-These patterns help agents preserve state across context window boundaries and long-running tasks. For retrieval-side continuity patterns, see the counterpart skill (`context-retrieval-protocol`).
+These patterns help agents preserve state across context window boundaries and long-running tasks. They are the storage-side patterns; the symmetric retrieval-side patterns (search, re-read after compaction, references navigation) belong to the retrieval workflow and follow the same principles described below applied to retrieval tools.
 
 ### Basic Continuity (Default)
 
