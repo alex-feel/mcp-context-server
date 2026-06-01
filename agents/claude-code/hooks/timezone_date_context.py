@@ -2,9 +2,9 @@
 """
 Timezone and Date Context Hook for Claude Code
 
-This hook provides timezone and date context to the model at session start,
-helping the model understand the user's current timezone and date for better
-context when handling date-related queries.
+This hook provides timezone and date context to the model at session start
+and at subagent start, helping the model understand the user's current
+timezone and date for better context when handling date-related queries.
 
 Trigger: SessionStart and SubagentStart with any source (no source restrictions)
 """

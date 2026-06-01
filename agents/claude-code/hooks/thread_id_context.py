@@ -3,7 +3,7 @@
 Thread ID Manager Hook for Claude Code
 
 This hook manages thread IDs for the context server:
-1. Validates that the hook event is 'SessionStart'
+1. Validates that the hook event is 'SessionStart' or 'SubagentStart'
 2. Takes session_id from the Claude Code payload (API contract)
 3. Writes it as thread_id to .context_server/.thread_id file ONLY if it differs
 4. Outputs unified thread context message for ALL sources
