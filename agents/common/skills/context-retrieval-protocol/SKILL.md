@@ -332,7 +332,7 @@ The tools below cover retrieval. For storage and update operations, the context 
 - `get_context_by_ids` is recommended for retrieving full content
 - `hybrid_search_context` is recommended for conceptual discovery -- use when in doubt
 - Specify `thread_id` to search within the current session
-- **Truncated text, summaries, and metadata are for RELEVANCE ASSESSMENT only -- not for understanding substance.** Summaries are AI-generated approximations that may omit critical conditions, caveats, or nuances present in the full text. Do not draw definitive conclusions about what an entry says, recommends, or decides from search results alone -- always retrieve full content via `get_context_by_ids` before reasoning about an entry's actual content.
+- **Truncated text, summaries, and metadata are for RELEVANCE ASSESSMENT only -- not for understanding substance.** Always retrieve full content via `get_context_by_ids` before reasoning about an entry's actual content (the Truncation Discipline section below states this rule in full).
 
 ## Truncation Discipline (ABSOLUTE)
 

@@ -245,16 +245,7 @@ The following guidance is **CRITICAL** for understanding what to include vs excl
 | Update hook logic | `["python", "pytest", "mypy"]`         | pytest/mypy are validation tools, not task subject      |
 | Design API schema | `["python", "git", "vscode"]`          | git/vscode are development tools, not task subject      |
 
-**Example Values (Illustrative, Not Exhaustive):**
-
-Use any lowercase identifier relevant to your project's technology stack. Common examples:
-
-- **Languages:** python, typescript, javascript, go, rust, java, csharp, ruby, php
-- **Frameworks:** fastapi, react, nextjs, django, express, spring, rails
-- **Databases:** postgresql, mongodb, redis, elasticsearch, sqlite
-- **Infrastructure:** docker, kubernetes, aws, terraform
-
-This list is illustrative -- use any lowercase identifier that describes your task's subject matter.
+**Example values (illustrative, not exhaustive):** use any lowercase identifier that describes your task's subject matter -- e.g. languages (`python`, `typescript`, `go`, `rust`), frameworks (`fastapi`, `react`, `django`), databases (`postgresql`, `mongodb`, `redis`), infrastructure (`docker`, `kubernetes`, `terraform`).
 
 **Example:**
 
@@ -422,14 +413,7 @@ Complete the following before stopping:
        "references": {}
      }
      ```
-     **Why these fields are recommended:**
-     - `agent_name`: Enables filtering by agent (e.g., find all implementation-guide plans)
-     - `task_name`: Enables filtering by task (e.g., find context about specific feature)
-     - `status`: Enables filtering by completion state (done vs pending)
-     - `project`: Enables filtering by project (e.g., find all context from current project)
-     - `technologies`: Enables cross-project discovery by tech stack (use `array_contains` operator or tags for filtering)
-     - `report_type`: Enables filtering by work type (research, implementation, validation, documentation)
-     Including these fields ensures other agents and sessions can find your context via metadata filtering.
+     **Why these fields are recommended:** each enables metadata filtering so other agents and sessions can find your context -- by agent (`agent_name`), task (`task_name`), completion state (`status`), project (`project`), tech stack (`technologies`, via the `array_contains` operator or tags), and work type (`report_type`).
    - `tags`: **Recommended** - `["report", ...relevant tags]` for search and categorization
 
 4. **After successfully saving**, capture the `context_id` from the `store_context` response and include it in your brief completion status to the calling party:
