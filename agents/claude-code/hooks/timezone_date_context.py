@@ -6,7 +6,7 @@ This hook provides timezone and date context to the model at session start,
 helping the model understand the user's current timezone and date for better
 context when handling date-related queries.
 
-Trigger: SessionStart with any source (no source restrictions)
+Trigger: SessionStart and SubagentStart with any source (no source restrictions)
 """
 
 import importlib.util
@@ -38,8 +38,8 @@ def main() -> None:
         # Extract key fields
         hook_event_name = input_data.get('hook_event_name', '')
 
-        # Initial validation - only run on SessionStart events
-        if hook_event_name != 'SessionStart':
+        # Initial validation - only run on SessionStart and SubagentStart events
+        if hook_event_name not in ('SessionStart', 'SubagentStart'):
             sys.exit(0)
 
         # Get current timezone and date with timezone awareness
@@ -74,15 +74,12 @@ def main() -> None:
             f"The current date is {current_date}.\n"
             "Any dates before this are in the past, and any dates after this are in the future. "
             "When the user asks for the 'latest', 'most recent', 'today's', etc. "
-            "don't assume your knowledge is up to date.\n\n"
-            "CRITICAL: When spawning or resuming subagents via the Task/Agent tool, you MUST include the EXACT format above "
-            "(starting with 'TIMEZONE CONTEXT: The user's timezone is...'). "
-            "Do NOT condense or reformat - the phrase 'The user's timezone is' is required for validation."
+            "don't assume your knowledge is up to date."
         )
 
         try:
             json_output = _load_json_output()
-            json_output.emit_additional_context('SessionStart', context_message)
+            json_output.emit_additional_context(hook_event_name, context_message)
         except ImportError:
             print(context_message)
 

@@ -11,7 +11,7 @@ This hook manages thread IDs for the context server:
 Adapter pattern: Claude Code provides session_id; this hook translates it to
 thread_id for the context server, bridging the two naming conventions.
 
-Trigger: SessionStart with any source
+Trigger: SessionStart and SubagentStart with any source
 """
 
 import importlib.util
@@ -45,7 +45,7 @@ def main() -> None:
         session_id = input_data.get('session_id', '')
 
         # Validate hook event and session_id
-        if hook_event_name != 'SessionStart':
+        if hook_event_name not in ('SessionStart', 'SubagentStart'):
             sys.exit(0)
 
         if not session_id:
@@ -78,13 +78,11 @@ def main() -> None:
         context_message = (
             f'THREAD CONTEXT: Current thread ID is {session_id}.\n'
             'This thread ID identifies the current context-server thread for context storage and retrieval. '
-            'Use this value as thread_id when working with the context-server.\n\n'
-            'CRITICAL: When spawning or resuming subagents via the Task/Agent tool, ALWAYS include the current '
-            'thread ID in the task prompt to maintain context continuity across the agent hierarchy.'
+            'Use this value as thread_id when working with the context-server.'
         )
         try:
             json_output = _load_json_output()
-            json_output.emit_additional_context('SessionStart', context_message)
+            json_output.emit_additional_context(hook_event_name, context_message)
         except ImportError:
             print(context_message)
 

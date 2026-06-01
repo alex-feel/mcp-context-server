@@ -64,14 +64,12 @@ hooks:
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/user_prompt_context_saver_config.yaml
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/subagent_report_context_saver.py
 
-    # Session context hooks
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/thread_id_context.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/task_thread_id_context.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/timezone_date_context.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/task_timezone_date_context.py
-
     # Project identity
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/worktree_context.py
+
+    # Session context hooks
+    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/thread_id_context.py
+    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/timezone_date_context.py
 
     # Context lifecycle hooks and configs
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py
@@ -99,6 +97,22 @@ hooks:
       type: command
       command: timezone_date_context.py
 
+    # Subagent context injection - mirrors SessionStart context for spawned subagents
+    - event: SubagentStart
+      matcher: '*'
+      type: command
+      command: worktree_context.py
+
+    - event: SubagentStart
+      matcher: '*'
+      type: command
+      command: thread_id_context.py
+
+    - event: SubagentStart
+      matcher: '*'
+      type: command
+      command: timezone_date_context.py
+
     - event: SessionStart
       matcher: '*'
       type: command
@@ -116,17 +130,6 @@ hooks:
       type: command
       command: context_management_precompact.py
       config: context_management_precompact_config.yaml
-
-    # Task enhancement hooks
-    - event: PreToolUse
-      matcher: Task|Agent
-      type: command
-      command: task_thread_id_context.py
-
-    - event: PreToolUse
-      matcher: Task|Agent
-      type: command
-      command: task_timezone_date_context.py
 
     # Context preservation during workflow
     - event: UserPromptSubmit

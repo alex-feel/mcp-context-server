@@ -14,7 +14,7 @@ Fallback chain for project name:
 2. Basename of git toplevel directory
 3. Current directory basename
 
-Event: SessionStart
+Event: SessionStart and SubagentStart
 Type: command
 """
 
@@ -333,11 +333,12 @@ def main() -> None:
 
         # Extract and validate event type
         hook_event_name = input_data.get('hook_event_name', '')
-        if hook_event_name != 'SessionStart':
+        if hook_event_name not in ('SessionStart', 'SubagentStart'):
             sys.exit(0)
 
-        # Get project directory from environment
-        cwd = os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())
+        # Get project directory: prefer payload 'cwd' (documented Common input field
+        # for all hook events), fall back to CLAUDE_PROJECT_DIR env var, then os.getcwd().
+        cwd = input_data.get('cwd', '') or os.environ.get('CLAUDE_PROJECT_DIR') or os.getcwd()
 
         # Get worktree information
         worktree_info = get_worktree_info(cwd, config)
@@ -360,7 +361,7 @@ def main() -> None:
 
         try:
             json_output = _load_json_output()
-            json_output.emit_additional_context('SessionStart', message)
+            json_output.emit_additional_context(hook_event_name, message)
         except ImportError:
             print(message)
         sys.exit(0)
