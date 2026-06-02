@@ -10,9 +10,19 @@ This hook provides guidance text to the orchestrator at session start,
 informing it about the option to check recent context entries for workflow
 continuity after context compaction or session resume.
 
-The guidance content is configurable via external YAML configuration.
+The guidance content is configurable via external YAML configuration. The hook
+emits the message via the modern JSON ``hookSpecificOutput.additionalContext``
+mechanism so Claude Code injects it into the orchestrator's context window as
+a system reminder.
 
 Trigger: SessionStart with any source
+
+main() relies on its helpers being correct under the platform contract; only
+one external-condition handler exists (json.JSONDecodeError for malformed stdin
+from the Claude Code wrapper). There is no catch-all except Exception block:
+an unexpected exception escapes to Python's default handler, surfacing the
+traceback to the operator's TUI so the underlying code-quality defect can be
+fixed.
 """
 
 import importlib.util
@@ -210,8 +220,11 @@ def main() -> None:
         # Always exit successfully
         sys.exit(0)
 
-    except Exception:
-        # Handle all errors silently and exit successfully
+    except json.JSONDecodeError:
+        # Malformed stdin from the Claude Code wrapper: external contract
+        # violation, not a hook-internal defect. Exit 0 because the hook contract
+        # requires non-blocking on stdin corruption (the model has no actionable
+        # feedback to give).
         sys.exit(0)
 
 

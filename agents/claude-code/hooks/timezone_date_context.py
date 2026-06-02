@@ -7,6 +7,20 @@ and at subagent start, helping the model understand the user's current
 timezone and date for better context when handling date-related queries.
 
 Trigger: SessionStart and SubagentStart with any source (no source restrictions)
+
+main() relies on its helpers being correct under the platform contract; only
+one external-condition handler exists (json.JSONDecodeError for malformed stdin
+from the Claude Code wrapper). There is no catch-all except Exception block in
+main()'s outer try: an unexpected exception escapes to Python's default
+handler, surfacing the traceback to the operator's TUI so the underlying
+code-quality defect can be fixed.
+
+main() contains one local except Exception block that wraps a narrow
+strftime('%Z') call. The block converts a real-world external failure
+(timezone-database lookup returning a non-ASCII or empty timezone identifier on
+misconfigured Windows-locale or corrupted-tzdata systems) into a domain-meaningful
+sentinel value 'Local'. This is not a hook-internal defect mask; it implements
+the timezone-name fallback chain and is intentionally preserved.
 """
 
 import importlib.util
@@ -86,8 +100,11 @@ def main() -> None:
         # Always exit successfully
         sys.exit(0)
 
-    except Exception:
-        # Handle all errors silently and exit successfully
+    except json.JSONDecodeError:
+        # Malformed stdin from the Claude Code wrapper: external contract
+        # violation, not a hook-internal defect. Exit 0 because the hook contract
+        # requires non-blocking on stdin corruption (the model has no actionable
+        # feedback to give).
         sys.exit(0)
 
 

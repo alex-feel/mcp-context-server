@@ -9,9 +9,19 @@ Context Management PreCompact Hook for Claude Code.
 This hook triggers before context compaction, prompting the orchestrator to
 preserve critical workflow state to the context-server before compaction occurs.
 
-The message content is configurable via external YAML configuration.
+The message content is configurable via external YAML configuration. The hook
+emits the message via the modern JSON ``hookSpecificOutput.additionalContext``
+mechanism so Claude Code injects it into the orchestrator's context window as
+a system reminder.
 
 Trigger: PreCompact event (fires before Claude Code performs context compaction)
+
+main() relies on its helpers being correct under the platform contract; only
+one external-condition handler exists (json.JSONDecodeError for malformed stdin
+from the Claude Code wrapper). There is no catch-all except Exception block:
+an unexpected exception escapes to Python's default handler, surfacing the
+traceback to the operator's TUI so the underlying code-quality defect can be
+fixed.
 """
 
 import importlib.util
@@ -28,6 +38,17 @@ def _load_config_loader() -> ModuleType:
     spec = importlib.util.spec_from_file_location('hook_config_loader', loader_path)
     if spec is None or spec.loader is None:
         raise ImportError(f'Cannot load hook_config_loader from {loader_path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_json_output() -> ModuleType:
+    """Dynamically load hook_json_output from the same directory."""
+    loader_path = Path(__file__).parent / 'hook_json_output.py'
+    spec = importlib.util.spec_from_file_location('hook_json_output', loader_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'Cannot load hook_json_output from {loader_path}')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -306,15 +327,20 @@ def main() -> None:
         if hook_event_name != 'PreCompact':
             sys.exit(0)
 
-        # Build and output precompact message for the orchestrator
+        # Build and emit precompact message for the orchestrator via JSON
+        # additionalContext (modern context-injection mechanism for PreCompact events)
         precompact_message = build_precompact_message(config)
-        print(precompact_message)
+        json_output = _load_json_output()
+        json_output.emit_additional_context('PreCompact', precompact_message)
 
         # Always exit successfully
         sys.exit(0)
 
-    except Exception:
-        # Handle all errors silently and exit successfully
+    except json.JSONDecodeError:
+        # Malformed stdin from the Claude Code wrapper: external contract
+        # violation, not a hook-internal defect. Exit 0 because the hook contract
+        # requires non-blocking on stdin corruption (the model has no actionable
+        # feedback to give).
         sys.exit(0)
 
 

@@ -16,6 +16,15 @@ Note: Currently, the UserPromptSubmit event does not provide images from user
 requests, so this hook cannot save image content to the context server. Only
 text prompts are captured and stored.
 
+main() relies on its helpers being correct under the platform contract; only
+narrower handlers exist (json.JSONDecodeError for malformed stdin from Claude
+Code; an inner except Exception around the MCP store_context call and its
+additionalContext emission to absorb realistic remote-service failures without
+blocking the user's workflow). There is no outer catch-all except Exception
+block: an unexpected exception escapes to Python's default handler, surfacing
+the traceback to the operator's TUI so the underlying code-quality defect can
+be fixed.
+
 Trigger: UserPromptSubmit
 """
 
@@ -48,6 +57,17 @@ def _load_config_loader() -> ModuleType:
     spec = importlib.util.spec_from_file_location('hook_config_loader', loader_path)
     if spec is None or spec.loader is None:
         raise ImportError(f'Cannot load hook_config_loader from {loader_path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_json_output() -> ModuleType:
+    """Dynamically load hook_json_output from the same directory."""
+    loader_path = Path(__file__).parent / 'hook_json_output.py'
+    spec = importlib.util.spec_from_file_location('hook_json_output', loader_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'Cannot load hook_json_output from {loader_path}')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -1543,252 +1563,255 @@ def main() -> None:
     log_always('Entering main() function')
     start_time = datetime.now(tz=UTC)
 
+    # Load configuration (defaults merged with config file if provided)
     try:
-        # Load configuration (defaults merged with config file if provided)
-        try:
-            config_loader = _load_config_loader()
-            config: dict[str, Any] = config_loader.get_config_from_argv(DEFAULT_CONFIG)
-        except Exception:
-            # If config loading fails, use defaults
-            config = DEFAULT_CONFIG.copy()
+        config_loader = _load_config_loader()
+        config: dict[str, Any] = config_loader.get_config_from_argv(DEFAULT_CONFIG)
+    except Exception:
+        # If config loading fails, use defaults
+        config = DEFAULT_CONFIG.copy()
 
-        # Check if hook is enabled
-        if not config.get('enabled', True):
-            log_always('Hook disabled via config, exiting')
-            sys.exit(0)
-
-        # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
-        # This prevents non-ASCII text corruption (mojibake) in MCP communication
-        setup_windows_utf8()
-
-        # Reconfigure stdin to UTF-8 for Git Bash compatibility
-        # Git Bash on Windows uses MinGW64/MSYS2 runtime with Unix-style locale system.
-        # Without LANG/LC_ALL exports, it defaults to Windows codepage (CP1252/Windows-1251),
-        # causing stdin pipes to corrupt UTF-8 data BEFORE Python reads it.
-        # This reconfigures the already-open stdin stream to UTF-8 encoding.
-        #
-        # Use getattr() for type-safe access to reconfigure() method (Python 3.7+)
-        # sys.stdin is typed as TextIO in stubs but is TextIOWrapper at runtime
-        log_always('Reconfiguring stdin for UTF-8')
-        reconfigure_method = getattr(sys.stdin, 'reconfigure', None)
-        if reconfigure_method is not None:
-            # Python 3.7+ has reconfigure() method on TextIOWrapper
-            try:
-                reconfigure_method(encoding='utf-8')
-                log_always('stdin reconfigured to UTF-8 via reconfigure()')
-                log_error('Git Bash compatibility: stdin reconfigured to UTF-8')
-            except OSError as e:
-                error_msg = f'stdin reconfigure failed: {e}'
-                log_always(error_msg, level='ERROR')
-                log_error(f'Git Bash compatibility: {error_msg}')
-        else:
-            # Fallback for Python < 3.7 or if reconfigure() not available
-            try:
-                sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
-                log_always('stdin wrapped with UTF-8 TextIOWrapper')
-                log_error('Git Bash compatibility: stdin wrapped with UTF-8 TextIOWrapper')
-            except Exception as e:
-                error_msg = f'stdin UTF-8 fix failed: {e}'
-                log_always(error_msg, level='ERROR')
-                log_error(f'Git Bash compatibility: {error_msg}')
-
-        # Read input from stdin
-        log_always('Reading stdin data')
-        try:
-            input_data = json.load(sys.stdin)
-            log_always(f'stdin data keys: {list(input_data.keys())}')
-        except json.JSONDecodeError as e:
-            log_always(f'JSON decode error: {e}', level='ERROR')
-            log_always('Exiting: Invalid JSON from stdin')
-            sys.exit(0)
-        except Exception as e:
-            log_always(f'Error reading stdin: {type(e).__name__}: {e}', level='ERROR')
-            log_always('Exiting: Failed to read stdin')
-            sys.exit(0)
-
-        # Extract key fields
-        hook_event_name = input_data.get('hook_event_name', '')
-        log_always(f'hook_event_name: {hook_event_name}')
-
-        # Validate this is a UserPromptSubmit event
-        if hook_event_name != 'UserPromptSubmit':
-            log_always(f'Skipping: Event type is {hook_event_name}, not UserPromptSubmit')
-            sys.exit(0)
-
-        # Extract prompt from input data (UserPromptSubmit has prompt directly)
-        prompt = input_data.get('prompt', '')
-        log_always(f'Prompt length: {len(prompt)} characters')
-        if not prompt:
-            # No prompt to save
-            log_always('Skipping: Empty prompt')
-            sys.exit(0)
-
-        # Check if this is a pre-built slash command that should be skipped
-        if is_prebuilt_slash_command(prompt, config):
-            # Skip pre-built slash commands
-            log_always('Skipping: Pre-built slash command detected')
-            sys.exit(0)
-
-        # Check if this prompt matches any skip pattern (internal hook prompts)
-        if matches_skip_pattern(prompt, config):
-            # Skip internal hook prompts
-            log_always('Skipping: Internal hook prompt detected')
-            sys.exit(0)
-
-        # Get Claude project directory
-        claude_project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
-        log_always(f'CLAUDE_PROJECT_DIR for context save: {claude_project_dir}')
-        if not claude_project_dir:
-            # No project directory, can't proceed
-            log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
-            sys.exit(0)
-
-        # Get worktree information for context metadata and thread ID resolution
-        # Provides canonical project name from git remote URL for cross-worktree consistency
-        worktree_info = get_worktree_info(claude_project_dir)
-        log_always(f'Worktree info: project={worktree_info["project"]}')
-
-        # Resolve thread ID (reads .thread_id file, falls back to project name)
-        thread_id = resolve_thread_id(claude_project_dir, config, worktree_info)
-
-        # Create MCP client and store context
-        try:
-            # Any failure in MCP communication should be silent
-            #
-            # CRITICAL UTF-8 REQUIREMENT:
-            # The setup_windows_utf8() function MUST be called before this point
-            # to ensure subprocess stdin/stdout use UTF-8 encoding.
-            # Without this, non-ASCII text (Cyrillic, Chinese, Arabic, etc.) gets
-            # corrupted on Windows due to codepage defaults (CP1252/Windows-1251).
-            #
-            # FastMCP's StdioTransport does not explicitly set encoding='utf-8'
-            # on subprocess pipes, so we configure it via environment variable
-            # (PYTHONUTF8=1) and console codepage (65001) instead.
-
-            # Create client based on transport configuration (stdio or http)
-            client = create_mcp_client(config)
-
-            # Build metadata with worktree fields for context isolation
-            metadata: dict[str, Any] = {
-                'project': worktree_info['project'],
-            }
-            # Add optional worktree fields if available (git repository detected)
-            if worktree_info.get('worktree_id') is not None:
-                metadata['worktree_id'] = worktree_info['worktree_id']
-            if worktree_info.get('worktree_path') is not None:
-                metadata['worktree_path'] = worktree_info['worktree_path']
-            if worktree_info.get('is_linked_worktree') is not None:
-                metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
-
-            log_always('Storing context in MCP server')
-            result = client.store_context(
-                thread_id=thread_id,
-                source='user',
-                text=prompt,
-                metadata=metadata,
-            )
-
-            # Check for chunked storage with partial failures and provide user feedback
-            if result.get('chunked', False):
-                chunks_failed = result.get('chunks_failed', 0)
-                total_chunks = result.get('total_chunks', 0)
-                chunks_stored = result.get('chunks_stored', 0)
-
-                if chunks_failed > 0:
-                    # Get fail_mode from config
-                    chunking_config = config.get('chunking', DEFAULT_CONFIG['chunking'])
-                    fail_mode = chunking_config.get('fail_mode', 'warn')
-
-                    failed_numbers = result.get('failed_chunk_numbers', [])
-                    feedback_msg = (
-                        f'Context storage partial failure: {chunks_failed}/{total_chunks} chunks failed '
-                        f'(chunks {failed_numbers}). {chunks_stored} chunks stored successfully.'
-                    )
-
-                    # Always log the failure (existing logging continues)
-                    log_always(feedback_msg, level='WARN')
-                    report_error('CHUNK_STORAGE_PARTIAL', feedback_msg)
-
-                    # User feedback based on fail_mode (displays in TUI)
-                    if fail_mode == 'warn':
-                        print(f'[WARN] {feedback_msg}', file=sys.stderr)
-                    elif fail_mode == 'error':
-                        print(f'[ERROR] {feedback_msg}', file=sys.stderr)
-                    # 'silent' mode: no stderr output, only logging
-
-                    log_always(f'User feedback mode: {fail_mode}')
-                else:
-                    log_always(f'SUCCESS: All {total_chunks} chunks stored successfully')
-
-                # Output chunk IDs via additionalContext for orchestrator reference
-                if config.get('output_context_id', True):
-                    chunk_ids = result.get('chunk_ids', [])
-                    if chunk_ids:
-                        hook_output: dict[str, Any] = {
-                            'hookSpecificOutput': {
-                                'hookEventName': 'UserPromptSubmit',
-                                'additionalContext': (
-                                    f'[Hook: user message stored to context-server (chunked).'
-                                    f' context_ids={chunk_ids}]'
-                                ),
-                            },
-                        }
-                        sys.stdout.write(json.dumps(hook_output))
-                        sys.stdout.flush()
-                        log_always(f'Output chunk context_ids={chunk_ids} via additionalContext')
-            else:
-                log_always('SUCCESS: Context stored successfully')
-
-                # Output context_id via additionalContext for orchestrator reference
-                if config.get('output_context_id', True):
-                    context_id = result.get('context_id')
-                    if context_id is not None:
-                        hook_output = {
-                            'hookSpecificOutput': {
-                                'hookEventName': 'UserPromptSubmit',
-                                'additionalContext': f'[Hook: user message stored to context-server. context_id={context_id}]',
-                            },
-                        }
-                        sys.stdout.write(json.dumps(hook_output))
-                        sys.stdout.flush()
-                        log_always(f'Output context_id={context_id} via additionalContext')
-
-        except Exception as e:
-            # Log the error for debugging with full traceback, then suppress as designed
-            error_msg = f'{type(e).__name__}: {e}'
-            full_traceback = traceback.format_exc()
-
-            # Check for specific error patterns related to pipe buffer issues
-            error_str = str(e).lower()
-            error_context = ''
-
-            if 'broken pipe' in error_str:
-                error_context = ' (Message likely too large for subprocess pipe buffer)'
-            elif 'timeout' in error_str:
-                error_context = ' (Consider increasing timeout for large messages via CLAUDE_HOOK_MCP_TIMEOUT)'
-            elif '[errno 32]' in error_str or 'epipe' in error_str:
-                error_context = ' (Subprocess pipe broken - message size may exceed buffer capacity)'
-            elif 'buffer' in error_str:
-                error_context = ' (Buffer-related error - message may be too large)'
-
-            log_always(f'MCP store failure: {error_msg}{error_context}', level='ERROR')
-            log_always(f'Traceback:\n{full_traceback}', level='ERROR')
-            report_error('MCP_STORE_FAILURE', f'{error_msg}{error_context}\n{full_traceback}')
-            # Silent failure - don't break Claude Code workflow
-
-        # Always exit successfully
-        end_time = datetime.now(tz=UTC)
-        duration = (end_time - start_time).total_seconds()
-        log_always(f'Execution completed in {duration:.3f} seconds')
+    # Check if hook is enabled
+    if not config.get('enabled', True):
+        log_always('Hook disabled via config, exiting')
         sys.exit(0)
+
+    # CRITICAL: Configure UTF-8 for Windows BEFORE any subprocess operations
+    # This prevents non-ASCII text corruption (mojibake) in MCP communication
+    setup_windows_utf8()
+
+    # Reconfigure stdin to UTF-8 for Git Bash compatibility
+    # Git Bash on Windows uses MinGW64/MSYS2 runtime with Unix-style locale system.
+    # Without LANG/LC_ALL exports, it defaults to Windows codepage (CP1252/Windows-1251),
+    # causing stdin pipes to corrupt UTF-8 data BEFORE Python reads it.
+    # This reconfigures the already-open stdin stream to UTF-8 encoding.
+    #
+    # Use getattr() for type-safe access to reconfigure() method (Python 3.7+)
+    # sys.stdin is typed as TextIO in stubs but is TextIOWrapper at runtime
+    log_always('Reconfiguring stdin for UTF-8')
+    reconfigure_method = getattr(sys.stdin, 'reconfigure', None)
+    if reconfigure_method is not None:
+        # Python 3.7+ has reconfigure() method on TextIOWrapper
+        try:
+            reconfigure_method(encoding='utf-8')
+            log_always('stdin reconfigured to UTF-8 via reconfigure()')
+            log_error('Git Bash compatibility: stdin reconfigured to UTF-8')
+        except OSError as e:
+            error_msg = f'stdin reconfigure failed: {e}'
+            log_always(error_msg, level='ERROR')
+            log_error(f'Git Bash compatibility: {error_msg}')
+    else:
+        # Fallback for Python < 3.7 or if reconfigure() not available
+        try:
+            sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+            log_always('stdin wrapped with UTF-8 TextIOWrapper')
+            log_error('Git Bash compatibility: stdin wrapped with UTF-8 TextIOWrapper')
+        except Exception as e:
+            error_msg = f'stdin UTF-8 fix failed: {e}'
+            log_always(error_msg, level='ERROR')
+            log_error(f'Git Bash compatibility: {error_msg}')
+
+    # Read input from stdin
+    log_always('Reading stdin data')
+    try:
+        input_data = json.load(sys.stdin)
+        log_always(f'stdin data keys: {list(input_data.keys())}')
+    except json.JSONDecodeError as e:
+        log_always(f'JSON decode error: {e}', level='ERROR')
+        log_always('Exiting: Invalid JSON from stdin')
+        sys.exit(0)
+    except Exception as e:
+        log_always(f'Error reading stdin: {type(e).__name__}: {e}', level='ERROR')
+        log_always('Exiting: Failed to read stdin')
+        sys.exit(0)
+
+    # Extract key fields
+    hook_event_name = input_data.get('hook_event_name', '')
+    log_always(f'hook_event_name: {hook_event_name}')
+
+    # Validate this is a UserPromptSubmit event
+    if hook_event_name != 'UserPromptSubmit':
+        log_always(f'Skipping: Event type is {hook_event_name}, not UserPromptSubmit')
+        sys.exit(0)
+
+    # Extract prompt from input data (UserPromptSubmit has prompt directly)
+    prompt = input_data.get('prompt', '')
+    log_always(f'Prompt length: {len(prompt)} characters')
+    if not prompt:
+        # No prompt to save
+        log_always('Skipping: Empty prompt')
+        sys.exit(0)
+
+    # Check if this is a pre-built slash command that should be skipped
+    if is_prebuilt_slash_command(prompt, config):
+        # Skip pre-built slash commands
+        log_always('Skipping: Pre-built slash command detected')
+        sys.exit(0)
+
+    # Check if this prompt matches any skip pattern (internal hook prompts)
+    if matches_skip_pattern(prompt, config):
+        # Skip internal hook prompts
+        log_always('Skipping: Internal hook prompt detected')
+        sys.exit(0)
+
+    # Get Claude project directory
+    claude_project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
+    log_always(f'CLAUDE_PROJECT_DIR for context save: {claude_project_dir}')
+    if not claude_project_dir:
+        # No project directory, can't proceed
+        log_always('Exiting: CLAUDE_PROJECT_DIR not set', level='ERROR')
+        sys.exit(0)
+
+    # Get worktree information for context metadata and thread ID resolution
+    # Provides canonical project name from git remote URL for cross-worktree consistency
+    worktree_info = get_worktree_info(claude_project_dir)
+    log_always(f'Worktree info: project={worktree_info["project"]}')
+
+    # Resolve thread ID (reads .thread_id file, falls back to project name)
+    thread_id = resolve_thread_id(claude_project_dir, config, worktree_info)
+
+    # Create MCP client and store context
+    try:
+        # Any failure in MCP communication should be silent
+        #
+        # CRITICAL UTF-8 REQUIREMENT:
+        # The setup_windows_utf8() function MUST be called before this point
+        # to ensure subprocess stdin/stdout use UTF-8 encoding.
+        # Without this, non-ASCII text (Cyrillic, Chinese, Arabic, etc.) gets
+        # corrupted on Windows due to codepage defaults (CP1252/Windows-1251).
+        #
+        # FastMCP's StdioTransport does not explicitly set encoding='utf-8'
+        # on subprocess pipes, so we configure it via environment variable
+        # (PYTHONUTF8=1) and console codepage (65001) instead.
+
+        # Create client based on transport configuration (stdio or http)
+        client = create_mcp_client(config)
+
+        # Build metadata with worktree fields for context isolation
+        metadata: dict[str, Any] = {
+            'project': worktree_info['project'],
+        }
+        # Add optional worktree fields if available (git repository detected)
+        if worktree_info.get('worktree_id') is not None:
+            metadata['worktree_id'] = worktree_info['worktree_id']
+        if worktree_info.get('worktree_path') is not None:
+            metadata['worktree_path'] = worktree_info['worktree_path']
+        if worktree_info.get('is_linked_worktree') is not None:
+            metadata['is_linked_worktree'] = worktree_info['is_linked_worktree']
+
+        log_always('Storing context in MCP server')
+        result = client.store_context(
+            thread_id=thread_id,
+            source='user',
+            text=prompt,
+            metadata=metadata,
+        )
+
+        # Check for chunked storage and surface complete chunk-storage info to the
+        # model via additionalContext (both success-chunk-ids AND any partial-failure
+        # summary). Operator-TUI stderr feedback for fail_mode is preserved as a
+        # deliberate companion channel that humans see in the TUI.
+        if result.get('chunked', False):
+            chunks_failed = result.get('chunks_failed', 0)
+            total_chunks = result.get('total_chunks', 0)
+            chunks_stored = result.get('chunks_stored', 0)
+            failed_numbers = result.get('failed_chunk_numbers', [])
+
+            # Derive chunk_ids by extracting context_id from each successful chunk's
+            # MCP response. The store_context_chunked method returns a list of per-chunk
+            # results: successful chunks have 'context_id' (per the context-server
+            # store_context tool contract); failed chunks have 'error' instead.
+            chunk_ids: list[int] = [
+                r['context_id']
+                for r in result.get('results', [])
+                if 'error' not in r and r.get('context_id') is not None
+            ]
+
+            partial_failure_summary = ''
+            if chunks_failed > 0:
+                # Get fail_mode from config
+                chunking_config = config.get('chunking', DEFAULT_CONFIG['chunking'])
+                fail_mode = chunking_config.get('fail_mode', 'warn')
+
+                partial_failure_summary = (
+                    f'Context storage partial failure: {chunks_failed}/{total_chunks} chunks failed '
+                    f'(chunks {failed_numbers}). {chunks_stored} chunks stored successfully.'
+                )
+
+                # Always log the failure (existing logging continues)
+                log_always(partial_failure_summary, level='WARN')
+                report_error('CHUNK_STORAGE_PARTIAL', partial_failure_summary)
+
+                # Operator-TUI feedback based on fail_mode (companion to model-visible
+                # additionalContext below; humans see [WARN]/[ERROR] in the TUI even
+                # when the model also sees the same info via additionalContext)
+                if fail_mode == 'warn':
+                    print(f'[WARN] {partial_failure_summary}', file=sys.stderr)
+                elif fail_mode == 'error':
+                    print(f'[ERROR] {partial_failure_summary}', file=sys.stderr)
+                # 'silent' mode: no stderr output, only logging
+
+                log_always(f'User feedback mode: {fail_mode}')
+            else:
+                log_always(f'SUCCESS: All {total_chunks} chunks stored successfully')
+
+            # Emit chunk-storage info to the model via additionalContext.
+            # Includes chunk_ids whenever any chunks succeeded AND the partial-failure
+            # summary whenever any chunks failed. Both cases coexist when partial.
+            if config.get('output_context_id', True) and (chunk_ids or partial_failure_summary):
+                if partial_failure_summary:
+                    chunk_message = (
+                        f'[Hook: user message stored to context-server (chunked).'
+                        f' context_ids={chunk_ids}. {partial_failure_summary}]'
+                    )
+                else:
+                    chunk_message = (
+                        f'[Hook: user message stored to context-server (chunked).'
+                        f' context_ids={chunk_ids}]'
+                    )
+                json_output = _load_json_output()
+                json_output.emit_additional_context('UserPromptSubmit', chunk_message)
+                log_always(f'Output chunk message via additionalContext: {chunk_message}')
+        else:
+            log_always('SUCCESS: Context stored successfully')
+
+            # Output context_id via additionalContext for orchestrator reference
+            if config.get('output_context_id', True):
+                context_id = result.get('context_id')
+                if context_id is not None:
+                    single_message = f'[Hook: user message stored to context-server. context_id={context_id}]'
+                    json_output = _load_json_output()
+                    json_output.emit_additional_context('UserPromptSubmit', single_message)
+                    log_always(f'Output context_id={context_id} via additionalContext')
 
     except Exception as e:
-        # Handle all errors silently but log them
-        error_msg = f'Unexpected error in main(): {type(e).__name__}: {e}'
+        # Log the error for debugging with full traceback, then suppress as designed
+        error_msg = f'{type(e).__name__}: {e}'
         full_traceback = traceback.format_exc()
-        log_always(error_msg, level='ERROR')
+
+        # Check for specific error patterns related to pipe buffer issues
+        error_str = str(e).lower()
+        error_context = ''
+
+        if 'broken pipe' in error_str:
+            error_context = ' (Message likely too large for subprocess pipe buffer)'
+        elif 'timeout' in error_str:
+            error_context = ' (Consider increasing timeout for large messages via CLAUDE_HOOK_MCP_TIMEOUT)'
+        elif '[errno 32]' in error_str or 'epipe' in error_str:
+            error_context = ' (Subprocess pipe broken - message size may exceed buffer capacity)'
+        elif 'buffer' in error_str:
+            error_context = ' (Buffer-related error - message may be too large)'
+
+        log_always(f'MCP store failure: {error_msg}{error_context}', level='ERROR')
         log_always(f'Traceback:\n{full_traceback}', level='ERROR')
-        sys.exit(0)
+        report_error('MCP_STORE_FAILURE', f'{error_msg}{error_context}\n{full_traceback}')
+        # Silent failure - don't break Claude Code workflow
+
+    # Always exit successfully
+    end_time = datetime.now(tz=UTC)
+    duration = (end_time - start_time).total_seconds()
+    log_always(f'Execution completed in {duration:.3f} seconds')
+    sys.exit(0)
 
 
 if __name__ == '__main__':
