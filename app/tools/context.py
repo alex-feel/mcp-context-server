@@ -43,6 +43,7 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
 from app.tools._shared import execute_store_in_transaction
@@ -238,8 +239,10 @@ async def store_context(
         context_id = ''
         was_updated = False
         embedding_stored = False
+        reconciled = False
+        attempt = 0
 
-        for attempt in range(max_retries + 1):
+        while True:
             try:
                 async with backend.begin_transaction() as txn:
                     context_id, was_updated, embedding_stored = await execute_store_in_transaction(
@@ -254,20 +257,43 @@ async def store_context(
                         validated_images=validated_images,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
+                        embedding_generation_enabled=get_embedding_provider() is not None,
                     )
 
                 # Transaction committed successfully -- break retry loop
                 break
+
+            except EmbeddingsReconcileRequiredError:
+                # The read-only pre-check skipped embedding generation expecting a
+                # deduplication UPDATE, but the transaction inserted a new entry
+                # (a concurrent interleaving write flipped the decision).
+                # Regenerate embeddings OUTSIDE the transaction (preserving the
+                # generation-first invariant) and retry once.
+                if reconciled:
+                    raise ToolError(
+                        'Failed to reconcile embeddings after deduplication divergence',
+                    ) from None
+                reconciled = True
+                logger.info(
+                    'Deduplication pre-check/transaction divergence in thread %s; '
+                    'regenerating skipped embeddings before retry',
+                    thread_id,
+                )
+                chunk_embeddings = await generate_embeddings_with_timeout(text)
+                chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
+                embedding_generated = chunk_embeddings is not None
+                continue
 
             except ToolError:
                 raise  # ToolError is a logical error, not connection error -- do not retry
             except Exception as e:
                 if is_connection_error(e) and attempt < max_retries:
                     delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    attempt += 1
                     logger.warning(
                         'Transaction failed with connection error, retrying in %.1fs '
                         '(attempt %d/%d): %s',
-                        delay, attempt + 1, max_retries, e,
+                        delay, attempt, max_retries, e,
                     )
                     await asyncio.sleep(delay)
                     continue

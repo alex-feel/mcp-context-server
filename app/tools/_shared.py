@@ -47,6 +47,32 @@ from app.summary.retry import compute_summary_total_timeout
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+class EmbeddingsReconcileRequiredError(Exception):
+    """Internal control-flow signal raised inside ``execute_store_in_transaction``.
+
+    The read-only deduplication pre-check (performed by the caller OUTSIDE the
+    transaction) skips embedding generation when a likely duplicate already has
+    embeddings, on the assumption that this store will deduplicate into an
+    UPDATE. If a concurrent same-thread write commits in the window between the
+    pre-check and the transaction, ``store_with_deduplication`` can instead
+    INSERT a brand-new entry. Committing that entry would leave a row with no
+    embeddings while embedding generation is enabled, silently violating the
+    generation-first guarantee.
+
+    Raising this exception rolls the open transaction back and instructs the
+    caller to regenerate embeddings OUTSIDE the transaction and retry the store.
+    It is deliberately NOT a ``ToolError`` (so the ``except ToolError`` fast-path
+    does not swallow it) and NOT a connection error (so it is not treated as a
+    transient retry). ``text_content`` lets the caller regenerate embeddings for
+    the exact entry that diverged.
+    """
+
+    def __init__(self, text_content: str) -> None:
+        super().__init__('Embedding reconciliation required after deduplication divergence')
+        self.text_content = text_content
+
+
 # ---------------------------------------------------------------------------
 # Concurrency limiters for embedding / summary / compression generation
 # ---------------------------------------------------------------------------
@@ -665,6 +691,7 @@ async def execute_store_in_transaction(
     validated_images: list[dict[str, str]],
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
+    embedding_generation_enabled: bool = False,
 ) -> tuple[str, bool, bool]:
     """Execute all store operations within an existing transaction.
 
@@ -688,6 +715,14 @@ async def execute_store_in_transaction(
         validated_images: Validated image list (may be empty).
         chunk_embeddings: Generated embeddings or None.
         embedding_model: Model name for embedding storage.
+        embedding_generation_enabled: True when an embedding provider is
+            configured. When True and this store INSERTs a new entry
+            (was_updated False) while chunk_embeddings is None -- which only
+            happens when the caller's read-only pre-check skipped generation
+            expecting a deduplication UPDATE -- the transaction is aborted via
+            EmbeddingsReconcileRequiredError so the caller can regenerate
+            embeddings outside the transaction and retry. Defaults to False so
+            callers unaware of the pre-check optimization keep prior behavior.
 
     Returns:
         Tuple of (context_id, was_updated, embedding_stored):
@@ -697,6 +732,9 @@ async def execute_store_in_transaction(
 
     Raises:
         ToolError: If store_with_deduplication fails (returns falsy context_id).
+        EmbeddingsReconcileRequiredError: If the store inserted a new entry while
+            the caller's pre-check had skipped embedding generation; signals the
+            caller to regenerate embeddings outside the transaction and retry.
     """
     # Store context entry with deduplication
     context_id, was_updated = await repos.context.store_with_deduplication(
@@ -711,6 +749,17 @@ async def execute_store_in_transaction(
 
     if not context_id:
         raise ToolError('Failed to store context')
+
+    # Generation-first reconciliation: the caller's read-only pre-check skips
+    # embedding generation when a likely duplicate already has embeddings,
+    # expecting this store to deduplicate into an UPDATE. If a concurrent
+    # same-thread write committed in the meantime, store_with_deduplication can
+    # instead INSERT a brand-new entry (was_updated False). Committing now would
+    # persist a row with no embeddings while generation is enabled, violating the
+    # generation-first guarantee. Abort so the caller regenerates embeddings
+    # OUTSIDE the transaction and retries.
+    if embedding_generation_enabled and chunk_embeddings is None and not was_updated:
+        raise EmbeddingsReconcileRequiredError(text_content)
 
     # Heartbeat: keep connection alive between sequential operations
     await transaction_heartbeat(txn)

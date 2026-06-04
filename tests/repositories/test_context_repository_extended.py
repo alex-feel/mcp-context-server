@@ -8,6 +8,7 @@ import json
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -999,6 +1000,38 @@ class TestContextRepositoryBatchDelete:
         """Batch delete with empty list returns 0."""
         deleted_count, _ = await context_repo.delete_contexts_batch(context_ids=[])
         assert deleted_count == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_contexts_batch_criteria_not_duplicated_on_retry(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """criteria_used must not accumulate duplicates if the write closure is retried.
+
+        criteria_used is built per closure invocation, so a transparent write
+        retry (which re-invokes the same closure) must not append the same
+        criteria strings twice into the returned list.
+        """
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='criteria-retry-thread',
+            source='user',
+            content_type='text',
+            text_content='Entry for criteria retry',
+        )
+
+        backend = context_repo.backend
+        original_execute_write = backend.execute_write
+
+        async def double_execute_write(fn, *args, **kwargs):
+            # Simulate a transparent retry: invoke the same closure twice.
+            first = await original_execute_write(fn, *args, **kwargs)
+            await original_execute_write(fn, *args, **kwargs)
+            return first
+
+        with patch.object(backend, 'execute_write', side_effect=double_execute_write):
+            _, criteria = await context_repo.delete_contexts_batch(context_ids=[ctx_id])
+
+        # Exactly one criteria entry despite the closure running twice.
+        assert criteria == ['context_ids: 1 IDs']
 
 
 class TestComputeContentHash:

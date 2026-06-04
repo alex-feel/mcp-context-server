@@ -396,7 +396,7 @@ class ScoresDict(TypedDict, total=False):
     Score Polarity Reference:
     - fts_score: HIGHER = better match (BM25/ts_rank relevance)
     - fts_rank: LOWER = better (1 = best)
-    - semantic_distance: LOWER = better (L2 Euclidean)
+    - semantic_distance: LOWER = better; L2 for fp32/mse, negated inner product for the ip compression variant
     - semantic_rank: LOWER = better (1 = best)
     - rrf: HIGHER = better (combined RRF score)
     - rerank_score: HIGHER = better (cross-encoder relevance, 0.0-1.0)
@@ -407,7 +407,7 @@ class ScoresDict(TypedDict, total=False):
     fts_rank: int | None  # Rank in FTS results (1-based, LOWER = better)
 
     # Semantic scores
-    semantic_distance: float | None  # L2 Euclidean distance (LOWER = better)
+    semantic_distance: float | None  # Lower = better; L2 for fp32/mse, negated inner product for ip variant
     semantic_rank: int | None  # Rank in semantic results (1-based, LOWER = better)
 
     # RRF score (hybrid only)
@@ -462,7 +462,7 @@ class SemanticSearchResultDict(TypedDict, total=False):
     """Type definition for semantic search result entry.
 
     The `scores` object contains:
-    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - semantic_distance: LOWER = more similar; L2 Euclidean for fp32/mse, negated inner product (~ -1..0) for the ip variant
     - semantic_rank: Always null for standalone semantic (no ranking)
     - rerank_score: Present when reranking is enabled (HIGHER = better)
     """
@@ -529,7 +529,7 @@ class HybridScoresDict(TypedDict, total=False):
     fts_rank: int | None  # Rank in FTS results (1-based), None if not in FTS results
     semantic_rank: int | None  # Rank in semantic results (1-based), None if not in semantic results
     fts_score: float | None  # Original FTS score (BM25/ts_rank)
-    semantic_distance: float | None  # Original semantic distance (L2)
+    semantic_distance: float | None  # Lower = better; L2 for fp32/mse, negated inner product for ip variant
     rerank_score: float | None  # Cross-encoder reranking score (HIGHER = better, 0.0-1.0)
 
 

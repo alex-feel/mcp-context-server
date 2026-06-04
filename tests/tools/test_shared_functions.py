@@ -19,6 +19,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from app.repositories.embedding_repository import ChunkEmbedding
+from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import build_store_response_message
@@ -524,6 +525,83 @@ class TestExecuteStoreInTransaction:
                 tags=None, validated_images=[],
                 chunk_embeddings=None, embedding_model='m',
             )
+
+    @pytest.mark.asyncio
+    async def test_store_raises_reconcile_when_insert_skipped_embeddings(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """INSERT with skipped embeddings + generation enabled raises reconcile signal.
+
+        Models the dedup pre-check / transaction divergence: the caller skipped
+        embedding generation expecting an UPDATE, but store_with_deduplication
+        inserted a new entry. The transaction must abort so the caller can
+        regenerate embeddings outside the transaction and retry.
+        """
+        # Default fixture returns ('42', False) -- a genuine INSERT.
+        with pytest.raises(EmbeddingsReconcileRequiredError) as exc_info:
+            await execute_store_in_transaction(
+                mock_repos, mock_txn,
+                thread_id='t', source='user', content_type='text',
+                text_content='reconcile me', metadata_str=None, summary=None,
+                tags=None, validated_images=[],
+                chunk_embeddings=None, embedding_model='m',
+                embedding_generation_enabled=True,
+            )
+        assert exc_info.value.text_content == 'reconcile me'
+        # Transaction aborted before any embedding write.
+        mock_repos.embeddings.store_chunked.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_store_no_reconcile_on_dedup_update(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """A dedup UPDATE with skipped embeddings does NOT trigger reconciliation."""
+        mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
+        _, was_updated, embedding_stored = await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[],
+            chunk_embeddings=None, embedding_model='m',
+            embedding_generation_enabled=True,
+        )
+        assert was_updated is True
+        assert embedding_stored is False
+
+    @pytest.mark.asyncio
+    async def test_store_no_reconcile_when_embeddings_present(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """A new INSERT that already carries embeddings does NOT reconcile."""
+        chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
+        _, was_updated, embedding_stored = await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[],
+            chunk_embeddings=chunk_embeddings, embedding_model='m',
+            embedding_generation_enabled=True,
+        )
+        assert was_updated is False
+        assert embedding_stored is True
+        mock_repos.embeddings.store_chunked.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_store_no_reconcile_when_generation_disabled(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """With generation disabled (default), a new INSERT with no embeddings is allowed."""
+        _, was_updated, embedding_stored = await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[],
+            chunk_embeddings=None, embedding_model='m',
+            embedding_generation_enabled=False,
+        )
+        assert was_updated is False
+        assert embedding_stored is False
+        mock_repos.embeddings.store_chunked.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_store_with_images_new_entry(

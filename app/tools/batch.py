@@ -43,6 +43,7 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import execute_store_in_transaction
@@ -373,10 +374,19 @@ async def store_context_batch(
         if atomic:
             # ATOMIC MODE: All entries in a single transaction with retry
             max_retries = 2
+            attempt = 0
+            # A pre-check-skipped embedding can diverge once per distinct entry,
+            # so bound reconciliation passes by the number of entries.
+            reconcile_passes = 0
+            max_reconcile_passes = len(validated_entries_filtered)
 
-            for attempt in range(max_retries + 1):
+            while True:
                 try:
                     results_attempt: list[BulkStoreResultItemDict] = []
+                    # Count stored embeddings per attempt; only fold into the
+                    # outer total once the transaction commits, so connection
+                    # retries and reconciliation passes never double-count.
+                    stored_count_attempt = 0
 
                     async with backend.begin_transaction() as txn:
                         for idx, (ve_idx, entry) in enumerate(validated_entries_filtered):
@@ -399,11 +409,12 @@ async def store_context_batch(
                                     validated_images=entry.get('images', []),
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
+                                    embedding_generation_enabled=embedding_provider is not None,
                                 )
                             )
 
                             if embedding_stored:
-                                embeddings_stored_count += 1
+                                stored_count_attempt += 1
 
                             results_attempt.append(BulkStoreResultItemDict(
                                 index=original_idx,
@@ -416,17 +427,41 @@ async def store_context_batch(
 
                     # Transaction committed successfully
                     results.extend(results_attempt)
+                    embeddings_stored_count += stored_count_attempt
                     break
+
+                except EmbeddingsReconcileRequiredError as reconcile:
+                    # The read-only pre-check skipped embedding generation for a
+                    # likely duplicate, but the transaction inserted a new entry.
+                    # Regenerate OUTSIDE the transaction (generation-first) for the
+                    # diverging text -- and any other filtered entry sharing that
+                    # exact text whose embeddings were also skipped -- then re-run
+                    # the whole atomic transaction.
+                    if reconcile_passes >= max_reconcile_passes:
+                        raise ToolError(
+                            'Failed to reconcile embeddings after deduplication '
+                            'divergence (atomic batch store)',
+                        ) from None
+                    reconcile_passes += 1
+                    regenerated = await generate_compression_with_timeout(
+                        await generate_embeddings_with_timeout(reconcile.text_content),
+                    )
+                    for r_ve_idx, r_entry in validated_entries_filtered:
+                        if (entry_embeddings.get(r_ve_idx) is None
+                                and r_entry['text_content'] == reconcile.text_content):
+                            entry_embeddings[r_ve_idx] = regenerated
+                    continue
 
                 except ToolError:
                     raise  # Logical error -- do not retry
                 except Exception as e:
                     if is_connection_error(e) and attempt < max_retries:
                         delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                        attempt += 1
                         logger.warning(
                             'Atomic batch store transaction failed, retrying in %.1fs '
                             '(attempt %d/%d): %s',
-                            delay, attempt + 1, max_retries, e,
+                            delay, attempt, max_retries, e,
                         )
                         await asyncio.sleep(delay)
                         continue
@@ -436,8 +471,10 @@ async def store_context_batch(
             for ve_idx, entry in validated_entries_filtered:
                 original_idx = entry['index']
                 max_retries = 2
+                attempt = 0
+                reconciled = False
 
-                for attempt in range(max_retries + 1):
+                while True:
                     try:
                         async with backend.begin_transaction() as txn:
                             context_id, was_updated, embedding_stored = (
@@ -453,6 +490,7 @@ async def store_context_batch(
                                     validated_images=entry.get('images', []),
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
+                                    embedding_generation_enabled=embedding_provider is not None,
                                 )
                             )
 
@@ -468,6 +506,29 @@ async def store_context_batch(
                             error=None,
                         ))
                         break  # Success -- exit retry loop
+
+                    except EmbeddingsReconcileRequiredError as reconcile:
+                        # Pre-check skipped embeddings for a likely duplicate, but
+                        # this store inserted a new entry. Regenerate OUTSIDE the
+                        # transaction (generation-first) and retry this entry once.
+                        if reconciled:
+                            logger.error(
+                                'Failed to reconcile embeddings for entry at index %d '
+                                'after deduplication divergence', original_idx,
+                            )
+                            results.append(BulkStoreResultItemDict(
+                                index=original_idx,
+                                success=False,
+                                context_id=None,
+                                error='Failed to reconcile embeddings after deduplication divergence',
+                            ))
+                            break
+                        reconciled = True
+                        entry_embeddings[ve_idx] = await generate_compression_with_timeout(
+                            await generate_embeddings_with_timeout(reconcile.text_content),
+                        )
+                        continue
+
                     except ToolError as e:
                         # Logical error -- do not retry, record as failure
                         logger.error(f'Failed to store entry at index {original_idx}: {e}')
@@ -481,10 +542,11 @@ async def store_context_batch(
                     except Exception as e:
                         if is_connection_error(e) and attempt < max_retries:
                             delay = 0.5 * (2 ** attempt)
+                            attempt += 1
                             logger.warning(
                                 'Non-atomic batch store entry %d failed with connection error, '
                                 'retrying in %.1fs (attempt %d/%d): %s',
-                                original_idx, delay, attempt + 1, max_retries, e,
+                                original_idx, delay, attempt, max_retries, e,
                             )
                             await asyncio.sleep(delay)
                             continue
@@ -870,10 +932,14 @@ async def update_context_batch(
                     updated_fields=None,
                     error=error,
                 ))
-            failed_ctx_ids = {ctx_id for _, ctx_id, _ in generation_errors}
+            # Filter by ORIGINAL INDEX, not by context_id: two updates may target
+            # the same context_id in one non-atomic batch, and filtering by a
+            # context_id set would also drop the sibling that did NOT fail
+            # (silently losing a successful update). Mirrors store_context_batch.
+            failed_indices = {original_idx for original_idx, _, _ in generation_errors}
             validated_updates_final = [
                 (vu_idx, u) for vu_idx, u in validated_updates_filtered
-                if u['context_id'] not in failed_ctx_ids
+                if u['index'] not in failed_indices
             ]
         else:
             validated_updates_final = validated_updates_filtered

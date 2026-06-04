@@ -1427,14 +1427,16 @@ class ContextRepository(BaseRepository):
         Returns:
             Tuple of (deleted_count, list_of_criteria_used)
         """
-        criteria_used: list[str] = []
-
         if self.backend.backend_type == 'sqlite':
 
             def _delete_batch_sqlite(conn: sqlite3.Connection) -> tuple[int, list[str]]:
                 cursor = conn.cursor()
                 conditions: list[str] = []
                 params: list[Any] = []
+                # Build per-invocation so transparent write-retries (e.g. on a
+                # transient "database is locked" error) do not accumulate
+                # duplicate criteria strings across attempts.
+                criteria_used: list[str] = []
 
                 if context_ids:
                     placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
@@ -1479,6 +1481,9 @@ class ContextRepository(BaseRepository):
         async def _delete_batch_postgresql(conn: 'asyncpg.Connection') -> tuple[int, list[str]]:
             conditions: list[str] = []
             params: list[Any] = []
+            # Build per-invocation (see the SQLite closure) so retried writes do
+            # not accumulate duplicate criteria strings across attempts.
+            criteria_used: list[str] = []
 
             if context_ids:
                 placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])

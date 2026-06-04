@@ -607,11 +607,13 @@ async def semantic_search_context(
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
     The `scores` object contains:
-    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - semantic_distance: LOWER = more similar. The metric depends on embedding storage:
+      Euclidean L2 (>= 0) for uncompressed/mse storage, or a negated inner product
+      (~ -1..0 for normalized embeddings, where more negative = more similar) when the
+      default ip compression variant is active. Compare values within one result set
+      rather than against fixed thresholds, since the range differs by storage variant.
     - semantic_rank: Always null for standalone semantic search
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
-
-    Typical distance interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
 
     Returns:
         Dict with query (str), results (list with id, thread_id, source,
@@ -1113,7 +1115,7 @@ async def hybrid_search_context(
     - fts_rank: Rank in full-text results (LOWER = better, 1 = best)
     - semantic_rank: Rank in semantic results (LOWER = better, 1 = best)
     - fts_score: BM25/ts_rank relevance (HIGHER = better match)
-    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - semantic_distance: LOWER = more similar (L2 for fp32/mse storage, negated inner product for the ip compression variant)
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
     When explain_query=True, the `stats` field contains:

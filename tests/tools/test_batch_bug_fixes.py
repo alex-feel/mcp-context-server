@@ -777,3 +777,84 @@ class TestBatchDeleteEmbeddingCleanup:
                 source=None,
                 older_than_days=30,
             )
+
+
+# Non-atomic update sibling-drop fix (filter by index, not by context_id)
+@pytest.mark.usefixtures('initialized_server')
+class TestUpdateBatchSiblingNotDropped:
+    """A sibling update sharing a context_id with a failed one must NOT be dropped."""
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_failed_generation_keeps_sibling_same_context_id(self):
+        """Two non-atomic updates target the same context_id; only the failing one is dropped.
+
+        index 0 (text update) fails embedding generation; index 1 (metadata-only,
+        no generation) shares the same context_id. The non-atomic filter must drop
+        only index 0 by ORIGINAL INDEX, leaving index 1 to be applied. The previous
+        context_id-set filter dropped both and silently lost index 1.
+        """
+        from app.tools.batch import store_context_batch
+        from app.tools.batch import update_context_batch
+
+        store_result = await store_context_batch(
+            entries=[{
+                'thread_id': 'sibling-drop-thread',
+                'source': 'user',
+                'text': 'A' * 600,
+            }],
+        )
+        cid = store_result['results'][0]['context_id']
+        assert cid is not None
+
+        _, mock_begin_transaction = _make_mock_txn()
+
+        async def emb_side_effect(text):
+            if 'FAILING' in text:
+                raise ToolError('boom: embedding generation failed')
+            return [('chunk-0', [0.1, 0.2, 0.3])]
+
+        with (
+            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch(
+                'app.tools.batch.generate_embeddings_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=emb_side_effect,
+            ),
+            patch(
+                'app.tools.batch.generate_compression_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=lambda emb: emb,
+            ),
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.get_content_type = AsyncMock(return_value='text')
+            # index 1 is a metadata-only update -> patch_metadata applies it.
+            mock_repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
+            mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
+
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+
+            result = await update_context_batch(
+                updates=[
+                    {'context_id': cid, 'text': 'FAILING update text content'},
+                    {'context_id': cid, 'metadata_patch': {'reviewed': True}},
+                ],
+                atomic=False,
+            )
+
+        by_index = {r['index']: r for r in result['results']}
+        # Failing text update is reported as failed...
+        assert by_index[0]['success'] is False
+        assert by_index[0]['error'] is not None
+        # ...but its same-context_id sibling is NOT dropped -- it is applied.
+        assert by_index[1]['success'] is True
+        assert result['total'] == 2
+        assert result['succeeded'] == 1
+        assert result['failed'] == 1

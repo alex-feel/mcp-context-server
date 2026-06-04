@@ -783,7 +783,7 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
 ```
 
 **Scores Object**:
-- `semantic_distance`: L2 Euclidean distance (LOWER = more similar)
+- `semantic_distance`: LOWER = more similar. The underlying metric depends on embedding storage: Euclidean L2 (>= 0) for uncompressed/`mse` storage, or a negated inner product (~ -1..0 for normalized embeddings, where more negative = more similar) when the default `ip` compression variant is active. Compare values within a single result set rather than against fixed thresholds, since the numeric range differs by storage variant.
 - `semantic_rank`: Always null for standalone semantic search (no ranking)
 - `rerank_score`: Cross-encoder relevance score (HIGHER = better, 0.0-1.0), present when reranking is enabled
 
