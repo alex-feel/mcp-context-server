@@ -97,7 +97,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             'Do NOT preemptively load all context -- retrieve user messages, then agent reports as needed',
             'Focus on the most recent entries first',
         ],
-        'emphasis': 'This check is OPTIONAL but recommended for session continuity.',
+            'emphasis': (
+            'This recovery is MANDATORY for session continuity after any compaction or resume: '
+            'before continuing work, re-read the original user requirements and your own active '
+            'plan or work-state by its preserved context_id.'
+        ),
         'recovery_after_compaction': {
             'header': 'Recovery After Compaction',
             'steps': [
@@ -110,12 +114,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
                     'Use get_context_by_ids to read full content of relevant user messages AND agent reports '
                     '(user messages first)'
                 ),
+                (
+                    'Re-read YOUR OWN active plan or work-state by its preserved context_id (get_context_by_ids) -- '
+                    'if you are doing the work yourself, you cannot resume it after compaction without re-reading '
+                    'the plan you authored'
+                ),
                 'Look for entries with status: pending to identify interrupted work',
                 (
                     'Reconcile any orchestrator task description against retrieved user messages; '
                     'user messages win on conflict'
                 ),
-                'Continue from last confirmed state, verified against user messages',
+                (
+                    'Continue from last confirmed state, verified against the original user requirements '
+                    'and your re-read active plan'
+                ),
             ],
         },
     },

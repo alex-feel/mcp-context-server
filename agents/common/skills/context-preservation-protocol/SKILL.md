@@ -10,7 +10,7 @@ description: |
 
 # Context Preservation Best Practices
 
-Storing work documentation and context before stopping is recommended to ensure continuity between sessions. The patterns in this skill help you structure, store, and preserve your work results in the context server.
+Storing work documentation and context before stopping is MANDATORY whenever you have context-server store capability and produced substantive work this session: the durable record is what survives a context reset or compaction, so an artifact left only in an ephemeral channel is lost. The patterns in this skill help you structure, store, and preserve your work results in the context server.
 
 </overview>
 
@@ -367,7 +367,7 @@ Both fields serve complementary purposes: `git_commits` provides typed, validate
 
 # Preservation Strategy
 
-Complete the following before stopping:
+When you have context-server store capability and produced substantive work this session, you MUST complete the following before stopping; if you already stored this report earlier in the same session and it is unchanged, do not store it again. Complete the following before stopping:
 
 1. **Create a comprehensive Markdown report** of your work results:
 
@@ -421,7 +421,7 @@ Complete the following before stopping:
    - **Example:** `"Implementation complete. 3 features implemented. Report ID: 2510"`
    - The caller can use this ID to retrieve the full report via `get_context_by_ids([context_id])`
 
-This ensures your work is documented, preserved, and **retrievable by other agents** who need to access your detailed findings.
+This ensures your work is documented, preserved, and **retrievable by other agents** who need to access your detailed findings. A structured-output return value or any other in-window reply to your caller is SEPARATE from this durable record and does NOT substitute for it; the ephemeral reply is lost on compaction, the stored entry is not. A dispatch instruction that forbids writing report files to disk (for example a swarm or deep-research "do not write files to disk" contract) governs on-disk files only and does NOT relieve you of storing the context-server entry.
 
 </strategy>
 
@@ -477,7 +477,7 @@ When completing work that another agent will continue:
 
 # Compliance Checklist
 
-Before returning to the calling party, consider verifying the following:
+Before returning to the calling party, verify the following whenever you had store capability and produced substantive work:
 
 - [ ] **Report created**: Comprehensive Markdown report documenting your work
 - [ ] **Report saved**: Called `store_context` with thread_id, source="agent", text, metadata, and tags
@@ -488,7 +488,7 @@ Before returning to the calling party, consider verifying the following:
 - [ ] **Storage verified**: Confirmed `store_context` call succeeded before returning
 - [ ] **Report ID returned**: Included `context_id` from `store_context` response in status message
 
-Completing this checklist is a best practice for reliable context preservation.
+Completing this checklist is mandatory for reliable context preservation whenever you had store capability and produced substantive work.
 
 </compliance_checklist>
 
@@ -525,7 +525,7 @@ Completing this checklist is a best practice for reliable context preservation.
 
 ## Storage Failure Protocol
 
-**Context server storage is recommended. Failure to store means work results may be lost.**
+**Context server storage is mandatory for substantive work when you have store capability. Failure to store means work results may be lost.**
 
 If context storage fails (network error, server unavailable, timeout):
 

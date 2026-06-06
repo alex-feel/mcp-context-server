@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 """
-Subagent Report Saver Hook for Claude Code.
+Context Preservation Stop Hook for Claude Code.
 
-This hook intercepts SubagentStop events and instructs the agent to save a
-comprehensive work report to the context server before stopping. This ensures
-all subagent work is properly documented and preserved for future reference.
+This hook intercepts both Stop (main agent finished responding) and SubagentStop
+(spawned subagent finished) events and instructs the principal to store a work
+report to the context server before stopping. This ensures work performed by the
+main agent and by every subagent is durably preserved for future reference and
+survives context compaction.
+
+The store directive is capability-gated and artifact-conditioned: the principal
+stores a context-server report only if it has context-server store tools (such
+as store_context) AND it produced a work artifact or finding this turn. The
+directive also clarifies that the StructuredOutput value returned to the caller
+is ephemeral and does NOT substitute for the durable context-server record, and
+that a dispatch instruction forbidding report files on disk does NOT relieve a
+capable principal of storing a context-server entry. The directive is ASCII-only
+so it survives stdout capture intact.
 
 The hook blocks the stop action via JSON output (top-level decision: "block")
-with the instruction text delivered as the `reason` field, so Claude reads the
-instruction as guidance for its next turn. A defense-in-depth ImportError
-fallback writes the same instruction to stderr and exits 2 if the shared JSON
-helper module cannot be loaded. The hook exits 0 on the modern path so Claude
-Code processes the JSON.
+with the directive text delivered as the `reason` field, so Claude reads it as
+guidance for its next turn. A defense-in-depth ImportError fallback writes the
+same directive to stderr and exits 2 if the shared JSON helper module cannot be
+loaded. The hook exits 0 on the modern path so Claude Code processes the JSON.
 
-Trigger: SubagentStop
+Trigger: Stop and SubagentStop
 Exit Codes:
   - 0: Modern path (JSON decision: "block" emitted) or silent pass-through
   - 2: Defense-in-depth fallback when hook_json_output.py cannot be imported
@@ -35,18 +45,35 @@ from types import ModuleType
 
 def format_instruction_message() -> str:
     """
-    Format the instruction message for the agent.
+    Format the capability-gated context-preservation directive.
+
+    The directive applies to both the main agent (Stop) and a spawned subagent
+    (SubagentStop). It is ASCII-only so it survives stdout capture, and it is
+    self-contained so a reader needs no external context to act on it.
 
     Returns:
-        Formatted instruction message for stderr
+        The directive text delivered as the `reason` field of the decision block.
     """
-    return '''FRIENDLY REMINDER: Work documentation required before stopping.
-
-If you have already stored your work report, do NOT save it again — just stop.
-
-Otherwise, follow your instructions/skills on context preservation.
-
-If you don't have any instructions/skills on context preservation, do NOT save any report — just stop.'''
+    return (
+        'CONTEXT PRESERVATION REQUIRED BEFORE STOPPING.\n'
+        '\n'
+        'If you have context-server store tools (for example store_context) AND you '
+        'produced any work artifact or finding this turn, you MUST store a concise '
+        'context-server report before you stop.\n'
+        '\n'
+        'Rules:\n'
+        '- Idempotency: if you have already stored your report this turn, do NOT store '
+        'it again -- just stop.\n'
+        '- Channel separation: a StructuredOutput or return value to your caller is '
+        'ephemeral and is lost on compaction. It does NOT substitute for the durable '
+        'context-server record. Store the context-server report in addition to '
+        'returning your result.\n'
+        '- Dispatch contract: an instruction telling you not to write report, summary, '
+        'or findings files to disk does NOT mean "skip the context-server entry". '
+        'Storing a context-server entry is not writing a file to disk; do it anyway if '
+        'you are capable.\n'
+        '- If you genuinely have no context-server store tools, just stop.'
+    )
 
 
 def _load_json_output() -> ModuleType:
@@ -66,10 +93,13 @@ def main() -> None:
         # Read input from stdin
         input_data = json.load(sys.stdin)
 
-        # Extract and validate hook event name
+        # Extract and validate hook event name. The same directive applies to
+        # the main agent (Stop) and a spawned subagent (SubagentStop); the
+        # harness auto-converts a Stop-registered hook to SubagentStop in
+        # subagent context, so a membership test covers both principals.
         hook_event_name = input_data.get('hook_event_name', '')
-        if hook_event_name != 'SubagentStop':
-            # Not a SubagentStop event, pass through silently
+        if hook_event_name not in ('Stop', 'SubagentStop'):
+            # Not a stop-time event, pass through silently
             sys.exit(0)
 
         # Check if stop_hook_active to prevent infinite loops
