@@ -5,24 +5,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Reference
 
 ```bash
-# IMPORTANT: All dev tasks (code, test, type-check, pre-commit) need the full
-# sync below. Bare `uv sync` lacks optional extras and causes type-checker errors.
+# IMPORTANT: dev tasks need the full sync below; bare `uv sync` lacks optional
+# extras and causes type-checker errors.
 
 # Build and run
-uv sync --all-extras --all-groups          # Install ALL dependencies (REQUIRED for development)
-uv run mcp-context-server                  # Start server (aliases: mcp-context, python -m app.server)
-uvx mcp-context-server                     # Run from PyPI
+uv sync --all-extras --all-groups   # install ALL deps (REQUIRED for dev)
+uv run mcp-context-server           # start server (aliases: mcp-context, python -m app.server)
+uvx mcp-context-server              # run from PyPI
 
 # Testing
-uv run pytest                              # Run all tests
-uv run pytest tests/server/test_server.py -v      # Run specific test file
-uv run pytest tests/server/test_server.py::TestStoreContext::test_store_text_context -v  # Single test
-uv run pytest --cov=app --cov-report=html  # Run with coverage
-uv run pytest -m "not integration"         # Skip slow tests for quick feedback
+uv run pytest                       # all tests
+uv run pytest tests/server/test_server.py -v   # one file
+uv run pytest tests/server/test_server.py::TestStoreContext::test_store_text_context -v   # one test
+uv run pytest --cov=app --cov-report=html   # coverage
+uv run pytest -m "not integration"  # skip slow tests
 
 # Code quality
-uv run pre-commit run --all-files          # Lint + type check (Ruff, mypy, pyright)
-uv run ruff check --fix .                  # Ruff linter with autofix
+uv run pre-commit run --all-files   # lint + type check (Ruff, mypy, pyright)
+uv run ruff check --fix .           # Ruff autofix
 ```
 
 Note: Integration test infrastructure currently exists only for SQLite. PostgreSQL integration tests are planned for the future.
@@ -31,66 +31,59 @@ Note: Integration test infrastructure currently exists only for SQLite. PostgreS
 
 ### MCP Protocol Integration
 
-[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server with JSON-RPC 2.0, automatic tool discovery, Pydantic validation, multi-transport (default: stdio, HTTP, streamable-http, SSE), and tool annotations (readOnlyHint, destructiveHint, idempotentHint). Compatible with Claude Desktop, Claude Code, LangGraph, and any MCP client.
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) server with JSON-RPC 2.0, automatic tool discovery, Pydantic validation, multi-transport (default stdio; also HTTP, streamable-http, SSE), and tool annotations (readOnlyHint, destructiveHint, idempotentHint). Compatible with Claude Desktop, Claude Code, LangGraph, and any MCP client.
 
 ### MCP Server Architecture
 
 FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
-   - Entry point with FastMCP instance, lifespan management, and main() function
-   - Tools in `app/tools/` by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic descriptions), `_shared.py` (internal infra: per-entry processing, image validation, generation-with-timeout, transaction execution, response builders — used by `context.py`/`batch.py`, not re-exported via `__init__.py`)
-   - Dynamic tool registration via `register_tool()` from `app/tools/__init__.py`
-   - Provides `/health` endpoint for container orchestration (HTTP transport only)
-   - Global state and initialization in `app/startup/` package: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`
-   - **Temporary Patches** (`app/patches/`): Monkey-patches for upstream MCP SDK bugs applied at startup.
-   - **Middleware** (`app/middleware/`): Schema-aware `JsonStringDeserializerMiddleware` for MCP client compatibility (FastMCP 3.1.x Middleware API). Registered via `mcp.add_middleware()` in lifespan() after all tool registrations. (Both Patches and Middleware are documented in "Known Upstream Bugs and Temporary Patches" with upstream tracking and removal instructions.)
+   - Entry point: FastMCP instance, lifespan, `main()`, `/health` endpoint (HTTP transport only); tool registration via `register_tool()` from `app/tools/__init__.py`.
+   - Tools in `app/tools/` by domain: `context.py` (CRUD), `search.py` (4 search tools), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic descriptions), `_shared.py` (internal infra: per-entry processing, image validation, generation-with-timeout, transaction execution, response builders — used by `context.py`/`batch.py`, not re-exported via `__init__.py`).
+   - Global state/init in `app/startup/`: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`.
+   - **Temporary Patches** (`app/patches/`): startup monkey-patches for upstream MCP SDK bugs. **Middleware** (`app/middleware/`): schema-aware `JsonStringDeserializerMiddleware` (FastMCP 3.1.x Middleware API), registered via `mcp.add_middleware()` in lifespan() after all tool registrations. (Both detailed under "Known Upstream Bugs and Temporary Patches".)
 
-2. **Authentication Layer** (`app/auth/simple_token.py`): Bearer token auth for HTTP transport with constant-time comparison. Configured via `MCP_AUTH_PROVIDER` and `MCP_AUTH_TOKEN`.
+2. **Authentication Layer** (`app/auth/simple_token.py`): Bearer token auth for HTTP transport, constant-time comparison. Via `MCP_AUTH_PROVIDER` + `MCP_AUTH_TOKEN`.
 
 3. **Storage Backend Layer** (`app/backends/`):
-   - **StorageBackend / TransactionContext Protocols** (`base.py`): Database-agnostic interface (8 methods incl. `begin_transaction()`); `TransactionContext` provides `connection`/`backend_type` for multi-operation atomic transactions
-   - **SQLiteBackend**: Zero-config, connection pooling, write queue, circuit breaker, single-user
-   - **PostgreSQLBackend**: Async via asyncpg, connection pooling, MVCC, JSONB/GIN indexes, pgvector, Pgpool-II auto-detection (disables prepared statements)
-   - **Backend Factory** (`factory.py`): Creates backend based on `STORAGE_BACKEND` env var
+   - **StorageBackend / TransactionContext Protocols** (`base.py`): database-agnostic interface (8 methods incl. `begin_transaction()`); `TransactionContext` exposes `connection`/`backend_type` for atomic multi-op transactions.
+   - **SQLiteBackend**: zero-config, connection pooling, write queue, circuit breaker, single-user.
+   - **PostgreSQLBackend**: async via asyncpg, connection pooling, MVCC, JSONB/GIN indexes, pgvector, Pgpool-II auto-detection (disables prepared statements).
+   - **Backend Factory** (`factory.py`): creates backend from `STORAGE_BACKEND`.
 
-4. **Repository Pattern** (`app/repositories/`):
-   - **RepositoryContainer** (`__init__.py`): DI container for all repositories
-   - Repositories: Context (CRUD, search, deduplication), Tag (normalization, many-to-many), Image (binary attachments), Statistics, Embedding (vector storage/search), Fts (FTS5/tsvector)
-   - All repositories use `StorageBackend` protocol — database-agnostic
-   - `BaseRepository` provides `_placeholder()`, `_placeholders()`, `_json_extract()` helpers
+4. **Repository Pattern** (`app/repositories/`): **RepositoryContainer** (`__init__.py`) = DI container. Repositories: Context (CRUD, search, deduplication), Tag (normalization, many-to-many), Image (binary attachments), Statistics, Embedding (vector storage/search), Fts (FTS5/tsvector). All use the `StorageBackend` protocol (database-agnostic); `BaseRepository` provides `_placeholder()`, `_placeholders()`, `_json_extract()`.
 
 5. **Data Models** (`app/models.py`): Pydantic V2 with `StrEnum` for Python 3.12+. Main models: `ContextEntry`, `ImageAttachment`, `StoreContextRequest`. Base64 image encoding with configurable size limits.
 
-6. **Provider Layers** — All use `<Name>Provider` Protocol + factory with dynamic imports (`PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts):
-   - **Embeddings** (`app/embeddings/`): Ollama, OpenAI, Azure, HuggingFace, Voyage. Retry via tenacity (`retry.py`). Context limits (`context_limits.py`). LangSmith tracing (`tracing.py`).
+6. **Provider Layers** — all use `<Name>Provider` Protocol + factory with dynamic imports (`PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts):
+   - **Embeddings** (`app/embeddings/`): Ollama, OpenAI, Azure, HuggingFace, Voyage. tenacity retry (`retry.py`), context limits (`context_limits.py`), LangSmith tracing (`tracing.py`).
    - **Reranking** (`app/reranking/`): FlashRank (default, 34MB model, ONNX inference offloaded to thread pool).
-   - **Summary** (`app/summary/`): Ollama, OpenAI, Anthropic. Retry via tenacity. Context limits (`context_limits.py`). Default model: `qwen3:0.6b`. Prompt: `DEFAULT_SUMMARY_PROMPT` in `instructions.py`, configurable via `SUMMARY_PROMPT` env var.
-   - **Compression** (`app/compression/`): TurboQuant (default ON in v3.0.0; set ENABLE_EMBEDDING_COMPRESSION=false to opt out). Pydantic v2 boundary types + frozen-slotted dataclasses for hot-path values; `app/compression/providers/turboquant/_types.py` defines a discriminated `MSEPayload | IPPayload` union with `from_bytes`/`to_bytes` and same-variant `concat` classmethods, plus a module-level dispatcher `payload_from_bytes(blob)` that reads the variant code byte and delegates to the right subtype. Provider factory (`PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts) mirrors the other provider layers; the cached compression provider lives in `app/compression/factory.py` as `get_cached_compression_provider()` and is used by both the encode and the compressed read paths. Bootstrap-only startup validator (`app/startup/compression_validator.py`) enforces the seed-locked invariant against the singleton `compression_metadata` table; provenance helpers live in `app/compression/provenance.py`. CPU-bound concurrency via a dedicated `_compression_semaphore` in `app/tools/_shared.py` acquired INSIDE `_encode_one` so each encode holds at most one permit (separate from the I/O-bound embedding/summary semaphores). Compressed read path: `EmbeddingRepository.search_compressed()` dispatched from `search()` when `settings.compression.enabled` is true; backend-agnostic linear scan with per-context aggregation; candidate payloads are decoded via `payload_from_bytes` and combined with the subtype's `concat` classmethod so the TurboQuant provider is invoked exactly once per query batch. Compressed write path wired through the existing chunked write flow; one bit-packed payload per chunk in `vec_context_embeddings_compressed`. See `docs/embedding-compression.md` for the full user-facing reference.
+   - **Summary** (`app/summary/`): Ollama, OpenAI, Anthropic. tenacity retry, context limits (`context_limits.py`). Default model `qwen3:0.6b`; prompt `DEFAULT_SUMMARY_PROMPT` in `instructions.py` (via `SUMMARY_PROMPT`).
+   - **Compression** (`app/compression/`): TurboQuant (default ON in v3.0.0; `ENABLE_EMBEDDING_COMPRESSION=false` to opt out). Wire types in `app/compression/providers/turboquant/_types.py` (discriminated `MSEPayload | IPPayload` union; dispatcher `payload_from_bytes(blob)`). Cached `get_cached_compression_provider()` (`app/compression/factory.py`); startup validator + provenance helpers (`app/startup/compression_validator.py`, `app/compression/provenance.py` — see "Compression Seed-Locked Invariant"). CPU-bound concurrency via `_compression_semaphore` in `app/tools/_shared.py` (held INSIDE `_encode_one`, separate from the I/O-bound embedding/summary semaphores). Read via `EmbeddingRepository.search_compressed()` (from `search()`); write via the chunked flow into `vec_context_embeddings_compressed`. Internals: `docs/embedding-compression.md`.
 
-7. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain's `RecursiveCharacterTextSplitter`). `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
+7. **Services Layer** (`app/services/`): `ChunkingService` (`TextChunk` dataclass, `split_text()`, LangChain `RecursiveCharacterTextSplitter`); `PassageExtractionService` (`extract_rerank_passage()`, `HighlightRegion` dataclass).
 
-8. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`): `MetadataFilter` with 16 operators. `QueryBuilder`: backend-aware SQL with nested JSON paths. Handles SQLite (`json_extract`) vs PostgreSQL (`->>`/`->`) operators.
+8. **Metadata Filtering** (`app/metadata_types.py` & `app/query_builder.py`): `MetadataFilter` (16 operators); `QueryBuilder` builds backend-aware SQL with nested JSON paths — SQLite `json_extract` vs PostgreSQL `->>`/`->`.
 
-9. **Other modules**: `app/fusion.py` (RRF algorithm), `app/errors.py` (error classification + exception formatting, see Key Implementation Details #5), `app/ids.py` (UUIDv7 generation and boundary normalization -- see Key Implementation Details #7), `app/cli/migrate.py` (database migration CLI -- see "Package and Release"), `app/instructions.py` (server instructions), `app/types.py` (40+ TypedDicts for API responses), `app/logger_config.py` (logging configuration), `app/schemas/` (SQL schema files).
+9. **Other modules**: `app/fusion.py` (RRF), `app/errors.py` (error classification + exception formatting, see #5), `app/ids.py` (UUIDv7 generation + ID normalization, see #7), `app/cli/migrate.py` (migration CLI, see "Package and Release"), `app/instructions.py` (server instructions), `app/types.py` (40+ API-response TypedDicts), `app/logger_config.py` (logging), `app/schemas/` (SQL schema files).
 
 ### Thread-Based Context Management
 
-Agents share context via `thread_id`. Entries tagged with `source`: 'user' or 'agent'. Filter by thread, source, tags, content type, or metadata (16 operators). Flat structure (no hierarchy).
+Agents share context via `thread_id`. Entries tagged `source`: 'user' or 'agent'. Filter by thread, source, tags, content type, or metadata (16 operators). Flat structure (no hierarchy).
 
 ### Database Schema
 
-Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata, summary column), `tags` (many-to-many, lowercase), `image_attachments` (binary, cascade delete).
+Tables: `context_entries` (main; thread_id/source indexes, JSON metadata, summary column), `tags` (many-to-many, lowercase), `image_attachments` (binary, cascade delete).
 
-**Public primary key (`context_entries.id`)**: 32-character lowercase hex UUIDv7. SQLite stores it as `TEXT NOT NULL UNIQUE`; PostgreSQL stores it as native `UUID NOT NULL PRIMARY KEY`. All foreign keys (`tags.context_entry_id`, `image_attachments.context_entry_id`, `embedding_metadata.context_id`, `embedding_chunks.context_id`, `vec_context_embeddings.context_id`) reference `context_entries(id)` as TEXT on SQLite and UUID on PostgreSQL.
+**Public primary key (`context_entries.id`)**: 32-character lowercase hex UUIDv7. SQLite: `TEXT NOT NULL UNIQUE`; PostgreSQL: native `UUID NOT NULL PRIMARY KEY`. All foreign keys (`tags.context_entry_id`, `image_attachments.context_entry_id`, `embedding_metadata.context_id`, `embedding_chunks.context_id`, `vec_context_embeddings.context_id`) reference `context_entries(id)` — TEXT on SQLite, UUID on PostgreSQL.
 
-**SQLite `rowid_int` surrogate**: On SQLite, `context_entries` carries an extra `rowid_int INTEGER PRIMARY KEY AUTOINCREMENT` — a stable INTEGER rowid backing the FTS5 external-content table, immune to VACUUM renumbering; never exposed at the MCP boundary. PostgreSQL has no equivalent — its native `UUID` PRIMARY KEY has stable storage independent of physical row layout.
+**SQLite `rowid_int` surrogate**: on SQLite, `context_entries` carries an extra `rowid_int INTEGER PRIMARY KEY AUTOINCREMENT` — a stable INTEGER rowid backing the FTS5 external-content table, immune to VACUUM renumbering, never exposed at the MCP boundary. PostgreSQL needs no equivalent (its native `UUID` PRIMARY KEY is layout-independent).
 
-**Embedding chunk and vec0 INTEGER bridge (preserved)**: Chunking maintains a 1:N context-to-embedding mapping via `embedding_chunks` with INTEGER rowid bridges to vec0. Columns `embedding_chunks.id`, `embedding_chunks.vec_rowid`, `vec_context_embeddings.id` stay INTEGER/BIGSERIAL; only the outer `context_id` FK is TEXT/UUID.
+**Embedding chunk and vec0 INTEGER bridge (preserved)**: chunking maintains a 1:N context→embedding mapping via `embedding_chunks` with INTEGER rowid bridges to vec0. `embedding_chunks.id`, `embedding_chunks.vec_rowid`, `vec_context_embeddings.id` stay INTEGER/BIGSERIAL; only the outer `context_id` FK is TEXT/UUID.
 
 **Performance**: WAL mode, 256MB mmap, compound index (thread_id, source). Indexed metadata: `status`, `agent_name`, `task_name`, `project`, `report_type`. See "Metadata Field Indexing by Backend" for per-backend details.
 
-**Optional compressed embedding storage**: When `ENABLE_EMBEDDING_COMPRESSION=true`, the fp32 `vec_context_embeddings` table is REPLACED by `vec_context_embeddings_compressed` (BLOB on SQLite, BYTEA on PostgreSQL) plus a singleton `compression_metadata(id INTEGER PRIMARY KEY CHECK (id = 1), provider, bits, variant, seed, dim, created_at)` provenance row. The `CHECK (id = 1)` singleton pattern is intentional: the rotation seed is load-bearing and the SQL-layer constraint prevents accidental duplicate-row insertion. On PostgreSQL, `idx_vec_context_embeddings_hnsw` is dropped during `--compress` migration and recreated during `--decompress`. Compressed payloads have no fixed width; size depends on `dim`, `bits`, and `variant`. The wire format uses a 4-byte magic prefix, a 1-byte variant code, and per-variant header fields; the IP variant includes an explicit 1-byte `mse_bits` field that the decoder reads directly, so future encoders can choose a different inner-MSE bit width without ambiguity. See `docs/embedding-compression.md`.
+**Optional compressed embedding storage**: with `ENABLE_EMBEDDING_COMPRESSION=true`, the fp32 `vec_context_embeddings` table is REPLACED by `vec_context_embeddings_compressed` (BLOB on SQLite, BYTEA on PostgreSQL) plus a singleton `compression_metadata(id INTEGER PRIMARY KEY CHECK (id = 1), provider, bits, variant, seed, dim, created_at)` provenance row. The `CHECK (id = 1)` singleton blocks accidental duplicate rows (the rotation seed is load-bearing). On PostgreSQL, `idx_vec_context_embeddings_hnsw` is dropped during `--compress` and recreated during `--decompress`. Compressed payloads have no fixed width (depends on `dim`/`bits`/`variant`); wire format (magic prefix, variant code, per-variant headers incl. the IP variant's explicit 1-byte `mse_bits` the decoder reads directly) is detailed in `docs/embedding-compression.md`.
 
 ### Search Tools
 
@@ -98,29 +91,27 @@ Tables: `context_entries` (main, with thread_id/source indexes, JSON metadata, s
 
 **FTS modes**: `match` (default, stemming), `prefix` (autocomplete), `phrase` (exact order), `boolean` (AND/OR/NOT). SQLite: FTS5 with BM25, Porter stemmer. PostgreSQL: tsvector/tsquery with ts_rank, 29 languages.
 
-**Hybrid search**: RRF formula `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Adaptive FTS: queries with ≥ `HYBRID_FTS_OR_THRESHOLD` (default 4) significant terms switch from AND to OR for better recall.
+**Hybrid search**: RRF `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Adaptive FTS: queries with ≥ `HYBRID_FTS_OR_THRESHOLD` (default 4) significant terms switch AND→OR for better recall.
 
 **Response**: `results` (array), `count` (int), `stats` (only when `explain_query=True`).
 
 ### Migration System
 
-Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, chunking (1:N embeddings), metadata indexing, summary column. PostgreSQL migrations use `POSTGRESQL_MIGRATION_TIMEOUT_S` (300s default) for DDL operations. Changing `FTS_LANGUAGE` requires FTS table rebuild.
+Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, chunking (1:N embeddings), metadata indexing, summary column. PostgreSQL DDL uses `POSTGRESQL_MIGRATION_TIMEOUT_S` (300s). Changing `FTS_LANGUAGE` requires an FTS table rebuild.
 
 ### Testing Strategy
 
-**Philosophy**: Tests use SQLite-only temp databases (no PostgreSQL required). Production supports both backends. Always add real server integration tests in `tests/integration/sqlite/test_real_server.py` for new tools.
+**Philosophy**: SQLite-only temp databases (no PostgreSQL); production supports both backends. Always add real server integration tests in `tests/integration/sqlite/test_real_server.py` for new tools.
 
-**Key Files**: `conftest.py` (fixtures, markers), `helpers.py` (shared test utilities -- uses `get_settings()` for configuration), `run_server.py` (subprocess server wrapper for integration tests).
+**Key Files**: `conftest.py` (fixtures, markers), `helpers.py` (shared utilities; uses `get_settings()`), `run_server.py` (subprocess server wrapper for integration tests).
 
 **Key Fixtures** (`conftest.py`): `test_db` (direct SQLite), `mock_server_dependencies` (mocked settings), `initialized_server` (full integration), `async_db_initialized` (async backend), `async_db_with_embeddings` (semantic search).
 
-**Skip Markers**: `@requires_ollama`, `@requires_sqlite_vec`, `@requires_numpy`, `@requires_semantic_search`
-
-`prevent_default_db_pollution` (autouse) prevents accidental production DB access.
+**Skip Markers**: `@requires_ollama`, `@requires_sqlite_vec`, `@requires_numpy`, `@requires_semantic_search`. `prevent_default_db_pollution` (autouse) prevents accidental production DB access.
 
 ### Test Directory Structure
 
-Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `app/<name>.py` (module).
+Tests mirror `app/`: `tests/<name>/` → `app/<name>/` (package) or `app/<name>.py` (module).
 
 **Non-trivial mappings**:
 - `tests/core/` → `app/*.py` small utility root modules (models, errors, fusion, instructions, etc.)
@@ -130,40 +121,40 @@ Tests mirror `app/` structure: `tests/<name>/` → `app/<name>/` (package) or `a
 
 **Shared infrastructure** stays at `tests/` root: `conftest.py`, `helpers.py`, `run_server.py`, `__init__.py`.
 
-**Placement rule**: Follow the PRIMARY source code module under test. Use import analysis as the arbiter when ambiguous.
+**Placement rule**: follow the PRIMARY source module under test; use import analysis as arbiter when ambiguous.
 
 ### Key Implementation Details
 
 1. **Python 3.12+ Type Hints**: `str | None` syntax, `StrEnum`, TypedDicts in `app/types.py`. **NEVER** use `from __future__ import annotations` in server.py (breaks FastMCP).
 
-2. **FastMCP Tool Signatures**: `Literal["user", "agent"]` for source, `Annotated[type, Field(...)]` for docs, `ctx: Context | None = None` as last param (hidden from clients). Returns must be serializable dicts/lists. Register via `register_tool()` in lifespan(), not `@mcp.tool()`.
+2. **FastMCP Tool Signatures**: `Literal["user", "agent"]` for source, `Annotated[type, Field(...)]` for docs, `ctx: Context | None = None` last (hidden from clients). Returns must be serializable dicts/lists. Register via `register_tool()` in lifespan(), not `@mcp.tool()`.
 
-3. **Async Operations**: SQLite ops are sync callables wrapped via `execute_write`/`execute_read`. PostgreSQL ops are native async. Repositories detect backend type automatically via `self.backend.backend_type`.
+3. **Async Operations**: SQLite ops are sync callables wrapped via `execute_write`/`execute_read`; PostgreSQL ops are native async. Repositories detect the backend via `self.backend.backend_type`.
 
 4. **Design Patterns**:
-   - **Protocol** (`@runtime_checkable`): `StorageBackend`, `TransactionContext`, `EmbeddingProvider`, `SummaryProvider`, `RerankingProvider`
-   - **Repository**: All SQL in `app/repositories/`, never in server.py or tools
-   - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_summary_provider()`, `create_reranking_provider()` — dynamic imports via `PROVIDER_MODULES` dicts
-   - **DI**: `RepositoryContainer` injects all repositories
+   - **Protocol** (`@runtime_checkable`): `StorageBackend`, `TransactionContext`, `EmbeddingProvider`, `SummaryProvider`, `RerankingProvider`.
+   - **Repository**: all SQL in `app/repositories/`, never in server.py or tools.
+   - **Factory**: `create_backend()`, `create_embedding_provider()`, `create_summary_provider()`, `create_reranking_provider()` — dynamic imports via `PROVIDER_MODULES` dicts.
+   - **DI**: `RepositoryContainer` injects all repositories.
 
-5. **Error Classification** (`app/errors.py`): `ConfigurationError` (exit 78, supervisor never retries), `DependencyError` (exit 69, may retry with backoff). `classify_provider_error()` classifies embedding/summary provider failures. BSD sysexits.h exit codes for Docker/Kubernetes restart policies.
+5. **Error Classification** (`app/errors.py`): `ConfigurationError` (exit 78, supervisor never retries), `DependencyError` (exit 69, may retry with backoff). `classify_provider_error()` classifies embedding/summary provider failures. BSD sysexits.h codes for Docker/K8s restart policies.
 
-6. **Server Instructions**: Optional `instructions` field in MCP `InitializeResult`. Configured via `MCP_SERVER_INSTRUCTIONS` env var (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`). Empty string disables. Includes `## Skill Integration` section directing agents to discover and apply context-server-related Skills.
+6. **Server Instructions**: optional `instructions` field in MCP `InitializeResult`. Via `MCP_SERVER_INSTRUCTIONS` (overrides `DEFAULT_INSTRUCTIONS` from `app/instructions.py`); empty string disables. Includes a `## Skill Integration` section pointing agents to context-server Skills.
 
-7. **UUIDv7 ID Generation** (`app/ids.py`): Single source of truth for context-entry identifier handling. Public functions: `generate_id()`, `generate_id_with_timestamp(created_at)`, `normalize_id(value)`, `is_id_prefix(value)`, `resolve_prefix(prefix, repo)`.
+7. **UUIDv7 ID Generation** (`app/ids.py`): single source of truth for context-entry IDs. Public: `generate_id()`, `generate_id_with_timestamp(created_at)`, `normalize_id(value)`, `is_id_prefix(value)`, `resolve_prefix(prefix, repo)`.
 
-   - **`uuid_utils.uuid7` parameter contract**: `timestamp` is UNIX **SECONDS** (integer), `nanos` is the nanosecond fraction within that second. The migration CLI uses `seconds = int(created_at.timestamp())` and `nanos = created_at.microsecond * 1_000`. Passing milliseconds in the `timestamp` slot would shift the embedded timestamp roughly 1000x into the future. Upstream tracker documenting user confusion about parameter units: [`aminalaee/uuid-utils#73`](https://github.com/aminalaee/uuid-utils/issues/73).
-   - **Lex-string ordering**: UUIDv7 hex strings sort chronologically at MILLISECOND granularity (the first 48 bits encode `unix_ts_ms`). Sub-millisecond order is determined by the random tail. The `id > ?` interleaving check in the deduplication path remains monotonic for any two timestamps that differ by >= 1 ms.
-   - **Lowercase invariant**: `normalize_id` always emits lowercase hex. Under SQLite TEXT BINARY collation, uppercase `A-F` sorts before lowercase `a-f`; storing mixed-case IDs would corrupt `id > ?` ordering comparisons. Tools accept either case at the boundary; storage is canonical lowercase.
-   - **Public display format**: 32-character hyphen-free lowercase hex (e.g. `0190abcdef1234567890abcdef123456`). Tools accept both the 32-char form and the 36-char hyphenated form (`0190abcd-ef12-3456-7890-abcdef123456`) at the boundary via `normalize_id`. Prefix lookup (`is_id_prefix` + `resolve_prefix`) requires a minimum of 8 hex characters and a maximum of 31.
-   - **asyncpg `pgproto.UUID` quirk**: asyncpg returns UUID columns as its own `asyncpg.pgproto.pgproto.UUID` type, NOT `uuid.UUID`. Code that needs to detect UUID values MUST use `isinstance(x, uuid.UUID)` (the asyncpg type subclasses `uuid.UUID` so isinstance works) and MUST NOT use `type(x) is uuid.UUID` (would fail at runtime).
-   - **Future stdlib `uuid.uuid7()` (Python 3.14)**: The stdlib function is parameterless and cannot be used by the migration CLI, which requires deterministic generation from a specific `created_at` value. Server-side ID generation may switch to the stdlib function after Python 3.14 adoption, but `uuid_utils` remains the canonical generator for the migration CLI.
+   - **`uuid_utils.uuid7` parameter contract**: `timestamp` is UNIX **SECONDS** (integer), `nanos` the nanosecond fraction within that second. Migration CLI uses `seconds = int(created_at.timestamp())`, `nanos = created_at.microsecond * 1_000`. Passing milliseconds in `timestamp` shifts the embedded timestamp ~1000x into the future ([uuid-utils#73](https://github.com/aminalaee/uuid-utils/issues/73)).
+   - **Lex-string ordering**: UUIDv7 hex sorts chronologically at MILLISECOND granularity (first 48 bits = `unix_ts_ms`; sub-ms order is the random tail), so the `id > ?` interleaving check stays monotonic for timestamps >= 1 ms apart.
+   - **Lowercase invariant**: `normalize_id` always emits lowercase hex. Under SQLite TEXT BINARY collation uppercase `A-F` sorts before lowercase `a-f`, so mixed-case IDs would corrupt `id > ?` ordering. Tools accept either case; storage is canonical lowercase.
+   - **Public display format**: 32-char hyphen-free lowercase hex (e.g. `0190abcdef1234567890abcdef123456`); tools also accept the 36-char hyphenated form via `normalize_id`. Prefix lookup requires 8 to 31 hex characters.
+   - **asyncpg `pgproto.UUID` quirk**: asyncpg returns UUID columns as its own `asyncpg.pgproto.pgproto.UUID`, NOT `uuid.UUID`. Detect with `isinstance(x, uuid.UUID)` (asyncpg subclasses it) — MUST NOT use `type(x) is uuid.UUID` (fails at runtime).
+   - **Future stdlib `uuid.uuid7()` (Python 3.14)**: parameterless, so unusable by the migration CLI (which needs deterministic generation from a specific `created_at`); `uuid_utils` stays the canonical migration-CLI generator.
 
 ## Package and Release
 
-uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context` (server entry points to `app.server:main`), `mcp-context-server-migrate` (database migration CLI, entry point `app.cli.migrate:main`). Python 3.12+. Optional extras: `embeddings-ollama`, `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`, `summary-ollama`, `summary-openai`, `summary-anthropic`, `reranking`, `langsmith`.
+uv + Hatchling. Entry points: `mcp-context-server`, `mcp-context` (→ `app.server:main`), `mcp-context-server-migrate` (migration CLI, → `app.cli.migrate:main`). Python 3.12+. Optional extras: `embeddings-ollama`, `embeddings-openai`, `embeddings-azure`, `embeddings-huggingface`, `embeddings-voyage`, `summary-ollama`, `summary-openai`, `summary-anthropic`, `reranking`, `langsmith`.
 
-The `mcp-context-server-migrate` console script ships alongside the server and migrates integer-keyed context databases to the UUIDv7 schema. Invoked manually on a backup of the source DB; accepts `--source-url`/`--target-url`/`--dry-run`/`--report PATH`; supports SQLite→SQLite, PostgreSQL→PostgreSQL, and cross-backend runs. See [`docs/migration-v2-to-v3.md`](docs/migration-v2-to-v3.md) for the full step-by-step guide.
+The `mcp-context-server-migrate` console script migrates integer-keyed context databases to the UUIDv7 schema. Run manually on a backup of the source DB; accepts `--source-url`/`--target-url`/`--dry-run`/`--report PATH`; supports SQLite→SQLite, PostgreSQL→PostgreSQL, and cross-backend. Full guide: [`docs/migration-v2-to-v3.md`](docs/migration-v2-to-v3.md).
 
 [Release Please](https://github.com/googleapis/release-please) for automated releases via [Conventional Commits](https://www.conventionalcommits.org/). On `release:published`: PyPI package, MCP Registry (`server.json`), GHCR Docker images (amd64/arm64): default Ollama variant and `ollama-openai` variant.
 
@@ -175,14 +166,14 @@ When a commit triggers a major version bump (Conventional Commit `!` suffix or `
 
 When changing core functionality, update the corresponding doc before committing:
 
-- **`README.md`** -- Update when adding, changing, or removing user-facing features. The README is the first thing users read; its Key Features list must reflect current capabilities.
-- Update any other related documents in `docs/`.
+- **`README.md`** — when adding/changing/removing user-facing features; its Key Features list (the first thing users read) must reflect current capabilities.
+- Any other related documents in `docs/`.
 
 ## CI and Docker Lock File Discipline
 
-The `uv.lock` file is a UNIVERSAL resolution containing ALL dependencies across ALL optional groups and extras. At install time, `uv sync` with selective flags installs only the relevant subset.
+`uv.lock` is a UNIVERSAL resolution of ALL dependencies across ALL optional groups/extras; `uv sync` with selective flags installs only the relevant subset.
 
-**Three defense layers**: (1) Pre-commit `uv-lock` hook (local); (2) `uv lock --check` (CI early step); (3) `uv sync --locked --all-extras --all-groups` (CI install). Every CI workflow (`test.yml`, `lint.yml`) MUST run both CI steps:
+**Three defense layers**: (1) pre-commit `uv-lock` hook (local); (2) `uv lock --check` (CI early step); (3) `uv sync --locked --all-extras --all-groups` (CI install). Every CI workflow (`test.yml`, `lint.yml`) MUST run both CI steps:
 
 ```yaml
 # CORRECT
@@ -193,7 +184,7 @@ The `uv.lock` file is a UNIVERSAL resolution containing ALL dependencies across 
 - run: uv sync --locked --dev --extra embeddings-ollama --extra reranking
 ```
 
-**Exception**: `publish.yml` and `release-please.yml` run `uv lock` (without `--check`) because Release Please bumps the version, requiring lock file regeneration.
+**Exception**: `publish.yml` and `release-please.yml` run `uv lock` (without `--check`) — Release Please bumps the version, requiring lock regeneration.
 
 **Docker** MUST use `--locked --no-dev --extra <variant>` for SELECTIVE installation:
 
@@ -202,44 +193,44 @@ uv sync --locked --no-install-project --extra ${EMBEDDING_EXTRA} --extra ${SUMMA
 uv sync --locked --extra ${EMBEDDING_EXTRA} --extra ${SUMMARY_EXTRA} --extra reranking --no-dev
 ```
 
-Build args: `EMBEDDING_EXTRA` (default: `embeddings-ollama`), `SUMMARY_EXTRA` (default: `summary-ollama`). Docker intentionally does NOT use `--all-extras`.
+Build args: `EMBEDDING_EXTRA` (default `embeddings-ollama`), `SUMMARY_EXTRA` (default `summary-ollama`). Docker intentionally does NOT use `--all-extras`.
 
 ## MCP Registry and server.json Maintenance
 
-`server.json` enables MCP client discovery. Every `Field(alias=...)` in `app/settings.py` MUST have a corresponding entry in `server.json` `environmentVariables`. This invariant is enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
+`server.json` enables MCP client discovery. Every `Field(alias=...)` in `app/settings.py` MUST have a matching entry in `server.json` `environmentVariables` — enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
 
 When adding or modifying environment variables in `app/settings.py`, update **both** `server.json` **and** `docs/environment-variables.md`.
 
 ## Environment Variables
 
-Configuration via `.env` file or environment. **Canonical source**: `app/settings.py` — all env vars with defaults, descriptions, and validation.
+Configuration via `.env` file or environment. **Canonical source**: `app/settings.py` — all env vars with defaults, descriptions, and validation. Full reference: `docs/environment-variables.md`.
 
 **Core**: `STORAGE_BACKEND` (sqlite*/postgresql), `LOG_LEVEL` (ERROR*), `DB_PATH`, `MAX_IMAGE_SIZE_MB` (10*), `MAX_TOTAL_SIZE_MB` (100*), `DISABLED_TOOLS`
 
 **Transport**: `MCP_TRANSPORT` (stdio*/http/streamable-http/sse), `FASTMCP_HOST` (0.0.0.0*), `FASTMCP_PORT` (8000*), `FASTMCP_STATELESS_HTTP` (true*)
 
-**FastMCP Logging** (deployment-only, NOT in `app/settings.py`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud). Read directly by FastMCP at import time — see [FASTMCP_* Governance](#fastmcp_-env-var-governance).
-
 **Auth**: `MCP_AUTH_PROVIDER` (none*/simple_token), `MCP_AUTH_TOKEN`, `MCP_AUTH_CLIENT_ID` (mcp-client*)
+
+**FastMCP Logging** (NOT in `app/settings.py`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud) — see [FASTMCP_* Governance](#fastmcp_-env-var-governance).
 
 **Feature Toggles**: `ENABLE_EMBEDDING_GENERATION` (true*), `ENABLE_SEMANTIC_SEARCH` (false*), `ENABLE_FTS` (false*), `ENABLE_HYBRID_SEARCH` (false*), `ENABLE_CHUNKING` (true*), `ENABLE_RERANKING` (true*), `ENABLE_SUMMARY_GENERATION` (true*)
 
 **Embedding**: `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (240*), `EMBEDDING_MAX_CONCURRENT` (3*)
 
-**Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:0.6b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (500*; text shorter than this skips summary (truncated preview is sufficient); 0 = always generate), `SUMMARY_PROMPT`
+**Summary**: `SUMMARY_PROVIDER` (ollama*/openai/anthropic), `SUMMARY_MODEL` (qwen3:0.6b*), `SUMMARY_MAX_TOKENS` (2000*), `SUMMARY_MIN_CONTENT_LENGTH` (500*; shorter text skips summary; 0 = always), `SUMMARY_PROMPT`
 
-**Retrieval**: `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` (false*; tri-state on `get_context_by_ids`: when false (default), the `summary` key is omitted entirely so `entry.get('summary')` returns `None` ("feature disabled"); when true with a stored non-empty summary, the value is returned verbatim; when true but DB summary is NULL/empty, normalized to `''` ("feature on, no data yet"). `text_content` always contains the full untruncated text.)
+**Retrieval**: `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` (false*; tri-state on `get_context_by_ids`: false omits the `summary` key (`get('summary')`→`None`); true returns a stored non-empty summary verbatim, else `''` (NULL/empty DB summary). `text_content` is always full/untruncated.)
 
-**Compression** (default ON in v3.0.0): `ENABLE_EMBEDDING_COMPRESSION` (true*; set false to opt out and keep fp32 storage), `COMPRESSION_PROVIDER` (turboquant*), `COMPRESSION_BITS` (4*; range 2-4), `COMPRESSION_VARIANT` (ip*/mse), `COMPRESSION_SEED` (0*; load-bearing and immutable after first compressed row is written), `COMPRESSION_MAX_CONCURRENT` (min(cpu_count, 4)*; range 1-32). Full reference: `docs/embedding-compression.md`.
+**Compression** (default ON in v3.0.0): `ENABLE_EMBEDDING_COMPRESSION` (true*; false to opt out, keep fp32), `COMPRESSION_PROVIDER` (turboquant*), `COMPRESSION_BITS` (4*; range 2-4), `COMPRESSION_VARIANT` (ip*/mse), `COMPRESSION_SEED` (0*; load-bearing, immutable after first compressed row), `COMPRESSION_MAX_CONCURRENT` (min(cpu_count, 4)*; range 1-32). Full reference: `docs/embedding-compression.md`.
 
-**Provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, and metadata indexing vars**: See `app/settings.py` for complete list with defaults and descriptions.
+**Other vars** (provider-specific, PostgreSQL, reranking, chunking, hybrid, FTS, search, metadata indexing): see `app/settings.py` for the complete list with defaults and descriptions.
 
 *\* = default value*
 
 ## Storage Backend Configuration
 
 ### SQLite (Default)
-Zero-config local storage. See SQLiteBackend in Architecture for features.
+Zero-config local storage; see SQLiteBackend (Architecture) for features.
 
 ### PostgreSQL
 ```bash
@@ -249,50 +240,40 @@ export STORAGE_BACKEND=postgresql
 uv run mcp-context-server  # Auto-initializes schema, enables pgvector
 ```
 
-**Optional: PostgreSQL 18+ `DEFAULT uuidv7()`.** On PG18+, you MAY set `id UUID PRIMARY KEY DEFAULT uuidv7()` (`ALTER TABLE context_entries ALTER COLUMN id SET DEFAULT uuidv7();`) for server-side generation. Pure operator-side optimization, NOT required: the app generates UUIDs Python-side via `app/ids.py` regardless of column default, and the migration CLI uses deterministic Python-side generation anchored to each row's `created_at`. PG17 and earlier lack `uuidv7()`.
+**Optional: PostgreSQL 18+ `DEFAULT uuidv7()`.** On PG18+, you MAY set `id UUID PRIMARY KEY DEFAULT uuidv7()` (`ALTER TABLE context_entries ALTER COLUMN id SET DEFAULT uuidv7();`) for server-side generation. Pure operator-side optimization, NOT required: the app generates UUIDs Python-side via `app/ids.py` regardless of column default (the migration CLI anchors to each row's `created_at`). PG17 and earlier lack `uuidv7()`.
 
 ### Supabase
 `STORAGE_BACKEND=postgresql` + `POSTGRESQL_CONNECTION_STRING`. Session Pooler for IPv4. "getaddrinfo failed" = switch from Direct to Session Pooler.
 
 ### Metadata Field Indexing by Backend
 
-SQLite: B-tree via `json_extract` for scalar fields only. PostgreSQL: B-tree for scalars, GIN for arrays/objects. Array/object queries require full table scan in SQLite.
+SQLite: B-tree via `json_extract` for scalars only (array/object queries need a full table scan). PostgreSQL: B-tree for scalars, GIN for arrays/objects.
 
 ## Docker Deployment
 
-Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in `deploy/docker/`: SQLite, PostgreSQL, Supabase. Ollama sidecar uses the stock `ollama/ollama:latest` image (or `ollama/ollama:rocm` for AMD GPUs) with an inline `entrypoint:` block in each compose file that pulls embedding and summary models on first startup.
+Multi-stage Dockerfile (uv, non-root UID 10001, `/health` endpoint). Configs in `deploy/docker/`: SQLite, PostgreSQL, Supabase. Ollama sidecar uses the stock `ollama/ollama:latest` image (`:rocm` for AMD GPUs) with an inline `entrypoint:` block per compose file pulling embedding+summary models on first startup.
 
 ### Docker Compose File Naming Convention
 
 **Naming formula:** `docker-compose.{storage}.{providers}[.local].yml`
 
-| Segment             | Values                                        | Description                                                                                                                                                               |
-|---------------------|-----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `{storage}`         | `sqlite`, `postgresql`, `postgresql-external` | Database backend                                                                                                                                                          |
-| `{providers}`       | `ollama`, `openai`, `ollama-openai`           | Embedding + summary provider combination. Single name when both use same provider; hyphenated `<embedding>-<summary>` when they differ.                                   |
-| `.local` (optional) | Present or absent                             | Present ONLY for provider combinations that have a published GHCR image, indicating the file builds that same configuration locally instead of pulling from the registry. |
+- `{storage}`: `sqlite`, `postgresql`, or `postgresql-external`.
+- `{providers}`: embedding+summary combo — single name when both share a provider (`ollama`, `openai`), hyphenated `<embedding>-<summary>` when they differ (`ollama-openai`).
+- `.local` (optional): present ONLY for combinations with a published GHCR image, marking the file that builds that config locally instead of pulling from the registry.
 
-**Five image source categories:**
+**Image sources**: `*.ollama.yml`/`*.ollama-openai.yml` pull the prebuilt GHCR image (`ghcr.io/alex-feel/mcp-context-server:latest` / `:latest-ollama-openai`, `pull_policy: always`); `*.local.yml` and provider-specific `*.openai.yml` build locally (`image: mcp-context-server`, `pull_policy: build`, with `EMBEDDING_EXTRA`/`SUMMARY_EXTRA` build args, e.g. `SUMMARY_EXTRA=summary-openai`).
 
-| Category                         | Files                        | `image:`                                                    | `pull_policy` | `build:` block                                  |
-|----------------------------------|------------------------------|-------------------------------------------------------------|---------------|-------------------------------------------------|
-| GHCR pull                        | `*.ollama.yml`               | `ghcr.io/alex-feel/mcp-context-server:latest`               | `always`      | None                                            |
-| GHCR pull (variant)              | `*.ollama-openai.yml`        | `ghcr.io/alex-feel/mcp-context-server:latest-ollama-openai` | `always`      | None                                            |
-| Local build (GHCR equivalent)    | `*.ollama.local.yml`         | `mcp-context-server`                                        | `build`       | Yes (no custom args, uses Dockerfile defaults)  |
-| Local build (variant equivalent) | `*.ollama-openai.local.yml`  | `mcp-context-server`                                        | `build`       | Yes (with SUMMARY_EXTRA=summary-openai)         |
-| Local build (provider-specific)  | `*.openai.yml`               | `mcp-context-server`                                        | `build`       | Yes (with EMBEDDING_EXTRA / SUMMARY_EXTRA args) |
-
-**Extensibility rule:** Adding a provider combination — if a GHCR image is published, create both `*.{providers}.yml` (GHCR pull) and `*.{providers}.local.yml` (local build); if no GHCR image, create only `*.{providers}.yml` (local build, no `.local` variant needed).
+**Extensibility rule:** if a GHCR image is published for a combo, create both `*.{providers}.yml` (pull) and `*.{providers}.local.yml` (local build); otherwise create only `*.{providers}.yml` (local build, no `.local` variant).
 
 ### Docker-Compose Environment Variable Policy
 
-**CRITICAL:** Compose files MUST contain ONLY variables REQUIRED for the deployment to function. All other settings use defaults from `app/settings.py`. This prevents drift between code defaults and hardcoded compose values.
+**CRITICAL:** Compose files MUST contain ONLY variables REQUIRED for the deployment to function; all else uses `app/settings.py` defaults. This prevents drift between code defaults and hardcoded compose values.
 
-**Configurable variables** use `${VAR:-default}` interpolation (default MUST match previously hardcoded value): `LOG_LEVEL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PROVIDER`, `SUMMARY_MODEL`, `SUMMARY_PROVIDER`. PostgreSQL variants add: `POSTGRESQL_USER`, `POSTGRESQL_PASSWORD`, `POSTGRESQL_DATABASE`. Ollama sidecar model names use the same interpolation to stay in sync.
+**Configurable** via `${VAR:-default}` interpolation (default MUST match the previously hardcoded value): `LOG_LEVEL`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`, `EMBEDDING_PROVIDER`, `SUMMARY_MODEL`, `SUMMARY_PROVIDER`; PostgreSQL variants add `POSTGRESQL_USER`, `POSTGRESQL_PASSWORD`, `POSTGRESQL_DATABASE`. Ollama sidecar model names use the same interpolation.
 
-**Required (hardcoded, NOT configurable)**: Transport (`MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`), `FASTMCP_ENABLE_RICH_LOGGING=false`, storage backend selection, `OLLAMA_HOST` (sidecar bind + client URL), `OLLAMA_KEEP_ALIVE=-1`, feature toggles (`ENABLE_*`), container paths (`DB_PATH`, `RERANKING_CACHE_DIR`), Docker networking (`POSTGRESQL_HOST`, `POSTGRESQL_PORT`).
+**Required (hardcoded, NOT configurable)**: transport (`MCP_TRANSPORT`, `FASTMCP_HOST`, `FASTMCP_PORT`), `FASTMCP_ENABLE_RICH_LOGGING=false`, storage backend selection, `OLLAMA_HOST` (sidecar bind + client URL), `OLLAMA_KEEP_ALIVE=-1`, feature toggles (`ENABLE_*`), container paths (`DB_PATH`, `RERANKING_CACHE_DIR`), Docker networking (`POSTGRESQL_HOST`, `POSTGRESQL_PORT`).
 
-**Do NOT add**: Tuning parameters with sensible defaults, feature-specific settings with correct defaults.
+**Do NOT add**: tuning parameters or feature-specific settings that have correct defaults.
 
 ## Kubernetes Deployment
 
@@ -319,9 +300,9 @@ Ruff (127 chars, single quotes), mypy/pyright strict for `app/`.
 
 Markdown files under `docs/` and the top-level `README.md` / `CLAUDE.md` use **one paragraph per physical line**. Do NOT hard-wrap prose at 70 / 80 / 100 columns. Tables, bullet/numbered list items, code blocks, headings, and YAML/JSON blocks retain their natural line breaks.
 
-Rationale: hard-wrapped prose forces every minor edit to reflow neighboring lines, polluting diffs and making line-anchored `grep` results misleading. One paragraph per line keeps `git diff` minimal (a wording change touches exactly one line), keeps `grep -n` results pointing at the start of the relevant paragraph, and matches the convention already used by the majority of the project's prose paragraphs.
+Rationale: one paragraph per line keeps `git diff` minimal (a wording change touches one line) and `grep -n` pointing at the paragraph start, instead of forcing reflow of neighboring lines.
 
-Existing files that violate this convention are normalized incrementally during related work. When you touch a paragraph for a content reason, normalize it to one line as part of the same edit; do not perform standalone reflow sweeps. The narrow hard-wrap section in `docs/embedding-compression.md` (PostgreSQL `search_path` contract) was reflowed as part of the v3.0.0 default-ON compression documentation refresh.
+Existing violations are normalized incrementally: when you touch a paragraph for a content reason, normalize it to one line in the same edit; do not perform standalone reflow sweeps.
 
 ## GitHub Actions Security Policy
 
@@ -329,7 +310,7 @@ All GitHub Actions workflows MUST follow these rules:
 
 1. **Never use mutable branch references** (`@main`, `@master`, `@develop`, `@release/vN`) for third-party actions. Mutable refs can be compromised (e.g., March 2026 `aquasecurity/trivy-action` incident — exfiltrated CI secrets).
 
-2. **Version tag pinning is the project standard.** Pin third-party actions to immutable version tags (e.g., `@v5`, `@v1.13.0`). SHA pinning not required — version tags are immutable enough and Dependabot-compatible.
+2. **Version tag pinning is the project standard.** Pin third-party actions to immutable tags (e.g., `@v5`, `@v1.13.0`). SHA pinning not required — tags are immutable enough and Dependabot-compatible.
 
 3. **Verify action runtimes before updating.** Before bumping an action version, check its runtime to avoid deprecated Node.js versions:
    ```bash
@@ -341,67 +322,36 @@ All GitHub Actions workflows MUST follow these rules:
 
 ### Environment Variables — Centralized Configuration
 
-**Never use `os.environ`/`os.getenv()` directly** — always `get_settings()` from `app/settings.py`.
+**Never use `os.environ`/`os.getenv()` directly** — always `get_settings()` from `app/settings.py`. Use `Field(alias='ENV_VAR_NAME')`.
 
 ```python
 # WRONG: os.getenv('DB_PATH')
 # CORRECT: get_settings().storage.db_path
 ```
 
-Use `Field(alias='ENV_VAR_NAME')`.
-
 ### Context Identifier Normalization
 
-`app/ids.py.normalize_id` is the canonical boundary normalizer for context-entry IDs. Any code that accepts a `context_id` from outside the storage layer (tool parameters, CLI flags, JSON payloads) MUST route it through `normalize_id` to fold case, strip whitespace, and validate format. The lowercase-hex invariant is load-bearing for SQLite TEXT BINARY ordering -- see Key Implementation Details #7 for details.
+`app/ids.py.normalize_id` is the canonical boundary normalizer for context-entry IDs. Any code accepting a `context_id` from outside the storage layer (tool parameters, CLI flags, JSON payloads) MUST route it through `normalize_id` to fold case, strip whitespace, and validate format. The lowercase-hex invariant is load-bearing for SQLite TEXT BINARY ordering — see Key Implementation Details #7.
 
 ### Settings Singleton Caching (`@lru_cache`)
 
-`get_settings()` is `@lru_cache`-decorated — a process-lifetime singleton. Once called, env var changes are ignored.
+`get_settings()` is `@lru_cache`-decorated — a process-lifetime singleton; once called, env var changes are ignored.
 
-**In tests**, use `get_settings.cache_clear()` to invalidate the cache when env vars change between operations:
+**In tests**, call `get_settings.cache_clear()` after changing env vars (e.g. after `monkeypatch.setenv(...)`) so the next `get_settings()` rebuilds `AppSettings`. For modules that change settings across tests, use an autouse fixture calling `get_settings.cache_clear()` (pattern: `tests/reranking/conftest.py`).
 
-```python
-from app.settings import get_settings
-monkeypatch.setenv('SOME_SETTING', 'new-value')
-get_settings.cache_clear()  # Next call creates fresh AppSettings
-```
-
-For modules that modify settings across multiple tests, use an autouse fixture (established pattern from `tests/reranking/conftest.py`):
-
-```python
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> None:
-    get_settings.cache_clear()
-```
-
-**Anti-pattern: Premature `get_settings()` in subprocess scripts.** `tests/run_server.py` configures environment via `os.environ` (intentional — it's an env configurator, not a settings consumer). Call `get_settings.cache_clear()` after all `os.environ` modifications before launching the server, or utilities like `is_ollama_model_available()` will cache stale defaults.
+**Anti-pattern: Premature `get_settings()` in subprocess scripts.** `tests/run_server.py` configures environment via `os.environ` (intentional: an env configurator, not a consumer). Call `get_settings.cache_clear()` after all `os.environ` changes before launching, or utilities like `is_ollama_model_available()` cache stale defaults.
 
 ### Per-test environment overrides for module-level `settings` bindings
 
-Tool modules cache `settings = get_settings()` at import time (e.g., `app/tools/context.py:60`). To flip an env-driven setting per test, three lines are required:
-
-```python
-import app.tools.context as context_module
-from app.settings import get_settings
-monkeypatch.setenv('SETTING_NAME', 'new-value')
-get_settings.cache_clear()
-monkeypatch.setattr(context_module, 'settings', get_settings())
-```
-
-The `monkeypatch.setattr` step refreshes the module-level binding to the new singleton; without it the module retains the pre-cache-clear reference. Established pattern — refactoring 15+ modules to call `get_settings()` inside each tool function would be YAGNI.
+Tool modules cache `settings = get_settings()` at import time (e.g., `app/tools/context.py:60`). To flip an env-driven setting per test: `monkeypatch.setenv(...)`, then `get_settings.cache_clear()`, then `monkeypatch.setattr(<tool_module>, 'settings', get_settings())`. The final `setattr` refreshes the module-level binding to the new singleton; without it the module keeps the stale reference. (Refactoring 15+ modules to call `get_settings()` per function would be YAGNI.)
 
 ### Settings Class Architecture
 
-**AppSettings must NEVER contain settings fields directly** — it only composes nested settings classes.
-
-When adding new settings: (1) add to an **existing** class if it EXACTLY matches the domain/purpose; (2) otherwise create a **new** class — even for a single setting.
+**AppSettings must NEVER contain settings fields directly** — it only composes nested settings classes. When adding settings: (1) add to an **existing** class if it EXACTLY matches the domain; (2) else create a **new** class — even for a single setting.
 
 ```python
-# WRONG: Adding directly to AppSettings
-class AppSettings(CommonSettings):
-    my_new_setting: str = Field(...)  # Never do this!
-
-# CORRECT: Create dedicated settings class
+# WRONG: my_new_setting: str = Field(...) directly on AppSettings
+# CORRECT: dedicated class, composed in via default_factory
 class MyFeatureSettings(CommonSettings):
     enabled: bool = Field(default=False, alias='ENABLE_MY_FEATURE')
 
@@ -409,76 +359,56 @@ class AppSettings(CommonSettings):
     my_feature: MyFeatureSettings = Field(default_factory=MyFeatureSettings)
 ```
 
-Existing settings classes: `LoggingSettings`, `ToolManagementSettings`, `TransportSettings`, `AuthSettings`, `InstructionsSettings`, `OllamaSettings`, `StorageSettings` (extends `BaseSettings`), `EmbeddingSettings`, `SummarySettings`, `SemanticSearchSettings`, `FtsSettings`, `HybridSearchSettings`, `SearchSettings`, `RetrievalSettings`, `ChunkingSettings`, `RerankingSettings`, `FtsPassageSettings`, `LangSmithSettings`.
+Existing settings classes are enumerated in `app/settings.py` (one per domain, e.g. `EmbeddingSettings`, `SummarySettings`, `RerankingSettings`, `FtsSettings`, `HybridSearchSettings`, `ChunkingSettings`, `RetrievalSettings`, `LangSmithSettings`); `StorageSettings` extends `BaseSettings`, the rest extend `CommonSettings`.
 
 ### FASTMCP_* Env Var Governance
 
 `FASTMCP_*` env vars belong in `app/settings.py` (and `server.json`) ONLY when the project takes **programmatic action** with them (passed to `mcp.run()`, used in logic). Import-time-only vars should NOT be in `settings.py`.
 
-| Env Var                       | In settings.py | Reason                                                        |
-|-------------------------------|----------------|---------------------------------------------------------------|
-| `FASTMCP_HOST`                | YES            | Passed to `mcp.run(host=...)`                                 |
-| `FASTMCP_PORT`                | YES            | Passed to `mcp.run(port=...)`                                 |
-| `FASTMCP_STATELESS_HTTP`      | YES            | Passed to `mcp.run(stateless_http=...)`                       |
-| `FASTMCP_TRANSPORT`           | NO             | Project uses MCP_TRANSPORT + explicit transport= arg          |
-| `FASTMCP_ENABLE_RICH_LOGGING` | NO             | Consumed at FastMCP import time; no `mcp.run()` parameter     |
+- **In `settings.py`** (passed to `mcp.run()`): `FASTMCP_HOST` (`host=`), `FASTMCP_PORT` (`port=`), `FASTMCP_STATELESS_HTTP` (`stateless_http=`).
+- **NOT in `settings.py`**: `FASTMCP_TRANSPORT` (project uses `MCP_TRANSPORT` + explicit `transport=` arg), `FASTMCP_ENABLE_RICH_LOGGING` (consumed at FastMCP import time; no `mcp.run()` parameter).
 
 ### Adding New MCP Tools
 
-```python
-# app/tools/<domain>.py
-async def my_tool(
-    param: Annotated[str, Field(description='...')],
-    ctx: Context | None = None,
-) -> MyToolResponse:
-    repos = await ensure_repositories()
-    return {'success': True, 'context_id': '0190abcdef1234567890abcdef123456'}
-```
+New tools live in `app/tools/<domain>.py` as `async` functions: `Annotated[..., Field(...)]` params, `ctx: Context | None = None` last; call `repos = await ensure_repositories()` and return a serializable dict (`{'success': True, 'context_id': ...}`).
 
-**Steps**: 1) Add to `app/tools/<domain>.py`; 2) Add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py`; 3) Export from `__init__.py`; 4) Register in `app/server.py` lifespan(); 5) Add TypedDict to `app/types.py`; 6) Add tests + real server tests in `tests/integration/sqlite/test_real_server.py`; 7) Update `server.json` if new env vars; 8) For backend-specific descriptions, add generator to `app/tools/descriptions.py`; 9) For store/update operations, use shared functions from `app/tools/_shared.py` (image validation, generation-with-timeout, transaction execution, response builders) for behavioral parity with existing tools
+**Steps**: 1) `app/tools/<domain>.py`; 2) add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py`; 3) export from `__init__.py`; 4) register in `app/server.py` lifespan(); 5) add a TypedDict to `app/types.py`; 6) add tests + real server tests in `tests/integration/sqlite/test_real_server.py`; 7) update `server.json` if new env vars; 8) backend-specific descriptions → add a generator to `app/tools/descriptions.py`; 9) store/update ops → reuse `app/tools/_shared.py` shared functions for parity.
 
 **Annotation categories**: READ_ONLY (readOnlyHint=True), ADDITIVE (destructiveHint=False), UPDATE (destructiveHint=True, idempotentHint=False), DELETE (destructiveHint=True, idempotentHint=True)
 
 ### Adding New Providers (Embeddings/Reranking/Summary)
 
-All three layers use identical patterns: 1) Create provider class in `app/<layer>/providers/` implementing the Protocol; 2) Add to `PROVIDER_MODULES`/`PROVIDER_CLASSES` dicts in `factory.py`; 3) Add install instructions to `PROVIDER_INSTALL_INSTRUCTIONS`; 4) Add optional dependency group in `pyproject.toml`.
+All three layers share a pattern: 1) create a provider class in `app/<layer>/providers/` implementing the Protocol; 2) add to `PROVIDER_MODULES`/`PROVIDER_CLASSES` in `factory.py`; 3) add install instructions to `PROVIDER_INSTALL_INSTRUCTIONS`; 4) add an optional dependency group in `pyproject.toml`.
 
 ### Generation-First Transactional Integrity
 
-**CRITICAL**: When generation is enabled and fails, NO data is saved — transaction rolls back. Flow: generate embeddings/summaries OUTSIDE the transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops in a single atomic `begin_transaction()`. All repo write methods accept optional `txn: TransactionContext`. `generate_embeddings_with_timeout` and `generate_summary_with_timeout` in `app/tools/_shared.py` are the single sources of truth for timeout/semaphore — used by `store_context`, `update_context`, `store_context_batch`, `update_context_batch`. Each `gather` result is inspected independently — failed generation raises (or is collected in non-atomic batch mode) without cancelling the other task.
+**CRITICAL**: when generation is enabled and fails, NO data is saved — the transaction rolls back. Flow: generate embeddings/summaries OUTSIDE the transaction via `asyncio.gather(*tasks, return_exceptions=True)`, then all DB ops in one atomic `begin_transaction()` (all repo writes accept optional `txn: TransactionContext`). `generate_embeddings_with_timeout`/`generate_summary_with_timeout` in `app/tools/_shared.py` are the single sources of truth for timeout/semaphore, used by `store_context`, `update_context`, `store_context_batch`, `update_context_batch`. Each `gather` result is inspected independently; failed generation raises (or is collected in non-atomic batch mode) without cancelling the other.
 
-**NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embeddings fail, or `ENABLE_SUMMARY_GENERATION=true` and summary fails, the entry MUST NOT be saved. No "store without embeddings"/"store without summary" fallback exists when generation is enabled — non-negotiable mandatory behavior. Skipping requires the user to explicitly set `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`. Only the user can make this decision.
+**NEVER propose "graceful skip" of generation when generation is enabled.** If `ENABLE_EMBEDDING_GENERATION=true` and embeddings fail, or `ENABLE_SUMMARY_GENERATION=true` and summary fails, the entry MUST NOT be saved — no "store without embeddings"/"store without summary" fallback exists. This is non-negotiable. Skipping requires the user to explicitly set `ENABLE_EMBEDDING_GENERATION=false` or `ENABLE_SUMMARY_GENERATION=false`; only the user can make this decision.
 
 ### Deduplication Behavior (store_context)
 
-Deduplication is **retry protection**: when an MCP client retransmits the same message (network glitch, timeout retry), the server updates the existing entry instead of creating a duplicate. This differs from a **new conversational turn** — where a user intentionally sends identical text after an agent has responded — which must be inserted as a new entry to preserve chronological ordering.
+Deduplication is **retry protection**: when an MCP client retransmits the same message (network glitch, timeout retry), the server updates the existing entry instead of duplicating. A **new conversational turn** (a user deliberately re-sending identical text after an agent responded) instead inserts a new entry, preserving chronological order.
 
-**Interleaving check**: Before deduplicating, the server verifies no opposite-source entries (agent entries for user source, user entries for agent source) were created after the candidate duplicate. If any exist, the message is a new turn and is inserted as a new entry. Uses `id > candidate_id` comparison (immune to clock skew) with the existing `idx_thread_source` index.
+**Interleaving check**: before deduplicating, the server checks for opposite-source entries (agent for user source, user for agent source) after the candidate; if any exist it's a new turn. Uses `id > candidate_id` (immune to clock skew) with the existing `idx_thread_source` index.
 
-When deduplication proceeds (same `thread_id + source + text_content` as the latest entry, with no interleaving):
+When deduplication proceeds (same `thread_id + source + text_content` as the latest entry, no interleaving): **Metadata** via `COALESCE(new, existing)` (`None` keeps existing, explicit value replaces); **Tags/Images** REPLACED (not accumulated) when provided, preserved when `None`; **content_type/updated_at** auto-updated; **Embeddings** skipped if present, else generated; **Summary** regeneration skipped if present (`COALESCE(NULL, existing_summary)` preserves it); **Pre-check** read-only check before generation skips LLM calls for duplicates (in both `store_context` and `store_context_batch`).
 
-- **Metadata**: Updated via `COALESCE(new, existing)`. `None` preserves existing; explicit value replaces.
-- **Tags/Images**: REPLACED (not accumulated) when provided. Preserved when `None`.
-- **content_type/updated_at**: Auto-updated.
-- **Embeddings**: Storage skipped if already exist; generated if missing.
-- **Summary**: Regeneration skipped if already exists. `COALESCE(NULL, existing_summary)` preserves pre-existing summary when generation is skipped.
-- **Pre-check optimization**: Read-only check before embedding/summary generation to skip LLM API calls for duplicates. Applied in both `store_context` and `store_context_batch`.
-
-The `store_context_batch` tool uses the same dedup logic (calls `store_with_deduplication` per entry) with the same pre-check optimization and interleaving check.
+`store_context_batch` applies the same dedup logic (`store_with_deduplication` per entry), pre-check, and interleaving check.
 
 ### Update Context and Batch Operations
 
 **Update**: Partial updates (only provided fields). Immutable: `id`, `thread_id`, `source`, `created_at`. Auto-managed: `content_type`, `updated_at`. Tags/images: replacement (not merge). Transaction-wrapped.
 
-**Batch**: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries). `atomic=true` (default): all-or-nothing. `atomic=false`: independent processing with per-entry results. Batch and non-batch tools share per-entry processing logic (image validation, transaction execution, response message building) via `app/tools/_shared.py` to guarantee behavioral parity.
+**Batch**: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries). `atomic=true` (default): all-or-nothing. `atomic=false`: independent processing with per-entry results. Batch and non-batch tools share per-entry logic (image validation, transaction execution, response building) via `app/tools/_shared.py` for parity.
 
 ### Compression Seed-Locked Invariant
 
-`COMPRESSION_SEED` has default `0` in v3.0.0. The startup validator (`app/startup/compression_validator.py`) inserts a singleton row into `compression_metadata` on the first start using the active runtime configuration and treats the DB as the source of truth thereafter. Subsequent starts where the runtime `CompressionSettings` disagrees with the persisted `(provider, bits, variant, seed, dim)` row raise `ConfigurationError` (exit 78); the supervisor will NOT auto-restart, so the misconfiguration surfaces loudly instead of producing silently corrupted search results.
+`COMPRESSION_SEED` defaults to `0` in v3.0.0. On first start the validator (`app/startup/compression_validator.py`) writes a singleton `compression_metadata` row from the runtime config, then treats the DB as source of truth. Later starts where runtime `CompressionSettings` disagrees with the persisted `(provider, bits, variant, seed, dim)` row raise `ConfigurationError` (exit 78); the supervisor will NOT auto-restart, surfacing the misconfiguration loudly instead of silently corrupting search results.
 
-In multi-pod Kubernetes deployments all pods MUST inherit the SAME `COMPRESSION_SEED`. Use a ConfigMap-bound env var so every pod resolves to the identical value. Changing the seed AFTER any compressed data has been stored will corrupt every decode/search operation; there is no recovery path besides restoring from backup. The Helm chart ships an active compression block (`enabled: true`, `seed: 0`) in both `deploy/helm/mcp-context-server/values-sqlite.yaml` and `values-postgresql.yaml`; the PostgreSQL profile additionally documents the multi-pod ConfigMap discipline inline, including the requirement that every pod inherit the same seed via the chart's ConfigMap template. Set `compression.enabled: false` in your Helm values to opt out on a given deployment. See `docs/embedding-compression.md` for the full reference.
+In multi-pod Kubernetes deployments all pods MUST inherit the SAME `COMPRESSION_SEED` (ConfigMap-bound, so every pod resolves the identical value). Changing the seed AFTER any compressed data is stored corrupts every decode/search; the only recovery is restoring from backup. The Helm chart ships an active compression block (`enabled: true`, `seed: 0`) in `values-sqlite.yaml`/`values-postgresql.yaml` under `deploy/helm/mcp-context-server/` (PG profile documents the multi-pod ConfigMap discipline inline); `compression.enabled: false` opts out. See `docs/embedding-compression.md`.
 
-After the validator runs, the lifespan emits an INFO log line announcing the active compression configuration (sibling to the embedding/reranking/chunking/summary announcements). When compression is enabled, the line sources `provider`, `bits`, `variant`, `dim`, and `seed` from the singleton `compression_metadata` row (DB-truth) and `max_concurrent` from the runtime `CompressionSettings`; when disabled, the line reports `Embedding compression disabled (ENABLE_EMBEDDING_COMPRESSION=false)`. The `get_statistics` MCP tool exposes the same values under a `compression` sub-block. It also reports `embeddings_size_mb` plus the boolean `embeddings_size_estimated` immediately after the total `database_size_mb`, gated on embedding generation OR compression (NOT `ENABLE_SEMANTIC_SEARCH`) and degrading to `0.0` on failure. Both size keys are per-backend and NOT byte-comparable across backends: `database_size_mb` is the whole database via `pg_database_size(current_database())` on PostgreSQL versus the on-disk file (WAL sidecars excluded) on SQLite; `embeddings_size_mb` is the active vector payload table's on-disk relation size including indexes (`pg_total_relation_size(to_regclass(...))`) on PostgreSQL versus exact compressed payload bytes (`SUM(LENGTH(payload))`, `dbstat`-free) or a deterministic fp32 estimate (`SUM(chunk_count * dimensions * 4)`, `embeddings_size_estimated=true`) on SQLite. All PostgreSQL numeric aggregates are coerced to native floats via `_to_float` in `app/repositories/statistics_repository.py` (asyncpg maps `AVG()` to `Decimal`, which fails the MCP float output schema). See `docs/embedding-compression.md#observability` for the full surface.
+After validation, the lifespan logs the active compression config (singleton `compression_metadata` row + `max_concurrent`); when disabled it reports `Embedding compression disabled (ENABLE_EMBEDDING_COMPRESSION=false)`. `get_statistics` exposes the same values under a `compression` sub-block, plus `embeddings_size_mb` and boolean `embeddings_size_estimated` after total `database_size_mb` — gated on embedding generation OR compression (NOT `ENABLE_SEMANTIC_SEARCH`), `0.0` on failure. Both size keys are per-backend, NOT byte-comparable (formulas in `docs/embedding-compression.md#observability`; on SQLite `embeddings_size_estimated=true` marks a deterministic fp32 estimate). PostgreSQL numeric aggregates are coerced to floats via `_to_float` in `app/repositories/statistics_repository.py` (asyncpg maps `AVG()` to `Decimal`, failing the MCP float output schema).
 
 ### Known Upstream Bugs and Temporary Patches
 
@@ -487,11 +417,11 @@ After the validator runs, the lifespan emits an INFO log line announcing the act
 Monkey-patch for `BaseSession._send_response()`/`send_notification()` not handling `ClosedResourceError`/`BrokenResourceError` on client disconnect. Applied in `app/server.py` lifespan (step 0).
 
 - **Upstream tracking**: [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), PRs [#2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [#2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
-- **Removal**: When upstream MCP SDK fixes this, update `mcp` dependency, delete `app/patches/`, remove patch import/call from `app/server.py`, delete `tests/patches/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/integration/sqlite/test_real_server.py`, remove this section.
+- **Removal** (when upstream MCP SDK fixes this): bump `mcp`, delete `app/patches/` + its patch import/call in `app/server.py`, delete `tests/patches/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/integration/sqlite/test_real_server.py`, and remove this section.
 
 **Client JSON String Serialization** (`app/middleware/json_string_deserializer.py`):
 
-Schema-aware FastMCP middleware fixing MCP clients (including Claude Code) intermittently serializing list/dict parameters as JSON strings. Uses `Middleware` base class with `on_call_tool` override. `build_schema_map()` inspects each tool's JSON Schema at startup for `array`/`object` parameters (including `Optional` via `anyOf`/`$ref`). Only those parameters are deserialization candidates — strings are never touched. Handles double-encoding. Registered in `app/server.py` lifespan (step 25) via `mcp.add_middleware()`, after all `register_tool()` calls.
+Schema-aware FastMCP middleware fixing MCP clients (including Claude Code) intermittently serializing list/dict parameters as JSON strings. `Middleware` base class with `on_call_tool` override; `build_schema_map()` inspects each tool's JSON Schema at startup for `array`/`object` params (incl. `Optional` via `anyOf`/`$ref`) — only those are deserialization candidates, strings are never touched. Handles double-encoding. Registered in `app/server.py` lifespan (step 25) via `mcp.add_middleware()`, after all `register_tool()` calls.
 
 - **Upstream tracking**: [Claude Code #22394](https://github.com/anthropics/claude-code/issues/22394) (closed NOT_PLANNED), [Claude Code #26094](https://github.com/anthropics/claude-code/issues/26094), [FastMCP #932](https://github.com/jlowin/fastmcp/issues/932), Claude Code #5504, #4192, #3084
-- **Removal**: When upstream clients fix their serialization, delete `app/middleware/`, remove middleware import and registration block (step 25) from `app/server.py` lifespan(), delete `tests/middleware/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/integration/sqlite/test_real_server.py`, remove this section.
+- **Removal** (when upstream clients fix serialization): delete `app/middleware/` + its import/registration block (step 25) in `app/server.py` lifespan(), delete `tests/middleware/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/integration/sqlite/test_real_server.py`, and remove this section.
