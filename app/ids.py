@@ -26,8 +26,13 @@ Module contents
     - :func:`is_id_prefix` -- predicate for partial-hex prefix strings.
     - :func:`resolve_prefix` -- resolve a prefix to a unique full ID via a
       repository implementing the :class:`_PrefixResolverRepo` protocol.
+    - :func:`resolve_or_normalize_id` -- single boundary helper that either
+      normalizes a full ID or resolves an 8-31 char hex prefix.
+    - :func:`resolve_or_normalize_ids` -- the list form of
+      :func:`resolve_or_normalize_id`, preserving input order.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 from typing import runtime_checkable
@@ -177,3 +182,47 @@ async def resolve_prefix(prefix: str, repo: _PrefixResolverRepo) -> ContextId:
     if len(matches) > 1:
         raise ValueError(f'Ambiguous prefix {prefix!r} matches multiple entries')
     return matches[0]
+
+
+async def resolve_or_normalize_id(value: str, repo: _PrefixResolverRepo) -> ContextId:
+    """Canonicalize a full ID, or resolve an 8-31 char hex prefix to its unique full ID.
+
+    Single boundary helper for every tool that accepts a context-entry ID from
+    outside the storage layer. A full 32-char hex or 36-char hyphenated identifier
+    is validated and lowercased via :func:`normalize_id`; an 8-31 hex-char prefix
+    is resolved to its unique full ID via :func:`resolve_prefix`. Routing every
+    ID-accepting tool through this one helper keeps prefix acceptance uniform
+    across ``get_context_by_ids``, ``update_context``, ``delete_context`` and
+    their batch variants.
+
+    Propagates :class:`ValueError` from :func:`normalize_id` or
+    :func:`resolve_prefix` when ``value`` is neither a valid full identifier nor
+    a prefix that resolves to exactly one entry (no match or ambiguous match).
+
+    Args:
+        value: A full UUID (32-char hex or 36-char hyphenated) or an 8-31 char
+            hex prefix.
+        repo: Object implementing the :class:`_PrefixResolverRepo` protocol.
+
+    Returns:
+        A 32-character lowercase hex string matching ``^[0-9a-f]{32}$``.
+    """
+    if is_id_prefix(value):
+        return await resolve_prefix(value, repo)
+    return normalize_id(value)
+
+
+async def resolve_or_normalize_ids(values: Sequence[str], repo: _PrefixResolverRepo) -> list[ContextId]:
+    """Apply :func:`resolve_or_normalize_id` to each item, preserving order.
+
+    Propagates :class:`ValueError` from the first item that is neither a valid
+    full identifier nor a prefix that resolves to exactly one entry.
+
+    Args:
+        values: Context-entry IDs and/or 8-31 char hex prefixes.
+        repo: Object implementing the :class:`_PrefixResolverRepo` protocol.
+
+    Returns:
+        The canonical 32-char lowercase hex IDs in the same order as ``values``.
+    """
+    return [await resolve_or_normalize_id(value, repo) for value in values]

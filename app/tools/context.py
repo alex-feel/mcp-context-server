@@ -35,9 +35,8 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.errors import format_exception_message
-from app.ids import is_id_prefix
-from app.ids import normalize_id
-from app.ids import resolve_prefix
+from app.ids import resolve_or_normalize_id
+from app.ids import resolve_or_normalize_ids
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -357,17 +356,18 @@ async def get_context_by_ids(
         ToolError: If fetching context entries fails.
     """
     try:
-        # Normalize all incoming IDs at the boundary
+        # Get repositories first; prefix resolution below needs the context repo.
+        repos = await ensure_repositories()
+
+        # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
+        # 8-31 char hex prefixes (uniform with update_context/delete_context).
         try:
-            context_ids = [normalize_id(cid) for cid in context_ids]
+            context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
 
         if ctx:
             await ctx.info(f'Fetching context entries: {context_ids}')
-
-        # Get repositories
-        repos = await ensure_repositories()
 
         # Fetch context entries using repository
         rows = await repos.context.get_by_ids(context_ids)
@@ -460,18 +460,19 @@ async def delete_context(
         if not context_ids and not thread_id:
             raise ToolError('Must provide either context_ids or thread_id')
 
-        # Normalize all incoming IDs at the boundary
+        # Get repositories first; prefix resolution below needs the context repo.
+        repos = await ensure_repositories()
+
+        # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
+        # 8-31 char hex prefixes (uniform with get_context_by_ids/update_context).
         if context_ids:
             try:
-                context_ids = [normalize_id(cid) for cid in context_ids]
+                context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
 
         if ctx:
             await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
-
-        # Get repositories
-        repos = await ensure_repositories()
 
         deleted = 0
 
@@ -611,10 +612,7 @@ async def update_context(
 
         # Boundary normalization: accept full hex (32 or 36 chars) or 8-31 char hex prefix
         try:
-            if is_id_prefix(context_id):
-                context_id = await resolve_prefix(context_id, repos.context)
-            else:
-                context_id = normalize_id(context_id)
+            context_id = await resolve_or_normalize_id(context_id, repos.context)
         except ValueError as e:
             raise ToolError(f'Invalid context ID: {e}') from e
 

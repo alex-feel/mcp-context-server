@@ -227,14 +227,22 @@ class TestMetadataQueryBuilderPostgresql:
         assert params == ['.txt']
 
     def test_operator_is_null_postgresql(self) -> None:
-        """Test IS_NULL operator for PostgreSQL."""
+        """IS_NULL matches a PRESENT JSON null only, via jsonb_typeof.
+
+        Regression guard for the cross-backend divergence where the prior
+        ``->>key IS NULL OR ...`` form also matched a MISSING key, unlike SQLite's
+        ``json_type='null'``. The fix mirrors SQLite by using jsonb_typeof, which
+        yields SQL NULL for a missing key and therefore does not match it. It also
+        removes the unparenthesized ``OR`` that risked AND/OR precedence bugs.
+        """
         builder = MetadataQueryBuilder(backend_type='postgresql')
         filter_spec = MetadataFilter(key='deleted_at', operator=MetadataOperator.IS_NULL)
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        # PostgreSQL uses jsonb_typeof for null checks
-        assert 'jsonb_typeof' in where_clause or 'null' in where_clause.lower()
+        assert "jsonb_typeof(metadata->'deleted_at') = 'null'" in where_clause
+        # Must NOT fall back to the absent-key-matching ``IS NULL`` form.
+        assert 'IS NULL' not in where_clause
         assert len(params) == 0
 
     def test_operator_is_not_null_postgresql(self) -> None:

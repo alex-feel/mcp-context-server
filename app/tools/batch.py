@@ -35,9 +35,8 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.errors import format_exception_message
-from app.ids import is_id_prefix
-from app.ids import normalize_id
-from app.ids import resolve_prefix
+from app.ids import resolve_or_normalize_id
+from app.ids import resolve_or_normalize_ids
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -667,10 +666,7 @@ async def update_context_batch(
 
             # Resolve to canonical 32-char hex (accept full or prefix)
             try:
-                if is_id_prefix(context_id_raw):
-                    context_id = await resolve_prefix(context_id_raw, repos.context)
-                else:
-                    context_id = normalize_id(context_id_raw)
+                context_id = await resolve_or_normalize_id(context_id_raw, repos.context)
             except ValueError as e:
                 validation_errors.append((idx, context_id_raw, f'Invalid context_id: {e}'))
                 continue
@@ -1201,14 +1197,15 @@ async def delete_context_batch(
                 criteria_summary.append(f'older_than={older_than_days}d')
             await ctx.info(f'Batch delete with criteria: {", ".join(criteria_summary)}')
 
-        # Normalize all incoming IDs at the boundary
+        repos = await ensure_repositories()
+
+        # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
+        # 8-31 char hex prefixes (uniform with delete_context).
         if context_ids:
             try:
-                context_ids = [normalize_id(cid) for cid in context_ids]
+                context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
-
-        repos = await ensure_repositories()
 
         # Delete embeddings first if context_ids are specified.
         # Gate on embedding generation OR compression: either toggle being

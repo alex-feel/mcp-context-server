@@ -535,11 +535,17 @@ class MetadataQueryBuilder:
         """Add a condition to check if value is JSON null."""
         key_path = json_path[2:]
         if self.backend_type == 'sqlite':
-            # In SQLite JSON, null values are stored as JSON null, not SQL NULL
+            # In SQLite JSON, null values are stored as JSON null, not SQL NULL.
+            # json_type returns 'null' for a present JSON null and SQL NULL for a
+            # missing key, so a missing key does NOT match.
             self.conditions.append(f"json_type(metadata, '{json_path}') = 'null'")
         else:  # postgresql
-            # In PostgreSQL, check if the value is NULL or the JSON value is null
-            self.conditions.append(f"metadata->>'{key_path}' IS NULL OR metadata->'{key_path}' = 'null'::jsonb")
+            # Match a PRESENT JSON null only, mirroring the SQLite json_type='null'
+            # semantics above. jsonb_typeof returns 'null' for a stored JSON null and
+            # SQL NULL for a missing key, so a missing key does NOT match. The earlier
+            # "->>key IS NULL OR ..." form conflated absent-key with JSON-null and, being
+            # an unparenthesized OR, also risked AND/OR precedence bugs when combined.
+            self.conditions.append(f"jsonb_typeof(metadata->'{key_path}') = 'null'")
 
     def _add_is_not_null_condition(self, json_path: str) -> None:
         """Add a condition to check if value is not JSON null."""
