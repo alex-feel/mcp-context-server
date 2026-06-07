@@ -74,8 +74,6 @@ hooks:
     # Context lifecycle hooks and configs
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/context_awareness_guidance_config.yaml
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/context_management_precompact.py
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/context_management_precompact_config.yaml
 
     # Server health
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/mcp_preflight_checks_context.py
@@ -123,13 +121,6 @@ hooks:
       type: command
       command: context_awareness_guidance.py
       config: context_awareness_guidance_config.yaml
-
-    # PreCompact event
-    - event: PreCompact
-      matcher: '*'
-      type: command
-      command: context_management_precompact.py
-      config: context_management_precompact_config.yaml
 
     # Context preservation during workflow
     - event: UserPromptSubmit

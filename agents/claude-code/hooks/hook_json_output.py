@@ -4,7 +4,7 @@
 Provides three emitter functions for the three documented JSON output schemas:
 
 - emit_additional_context: injects context into the model (UserPromptSubmit,
-  SessionStart, SubagentStart, PreCompact, and non-blocking PreToolUse/PostToolUse).
+  SessionStart, SubagentStart, and non-blocking PreToolUse/PostToolUse).
 - emit_pre_tool_use_deny: denies a PreToolUse tool call via
   hookSpecificOutput.permissionDecision=deny with permissionDecisionReason.
 - emit_decision_block: blocks via top-level decision=block with reason

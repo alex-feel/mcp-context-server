@@ -14,8 +14,11 @@ as store_context) AND it produced a work artifact or finding this turn. The
 directive also clarifies that the StructuredOutput value returned to the caller
 is ephemeral and does NOT substitute for the durable context-server record, and
 that a dispatch instruction forbidding report files on disk does NOT relieve a
-capable principal of storing a context-server entry. The directive is ASCII-only
-so it survives stdout capture intact.
+capable principal of storing a context-server entry. Finally, the directive
+formalizes how to answer the block: a principal whose report is already stored
+(or that has nothing to store) replies in one concise line stating the stored
+report context_id and its key decision, instead of re-explaining at length. The
+directive is ASCII-only so it survives stdout capture intact.
 
 The hook blocks the stop action via JSON output (top-level decision: "block")
 with the directive text delivered as the `reason` field, so Claude reads it as
@@ -48,7 +51,9 @@ def format_instruction_message() -> str:
     Format the capability-gated context-preservation directive.
 
     The directive applies to both the main agent (Stop) and a spawned subagent
-    (SubagentStop). It is ASCII-only so it survives stdout capture, and it is
+    (SubagentStop). It states when to store a report and formalizes how to answer
+    the block in one concise line when the report is already stored or there is
+    nothing to store. It is ASCII-only so it survives stdout capture, and it is
     self-contained so a reader needs no external context to act on it.
 
     Returns:
@@ -72,7 +77,16 @@ def format_instruction_message() -> str:
         'or findings files to disk does NOT mean "skip the context-server entry". '
         'Storing a context-server entry is not writing a file to disk; do it anyway if '
         'you are capable.\n'
-        '- If you genuinely have no context-server store tools, just stop.'
+        '- If you genuinely have no context-server store tools, just stop.\n'
+        '\n'
+        'How to answer this block (keep it to ONE concise line):\n'
+        '- Report already stored, or nothing to store: state the stored report context_id '
+        'and your key decision or outcome, for example "Report already stored: ID <id>; '
+        'Decision: PROCEED", then stop.\n'
+        '- No store tools and nothing to store: say so in one short line, then stop.\n'
+        '- Work produced and not yet stored: store it now, then give that same one-line '
+        'confirmation.\n'
+        'Do not re-explain at length; this turn is just your brief confirmation.'
     )
 
 
