@@ -8438,6 +8438,86 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_list_threads_pagination(self) -> bool:
+        """Verify list_threads optional limit/offset pagination is bounded, ordered, and backward-compatible.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'list_threads_pagination'
+        assert self.client is not None
+        try:
+            # Store entries in four distinct threads with increasing created_at so
+            # the most-recent-first ordering is deterministic: _page_d is newest.
+            page_threads = [
+                f'{self.test_thread_id}_page_a',
+                f'{self.test_thread_id}_page_b',
+                f'{self.test_thread_id}_page_c',
+                f'{self.test_thread_id}_page_d',
+            ]
+            for thread_id in page_threads:
+                store = await self.client.call_tool('store_context', {
+                    'thread_id': thread_id, 'source': 'agent',
+                    'text': f'Entry for {thread_id}',
+                })
+                store_data = self._extract_content(store)
+                if not store_data.get('success'):
+                    self.test_results.append((test_name, False, f'Store failed for {thread_id}: {store_data}'))
+                    return False
+                # Ensure distinct created_at timestamps for deterministic ordering.
+                await asyncio.sleep(0.01)
+
+            # 1) No-arg call returns ALL threads (backward compatible).
+            all_data = self._extract_content(await self.client.call_tool('list_threads', {}))
+            if 'threads' not in all_data:
+                self.test_results.append((test_name, False, f'Missing threads key (no-arg): {all_data}'))
+                return False
+            all_ids = [t.get('thread_id') for t in all_data['threads']]
+            if not all(t in all_ids for t in page_threads):
+                self.test_results.append((test_name, False, f'No-arg call did not return all stored threads: {all_ids}'))
+                return False
+
+            # 2) limit=2 returns exactly two threads; total_threads is the page count.
+            limit_data = self._extract_content(await self.client.call_tool('list_threads', {'limit': 2}))
+            limit_threads = limit_data.get('threads', [])
+            if len(limit_threads) != 2:
+                self.test_results.append((test_name, False, f'limit=2 returned {len(limit_threads)} threads'))
+                return False
+            if limit_data.get('total_threads') != 2:
+                self.test_results.append((test_name, False,
+                    f'total_threads should be 2: {limit_data.get("total_threads")}'))
+                return False
+
+            # 3) offset paginates without overlap.
+            page1 = self._extract_content(
+                await self.client.call_tool('list_threads', {'limit': 2, 'offset': 0}),
+            ).get('threads', [])
+            page2 = self._extract_content(
+                await self.client.call_tool('list_threads', {'limit': 2, 'offset': 2}),
+            ).get('threads', [])
+            page1_ids = {t.get('thread_id') for t in page1}
+            page2_ids = {t.get('thread_id') for t in page2}
+            if page1_ids & page2_ids:
+                self.test_results.append((test_name, False, f'Pages overlap: {page1_ids & page2_ids}'))
+                return False
+
+            # 4) Ordering: among the four stored threads the global newest-first list
+            #    must yield d, c, b, a (newest created_at first).
+            ordered_full = [t.get('thread_id') for t in all_data['threads']]
+            our_in_order = [tid for tid in ordered_full if tid in page_threads]
+            expected_order = list(reversed(page_threads))
+            if our_in_order != expected_order:
+                self.test_results.append((test_name, False,
+                    f'Ordering wrong. Expected {expected_order}, got {our_in_order}'))
+                return False
+
+            self.test_results.append((test_name, True,
+                'list_threads pagination bounded, ordered, and backward-compatible'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_session_pooler_validation_noop_on_sqlite(self) -> bool:
         """Verify the session-pooler advisory wiring is a PostgreSQL-only no-op on SQLite.
 
@@ -9747,6 +9827,7 @@ class MCPServerIntegrationTest:
             ('Summary Env Vars Accepted', self.test_summary_env_vars_accepted),
             # Coverage of generation-first transactional store path with stub providers
             ('List Threads Populated Database', self.test_list_threads_with_populated_database),
+            ('List Threads Pagination', self.test_list_threads_pagination),
             ('Session Pooler Validation No-op on SQLite', self.test_session_pooler_validation_noop_on_sqlite),
             ('Update Triggers Embedding Regen', self.test_update_context_triggers_embedding_regeneration),
             ('Batch Store Dedup Within Batch', self.test_store_context_batch_dedup_within_batch),

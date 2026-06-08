@@ -7,10 +7,12 @@ This module contains tools for discovering and analyzing stored context:
 """
 
 import logging
+from typing import Annotated
 from typing import cast
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
+from pydantic import Field
 
 from app.errors import format_exception_message
 from app.settings import get_settings
@@ -25,31 +27,53 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-async def list_threads(ctx: Context | None = None) -> ThreadListDict:
-    """List all threads with entry statistics. Use for thread discovery and overview.
+async def list_threads(
+    limit: Annotated[
+        int | None,
+        Field(ge=1, le=100, description='Maximum threads to return (1-100); omit for all threads (default)'),
+    ] = None,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    ctx: Context | None = None,
+) -> ThreadListDict:
+    """List threads with entry statistics. Use for thread discovery and overview.
+
+    Pagination is optional and backward-compatible: with no arguments ALL threads
+    are returned. Supply `limit` to bound the result and `offset` to skip rows.
+    Threads are ordered by most-recent activity first (last_entry DESC, then by
+    latest entry id DESC); pagination applies AFTER this ordering.
+
+    Args:
+        limit: Maximum threads to return (1-100). When omitted (None), all
+            threads are returned (no limit).
+        offset: Number of leading threads to skip for pagination (default 0).
+            Ignored when `limit` is omitted.
+        ctx: FastMCP context (injected; hidden from clients).
 
     Fields explained:
     - entry_count: Total context entries in thread
     - source_types: Number of distinct sources (1=user only or agent only, 2=both)
     - multimodal_count: Entries containing images
     - first_entry/last_entry: ISO timestamps of earliest/latest entries
-    - last_id: ID of most recent entry (useful for pagination)
+    - last_id: ID of most recent entry (a hint for keyset pagination; not yet
+      consumed as a cursor -- limit/offset is the supported pagination today)
 
     Returns:
-        ThreadListDict with threads (list of thread info dicts) and total_threads (int).
+        ThreadListDict with threads (list of thread info dicts for the requested
+        page) and total_threads (count of threads in THIS response, not the whole
+        database).
 
     Raises:
         ToolError: If listing threads fails.
     """
     try:
         if ctx:
-            await ctx.info('Listing all threads')
+            await ctx.info('Listing threads')
 
         # Get repositories
         repos = await ensure_repositories()
 
-        # Use statistics repository to get thread list
-        threads = await repos.statistics.get_thread_list()
+        # Use statistics repository to get thread list (optionally paginated).
+        threads = await repos.statistics.get_thread_list(limit=limit, offset=offset)
 
         return {
             'threads': threads,

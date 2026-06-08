@@ -1150,3 +1150,127 @@ class TestSqliteTruthinessAlignment:
         assert type(avg) is float
         # 3 entries across 2 threads -> average 1.5.
         assert avg == 1.5
+
+
+class TestGetThreadListPagination:
+    """Tests for optional limit/offset pagination on get_thread_list (SQLite).
+
+    Five threads with strictly increasing last_entry timestamps are inserted so
+    the deterministic ORDER BY (MAX(created_at) DESC, MAX(id) DESC) produces a
+    known sequence: thread_e, thread_d, thread_c, thread_b, thread_a.
+    """
+
+    @staticmethod
+    def _insert_five_threads(conn: sqlite3.Connection) -> None:
+        cursor = conn.cursor()
+        rows = [
+            ('0190abcdef1234567890abcd0000e001', 'thread_a', '2026-01-01 10:00:01'),
+            ('0190abcdef1234567890abcd0000e002', 'thread_b', '2026-01-01 10:00:02'),
+            ('0190abcdef1234567890abcd0000e003', 'thread_c', '2026-01-01 10:00:03'),
+            ('0190abcdef1234567890abcd0000e004', 'thread_d', '2026-01-01 10:00:04'),
+            ('0190abcdef1234567890abcd0000e005', 'thread_e', '2026-01-01 10:00:05'),
+        ]
+        for entry_id, thread_id, created_at in rows:
+            cursor.execute(
+                'INSERT INTO context_entries '
+                '(id, thread_id, source, content_type, text_content, created_at) '
+                "VALUES (?, ?, 'user', 'text', 'entry', ?)",
+                (entry_id, thread_id, created_at),
+            )
+
+    # Expected order, newest activity first.
+    _EXPECTED_ORDER = ['thread_e', 'thread_d', 'thread_c', 'thread_b', 'thread_a']
+
+    @pytest.mark.asyncio
+    async def test_no_limit_returns_all_threads(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Default (no limit) returns every thread in the canonical order."""
+        await stats_test_db.execute_write(self._insert_five_threads)
+
+        result = await stats_repo.get_thread_list()
+
+        assert [t['thread_id'] for t in result] == self._EXPECTED_ORDER
+
+    @pytest.mark.asyncio
+    async def test_limit_none_explicit_returns_all_threads(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Explicit limit=None is identical to the default (no LIMIT clause)."""
+        await stats_test_db.execute_write(self._insert_five_threads)
+
+        result = await stats_repo.get_thread_list(limit=None)
+
+        assert [t['thread_id'] for t in result] == self._EXPECTED_ORDER
+
+    @pytest.mark.asyncio
+    async def test_limit_bounds_result_preserving_order(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """limit returns the first N threads of the canonical order."""
+        await stats_test_db.execute_write(self._insert_five_threads)
+
+        result = await stats_repo.get_thread_list(limit=2)
+
+        assert [t['thread_id'] for t in result] == ['thread_e', 'thread_d']
+
+    @pytest.mark.asyncio
+    async def test_offset_skips_leading_threads(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """limit + offset returns the correct page slice in canonical order."""
+        await stats_test_db.execute_write(self._insert_five_threads)
+
+        result = await stats_repo.get_thread_list(limit=2, offset=2)
+
+        assert [t['thread_id'] for t in result] == ['thread_c', 'thread_b']
+
+    @pytest.mark.asyncio
+    async def test_offset_past_end_returns_empty(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """An offset past the last row yields an empty page, not an error."""
+        await stats_test_db.execute_write(self._insert_five_threads)
+
+        result = await stats_repo.get_thread_list(limit=5, offset=10)
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_limit_larger_than_total_returns_all(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """A limit exceeding the thread count returns every thread."""
+        await stats_test_db.execute_write(self._insert_five_threads)
+
+        result = await stats_repo.get_thread_list(limit=100)
+
+        assert [t['thread_id'] for t in result] == self._EXPECTED_ORDER
+
+    @pytest.mark.asyncio
+    async def test_full_page_walk_covers_all_threads_once(
+        self,
+        stats_test_db: StorageBackend,
+        stats_repo: StatisticsRepository,
+    ) -> None:
+        """Walking pages of size 2 reconstructs the full ordered list exactly once."""
+        await stats_test_db.execute_write(self._insert_five_threads)
+
+        page1 = await stats_repo.get_thread_list(limit=2, offset=0)
+        page2 = await stats_repo.get_thread_list(limit=2, offset=2)
+        page3 = await stats_repo.get_thread_list(limit=2, offset=4)
+
+        walked = [t['thread_id'] for t in (*page1, *page2, *page3)]
+        assert walked == self._EXPECTED_ORDER

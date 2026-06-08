@@ -66,17 +66,38 @@ class StatisticsRepository(BaseRepository):
         """
         super().__init__(backend)
 
-    async def get_thread_list(self) -> list[ThreadInfoDict]:
-        """Get list of all threads with statistics.
+    async def get_thread_list(self, limit: int | None = None, offset: int = 0) -> list[ThreadInfoDict]:
+        """Get list of threads with statistics, optionally paginated.
+
+        When ``limit`` is None (the default) ALL threads are returned and no
+        LIMIT/OFFSET clause is emitted, preserving the historical unbounded
+        behavior. When ``limit`` is provided, the result is bounded to ``limit``
+        rows starting at ``offset``, applied AFTER the ORDER BY so pagination
+        walks the most-recently-active threads first.
+
+        Args:
+            limit: Maximum number of threads to return. None returns all threads.
+            offset: Number of leading threads to skip (only applied when ``limit``
+                is provided).
 
         Returns:
-            List of thread information dictionaries
+            List of thread information dictionaries for the requested page.
         """
+        # Bind LIMIT/OFFSET only when a limit is requested. The placeholders are
+        # positions 1 and 2 because the GROUP BY listing queries carry no other
+        # bound parameters; _placeholder yields '?' on SQLite and '$1'/'$2' on
+        # PostgreSQL.
+        pagination_clause = ''
+        params: tuple[int, ...] = ()
+        if limit is not None:
+            pagination_clause = f'\n                    LIMIT {self._placeholder(1)} OFFSET {self._placeholder(2)}'
+            params = (limit, offset)
+
         if self.backend.backend_type == 'sqlite':
 
             def _list_threads_sqlite(conn: sqlite3.Connection) -> list[ThreadInfoDict]:
                 cursor = conn.cursor()
-                cursor.execute('''
+                cursor.execute(f'''
                     SELECT
                         thread_id,
                         COUNT(*) as entry_count,
@@ -87,8 +108,8 @@ class StatisticsRepository(BaseRepository):
                         MAX(id) as last_id
                     FROM context_entries
                     GROUP BY thread_id
-                    ORDER BY MAX(created_at) DESC, MAX(id) DESC
-                ''')
+                    ORDER BY MAX(created_at) DESC, MAX(id) DESC{pagination_clause}
+                ''', params)
 
                 threads: list[ThreadInfoDict] = []
                 for row in cursor.fetchall():
@@ -102,7 +123,7 @@ class StatisticsRepository(BaseRepository):
         # postgresql
 
         async def _list_threads_postgresql(conn: 'asyncpg.Connection') -> list[ThreadInfoDict]:
-            rows = await conn.fetch('''
+            rows = await conn.fetch(f'''
                     SELECT
                         thread_id,
                         COUNT(*) as entry_count,
@@ -113,8 +134,8 @@ class StatisticsRepository(BaseRepository):
                         (array_agg(id ORDER BY id DESC))[1] as last_id
                     FROM context_entries
                     GROUP BY thread_id
-                    ORDER BY MAX(created_at) DESC, (array_agg(id ORDER BY id DESC))[1] DESC
-                ''')
+                    ORDER BY MAX(created_at) DESC, (array_agg(id ORDER BY id DESC))[1] DESC{pagination_clause}
+                ''', *params)
 
             threads: list[ThreadInfoDict] = []
             for row in rows:

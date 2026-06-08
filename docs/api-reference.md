@@ -135,13 +135,17 @@ Delete context entries by IDs or thread.
 
 ### list_threads
 
-List all active threads with statistics.
+List threads with statistics. Pagination is optional and backward-compatible: with no arguments ALL threads are returned, ordered by most-recent activity first.
+
+**Parameters:**
+- `limit` (int, optional): Maximum threads to return (1-100). Omit (the default) to return all threads with no limit.
+- `offset` (int, optional): Number of leading threads to skip for pagination (default 0). Ignored when `limit` is omitted.
 
 **Returns:** Dictionary containing:
-- List of threads with entry counts
-- Source type distribution
-- Multimodal content counts
-- Timestamp ranges
+- `threads`: List of threads for the requested page, each with thread_id, entry_count, source_types, multimodal_count, first_entry/last_entry timestamps, and last_id (a hint for future keyset pagination).
+- `total_threads`: Count of threads in THIS response (the returned page), not the whole database.
+
+Threads are ordered by `last_entry` descending, tie-broken by the latest entry id descending; `limit`/`offset` are applied after this ordering. Keyset (cursor) pagination on `last_id` is a possible future enhancement; today `limit`/`offset` is the supported pagination.
 
 ### get_statistics
 
