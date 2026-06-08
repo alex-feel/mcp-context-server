@@ -905,6 +905,33 @@ class PostgreSQLBackend:
                 )
                 await asyncio.sleep(delay)
 
+            except asyncpg.exceptions.QueryCanceledError as e:
+                # Statement / lock-wait timeout (SQLSTATE 57014): PostgreSQL
+                # cancelled the statement after it exceeded statement_timeout
+                # (~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S, set in _setup_connection).
+                # Retry on a fresh connection with bounded backoff. This helps
+                # only a TRANSIENT lock-WAIT that has since cleared; a write
+                # fundamentally slower than the ceiling (e.g. fp32 in-transaction
+                # HNSW maintenance with ENABLE_EMBEDDING_COMPRESSION=false) needs
+                # a higher POSTGRESQL_COMMAND_TIMEOUT_S or compression left ON.
+                # Safe to retry: every write operation reaching execute_write is
+                # idempotent (deduplicating store / keyed update) and all
+                # generation completed outside the transaction.
+                last_error = e
+                delay = min(
+                    self.retry_config.base_delay * (self.retry_config.backoff_factor**attempt),
+                    self.retry_config.max_delay,
+                )
+
+                if self.retry_config.jitter:
+                    delay += random.uniform(0, delay * 0.3)
+
+                logger.warning(
+                    f'Statement timeout on write, retrying in {delay:.2f}s '
+                    f'(attempt {attempt + 1}/{self.retry_config.max_retries}): {e}',
+                )
+                await asyncio.sleep(delay)
+
             except Exception as e:
                 # Non-retryable error
                 self.metrics.failed_queries += 1

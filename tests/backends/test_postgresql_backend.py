@@ -6,9 +6,13 @@ configuration, connection string handling, advisory locks, and
 connection reset behavior.
 """
 
+import contextlib
 import unittest.mock
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 
+import asyncpg
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
@@ -360,8 +364,6 @@ class TestInitializeErrorClassification:
     @pytest.mark.asyncio
     async def test_too_many_connections_raises_dependency_error(self) -> None:
         """TooManyConnectionsError during pool creation raises DependencyError."""
-        import asyncpg
-
         from app.errors import DependencyError
 
         backend = PostgreSQLBackend(
@@ -381,8 +383,6 @@ class TestInitializeErrorClassification:
     @pytest.mark.asyncio
     async def test_invalid_password_raises_configuration_error(self) -> None:
         """InvalidPasswordError during pool creation raises ConfigurationError."""
-        import asyncpg
-
         from app.errors import ConfigurationError
 
         backend = PostgreSQLBackend(
@@ -402,8 +402,6 @@ class TestInitializeErrorClassification:
     @pytest.mark.asyncio
     async def test_invalid_catalog_name_raises_configuration_error(self) -> None:
         """InvalidCatalogNameError during pool creation raises ConfigurationError."""
-        import asyncpg
-
         from app.errors import ConfigurationError
 
         backend = PostgreSQLBackend(
@@ -479,3 +477,92 @@ class TestInitializeErrorClassification:
             pytest.raises(DependencyError, match='PostgreSQL connection failed'),
         ):
             await backend.initialize()
+
+
+class TestExecuteWriteStatementTimeoutRetry:
+    """execute_write retries QueryCanceledError (SQLSTATE 57014) then succeeds."""
+
+    @staticmethod
+    def _make_backend() -> PostgreSQLBackend:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        # Tight, deterministic retry config: enough attempts, no real sleeping.
+        backend.retry_config.max_retries = 3
+        backend.retry_config.base_delay = 0.0
+        backend.retry_config.max_delay = 0.0
+        backend.retry_config.jitter = False
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_execute_write_retries_query_canceled_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A single QueryCanceledError is retried; the second attempt commits once.
+
+        Asserts NO duplicate write: the operation callable is invoked exactly
+        twice total (one cancelled attempt + one successful attempt), and the
+        successful attempt returns its value exactly once.
+        """
+        backend = self._make_backend()
+        backend._shutdown = False
+
+        # Fake transaction context manager (no real DB).
+        @contextlib.asynccontextmanager
+        async def _fake_transaction() -> AsyncIterator[None]:
+            yield None
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
+
+        # get_connection is an async context manager yielding mock_conn.
+        @contextlib.asynccontextmanager
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
+
+        call_count = {'n': 0}
+
+        async def operation(_conn: object, value: str) -> str:
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                raise asyncpg.exceptions.QueryCanceledError(
+                    'canceling statement due to statement timeout',
+                )
+            return value
+
+        result = await backend.execute_write(operation, 'committed-once')
+
+        assert result == 'committed-once'
+        # Exactly two invocations: one cancelled, one successful. No third
+        # invocation => no duplicate write.
+        assert call_count['n'] == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_write_query_canceled_exhausts_then_raises(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Persistent QueryCanceledError exhausts retries and re-raises it."""
+        backend = self._make_backend()
+        backend.retry_config.max_retries = 2
+        backend._shutdown = False
+
+        @contextlib.asynccontextmanager
+        async def _fake_transaction() -> AsyncIterator[None]:
+            yield None
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
+
+        @contextlib.asynccontextmanager
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
+
+        async def operation(_conn: object) -> None:
+            raise asyncpg.exceptions.QueryCanceledError('still timing out')
+
+        with pytest.raises(asyncpg.exceptions.QueryCanceledError):
+            await backend.execute_write(operation)

@@ -87,6 +87,20 @@ class TestConnectionErrorClassification:
         assert not is_connection_error(TypeError('wrong type'))
         assert not is_connection_error(RuntimeError('logic error'))
 
+    def test_query_canceled_error_is_retryable(self) -> None:
+        """statement_timeout cancel (SQLSTATE 57014) is classified retryable.
+
+        QueryCanceledError is raised when PostgreSQL cancels a statement that
+        exceeded statement_timeout. It is a transient lock-wait/timeout error,
+        safe to retry because the DB write is idempotent and generation already
+        completed outside the transaction.
+        """
+        assert is_connection_error(asyncpg.exceptions.QueryCanceledError('canceling statement due to statement timeout'))
+
+    def test_query_canceled_error_sqlstate_is_57014(self) -> None:
+        """Document the SQLSTATE this classifier now treats as retryable."""
+        assert asyncpg.exceptions.QueryCanceledError.sqlstate == '57014'
+
 
 # ---------------------------------------------------------------------------
 # New: TestValidateAndNormalizeImages

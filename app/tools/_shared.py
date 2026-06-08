@@ -409,21 +409,46 @@ async def transaction_heartbeat(txn: object) -> None:
 
 
 def is_connection_error(exc: Exception) -> bool:
-    """Check if an exception indicates a connection-level failure.
+    """Check if an exception is a transient DB error that is safe to retry.
 
-    These errors are safe to retry because they indicate the connection
-    was lost (not a logical/data error). Operations using deduplication
-    (store_context) or idempotent updates are safe to retry.
+    Despite the historical name, this classifier covers two transient
+    families, both safe to retry because the database write that follows is
+    idempotent (store_context deduplicates; update_context is a keyed
+    partial update) and ALL embedding/summary/compression generation has
+    already completed OUTSIDE the transaction (generation-first invariant) --
+    so a retry re-runs only the rolled-back DB write and never regenerates or
+    skips generation:
+
+    1. Connection-level failures (the connection was lost, not a logical/data
+       error): asyncpg.InterfaceError, asyncpg.ConnectionDoesNotExistError,
+       ConnectionResetError, OSError.
+    2. Statement / lock-wait timeouts: asyncpg.exceptions.QueryCanceledError
+       (SQLSTATE 57014). PostgreSQL cancels the statement when it exceeds the
+       connection's statement_timeout (set to ~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S
+       in PostgreSQLBackend._setup_connection). Retrying with the SAME ceiling
+       only helps a TRANSIENT lock-WAIT (the write was blocked behind a
+       concurrent writer and the contention has since cleared); it does NOT
+       help a write that is fundamentally slower than the ceiling -- for that
+       case (notably fp32 mode, ENABLE_EMBEDDING_COMPRESSION=false, where each
+       per-chunk INSERT performs in-transaction HNSW maintenance) the operator
+       must also raise POSTGRESQL_COMMAND_TIMEOUT_S or keep compression ON. See
+       docs/database-backends.md.
+
+    QueryCanceledError is PostgreSQL-only; the isinstance check is harmless on
+    SQLite, which never raises it (SQLite write contention surfaces as
+    sqlite3.OperationalError 'database is locked', handled by the SQLite
+    backend's own write-queue retry).
 
     Args:
         exc: The exception to classify
 
     Returns:
-        True if the exception is a connection error safe for retry
+        True if the exception is a transient DB error safe for retry
     """
     return isinstance(exc, (
         asyncpg.InterfaceError,
         asyncpg.ConnectionDoesNotExistError,
+        asyncpg.exceptions.QueryCanceledError,
         ConnectionResetError,
         OSError,
     ))
