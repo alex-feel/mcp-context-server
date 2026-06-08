@@ -21,6 +21,7 @@ from typing import TypeVar
 from typing import cast
 from typing import overload
 from urllib.parse import quote
+from urllib.parse import urlsplit
 
 import asyncpg
 
@@ -186,6 +187,10 @@ class PostgreSQLBackend:
 
     # Pgpool-II detection result (set during initialize() by _detect_pgpool_ii())
     _pgpool_version: str | None
+    # Session-mode pooler detection result (set during initialize() by
+    # _detect_session_mode_pooler()); True when a Supabase Session Pooler
+    # endpoint (host *.pooler.supabase.com on port 5432) is in use.
+    _session_mode_pooler: bool
 
     def __init__(
         self,
@@ -569,6 +574,9 @@ class PostgreSQLBackend:
             # Detect Pgpool-II and log result
             await self._detect_pgpool_ii()
 
+            # Detect Supabase Session Pooler endpoint and warn on oversized pool
+            self._detect_session_mode_pooler()
+
             logger.info('PostgreSQL backend initialized successfully')
 
         except (
@@ -644,6 +652,57 @@ class PostgreSQLBackend:
             # Log but do not fail initialization
             logger.warning(f'Pgpool-II detection check failed: {e}')
             self._pgpool_version = None
+
+    def _detect_session_mode_pooler(self) -> None:
+        """Detect a Supabase Session Pooler endpoint and warn if pool too large.
+
+        Inspects the connection string host/port (the authoritative endpoint the
+        pool actually dials, including the POSTGRESQL_CONNECTION_STRING form).
+        When a Supabase Session Pooler (host contains ``pooler.supabase.com`` on
+        port 5432) is detected AND POSTGRESQL_POOL_MAX exceeds the conservative
+        default per-session client cap, logs a targeted WARNING naming the
+        symptom (MaxClientsInSessionMode) and the fix.
+
+        Defense-in-depth only: does NOT modify pool size. Non-fatal -- any
+        parsing failure is logged and treated as "not a session pooler".
+
+        Mirrors _detect_pgpool_ii() in level, message shape, and resilience.
+        """
+        from app.startup.validation import is_supabase_session_pooler
+
+        try:
+            parsed = urlsplit(self.connection_string)
+            host = (parsed.hostname or '').lower()
+            port = parsed.port if parsed.port is not None else 5432
+        except Exception as e:
+            # Malformed connection string is non-fatal for this advisory;
+            # the pool creation above already succeeded with this string.
+            logger.warning(f'Session-mode pooler detection check failed: {e}')
+            self._session_mode_pooler = False
+            return
+
+        if not is_supabase_session_pooler(host, port):
+            self._session_mode_pooler = False
+            return
+
+        self._session_mode_pooler = True
+
+        pool_max = settings.storage.postgresql_pool_max
+        cap = settings.storage.postgresql_session_pooler_max_clients
+        if pool_max > cap:
+            logger.warning(
+                f'Supabase Session Pooler detected ({host}:{port}) with '
+                f'POSTGRESQL_POOL_MAX={pool_max}, which exceeds '
+                f'POSTGRESQL_SESSION_POOLER_MAX_CLIENTS={cap} (the session-mode '
+                f'per-session client cap; default 15 on Supabase Free/Pro tiers). '
+                f'This can intermittently fail with "MaxClientsInSessionMode: '
+                f'max clients reached - in Session mode max clients are limited '
+                f'to pool_size". Lower POSTGRESQL_POOL_MAX to fit your pooler '
+                f'capacity (or raise POSTGRESQL_SESSION_POOLER_MAX_CLIENTS if your '
+                f'tier allows more), or use the Transaction-mode pooler (port 6543) '
+                f'or a Direct Connection. See docs/database-backends.md '
+                f'"Session Pooler Connection Limits".',
+            )
 
     async def shutdown(self) -> None:
         """Gracefully shut down the PostgreSQL backend."""
@@ -1003,5 +1062,9 @@ class PostgreSQLBackend:
         if hasattr(self, '_pgpool_version'):
             pool_metrics['pgpool_detected'] = self._pgpool_version is not None
             pool_metrics['pgpool_version'] = self._pgpool_version
+
+        # Add session-mode pooler detection info (only if detection has run)
+        if hasattr(self, '_session_mode_pooler'):
+            pool_metrics['session_mode_pooler_detected'] = self._session_mode_pooler
 
         return pool_metrics

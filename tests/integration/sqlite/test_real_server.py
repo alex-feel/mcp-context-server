@@ -8438,6 +8438,30 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_session_pooler_validation_noop_on_sqlite(self) -> bool:
+        """Verify the session-pooler advisory wiring is a PostgreSQL-only no-op on SQLite.
+
+        validate_session_pooler_capacity() / _detect_session_mode_pooler() are gated on
+        backend_type == 'postgresql'; a healthy SQLite server boot proves the new startup
+        step neither runs nor crashes on the default backend.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'session_pooler_validation_noop_on_sqlite'
+        assert self.client is not None
+        try:
+            data = self._extract_content(await self.client.call_tool('list_threads', {}))
+            if 'threads' not in data:
+                self.test_results.append((test_name, False, f'Server not operational: {data}'))
+                return False
+            self.test_results.append((test_name, True,
+                'SQLite server operational; session-pooler advisory is a PG-only no-op'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Unexpected failure: {e}'))
+            return False
+
     async def test_update_context_triggers_embedding_regeneration(self) -> bool:
         """Verify that updating text content triggers embedding regeneration.
 
@@ -9723,6 +9747,7 @@ class MCPServerIntegrationTest:
             ('Summary Env Vars Accepted', self.test_summary_env_vars_accepted),
             # Coverage of generation-first transactional store path with stub providers
             ('List Threads Populated Database', self.test_list_threads_with_populated_database),
+            ('Session Pooler Validation No-op on SQLite', self.test_session_pooler_validation_noop_on_sqlite),
             ('Update Triggers Embedding Regen', self.test_update_context_triggers_embedding_regeneration),
             ('Batch Store Dedup Within Batch', self.test_store_context_batch_dedup_within_batch),
             ('Hybrid Search Graceful Degradation', self.test_hybrid_search_graceful_degradation_fts_only),

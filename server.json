@@ -298,6 +298,13 @@
           "name": "POSTGRESQL_POOL_MAX"
         },
         {
+          "description": "Per-session client cap of an external session-mode pooler (Supabase Session Pooler / Supavisor); advisory threshold for a startup MaxClientsInSessionMode warning when POSTGRESQL_POOL_MAX exceeds it (default 15)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
+        },
+        {
           "description": "PostgreSQL connection pool timeout in seconds",
           "isRequired": false,
           "format": "number",
@@ -1289,6 +1296,13 @@
           "format": "number",
           "isSecret": false,
           "name": "POSTGRESQL_POOL_MAX"
+        },
+        {
+          "description": "Per-session client cap of an external session-mode pooler (Supabase Session Pooler / Supavisor); advisory threshold for a startup MaxClientsInSessionMode warning when POSTGRESQL_POOL_MAX exceeds it (default 15)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
         },
         {
           "description": "PostgreSQL connection pool timeout in seconds",

@@ -316,13 +316,14 @@ For detailed PostgreSQL setup and Supabase integration, see the [Database Backen
 
 These settings apply only when `STORAGE_BACKEND=postgresql`.
 
-| Variable                         | Type    | Default | Constraints | Description                                                                                            |
-|----------------------------------|---------|---------|-------------|--------------------------------------------------------------------------------------------------------|
-| `POSTGRESQL_POOL_MIN`            | integer | `2`     |             | Minimum connections in the asyncpg connection pool                                                     |
-| `POSTGRESQL_POOL_MAX`            | integer | `20`    |             | Maximum connections in the asyncpg connection pool                                                     |
-| `POSTGRESQL_POOL_TIMEOUT_S`      | float   | `120.0` |             | Connection acquisition timeout in seconds                                                              |
-| `POSTGRESQL_COMMAND_TIMEOUT_S`   | float   | `60.0`  |             | Default command timeout in seconds                                                                     |
-| `POSTGRESQL_MIGRATION_TIMEOUT_S` | float   | `300.0` | >0, <=3600  | Timeout in seconds for migration DDL operations (CREATE INDEX, ALTER TABLE). Default: 300s (5 minutes) |
+| Variable                                | Type    | Default | Constraints | Description                                                                                                                                                                                                                                            |
+|-----------------------------------------|---------|---------|-------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `POSTGRESQL_POOL_MIN`                   | integer | `2`     |             | Minimum connections in the asyncpg connection pool                                                                                                                                                                                                     |
+| `POSTGRESQL_POOL_MAX`                   | integer | `20`    |             | Maximum connections in the asyncpg connection pool                                                                                                                                                                                                     |
+| `POSTGRESQL_SESSION_POOLER_MAX_CLIENTS` | integer | `15`    | >=1         | Per-session client cap of an external session-mode pooler (Supabase Session Pooler / Supavisor); advisory startup WARNING about MaxClientsInSessionMode when `POSTGRESQL_POOL_MAX` exceeds it. Raise on larger tiers. See `docs/database-backends.md`. |
+| `POSTGRESQL_POOL_TIMEOUT_S`             | float   | `120.0` |             | Connection acquisition timeout in seconds                                                                                                                                                                                                              |
+| `POSTGRESQL_COMMAND_TIMEOUT_S`          | float   | `60.0`  |             | Default command timeout in seconds                                                                                                                                                                                                                     |
+| `POSTGRESQL_MIGRATION_TIMEOUT_S`        | float   | `300.0` | >0, <=3600  | Timeout in seconds for migration DDL operations (CREATE INDEX, ALTER TABLE). Default: 300s (5 minutes)                                                                                                                                                 |
 
 ## PostgreSQL Connection Pool Hardening
 

@@ -601,6 +601,26 @@ class TestValidatePoolTimeoutForEmbedding:
         assert len(timeout_warnings) == 0
 
 
+class TestIsSupabaseSessionPooler:
+    """Tests for the is_supabase_session_pooler() predicate.
+
+    The session-pooler advisory now lives solely in
+    PostgreSQLBackend._detect_session_mode_pooler() (a single detector that
+    mirrors _detect_pgpool_ii, sets the metric, and warns once); see
+    tests/backends/test_session_pooler_detection.py. Only the shared predicate
+    remains in app.startup.validation.
+    """
+
+    def test_is_supabase_session_pooler_matrix(self) -> None:
+        """Predicate flags only pooler.supabase.com on port 5432."""
+        from app.startup.validation import is_supabase_session_pooler
+
+        assert is_supabase_session_pooler('aws-0-us-east-1.pooler.supabase.com', 5432) is True
+        assert is_supabase_session_pooler('aws-0-us-east-1.pooler.supabase.com', 6543) is False
+        assert is_supabase_session_pooler('db.abc.supabase.co', 5432) is False
+        assert is_supabase_session_pooler('localhost', 5432) is False
+
+
 class TestGetServerVersion:
     """Tests for _get_server_version()."""
 

@@ -21,6 +21,19 @@ from app.settings import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# Hostname fragment identifying the Supabase / Supavisor pooler endpoint.
+# Both session mode (port 5432) and transaction mode (port 6543) share this
+# host; only session mode (5432) enforces the per-session client cap that
+# produces "MaxClientsInSessionMode". This (and the port below) is a fixed
+# external-service protocol fact used only inside the detection predicate --
+# like the 'SHOW POOL_VERSION' probe and error code 42704 used for Pgpool-II
+# detection -- NOT an operator setting. The configurable advisory threshold
+# lives in StorageSettings.postgresql_session_pooler_max_clients.
+_SUPABASE_POOLER_HOST_FRAGMENT = 'pooler.supabase.com'
+
+# Supavisor session-mode port. Transaction mode (6543) has no per-session cap.
+_SUPABASE_SESSION_MODE_PORT = 5432
+
 
 def validate_pool_timeout_for_embedding() -> None:
     """Validate POSTGRESQL_POOL_TIMEOUT_S is sufficient for embedding operations.
@@ -68,6 +81,25 @@ def validate_pool_timeout_for_embedding() -> None:
             f'Consider increasing POSTGRESQL_POOL_TIMEOUT_S to avoid connection timeout errors '
             f'during high-load semantic search operations.',
         )
+
+
+def is_supabase_session_pooler(host: str, port: int) -> bool:
+    """Return True when (host, port) identifies a Supabase Session Pooler.
+
+    The Supabase / Supavisor pooler host contains ``pooler.supabase.com`` and
+    serves Session mode on port 5432 (the mode that enforces a per-session
+    client cap and raises ``MaxClientsInSessionMode`` when exceeded).
+    Transaction mode (port 6543) shares the host but has no per-session cap and
+    is intentionally NOT flagged. Non-Supabase hosts are never flagged.
+
+    Args:
+        host: Lowercased hostname.
+        port: TCP port.
+
+    Returns:
+        bool: True only for Supabase Session Pooler (host fragment + port 5432).
+    """
+    return _SUPABASE_POOLER_HOST_FRAGMENT in host and port == _SUPABASE_SESSION_MODE_PORT
 
 
 def truncate_text(text: str | None, max_length: int = 300) -> tuple[str | None, bool]:
@@ -196,6 +228,7 @@ def validate_date_range(start_date: str | None, end_date: str | None) -> None:
 
 __all__ = [
     'validate_pool_timeout_for_embedding',
+    'is_supabase_session_pooler',
     'truncate_text',
     'validate_date_param',
     'validate_date_range',

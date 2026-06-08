@@ -882,6 +882,17 @@ class StorageSettings(BaseSettings):
     # PostgreSQL connection pool settings
     postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN')
     postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX')
+    postgresql_session_pooler_max_clients: int = Field(
+        default=15,
+        alias='POSTGRESQL_SESSION_POOLER_MAX_CLIENTS',
+        ge=1,
+        description='Per-session client cap of an external session-mode pooler '
+        '(Supabase Session Pooler / Supavisor). Advisory only: when a Supabase '
+        'session-pooler endpoint is detected at startup and POSTGRESQL_POOL_MAX '
+        'exceeds this value, the server logs a WARNING about MaxClientsInSessionMode. '
+        'Default 15 matches Supabase Free/Pro tiers; raise it on larger tiers to '
+        'silence false advisories. Never clamps the pool.',
+    )
     postgresql_pool_timeout_s: float = Field(default=120.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
     postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
     postgresql_migration_timeout_s: float = Field(
