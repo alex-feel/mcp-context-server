@@ -359,6 +359,42 @@ class TestIsClientError:
         wrapper.__context__ = context
         assert is_client_error(wrapper) is True
 
+    def test_detects_nested_response_status_code(self) -> None:
+        """is_client_error() detects a 4xx on a nested .response object.
+
+        requests.exceptions.HTTPError / huggingface_hub.HfHubHTTPError /
+        httpx.HTTPStatusError carry the status only at e.response.status_code,
+        with NO top-level status_code attribute.
+        """
+        from types import SimpleNamespace
+
+        from app.errors import is_client_error
+
+        class FakeHttpError(Exception):
+            """Exception exposing the status only via a nested response object."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.response = SimpleNamespace(status_code=status_code)
+
+        assert is_client_error(FakeHttpError('invalid token', status_code=401)) is True
+        assert is_client_error(FakeHttpError('not found', status_code=404)) is True
+
+    def test_ignores_nested_response_5xx(self) -> None:
+        """is_client_error() returns False for a 5xx on a nested .response object."""
+        from types import SimpleNamespace
+
+        from app.errors import is_client_error
+
+        class FakeHttpError(Exception):
+            """Exception exposing the status only via a nested response object."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.response = SimpleNamespace(status_code=status_code)
+
+        assert is_client_error(FakeHttpError('service unavailable', status_code=503)) is False
+
 
 class TestFormatExceptionMessage:
     """Tests for format_exception_message()."""

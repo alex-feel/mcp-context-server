@@ -58,20 +58,29 @@ class DependencyError(Exception):
 def is_client_error(exc: Exception) -> bool:
     """Detect HTTP 4xx client errors from API provider exceptions.
 
-    Checks for status_code attribute (openai.APIStatusError, anthropic.APIStatusError)
-    in the exception or its cause chain. Client errors (400-499) indicate permanent
-    configuration problems that will not resolve with retries.
+    Checks for a 4xx status code in the exception or its __cause__/__context__
+    chain, resolved two ways per candidate: a top-level ``status_code`` attribute
+    (openai/anthropic ``APIStatusError``, ``ollama.ResponseError``) OR a nested
+    ``response.status_code`` (``requests.exceptions.HTTPError`` /
+    ``huggingface_hub.HfHubHTTPError`` / ``httpx.HTTPStatusError``, which expose
+    the status only on the response object). Client errors (400-499) indicate
+    permanent configuration problems that will not resolve with retries.
 
     Args:
         exc: The exception to inspect.
 
     Returns:
-        True if the exception or its cause has an HTTP 4xx status_code.
+        True if the exception or its cause/context has an HTTP 4xx status code.
     """
     for candidate in (exc, exc.__cause__, exc.__context__):
         if candidate is None:
             continue
+        # Direct status_code: openai/anthropic APIStatusError, ollama.ResponseError.
         status_code = getattr(candidate, 'status_code', None)
+        if not isinstance(status_code, int):
+            # Nested response object: requests.HTTPError / huggingface_hub.HfHubHTTPError
+            # / httpx.HTTPStatusError expose the status only at .response.status_code.
+            status_code = getattr(getattr(candidate, 'response', None), 'status_code', None)
         if isinstance(status_code, int) and 400 <= status_code < 500:
             return True
     return False

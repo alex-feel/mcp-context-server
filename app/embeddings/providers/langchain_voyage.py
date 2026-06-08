@@ -10,6 +10,8 @@ from typing import Any
 
 from app.embeddings.retry import with_retry_and_timeout
 from app.embeddings.tracing import traced_embedding
+from app.errors import ConfigurationError
+from app.errors import is_client_error
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -157,16 +159,29 @@ class VoyageEmbeddingProvider:
 
         Returns:
             True if provider is ready to generate embeddings
+
+        Raises:
+            ConfigurationError: If the API returns a client error (4xx) indicating
+                a permanent configuration problem (e.g., invalid VOYAGE_API_KEY or
+                EMBEDDING_MODEL)
         """
         if self._embeddings is None:
             return False
 
         try:
             await self._embeddings.aembed_query('test')
-            return True
         except Exception as e:
+            if is_client_error(e):
+                raise ConfigurationError(
+                    f'Voyage AI API returned a client error during availability check: {e}. '
+                    'This indicates a permanent configuration problem (e.g., invalid '
+                    'VOYAGE_API_KEY or EMBEDDING_MODEL). '
+                    'Fix: Check the error message above and correct the configuration.',
+                ) from e
             logger.warning(f'Voyage AI embedding not available: {e}')
             return False
+        else:
+            return True
 
     def get_dimension(self) -> int:
         """Return configured embedding dimension."""
