@@ -59,6 +59,77 @@ class TestConnectionStringBuilding:
         assert backend.connection_string == pooler_conn
 
 
+class TestBuildAsyncpgConnectKwargs:
+    """Unit tests for the shared asyncpg connect-kwargs builder.
+
+    The same helper feeds both the connection pool and the migration CLI, so
+    its output is the single source of truth for search_path / statement cache
+    behavior. These tests are DB-free.
+    """
+
+    def test_search_path_quotes_non_default_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-default schema is double-quoted and followed by public."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_SCHEMA', 'My.Schema')
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['server_settings']['search_path'] == '"My.Schema", public'
+
+    def test_search_path_public_is_benign_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default public schema resolves to the benign no-op form."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.delenv('POSTGRESQL_SCHEMA', raising=False)
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['server_settings']['search_path'] == '"public", public'
+
+    def test_statement_cache_zero_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """statement_cache_size=0 (transaction-pooler mode) propagates verbatim."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_STATEMENT_CACHE_SIZE', '0')
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['statement_cache_size'] == 0
+
+    def test_statement_cache_default_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default prepared-statement cache size is forwarded unchanged."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.delenv('POSTGRESQL_STATEMENT_CACHE_SIZE', raising=False)
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['statement_cache_size'] == 100
+
+    def test_tcp_keepalive_gucs_present_when_positive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TCP keepalive GUCs appear in server_settings when their value is > 0."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_IDLE_S', '15')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S', '5')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_COUNT', '3')
+        server_settings = build_asyncpg_connect_kwargs(AppSettings())['server_settings']
+        assert server_settings['tcp_keepalives_idle'] == '15'
+        assert server_settings['tcp_keepalives_interval'] == '5'
+        assert server_settings['tcp_keepalives_count'] == '3'
+
+    def test_tcp_keepalive_gucs_absent_when_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TCP keepalive GUCs are omitted entirely when set to 0 (disabled)."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_IDLE_S', '0')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S', '0')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_COUNT', '0')
+        server_settings = build_asyncpg_connect_kwargs(AppSettings())['server_settings']
+        assert 'tcp_keepalives_idle' not in server_settings
+        assert 'tcp_keepalives_interval' not in server_settings
+        assert 'tcp_keepalives_count' not in server_settings
+
+
 class TestPoolHardeningSettings:
     """Test pool hardening settings."""
 

@@ -55,6 +55,7 @@ from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from typing import Any
 from typing import cast
 from urllib.parse import urlparse
 
@@ -195,6 +196,12 @@ def parse_backend_url(url: str) -> tuple[str, str]:
         return ('sqlite', url[len('sqlite:') :])
     if lowered.startswith(('postgresql://', 'postgres://')):
         return ('postgresql', url)
+    # Bare Windows absolute path (e.g. ``C:\path\db`` or ``C:/path/db``).
+    # ``urlparse`` would misread the single-letter drive as a URL scheme and
+    # reject it, so detect it explicitly and treat it as a SQLite filesystem
+    # path -- the CLI accepts plain paths without a scheme on every platform.
+    if re.match(r'^[A-Za-z]:[\\/]', url):
+        return ('sqlite', url)
     parsed = urlparse(url)
     if parsed.scheme in ('', 'file'):
         if parsed.scheme == 'file':
@@ -1150,6 +1157,59 @@ async def _target_pg_has_data(conn: 'asyncpg.Connection[asyncpg.Record]') -> boo
     return int(count or 0) > 0
 
 
+def _pg_connect_kwargs() -> dict[str, Any]:
+    """Return the shared asyncpg connect kwargs for the migration CLI.
+
+    Imported lazily so the SQLite-only migration paths never import the
+    PostgreSQL backend (and therefore never require asyncpg/pgvector to be
+    installed). The kwargs apply ``search_path`` (``POSTGRESQL_SCHEMA``) and
+    ``statement_cache_size`` (set ``POSTGRESQL_STATEMENT_CACHE_SIZE=0`` for
+    transaction-mode poolers such as the Supabase Transaction Pooler). SSL is
+    carried by the DSN (``?sslmode=...``), parsed natively by asyncpg.
+
+    Returns:
+        Mapping suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``.
+    """
+    from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+    from app.settings import get_settings
+
+    return build_asyncpg_connect_kwargs(get_settings())
+
+
+async def _pg_table_exists(conn: 'asyncpg.Connection[asyncpg.Record]', table_name: str) -> bool:
+    """Return True if ``table_name`` exists in the connection's current schema.
+
+    Uses ``current_schema()`` so the probe honors the ``search_path`` applied by
+    :func:`_pg_connect_kwargs` (correct for non-default ``POSTGRESQL_SCHEMA``).
+
+    Returns:
+        True iff the table exists in the resolved schema.
+    """
+    result = await conn.fetchval(
+        'SELECT EXISTS (SELECT 1 FROM information_schema.tables '
+        'WHERE table_schema = current_schema() AND table_name = $1)',
+        table_name,
+    )
+    return bool(result)
+
+
+async def _detect_source_embedding_dim_pg(conn: 'asyncpg.Connection[asyncpg.Record]') -> int | None:
+    """Best-effort detection of the embedding dimension from a PostgreSQL source.
+
+    Mirrors :func:`_detect_source_embedding_dim` (the SQLite detector). Guards the
+    read behind table existence so a source that never enabled semantic search
+    (no ``embedding_metadata`` table) yields ``None`` instead of raising.
+
+    Returns:
+        The dimension from the first ``embedding_metadata`` row, or ``None`` when
+        the table is absent or empty.
+    """
+    if not await _pg_table_exists(conn, 'embedding_metadata'):
+        return None
+    row = await conn.fetchval('SELECT dimensions FROM embedding_metadata LIMIT 1')
+    return int(row) if row is not None else None
+
+
 async def copy_embedding_metadata_pg(
     source: 'asyncpg.Connection[asyncpg.Record]',
     target: 'asyncpg.Connection[asyncpg.Record]',
@@ -1334,12 +1394,119 @@ async def copy_vec_embeddings_pg(
     stats.vec_rows_migrated = inserted
 
 
+async def initialize_target_postgresql(
+    target_url: str,
+    *,
+    embedding_dim: int | None,
+    with_semantic: bool,
+    stats: MigrationStats,
+) -> None:
+    """Auto-initialize a PostgreSQL target's v3 schema, mirroring
+    :func:`initialize_target_sqlite`.
+
+    Applies the base schema and the migrations the live server applies at
+    startup, in the same order, against a backend built from ``target_url``:
+    ``init_database`` -> (optional semantic search) -> jsonb_merge_patch ->
+    function search_path -> (optional chunking). The embedding-compression
+    migration and the seed-locked provenance validator are NEVER run here, so
+    the target retains the fp32 layout; compression is a separate, explicit
+    ``--compress`` step.
+
+    The semantic and chunking migrations are invoked with ``force=True`` so the
+    fp32 vector layout is created regardless of the CLI process's
+    ``ENABLE_SEMANTIC_SEARCH`` value, and ``apply_semantic_search_migration``
+    receives the SOURCE-detected ``embedding_dim`` so the target vector column
+    width matches the data being copied (mirrors the SQLite path's
+    ``_detect_source_embedding_dim`` -> ``initialize_target_sqlite`` flow).
+
+    Args:
+        target_url: asyncpg DSN for the target database.
+        embedding_dim: SOURCE embedding dimension, templated into the semantic
+            vector column. Ignored when ``with_semantic`` is False.
+        with_semantic: When True, also create the semantic-search and chunking
+            layout (PG->PG migrations that copy embeddings). When False (a
+            cross-backend migration that drops embeddings), only the base schema
+            and the PostgreSQL helper functions are created; the server creates
+            the vector layout later, at the operator's configured dimension,
+            when re-embedding.
+        stats: Mutated to record an informational warning describing the
+            auto-init.
+
+    Raises:
+        RuntimeError: If the pgvector extension cannot be created (for example,
+            insufficient privileges on a managed service such as Supabase).
+    """
+    import asyncpg
+
+    from app.backends import create_backend
+    from app.migrations.chunking import apply_chunking_migration
+    from app.migrations.semantic import apply_function_search_path_migration
+    from app.migrations.semantic import apply_jsonb_merge_patch_migration
+    from app.migrations.semantic import apply_semantic_search_migration
+    from app.startup import init_database
+
+    pg_kwargs = _pg_connect_kwargs()
+
+    from app.settings import get_settings
+
+    schema = get_settings().storage.postgresql_schema
+
+    # The pgvector extension must exist before the backend pool is created: the
+    # pool's per-connection init registers the vector type and raises when the
+    # extension is absent (whenever the pgvector package is installed). The
+    # target schema must also exist before the schema-qualified function DDL in
+    # the base schema / migrations runs (CREATE FUNCTION "<schema>".update_...);
+    # PostgreSQL does not auto-create a non-default schema. Both are created
+    # idempotently up front; surface a clear, actionable error on managed
+    # services where DDL privileges are restricted.
+    ext_conn = await asyncpg.connect(target_url, **pg_kwargs)
+    try:
+        await ext_conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
+        await ext_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    except asyncpg.InsufficientPrivilegeError as exc:
+        raise RuntimeError(
+            'Cannot initialize the target database (insufficient privileges to '
+            'CREATE EXTENSION vector or CREATE SCHEMA). Enable pgvector and the '
+            f'"{schema}" schema first, then rerun: on Supabase use Dashboard -> '
+            'Database -> Extensions -> vector; on self-hosted PostgreSQL run '
+            '"CREATE EXTENSION vector;" and "CREATE SCHEMA <schema>;" as a superuser.',
+        ) from exc
+    finally:
+        await ext_conn.close()
+
+    backend = create_backend(backend_type='postgresql', connection_string=target_url)
+    await backend.initialize()
+    try:
+        await init_database(backend=backend)
+        if with_semantic:
+            await apply_semantic_search_migration(backend, force=True, embedding_dim=embedding_dim)
+        await apply_jsonb_merge_patch_migration(backend)
+        await apply_function_search_path_migration(backend)
+        if with_semantic:
+            await apply_chunking_migration(backend, force=True)
+    finally:
+        await backend.shutdown()
+
+    stats.warnings.append(
+        'auto-initialized target PostgreSQL schema '
+        f'(semantic_search={"yes" if with_semantic else "no"}, '
+        f'embedding_dim={embedding_dim if with_semantic else "n/a"})',
+    )
+
+
 async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     """Drive a PostgreSQL-to-PostgreSQL migration.
 
-    The target PostgreSQL schema must be created by the user (typically
-    via a one-time server startup against the target connection string)
-    before invoking this CLI.
+    The target PostgreSQL database must already exist (the CLI does not run
+    ``CREATE DATABASE``), but its schema is auto-initialized when absent via
+    :func:`initialize_target_postgresql` -- the user no longer has to start the
+    server once against the target to create the schema. When the source carries
+    embeddings, the target is built with the fp32 vector layout (compression is
+    never enabled here); enable compression afterward with the separate
+    ``--compress`` step. If a pre-existing target lacks the fp32
+    ``vec_context_embeddings`` table while the source has embeddings (for example
+    a target initialized with compression enabled), the migration aborts with a
+    recorded error rather than silently dropping the vectors.
 
     Args:
         options: Parsed CLI options.
@@ -1350,8 +1517,9 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     import asyncpg
 
     stats = MigrationStats()
-    source_conn = await asyncpg.connect(options.source_url)
-    target_conn = await asyncpg.connect(options.target_url)
+    pg_kwargs = _pg_connect_kwargs()
+    source_conn = await asyncpg.connect(options.source_url, **pg_kwargs)
+    target_conn = await asyncpg.connect(options.target_url, **pg_kwargs)
     try:
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
@@ -1384,16 +1552,57 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         for row in source_rows:
             id_mapping[int(row['id'])] = generate_id_with_timestamp(row['created_at'])
 
-        target_table_exists = await target_conn.fetchval(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_name='context_entries' LIMIT 1",
-        )
-        if not target_table_exists:
-            stats.errors.append(
-                'target PostgreSQL database has no context_entries table; '
-                'initialize the target schema before running migration',
-            )
-            return stats
+        # Detect what the SOURCE carries so the target can be shaped to match.
+        source_has_embeddings = await _pg_table_exists(source_conn, 'embedding_metadata')
+        source_dim = await _detect_source_embedding_dim_pg(source_conn)
+
+        # Auto-initialize the target schema when it has no context_entries table,
+        # mirroring the SQLite path (initialize_target_sqlite). This removes the
+        # trap where the user had to manually pre-create the fp32 layout: the
+        # target is built with ENABLE_EMBEDDING_COMPRESSION effectively off (the
+        # compression migration is never run here), so copy_vec_embeddings_pg has
+        # an fp32 vec_context_embeddings table to write into. Compression is a
+        # separate, explicit --compress step afterward.
+        target_initialized = await _pg_table_exists(target_conn, 'context_entries')
+        if not target_initialized:
+            if options.dry_run:
+                stats.warnings.append(
+                    'target PostgreSQL database has no context_entries table; '
+                    'it would be auto-initialized on a real run',
+                )
+            else:
+                await initialize_target_postgresql(
+                    options.target_url,
+                    embedding_dim=source_dim,
+                    with_semantic=source_has_embeddings,
+                    stats=stats,
+                )
+
+        # Defensive backstop (never silently drop embeddings): a PRE-EXISTING
+        # target that has context_entries but lacks the fp32 vec_context_embeddings
+        # table (e.g. initialized with compression enabled or semantic search
+        # disabled) cannot receive the source's embeddings -- refuse rather than
+        # discard them. Skipped when the target was just auto-initialized
+        # (target_initialized is False): a real run already created the fp32 vec
+        # table via initialize_target_postgresql, and a dry run reports the
+        # auto-init plan instead.
+        if target_initialized and source_has_embeddings:
+            target_has_vec = await _pg_table_exists(target_conn, 'vec_context_embeddings')
+            if not target_has_vec:
+                message = (
+                    'source has embeddings but the target lacks the fp32 '
+                    'vec_context_embeddings table (the target was likely '
+                    'initialized with ENABLE_EMBEDDING_COMPRESSION=true or '
+                    'ENABLE_SEMANTIC_SEARCH=false). Re-create the target with '
+                    'ENABLE_SEMANTIC_SEARCH=true and ENABLE_EMBEDDING_COMPRESSION=false '
+                    '(or let this CLI auto-initialize an empty target), run the '
+                    'migration, then run --compress to enable compression.'
+                )
+                if options.dry_run:
+                    stats.warnings.append(f'{message} (a real run would abort)')
+                else:
+                    stats.errors.append(f'{message} Aborting to avoid silently dropping embeddings.')
+                    return stats
 
         if not options.dry_run:
             await target_conn.execute('BEGIN')
@@ -1431,8 +1640,10 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     )
                 stats.rows_migrated += 1
 
-            tag_rows = await source_conn.fetch(
-                'SELECT context_entry_id, tag FROM tags ORDER BY id ASC',
+            tag_rows = (
+                await source_conn.fetch('SELECT context_entry_id, tag FROM tags ORDER BY id ASC')
+                if await _pg_table_exists(source_conn, 'tags')
+                else []
             )
             for tag_row in tag_rows:
                 source_id = int(tag_row['context_entry_id'])
@@ -1450,9 +1661,13 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     )
                 stats.tags_migrated += 1
 
-            image_rows = await source_conn.fetch(
-                'SELECT context_entry_id, image_data, mime_type, image_metadata, position, created_at '
-                'FROM image_attachments ORDER BY id ASC',
+            image_rows = (
+                await source_conn.fetch(
+                    'SELECT context_entry_id, image_data, mime_type, image_metadata, position, created_at '
+                    'FROM image_attachments ORDER BY id ASC',
+                )
+                if await _pg_table_exists(source_conn, 'image_attachments')
+                else []
             )
             for img in image_rows:
                 source_id = int(img['context_entry_id'])
@@ -1481,13 +1696,32 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             # the embedding state in the target database. PostgreSQL has
             # no embedding_chunks table; the 1:N relationship lives in
             # vec_context_embeddings.id (BIGSERIAL PK) plus context_id
-            # (UUID FK).
-            await copy_embedding_metadata_pg(
-                source_conn, target_conn, id_mapping, stats, options.dry_run,
-            )
-            await copy_vec_embeddings_pg(
-                source_conn, target_conn, id_mapping, stats, options.dry_run,
-            )
+            # (UUID FK). Guarded by source table existence so a v2 source
+            # that never enabled semantic search (no embedding_metadata
+            # table) does not crash the migration.
+            if source_has_embeddings:
+                if options.dry_run and not target_initialized:
+                    # The target would be auto-initialized on a real run, so its
+                    # vec_context_embeddings table does not exist yet. Report
+                    # symmetric would-migrate counts straight from the source
+                    # instead of letting copy_vec_embeddings_pg emit a
+                    # contradictory "initialize the target schema first" warning
+                    # with vec_rows_migrated=0 (which would falsely imply the
+                    # embeddings are lost). Mirrors the SQLite dry-run, which
+                    # previews against an initialized target.
+                    stats.embedding_metadata_migrated = int(
+                        await source_conn.fetchval('SELECT COUNT(*) FROM embedding_metadata') or 0,
+                    )
+                    stats.vec_rows_migrated = int(
+                        await source_conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings') or 0,
+                    )
+                else:
+                    await copy_embedding_metadata_pg(
+                        source_conn, target_conn, id_mapping, stats, options.dry_run,
+                    )
+                    await copy_vec_embeddings_pg(
+                        source_conn, target_conn, id_mapping, stats, options.dry_run,
+                    )
 
             if not options.dry_run:
                 await target_conn.execute('COMMIT')
@@ -1504,8 +1738,12 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
 async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) -> MigrationStats:
     """Migrate from a SQLite source to a PostgreSQL target.
 
-    Vector embeddings are dropped; their on-disk binary formats are not
-    portable between the two backends. A warning is emitted.
+    Vector embeddings are dropped (their on-disk binary formats are not portable
+    between the two backends; a warning is emitted) -- re-embed the target
+    afterward. All other data is copied: context_entries, tags, and image
+    attachments. The target schema is auto-initialized when absent (base layout
+    without the vector tables, which the server creates at the configured
+    EMBEDDING_DIM on re-embed).
 
     Args:
         options: Parsed CLI options.
@@ -1522,7 +1760,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
 
     _, source_address = parse_backend_url(options.source_url)
     source = open_source_sqlite(source_address)
-    target_conn = await asyncpg.connect(options.target_url)
+    target_conn = await asyncpg.connect(options.target_url, **_pg_connect_kwargs())
     try:
         id_kind = detect_source_id_kind(source)
         if id_kind != 'integer':
@@ -1530,6 +1768,8 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                 f'source database id column is {id_kind!r}; nothing to migrate',
             )
             return stats
+
+        optional_tables = detect_optional_tables(source)
 
         if not options.dry_run and await _target_pg_has_data(target_conn):
             stats.errors.append(
@@ -1546,16 +1786,25 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
         source_rows = cursor.fetchall()
         id_mapping = build_id_mapping(source_rows)
 
-        target_table_exists = await target_conn.fetchval(
-            "SELECT 1 FROM information_schema.tables "
-            "WHERE table_name='context_entries' LIMIT 1",
-        )
-        if not target_table_exists:
-            stats.errors.append(
-                'target PostgreSQL database has no context_entries table; '
-                'initialize the target schema before running migration',
-            )
-            return stats
+        # Auto-initialize the target schema when absent (mirrors the SQLite
+        # path and the PG->PG path). Cross-backend migration drops vector
+        # embeddings, so the target is initialized WITHOUT the semantic/chunking
+        # layout (with_semantic=False); the server creates the vector tables at
+        # the operator's configured dimension when re-embedding later.
+        target_initialized = await _pg_table_exists(target_conn, 'context_entries')
+        if not target_initialized:
+            if options.dry_run:
+                stats.warnings.append(
+                    'target PostgreSQL database has no context_entries table; '
+                    'it would be auto-initialized on a real run',
+                )
+            else:
+                await initialize_target_postgresql(
+                    options.target_url,
+                    embedding_dim=None,
+                    with_semantic=False,
+                    stats=stats,
+                )
 
         if not options.dry_run:
             await target_conn.execute('BEGIN')
@@ -1592,6 +1841,64 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         _coerce_datetime(row['updated_at']),
                     )
                 stats.rows_migrated += 1
+
+            # Copy tags and image attachments (portable across backends: tags
+            # are TEXT, image payloads are BYTEA<->BLOB). Only the embedding
+            # vectors are dropped cross-backend. Reads are guarded by source
+            # table presence.
+            if optional_tables.get('tags'):
+                tag_cursor = source.execute('SELECT context_entry_id, tag FROM tags ORDER BY id ASC')
+                for tag_row in tag_cursor:
+                    sid = int(tag_row['context_entry_id'])
+                    mapped = id_mapping.get(sid)
+                    if mapped is None:
+                        stats.warnings.append(
+                            f'tags row references missing context_entry_id={sid}; skipped',
+                        )
+                        continue
+                    if not options.dry_run:
+                        await target_conn.execute(
+                            'INSERT INTO tags (context_entry_id, tag) VALUES ($1::uuid, $2)',
+                            mapped,
+                            tag_row['tag'],
+                        )
+                    stats.tags_migrated += 1
+
+            if optional_tables.get('image_attachments'):
+                image_cursor = source.execute(
+                    'SELECT context_entry_id, image_data, mime_type, image_metadata, position, created_at '
+                    'FROM image_attachments ORDER BY id ASC',
+                )
+                for img in image_cursor:
+                    sid = int(img['context_entry_id'])
+                    mapped = id_mapping.get(sid)
+                    if mapped is None:
+                        stats.warnings.append(
+                            f'image_attachments row references missing context_entry_id={sid}; skipped',
+                        )
+                        continue
+                    # A schema-legal NULL created_at is preserved as NULL rather
+                    # than crashing _coerce_datetime (the migration must not
+                    # invent data for arbitrary non-app source databases).
+                    img_created_at = (
+                        _coerce_datetime(img['created_at'])
+                        if img['created_at'] is not None
+                        else None
+                    )
+                    if not options.dry_run:
+                        await target_conn.execute(
+                            'INSERT INTO image_attachments '
+                            '(context_entry_id, image_data, mime_type, image_metadata, position, created_at) '
+                            'VALUES ($1::uuid, $2, $3, $4::jsonb, $5, $6)',
+                            mapped,
+                            img['image_data'],
+                            img['mime_type'],
+                            img['image_metadata'],
+                            img['position'],
+                            img_created_at,
+                        )
+                    stats.images_migrated += 1
+
             if not options.dry_run:
                 await target_conn.execute('COMMIT')
         except Exception:
@@ -1607,8 +1914,11 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
 async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) -> MigrationStats:
     """Migrate from a PostgreSQL source to a SQLite target.
 
-    Mirrors :func:`run_migration_mixed_sqlite_to_postgresql` with the
-    backends swapped. Vector embeddings are not transferred.
+    Mirrors :func:`run_migration_mixed_sqlite_to_postgresql` with the backends
+    swapped. Vector embeddings are not transferred (re-embed afterward), but
+    context_entries, tags, and image attachments are copied, and the SQLite
+    target's FTS5 index is rebuilt from the copied rows so full-text search works
+    even though FTS is not portable from PostgreSQL.
 
     Args:
         options: Parsed CLI options.
@@ -1633,7 +1943,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         )
         return stats
 
-    source_conn = await asyncpg.connect(options.source_url)
+    source_conn = await asyncpg.connect(options.source_url, **_pg_connect_kwargs())
     target: sqlite3.Connection | None = None
     try:
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
@@ -1658,10 +1968,20 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         for row in source_rows:
             id_mapping[int(row['id'])] = generate_id_with_timestamp(row['created_at'])
 
+        # Detect which optional tables the PostgreSQL source carries so the
+        # SQLite target is shaped to match. FTS is offered on the target (it is
+        # not portable from PostgreSQL, but the SQLite target supports it and
+        # the index is rebuilt locally from the copied rows below).
+        source_has_tags = await _pg_table_exists(source_conn, 'tags')
+        source_has_images = await _pg_table_exists(source_conn, 'image_attachments')
         target = open_target_sqlite(target_address)
         initialize_target_sqlite(
             target,
-            optional_tables={'tags': True, 'image_attachments': True},
+            optional_tables={
+                'tags': True,
+                'image_attachments': True,
+                'context_entries_fts': True,
+            },
             embedding_dim=None,
             fts_tokenizer='porter unicode61',
             stats=stats,
@@ -1703,6 +2023,67 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                         ),
                     )
                 stats.rows_migrated += 1
+
+            # Copy tags and image attachments from the PostgreSQL source into
+            # the SQLite target (portable: tags are TEXT, image payloads are
+            # BYTEA->BLOB; image_metadata is cast to text for the SQLite TEXT
+            # column; timestamps are rendered ISO-8601). Only embeddings are
+            # dropped cross-backend. Reads guarded by source table presence.
+            if source_has_tags:
+                tag_rows = await source_conn.fetch(
+                    'SELECT context_entry_id, tag FROM tags ORDER BY id ASC',
+                )
+                for tag_row in tag_rows:
+                    sid = int(tag_row['context_entry_id'])
+                    mapped = id_mapping.get(sid)
+                    if mapped is None:
+                        stats.warnings.append(
+                            f'tags row references missing context_entry_id={sid}; skipped',
+                        )
+                        continue
+                    if not options.dry_run:
+                        target.execute(
+                            'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                            (mapped, tag_row['tag']),
+                        )
+                    stats.tags_migrated += 1
+
+            if source_has_images:
+                image_rows = await source_conn.fetch(
+                    'SELECT context_entry_id, image_data, mime_type, '
+                    'image_metadata::text AS image_metadata, position, created_at '
+                    'FROM image_attachments ORDER BY id ASC',
+                )
+                for img in image_rows:
+                    sid = int(img['context_entry_id'])
+                    mapped = id_mapping.get(sid)
+                    if mapped is None:
+                        stats.warnings.append(
+                            f'image_attachments row references missing context_entry_id={sid}; skipped',
+                        )
+                        continue
+                    # Preserve a schema-legal NULL created_at as NULL instead of
+                    # crashing on None.isoformat() (the source may be an
+                    # arbitrary non-app v2 database).
+                    img_created_at = (
+                        img['created_at'].isoformat() if img['created_at'] is not None else None
+                    )
+                    if not options.dry_run:
+                        target.execute(
+                            'INSERT INTO image_attachments '
+                            '(context_entry_id, image_data, mime_type, image_metadata, position, created_at) '
+                            'VALUES (?, ?, ?, ?, ?, ?)',
+                            (
+                                mapped,
+                                img['image_data'],
+                                img['mime_type'],
+                                img['image_metadata'],
+                                img['position'],
+                                img_created_at,
+                            ),
+                        )
+                    stats.images_migrated += 1
+
             if options.dry_run:
                 target.rollback()
             else:
@@ -1710,6 +2091,14 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         except Exception:
             target.rollback()
             raise
+
+        # Rebuild the SQLite FTS5 index from the copied rows, outside the data
+        # transaction (mirrors the SQLite->SQLite path), so the SQLite target
+        # has working full-text search even though FTS is not portable from
+        # PostgreSQL.
+        rebuild_fts_sqlite(target, stats, options.dry_run)
+        if not options.dry_run:
+            target.commit()
     finally:
         await source_conn.close()
         if target is not None:

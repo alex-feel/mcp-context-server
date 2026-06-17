@@ -920,6 +920,29 @@ class TestUrlHelpers:
         assert kind == 'postgresql'
         assert addr == 'postgresql://u:p@h/db'
 
+    def test_parse_backend_url_windows_backslash_path(self) -> None:
+        """A bare Windows absolute path with backslashes is treated as SQLite.
+
+        ``urlparse`` would misread the ``C:`` drive letter as a URL scheme; the
+        parser must recognize the drive-letter form and return it verbatim.
+        """
+        win_path = 'C:\\Users\\me\\AppData\\Local\\Temp\\v2_source.db'
+        kind, addr = parse_backend_url(win_path)
+        assert kind == 'sqlite'
+        assert addr == win_path
+
+    def test_parse_backend_url_windows_forwardslash_path(self) -> None:
+        """A bare Windows absolute path with forward slashes is treated as SQLite."""
+        kind, addr = parse_backend_url('D:/data/v3_target.db')
+        assert kind == 'sqlite'
+        assert addr == 'D:/data/v3_target.db'
+
+    def test_parse_backend_url_posix_path(self) -> None:
+        """A bare POSIX absolute path is still treated as SQLite (no regression)."""
+        kind, addr = parse_backend_url('/home/me/db.sqlite')
+        assert kind == 'sqlite'
+        assert addr == '/home/me/db.sqlite'
+
     def test_mask_credentials_redacts_password(self) -> None:
         """The password segment of a PostgreSQL URL is masked."""
         masked = mask_credentials('postgresql://user:secret@host/db')

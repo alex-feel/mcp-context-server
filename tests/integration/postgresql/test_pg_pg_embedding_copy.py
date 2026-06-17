@@ -451,3 +451,197 @@ async def test_pg_pg_migration_dry_run_does_not_insert(
         assert vec_count == 0
     finally:
         await tgt.close()
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_migration_auto_inits_empty_target(
+    isolated_pg_v2_source_db: str,
+    pg_test_url: str,
+) -> None:
+    """A bare (schema-less) target is auto-initialized and receives data + embeddings.
+
+    Regression guard for the manual-preinit trap: the CLI now mirrors the SQLite
+    path and creates the fp32 target schema itself. It MUST NOT create the
+    compressed layout (compression is a separate --compress step).
+    """
+    await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
+    db_name = 'mcp_pg_pg_v3_autoinit'
+    target_url = await _make_isolated_db(pg_test_url, db_name)
+    try:
+        options = MigrationOptions(
+            source_url=isolated_pg_v2_source_db,
+            target_url=target_url,
+            dry_run=False,
+            report_path=None,
+        )
+        stats = await run_migration_postgresql(options)
+
+        assert not stats.errors
+        assert stats.rows_migrated == 3
+        assert stats.embedding_metadata_migrated == 3
+        assert stats.vec_rows_migrated == 3
+
+        tgt = await asyncpg.connect(target_url)
+        try:
+            assert await tgt.fetchval('SELECT COUNT(*) FROM context_entries') == 3
+            assert await tgt.fetchval('SELECT COUNT(*) FROM vec_context_embeddings') == 3
+            assert await tgt.fetchval('SELECT COUNT(*) FROM embedding_metadata') == 3
+            # Auto-init must produce the fp32 layout, never the compressed one.
+            comp_table = await tgt.fetchval("SELECT to_regclass('compression_metadata')")
+            assert comp_table is None, 'auto-init must NOT create the compressed layout'
+        finally:
+            await tgt.close()
+    finally:
+        await _drop_isolated_db(pg_test_url, db_name)
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_migration_source_without_embedding_metadata_table(
+    pg_test_url: str,
+    isolated_pg_v3_target_db: str,
+) -> None:
+    """A v2 source that never enabled semantic search (no embedding_metadata TABLE) does not crash.
+
+    Distinct from test_..._missing_embedding_metadata_gracefully, which keeps the
+    table but seeds zero rows. Here the table is ABSENT entirely; before the
+    guard, the unconditional ``SELECT ... FROM embedding_metadata`` crashed the
+    whole migration.
+    """
+    db_name = 'mcp_pg_pg_v2_no_em_table'
+    src_url = await _make_isolated_db(pg_test_url, db_name)
+    try:
+        setup = await asyncpg.connect(src_url)
+        try:
+            # Base v2 schema WITHOUT embedding_metadata / vec_context_embeddings.
+            await setup.execute(
+                'CREATE TABLE context_entries ('
+                '  id BIGSERIAL PRIMARY KEY, thread_id TEXT NOT NULL, source TEXT NOT NULL,'
+                '  content_type TEXT NOT NULL, text_content TEXT, metadata JSONB, summary TEXT,'
+                '  content_hash TEXT, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,'
+                '  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);'
+                'CREATE TABLE tags (id BIGSERIAL PRIMARY KEY,'
+                '  context_entry_id BIGINT REFERENCES context_entries(id) ON DELETE CASCADE, tag TEXT NOT NULL);'
+                'CREATE TABLE image_attachments (id BIGSERIAL PRIMARY KEY,'
+                '  context_entry_id BIGINT REFERENCES context_entries(id) ON DELETE CASCADE,'
+                '  image_data BYTEA NOT NULL, mime_type TEXT NOT NULL, image_metadata JSONB,'
+                '  position INTEGER DEFAULT 0, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);',
+            )
+            await setup.execute(
+                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
+                "VALUES ('t', 'user', 'text', 'a'), ('t', 'user', 'text', 'b')",
+            )
+        finally:
+            await setup.close()
+
+        options = MigrationOptions(
+            source_url=src_url,
+            target_url=isolated_pg_v3_target_db,
+            dry_run=False,
+            report_path=None,
+        )
+        # Must complete without raising (the unguarded read would have crashed).
+        stats = await run_migration_postgresql(options)
+        assert stats.rows_migrated == 2
+        assert stats.embedding_metadata_migrated == 0
+        assert stats.vec_rows_migrated == 0
+        assert not stats.errors
+    finally:
+        await _drop_isolated_db(pg_test_url, db_name)
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_migration_aborts_when_target_lacks_fp32_vec_table(
+    isolated_pg_v2_source_db: str,
+    pg_test_url: str,
+) -> None:
+    """Defensive backstop: source has embeddings but target lacks the fp32 vec table.
+
+    Simulates a pre-existing target initialized compression-on (or semantic-off):
+    the migration MUST record an error and abort before writing any rows, never
+    silently dropping the embeddings at exit 0.
+    """
+    await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=2)
+    db_name = 'mcp_pg_pg_v3_no_fp32_vec'
+    target_url = await _make_isolated_db(pg_test_url, db_name)
+    try:
+        setup = await asyncpg.connect(target_url)
+        try:
+            # UUID-keyed target WITH context_entries + embedding_metadata but NO
+            # fp32 vec_context_embeddings table (the compression-on shape).
+            await setup.execute('CREATE EXTENSION IF NOT EXISTS vector')
+            await setup.execute(
+                'CREATE TABLE context_entries ('
+                '  id UUID PRIMARY KEY, thread_id TEXT NOT NULL, source TEXT NOT NULL,'
+                '  content_type TEXT NOT NULL, text_content TEXT, metadata JSONB, summary TEXT,'
+                '  content_hash TEXT, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,'
+                '  updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);'
+                'CREATE TABLE embedding_metadata ('
+                '  context_id UUID PRIMARY KEY, model_name TEXT NOT NULL, dimensions INTEGER NOT NULL,'
+                '  chunk_count INTEGER NOT NULL DEFAULT 1,'
+                '  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,'
+                '  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP);',
+            )
+        finally:
+            await setup.close()
+
+        options = MigrationOptions(
+            source_url=isolated_pg_v2_source_db,
+            target_url=target_url,
+            dry_run=False,
+            report_path=None,
+        )
+        stats = await run_migration_postgresql(options)
+
+        assert stats.errors, 'migration must record an error rather than silently drop embeddings'
+        assert any('vec_context_embeddings' in e for e in stats.errors)
+        assert stats.rows_migrated == 0
+
+        tgt = await asyncpg.connect(target_url)
+        try:
+            # Aborted before BEGIN: nothing was written.
+            assert await tgt.fetchval('SELECT COUNT(*) FROM context_entries') == 0
+        finally:
+            await tgt.close()
+    finally:
+        await _drop_isolated_db(pg_test_url, db_name)
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_dry_run_on_empty_target_reports_symmetric_counts(
+    isolated_pg_v2_source_db: str,
+    pg_test_url: str,
+) -> None:
+    """Dry-run against a bare (auto-init-able) target previews symmetric counts.
+
+    Regression for the dry-run reporting bug: the embedding counter (N) and the
+    vec counter (0) used to disagree, with a contradictory 'initialize the target
+    schema first' warning, even though a real run auto-initializes and copies
+    everything. The preview must be accurate and write nothing.
+    """
+    await _seed_source_with_embeddings(isolated_pg_v2_source_db, n_docs=3)
+    db_name = 'mcp_pg_pg_dryrun_empty'
+    target_url = await _make_isolated_db(pg_test_url, db_name)
+    try:
+        options = MigrationOptions(
+            source_url=isolated_pg_v2_source_db,
+            target_url=target_url,
+            dry_run=True,
+            report_path=None,
+        )
+        stats = await run_migration_postgresql(options)
+
+        assert not stats.errors
+        assert stats.rows_migrated == 3
+        # Symmetric would-migrate counts, NOT embedding=3 / vec=0.
+        assert stats.embedding_metadata_migrated == 3
+        assert stats.vec_rows_migrated == 3
+        assert not any('initialize the target schema first' in w for w in stats.warnings)
+
+        # Dry-run wrote nothing: the bare target still has no context_entries table.
+        tgt = await asyncpg.connect(target_url)
+        try:
+            assert await tgt.fetchval("SELECT to_regclass('context_entries')") is None
+        finally:
+            await tgt.close()
+    finally:
+        await _drop_isolated_db(pg_test_url, db_name)

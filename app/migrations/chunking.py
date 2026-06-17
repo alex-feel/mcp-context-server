@@ -103,7 +103,7 @@ def _check_embedding_metadata_exists_sqlite(conn: sqlite3.Connection) -> bool:
     return cursor.fetchone() is not None
 
 
-async def apply_chunking_migration(backend: StorageBackend) -> None:
+async def apply_chunking_migration(backend: StorageBackend, *, force: bool = False) -> None:
     """Apply chunking migration for 1:N embedding relationship.
 
     This migration:
@@ -113,6 +113,10 @@ async def apply_chunking_migration(backend: StorageBackend) -> None:
 
     Args:
         backend: Storage backend instance.
+        force: When True, apply the migration regardless of
+            ``settings.semantic_search.enabled``. Used by the migration CLI to
+            build the chunk-boundary columns on a target database; the server
+            keeps its default gated behavior.
 
     Raises:
         RuntimeError: If migration execution fails.
@@ -122,8 +126,8 @@ async def apply_chunking_migration(backend: StorageBackend) -> None:
         - Idempotent: Uses IF NOT EXISTS / IF EXISTS patterns
         - Must be called after apply_semantic_search_migration()
     """
-    # Only apply if semantic search is enabled (embeddings exist)
-    if not settings.semantic_search.enabled:
+    # Only apply if semantic search is enabled (embeddings exist), unless forced
+    if not force and not settings.semantic_search.enabled:
         return
 
     backend_type = backend.backend_type

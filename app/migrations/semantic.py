@@ -23,11 +23,25 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-async def apply_semantic_search_migration(backend: StorageBackend) -> None:
+async def apply_semantic_search_migration(
+    backend: StorageBackend,
+    *,
+    force: bool = False,
+    embedding_dim: int | None = None,
+) -> None:
     """Apply semantic search migration if enabled.
 
     Args:
         backend: Storage backend instance.
+        force: When True, apply the migration regardless of
+            ``settings.semantic_search.enabled``. Used by the migration CLI
+            (``app.cli.migrate``) to create the fp32 vector layout on a target
+            database while preserving the server's default behavior (gated on
+            the setting) for all other callers.
+        embedding_dim: Explicit vector dimension to template into the migration
+            SQL. When ``None`` the configured ``settings.embedding.dim`` is used.
+            The CLI passes the SOURCE database's detected dimension so the target
+            vector column width matches the data being copied.
 
     This function:
     1. Checks if vector table already exists with embeddings
@@ -38,7 +52,7 @@ async def apply_semantic_search_migration(backend: StorageBackend) -> None:
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
-    if not settings.semantic_search.enabled:
+    if not force and not settings.semantic_search.enabled:
         return
 
     backend_type = backend.backend_type
@@ -57,13 +71,17 @@ async def apply_semantic_search_migration(backend: StorageBackend) -> None:
     try:
         # Read migration SQL template
         migration_sql_template = migration_path.read_text(encoding='utf-8')
-        await _apply_migration_with_backend(backend, migration_sql_template)
+        await _apply_migration_with_backend(backend, migration_sql_template, embedding_dim=embedding_dim)
     except Exception as e:
         logger.error(f'Failed to apply semantic search migration: {e}')
         raise RuntimeError(f'Semantic search migration failed: {e}') from e
 
 
-async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_template: str) -> None:
+async def _apply_migration_with_backend(
+    manager: StorageBackend,
+    migration_sql_template: str,
+    embedding_dim: int | None = None,
+) -> None:
     """Helper function to apply migration with a given backend.
 
     Args:
@@ -73,10 +91,14 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
             loader substitutes {EMBEDDING_DIM} for the vector type
             dimension and {SCHEMA} ONLY for the trigger's FUNCTION
             DDL (CVE-2018-1058 mitigation; TABLE DDL remains BARE).
+        embedding_dim: Explicit vector dimension to template and to compare
+            against the existing table's dimension. When ``None``, falls back to
+            ``settings.embedding.dim``.
 
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
+    effective_dim = embedding_dim if embedding_dim is not None else settings.embedding.dim
     # Check for existing table and dimension compatibility - backend-specific
     if manager.backend_type == 'sqlite':
 
@@ -124,24 +146,24 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         table_exists, existing_dim = await manager.execute_read(cast(Any, _check_existing_dimension_postgresql))
 
     # Validate dimension compatibility
-    if table_exists and existing_dim is not None and existing_dim != settings.embedding.dim:
+    if table_exists and existing_dim is not None and existing_dim != effective_dim:
         db_path = str(settings.storage.db_path).replace('\\', '/')
         raise RuntimeError(
             f'Embedding dimension mismatch detected!\n'
             f'  Existing database dimension: {existing_dim}\n'
-            f'  Configured EMBEDDING_DIM: {settings.embedding.dim}\n\n'
+            f'  Configured EMBEDDING_DIM: {effective_dim}\n\n'
             f'To change embedding dimensions, you must:\n'
             f'  1. Back up your database: {db_path}\n'
             f'  2. Delete or rename the database file\n'
-            f'  3. Restart the server to create new tables with dimension {settings.embedding.dim}\n'
+            f'  3. Restart the server to create new tables with dimension {effective_dim}\n'
             f'  4. Re-import your context data (embeddings will be regenerated)\n\n'
             f'Note: Changing dimensions will lose all existing embeddings.',
         )
 
-    # Template the migration SQL with configured dimension and schema
+    # Template the migration SQL with the effective dimension and configured schema
     migration_sql = migration_sql_template.replace(
         '{EMBEDDING_DIM}',
-        str(settings.embedding.dim),
+        str(effective_dim),
     ).replace(
         '{SCHEMA}',
         settings.storage.postgresql_schema,
@@ -219,7 +241,7 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
     # Check table existence (not row existence) to determine if migration was applied
     if not table_exists:
         logger.info(
-            f'Semantic search migration applied successfully with dimension: {settings.embedding.dim}',
+            f'Semantic search migration applied successfully with dimension: {effective_dim}',
         )
     else:
         logger.info('Semantic search migration: tables already exist, skipping')

@@ -27,6 +27,7 @@ import asyncpg
 
 from app.errors import ConfigurationError
 from app.errors import DependencyError
+from app.settings import AppSettings
 from app.settings import get_settings
 
 # Get settings (used for connection configuration)
@@ -36,6 +37,60 @@ logger = logging.getLogger(__name__)
 
 # Type definitions
 T = TypeVar('T')
+
+
+def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dict[str, Any]:
+    """Build the asyncpg connection kwargs shared by the pool and the migration CLI.
+
+    Returns a dict suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``
+    or merging into ``asyncpg.create_pool(dsn, **kwargs)``. This is the single
+    source of truth for the two connection parameters that BOTH the long-lived
+    server pool (``PostgreSQLBackend.initialize``) and the short-lived migration
+    CLI (``app.cli.migrate``) must apply identically:
+
+    - ``server_settings['search_path']``: always populated as
+      ``"<POSTGRESQL_SCHEMA>", public`` (the schema double-quoted so mixed-case
+      and reserved identifiers are safe) so bare table names resolve to the
+      configured schema. With the default ``POSTGRESQL_SCHEMA=public`` this is
+      the benign no-op ``"public", public``.
+    - ``server_settings`` TCP keepalive GUCs: added only when their setting is
+      > 0. These are SECONDARY (silently ignored by Supavisor/PgBouncer); the
+      pool also installs the PRIMARY client-side ``setsockopt`` keepalive via its
+      ``init`` callback, which short-lived CLI connections do not need.
+    - ``statement_cache_size``: ``POSTGRESQL_STATEMENT_CACHE_SIZE`` (default 100;
+      set 0 to disable prepared statements for transaction-mode poolers such as
+      PgBouncer transaction mode, Pgpool-II, AWS RDS Proxy, or the Supabase
+      Transaction Pooler).
+
+    SSL is intentionally NOT included: asyncpg parses ``sslmode`` natively from
+    the DSN query string, so SSL is carried by the connection URL itself.
+
+    Args:
+        app_settings: Resolved application settings. Defaults to
+            ``get_settings()`` so callers in a different process (the CLI)
+            pick up that process's environment.
+
+    Returns:
+        Mapping with ``server_settings`` and ``statement_cache_size`` keys.
+    """
+    resolved = app_settings if app_settings is not None else get_settings()
+    storage = resolved.storage
+    server_settings: dict[str, str] = {
+        'search_path': f'"{storage.postgresql_schema}", public',
+    }
+    tcp_idle_guc = storage.postgresql_tcp_keepalives_idle_s
+    tcp_interval_guc = storage.postgresql_tcp_keepalives_interval_s
+    tcp_count_guc = storage.postgresql_tcp_keepalives_count
+    if tcp_idle_guc > 0:
+        server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
+    if tcp_interval_guc > 0:
+        server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
+    if tcp_count_guc > 0:
+        server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
+    return {
+        'server_settings': server_settings,
+        'statement_cache_size': storage.postgresql_statement_cache_size,
+    }
 
 
 class ConnectionState(Enum):
@@ -514,10 +569,10 @@ class PostgreSQLBackend:
                 'max_size': settings.storage.postgresql_pool_max,
                 'command_timeout': settings.storage.postgresql_command_timeout_s,
                 'timeout': settings.storage.postgresql_pool_timeout_s,
-                # Prepared statement cache configuration
-                # Set POSTGRESQL_STATEMENT_CACHE_SIZE=0 for external pooler compatibility
-                # (PgBouncer transaction mode, Pgpool-II, AWS RDS Proxy, etc.)
-                'statement_cache_size': settings.storage.postgresql_statement_cache_size,
+                # statement_cache_size and server_settings (search_path + TCP
+                # keepalive GUCs) are merged below via
+                # build_asyncpg_connect_kwargs() so the pool and the migration
+                # CLI share one source of truth.
                 'max_cached_statement_lifetime': settings.storage.postgresql_max_cached_statement_lifetime_s,
                 'max_cacheable_statement_size': settings.storage.postgresql_max_cacheable_statement_size,
                 # Connection lifecycle callbacks
@@ -526,36 +581,22 @@ class PostgreSQLBackend:
                 'reset': _reset_connection,  # Health check before pool return
             }
 
-            # Build server_settings sent in the PostgreSQL startup packet so
+            # Merge the shared connection kwargs (statement_cache_size +
+            # server_settings) sent in the PostgreSQL startup packet so
             # session-level parameters are set in a single round-trip and
             # persist for the connection's lifetime (asyncpg-recommended over
             # per-connection ``SET`` callbacks).
             #
-            # search_path is always populated to enforce the operator contract
-            # documented in docs/embedding-compression.md: bare table names
-            # resolve to ``POSTGRESQL_SCHEMA`` without per-operator ``?options=``
-            # configuration. When ``POSTGRESQL_SCHEMA=public`` (the default)
-            # this resolves to ``"public", public`` which is a benign no-op.
-            # Double-quoting the schema name is safe for mixed-case or
-            # reserved identifiers.
-            #
-            # TCP keepalive GUCs are SECONDARY: effective for direct PostgreSQL
-            # connections but silently ignored by Supavisor/PgBouncer. The
-            # PRIMARY TCP keepalive mechanism is client-side setsockopt
-            # configured in _init_connection above.
-            server_settings: dict[str, str] = {
-                'search_path': f'"{settings.storage.postgresql_schema}", public',
-            }
-            tcp_idle_guc = settings.storage.postgresql_tcp_keepalives_idle_s
-            tcp_interval_guc = settings.storage.postgresql_tcp_keepalives_interval_s
-            tcp_count_guc = settings.storage.postgresql_tcp_keepalives_count
-            if tcp_idle_guc > 0:
-                server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
-            if tcp_interval_guc > 0:
-                server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
-            if tcp_count_guc > 0:
-                server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
-            pool_kwargs['server_settings'] = server_settings
+            # build_asyncpg_connect_kwargs() is the single source of truth shared
+            # with the migration CLI: it always populates search_path
+            # (``"POSTGRESQL_SCHEMA", public``, a benign no-op for the default
+            # ``public``; double-quoted for mixed-case / reserved identifiers),
+            # adds the SECONDARY TCP keepalive GUCs when > 0 (the PRIMARY
+            # mechanism is the client-side setsockopt in _init_connection above,
+            # since Supavisor/PgBouncer ignore these GUCs), and forwards
+            # statement_cache_size (0 disables prepared statements for
+            # transaction-mode poolers).
+            pool_kwargs.update(build_asyncpg_connect_kwargs(settings))
 
             # Add connection recycling settings if configured (0 means disabled)
             if settings.storage.postgresql_max_inactive_lifetime_s > 0:

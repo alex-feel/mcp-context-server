@@ -22,9 +22,9 @@ Before running the CLI:
 
 - **Stop the server.** The migration tool requires exclusive read access to the source database.
 - **Make a backup copy of the source database.** The migration reads the source in read-only mode (SQLite uses the `mode=ro` URI parameter; PostgreSQL uses `BEGIN TRANSACTION READ ONLY`), but a backup is still essential in case of an interrupted run or operator error.
-- **Provision an empty target database.** For SQLite, a non-existent file path is fine -- the CLI creates the file and applies the current schema. For PostgreSQL, create an empty database manually (for example, `CREATE DATABASE mcp_context_v3;`); the CLI does not create PostgreSQL databases.
+- **Provision an empty target database.** For SQLite, a non-existent file path is fine -- the CLI creates the file and applies the current schema. For PostgreSQL, create an empty database manually (for example, `CREATE DATABASE mcp_context_v3;`); the CLI does not create the PostgreSQL database itself, but it now **auto-initializes the target schema** (tables, indexes, and functions) on an empty target, mirroring the SQLite path. You no longer need to start the server once against the target to create the schema -- if the target has no `context_entries` table, the CLI builds it before copying. When the source carries embeddings, the auto-initialized target gets the **fp32** vector layout (the CLI never enables compression during initialization); enable compression afterward with the separate `--compress` step (see [Compressing an Existing Database](#compressing-an-existing-database)).
 - **For SQLite source databases that use semantic search or FTS**, ensure the `sqlite-vec` extension is available in the Python environment running the CLI. The CLI loads the extension on both source and target connections when vector tables are present.
-- **For PostgreSQL targets that should use semantic search after migration**, ensure the `pgvector` extension is available on the target server; the migration copies row data but does not install database extensions.
+- **For PostgreSQL targets that should use semantic search after migration**, ensure the `pgvector` extension is enabled. When the source has embeddings, the CLI runs `CREATE EXTENSION IF NOT EXISTS vector` on the target during auto-initialization; this requires sufficient privileges. On managed services that restrict `CREATE EXTENSION` (notably Supabase), enable pgvector first via the database management interface (Supabase: Dashboard -> Database -> Extensions -> vector), then rerun.
 - **Protect PostgreSQL credentials.** Avoid placing passwords directly on the command line. Prefer environment-variable substitution or a `.pgpass` file. URLs printed by the CLI are masked in stdout (`postgresql://user:***@host/db`), but passwords on the original command line remain visible in process listings and shell history.
 
 ## CLI Usage
@@ -65,9 +65,19 @@ mcp-context-server-migrate \
 
 Passwords in printed URLs are masked in stdout output (`postgresql://user:***@host/db`).
 
+### PostgreSQL Connection Modes (Poolers, Schema, SSL)
+
+The CLI honors the same `POSTGRESQL_*` environment variables the server uses for every PostgreSQL connection it opens (source, target, and the auto-initialization connection):
+
+- **Schema (`POSTGRESQL_SCHEMA`).** The CLI applies `search_path = "<POSTGRESQL_SCHEMA>", public` on every connection, so a non-default schema is resolved correctly for both reads and the auto-initialized target. Set `POSTGRESQL_SCHEMA` to the same value the server will use.
+- **Connection poolers (`POSTGRESQL_STATEMENT_CACHE_SIZE`).** The CLI uses prepared statements by default (cache size 100). Transaction-mode poolers -- PgBouncer transaction mode, Pgpool-II, AWS RDS Proxy, and the **Supabase Transaction Pooler (port 6543)** -- break prepared statements. For those, either run the migration through a session-capable endpoint (a Direct connection or the Supabase **Session Pooler**, both on port 5432) or set `POSTGRESQL_STATEMENT_CACHE_SIZE=0`. For Supabase specifically, prefer the Direct connection or Session Pooler URL on port 5432.
+- **SSL.** SSL is taken from the connection URL. Put `?sslmode=require` (or your chosen mode) directly in `--source-url` / `--target-url`; the CLI does not inject `sslmode` from settings because the source and target may be different databases than the running server.
+
 ### Cross-Backend Migration
 
-The CLI supports SQLite -> PostgreSQL and PostgreSQL -> SQLite. Vector embeddings (the binary `embedding` BLOBs in SQLite's `vec_context_embeddings` table and the corresponding PostgreSQL `pgvector` values) are NOT portable across backends because their binary representations differ. When cross-backend migration is requested, the CLI emits a warning and DROPS the vector embeddings -- you must re-embed the target database after migration (either by storing entries again or by running the standard server startup path with embedding generation enabled, which fills in missing embeddings for entries that lack them).
+The CLI supports SQLite -> PostgreSQL and PostgreSQL -> SQLite. Vector embeddings (the binary `embedding` BLOBs in SQLite's `vec_context_embeddings` table and the corresponding PostgreSQL `pgvector` values) are NOT portable across backends because their binary representations differ. When cross-backend migration is requested, the CLI emits a warning and DROPS **only** the vector embeddings -- you must re-embed the target database after migration (either by storing entries again or by running the standard server startup path with embedding generation enabled, which fills in missing embeddings for entries that lack them).
+
+All other data is copied: `context_entries` (with `summary` and `content_hash`), `tags`, and `image_attachments` (image payloads are portable -- BYTEA on PostgreSQL maps to BLOB on SQLite). The target schema is auto-initialized when absent (the SQLite target via the existing initializer; the PostgreSQL target via the base schema, without the vector tables, which the server creates at your configured `EMBEDDING_DIM` when you re-embed). For PostgreSQL -> SQLite, the SQLite target's FTS5 index is rebuilt from the copied rows, so full-text search works on the target even though FTS is not portable from PostgreSQL.
 
 ### Optional Flags
 
