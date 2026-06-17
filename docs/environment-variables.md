@@ -65,7 +65,7 @@ For detailed authentication setup, see the [Authentication Guide](authentication
 | `EMBEDDING_RETRY_BASE_DELAY_S` | float   | `1.0`                  | >0, <=30           | Base delay in seconds between retry attempts (with exponential backoff)                                                                                              |
 | `EMBEDDING_MAX_CONCURRENT`     | integer | `3`                    | 1-20               | Maximum concurrent embedding generation operations. Limits parallel provider requests to prevent overload                                                            |
 
-For detailed embedding setup and provider selection, see the [Semantic Search Guide](semantic-search.md).
+For detailed embedding setup and provider selection, see the [Semantic Search Guide](semantic-search.md). To change `EMBEDDING_MODEL` on an existing database, run the migration CLI's `--re-embed` flag; changing `EMBEDDING_DIM` requires a database rebuild. Both procedures are documented in [Changing the Embedding Model or Dimensions](migration-v2-to-v3.md#changing-the-embedding-model-or-dimensions).
 
 ### Ollama-Specific Embedding Settings
 

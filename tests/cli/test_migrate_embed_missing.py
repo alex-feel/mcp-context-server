@@ -268,3 +268,139 @@ def test_dispatch_embed_missing_standalone(
     mock_compress.assert_not_called()
     mock_decompress.assert_not_called()
     mock_embed.assert_called_once()
+
+
+def _seed_entry_with_embedding(
+    path: Path, entry_id: str, text: str, model: str, dim: int,
+) -> None:
+    """Insert a context entry plus an embedding_metadata marker row."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            'INSERT INTO context_entries '
+            '(id, thread_id, source, content_type, text_content) '
+            "VALUES (?, 'thread-a', 'user', 'text', ?)",
+            (entry_id, text),
+        )
+        conn.execute(
+            'INSERT INTO embedding_metadata '
+            '(context_id, model_name, dimensions, chunk_count) VALUES (?, ?, ?, 1)',
+            (entry_id, model, dim),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_embed_missing_refuses_model_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Existing embeddings from a different model block the backfill."""
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.setenv('EMBEDDING_MODEL', 'new-model')
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')
+    monkeypatch.setenv('DB_PATH', str(tmp_path / 'test.db'))
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    _bootstrap_schema(db)
+    # One entry already embedded under a DIFFERENT model.
+    _seed_entry_with_embedding(
+        db, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'doc A', 'old-model', 1024,
+    )
+
+    rc = cli_main(['--source-url', f'sqlite:///{db}', '--embed-missing'])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "'old-model'" in err
+    assert '--re-embed' in err  # points to the whole-corpus path
+
+
+def test_embed_missing_refuses_dim_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Existing embeddings at a different dimension block the backfill."""
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.setenv('EMBEDDING_MODEL', 'same-model')
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')
+    monkeypatch.setenv('DB_PATH', str(tmp_path / 'test.db'))
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    _bootstrap_schema(db)
+    # Existing embedding recorded at dimension 512 (config wants 1024).
+    _seed_entry_with_embedding(
+        db, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'doc A', 'same-model', 512,
+    )
+
+    rc = cli_main(['--source-url', f'sqlite:///{db}', '--embed-missing'])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert 'EMBEDDING_DIM=1024' in err
+    assert '[512]' in err
+
+
+def _seed_compression_metadata(path: Path, dim: int) -> None:
+    """Create + populate the singleton compression_metadata row at ``dim``."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(
+            '''
+            CREATE TABLE IF NOT EXISTS compression_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                bits INTEGER NOT NULL CHECK (bits BETWEEN 2 AND 4),
+                variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
+                seed INTEGER NOT NULL CHECK (seed >= 0),
+                dim INTEGER NOT NULL CHECK (dim > 0),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ''',
+        )
+        conn.execute(
+            'INSERT INTO compression_metadata (id, provider, bits, variant, seed, dim) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, ?)",
+            (dim,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_embed_missing_refuses_compression_dim_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A seed-locked compression dim different from EMBEDDING_DIM is refused.
+
+    Regression test for the corruption path where the compressed database is
+    sealed at one dimension (compression_metadata) but embedding_metadata is
+    still empty: the per-row dimension scan finds nothing, so the guard MUST
+    consult compression_metadata to block the mismatched backfill.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('COMPRESSION_SEED', '0')
+    monkeypatch.setenv('COMPRESSION_BITS', '4')
+    monkeypatch.setenv('COMPRESSION_VARIANT', 'ip')
+    monkeypatch.setenv('EMBEDDING_DIM', '512')
+    monkeypatch.setenv('DB_PATH', str(tmp_path / 'test.db'))
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    _bootstrap_schema(db)
+    # Database sealed at dim=1024 (no embeddings yet); config wants 512.
+    _seed_compression_metadata(db, 1024)
+
+    rc = cli_main(['--source-url', f'sqlite:///{db}', '--embed-missing'])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert 'EMBEDDING_DIM=512' in err
+    assert 'compression_metadata' in err

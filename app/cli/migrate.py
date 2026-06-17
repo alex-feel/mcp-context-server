@@ -2121,8 +2121,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog='mcp-context-server-migrate',
         description=(
             'Migrate an integer-keyed MCP context database to the UUIDv7 '
-            'schema, or compress/decompress an existing UUIDv7 database '
-            'with TurboQuant embedding compression.'
+            'schema, compress/decompress an existing UUIDv7 database with '
+            'TurboQuant embedding compression, or re-embed an existing '
+            'database under a new model.'
         ),
     )
     parser.add_argument(
@@ -2170,7 +2171,26 @@ def build_parser() -> argparse.ArgumentParser:
             'Decompress a database with compressed embeddings back to fp32 '
             '(lossy reconstruction). Requires ENABLE_EMBEDDING_COMPRESSION '
             'to be unset or false. Reads from --source-url; --target-url is '
-            'ignored. Use --dry-run to preview.'
+            'ignored. Use --dry-run to preview. Not combinable with '
+            '--embed-missing (a co-passed --embed-missing is ignored; run it '
+            'separately after decompressing).'
+        ),
+    )
+    mode_group.add_argument(
+        '--re-embed',
+        action='store_true',
+        help=(
+            'Re-embed EVERY context_entries row using the currently '
+            'configured EMBEDDING_PROVIDER/EMBEDDING_MODEL, deleting existing '
+            'embeddings first. The one-command path for switching the '
+            'embedding MODEL on an existing database. Works for fp32 and '
+            'compressed layouts. Requires ENABLE_EMBEDDING_GENERATION=true. '
+            'Reads from --source-url; --target-url is ignored. Use --dry-run '
+            'to preview the entry count without calling the provider. Refuses '
+            'a dimension change (a different EMBEDDING_DIM than stored): a '
+            'dimension change requires the documented rebuild. A co-passed '
+            '--embed-missing is ignored because --re-embed already covers '
+            'every entry.'
         ),
     )
     # --embed-missing is intentionally OUTSIDE mode_group: Shape gamma
@@ -2243,13 +2263,17 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
     # Single-backend in-place operations: --compress, --decompress,
-    # --embed-missing. All three dispatch on --source-url alone;
+    # --re-embed, --embed-missing. All dispatch on --source-url alone;
     # --target-url is ignored. Composition rule: --compress and
     # --embed-missing can be combined (--compress runs first, then
-    # --embed-missing against the compressed layout). --compress and
-    # --decompress are mutually exclusive (enforced by argparse
-    # mode_group). Imported lazily so callers running the v2->v3
-    # migration do not pay the compression/numpy import cost.
+    # --embed-missing against the compressed layout). --compress,
+    # --decompress, and --re-embed are mutually exclusive (enforced by
+    # argparse mode_group). Both --decompress and --re-embed return before the
+    # --embed-missing check below, so a co-passed --embed-missing is silently
+    # superseded: --re-embed already re-embeds every entry (gaps included),
+    # and --decompress is documented as not combinable with --embed-missing
+    # (run it separately afterward). Imported lazily so callers running the
+    # v2->v3 migration do not pay the compression/numpy import cost.
     if args.compress:
         from app.cli.migrate_compression import run_compress
         rc = run_compress(args.source_url, dry_run=args.dry_run)
@@ -2262,6 +2286,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.decompress:
         from app.cli.migrate_compression import run_decompress
         return run_decompress(args.source_url, dry_run=args.dry_run)
+    if args.re_embed:
+        from app.cli.migrate_reembed import run_reembed
+        return run_reembed(args.source_url, dry_run=args.dry_run)
     if args.embed_missing:
         from app.cli.migrate_embeddings import run_embed_missing
         return run_embed_missing(args.source_url, dry_run=args.dry_run)
@@ -2269,8 +2296,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.target_url:
         logger.error(
             '--target-url is required for the v2->v3 migration. '
-            'Pass --compress or --decompress to run a compression operation '
-            'against the source database in-place.',
+            'For an in-place operation against --source-url, pass one of '
+            '--compress, --decompress, --re-embed, or --embed-missing '
+            '(none of which use --target-url).',
         )
         return 1
 

@@ -271,6 +271,45 @@ Running `--compress` against an already-compressed database is a no-op: the CLI 
 - Feature reference: [Embedding Compression Guide](embedding-compression.md)
 - Configuration: [Environment Variables Reference](environment-variables.md#embedding-compression-settings)
 
+## Changing the Embedding Model or Dimensions
+
+There are two distinct scenarios, and they have different procedures because changing the model and changing the dimension affect the vector storage differently.
+
+### Changing the model at the same dimension (use `--re-embed`)
+
+Switching to a different embedding model that produces vectors of the SAME dimension (for example, replacing `qwen3-embedding:0.6b` with another 1024-dimensional model) is a one-command operation. `--re-embed` regenerates embeddings for EVERY `context_entries` row using the currently configured `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL`, deleting the old vectors first and backfilling any entries that were missing embeddings along the way (it is a superset of `--embed-missing`). It works on both the fp32 and compressed layouts.
+
+Steps:
+
+1. **Stop the server** and **back up the database** (`--re-embed` deletes and rewrites every embedding).
+2. **Set the new `EMBEDDING_MODEL`** in the environment, leaving `EMBEDDING_DIM` unchanged, and ensure `ENABLE_EMBEDDING_GENERATION=true`.
+3. **Preview** with `--dry-run` -- it reports how many entries will be re-embedded and the existing model(s) being replaced, without calling the provider:
+
+   ```bash
+   mcp-context-server-migrate --source-url sqlite:////path/to/db.sqlite --re-embed --dry-run
+   ```
+
+4. **Execute** by re-running without `--dry-run`. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. On a compressed database the new payloads land in `vec_context_embeddings_compressed`; on an fp32 database they land in `vec_context_embeddings`.
+5. **Restart the server** with the new `EMBEDDING_MODEL` (and the same `COMPRESSION_*` values, if compression is enabled).
+
+`--re-embed` requires `ENABLE_EMBEDDING_GENERATION=true`, is mutually exclusive with `--compress` / `--decompress`, and supersedes `--embed-missing`. Related: the `--embed-missing` flag now refuses to backfill into a database whose existing embeddings use a different model or dimension than the configured values (mixing embedding spaces would corrupt semantic search); it points you here when it detects a model change.
+
+### Changing the dimension (destructive rebuild)
+
+Changing `EMBEDDING_DIM` is heavier and `--re-embed` deliberately refuses it. The dimension is baked into the vector-storage geometry: the fp32 `vec_context_embeddings` column width is fixed at table creation, and under compression the dimension is part of the seed-locked `compression_metadata` codebook (immutable by design). A dimension change therefore requires recreating the vector storage from scratch, not an in-place re-embed. Follow the [Changing Embedding Dimensions](semantic-search.md#changing-embedding-dimensions) procedure: back up, update the configuration, delete the database (or drop and recreate the vector tables at the new dimension), restart the server to create fresh tables, and re-store the data so embeddings are generated at the new dimension.
+
+## End-to-End Checklist: Supabase v2 to v3 With Compression
+
+This is the recommended order for moving an existing v2 deployment to a v3.0.0 Supabase (PostgreSQL) database with TurboQuant compression enabled. The key ordering rule is that compression is always the LAST step: the migration auto-initializes the target with the fp32 layout, and `--compress` converts it afterward.
+
+1. **Provision the empty target database** in Supabase and **enable the `pgvector` extension** (Dashboard -> Database -> Extensions -> vector). The CLI does not run `CREATE DATABASE`, and managed services restrict `CREATE EXTENSION`.
+2. **Configure the PostgreSQL connection** for the CLI and server: set `STORAGE_BACKEND=postgresql` and `POSTGRESQL_CONNECTION_STRING`. Use the Direct connection or Session Pooler (port 5432); if you must use the Transaction Pooler (port 6543), also set `POSTGRESQL_STATEMENT_CACHE_SIZE=0`. Set `POSTGRESQL_SCHEMA` to the schema the server will use. Match `EMBEDDING_MODEL` / `EMBEDDING_DIM` to the source data.
+3. **Keep compression OFF for the migration**: leave `ENABLE_EMBEDDING_COMPRESSION=false` (or unset) so the target is auto-initialized with the fp32 vector layout the migration copies into.
+4. **Run the v2-to-v3 migration** (preview first): `mcp-context-server-migrate --source-url <v2-url> --target-url <v3-supabase-url> --dry-run`, then without `--dry-run`. A same-backend (PostgreSQL -> PostgreSQL) migration copies the embeddings; a cross-backend migration (SQLite -> Supabase) drops them.
+5. **Restore embeddings if they were dropped** (cross-backend only): run `mcp-context-server-migrate --source-url <v3-supabase-url> --embed-missing` to regenerate them with the configured provider. (If you also intend to switch models, run `--re-embed` instead.)
+6. **Enable compression as the final step**: export `ENABLE_EMBEDDING_COMPRESSION=true` and the `COMPRESSION_*` values, then run `mcp-context-server-migrate --source-url <v3-supabase-url> --compress --dry-run` followed by `--compress`. In multi-pod Kubernetes deployments every pod MUST inherit the same `COMPRESSION_SEED`.
+7. **Launch the v3.0.0 server** with `ENABLE_EMBEDDING_COMPRESSION=true` and the same `COMPRESSION_SEED` / `COMPRESSION_BITS` / `COMPRESSION_VARIANT`. The server reads the seed from the singleton `compression_metadata` row; a mismatch raises `ConfigurationError` (exit 78) and refuses to start.
+
 ## Reverting
 
 If the migration outcome is unsatisfactory, the source database (untouched by the CLI's read-only connection) remains intact. Point the previous server version at the source database to revert. The target database can be deleted.

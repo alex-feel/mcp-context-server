@@ -217,7 +217,7 @@ def test_embed_missing_fp32_standalone(
     get_settings.cache_clear()
 
     provider = cast(EmbeddingProvider, _FakeEmbeddingProvider())
-    with patch('app.tools._shared.get_embedding_provider', return_value=provider):
+    with patch('app.cli._embedding_runtime.create_embedding_provider', return_value=provider):
         rc = run_embed_missing(f'sqlite:///{db}', dry_run=False)
 
     assert rc == 0
@@ -285,7 +285,7 @@ def test_embed_missing_compressed_standalone(
     asyncio.run(_apply_compression_schema())
 
     provider = cast(EmbeddingProvider, _FakeEmbeddingProvider())
-    with patch('app.tools._shared.get_embedding_provider', return_value=provider):
+    with patch('app.cli._embedding_runtime.create_embedding_provider', return_value=provider):
         rc = run_embed_missing(f'sqlite:///{db}', dry_run=False)
 
     assert rc == 0
@@ -337,7 +337,7 @@ def test_embed_missing_idempotent(
     get_settings.cache_clear()
 
     provider = cast(EmbeddingProvider, _FakeEmbeddingProvider())
-    with patch('app.tools._shared.get_embedding_provider', return_value=provider):
+    with patch('app.cli._embedding_runtime.create_embedding_provider', return_value=provider):
         rc1 = run_embed_missing(f'sqlite:///{db}', dry_run=False)
     assert rc1 == 0
     assert _count_table(db, 'embedding_metadata') == len(ids)
@@ -346,7 +346,7 @@ def test_embed_missing_idempotent(
     capsys.readouterr()
 
     # Second run should find ZERO missing.
-    with patch('app.tools._shared.get_embedding_provider', return_value=provider):
+    with patch('app.cli._embedding_runtime.create_embedding_provider', return_value=provider):
         rc2 = run_embed_missing(f'sqlite:///{db}', dry_run=False)
     assert rc2 == 0
     err2 = capsys.readouterr().err
@@ -492,6 +492,10 @@ def test_compress_then_embed_missing_composed(
     # Phase 2: --embed-missing against the compressed layout.
     monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
     monkeypatch.setenv('ENABLE_CHUNKING', 'false')
+    # The seeded fp32 rows recorded model_name='test-model'; configure the
+    # backfill to the SAME model so the embed-missing model-consistency
+    # pre-flight does not (correctly) refuse a mixed-model backfill.
+    monkeypatch.setenv('EMBEDDING_MODEL', 'test-model')
     get_settings.cache_clear()
     _reset_compression_cache()
     # Refresh the module-level ``settings`` binding so
@@ -500,7 +504,7 @@ def test_compress_then_embed_missing_composed(
     monkeypatch.setattr(_shared_module, 'settings', get_settings())
 
     provider = cast(EmbeddingProvider, _FakeEmbeddingProvider())
-    with patch('app.tools._shared.get_embedding_provider', return_value=provider):
+    with patch('app.cli._embedding_runtime.create_embedding_provider', return_value=provider):
         rc2 = run_embed_missing(f'sqlite:///{db}', dry_run=False)
 
     assert rc2 == 0

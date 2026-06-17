@@ -36,8 +36,15 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.cli._embedding_introspect import dimension_conflict_error
+from app.cli._embedding_introspect import distinct_embedding_models
+from app.cli._embedding_introspect import embedding_metadata_table_exists
+from app.cli._embedding_runtime import EmbeddingPipelineUnavailableError
+from app.cli._embedding_runtime import initialize_cli_embedding_pipeline
+from app.cli._embedding_runtime import shutdown_cli_embedding_pipeline
 from app.cli.migrate import mask_credentials
 from app.cli.migrate import parse_backend_url
+from app.embeddings.base import EmbeddingProvider
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -145,7 +152,7 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
 
         repos = RepositoryContainer(backend)
 
-        if not await _embedding_metadata_table_exists(backend):
+        if not await embedding_metadata_table_exists(backend):
             # Schema predates the semantic-search migration; every row
             # would qualify as missing but the storage path would fail
             # because the target tables do not exist. Surface a clearer
@@ -157,6 +164,23 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
                 'tables exist.',
                 file=sys.stderr,
             )
+            return 1
+
+        settings = get_settings()
+        model = settings.embedding.model
+        configured_dim = settings.embedding.dim
+
+        # Pre-flight: refuse to backfill into a database whose EXISTING
+        # embeddings use a different model or dimension. --embed-missing fills
+        # only the entries that lack embeddings and leaves the rest untouched,
+        # so a model/dim mismatch would mix incompatible embedding spaces in
+        # one table and corrupt semantic search. Surfaced before generation so
+        # no provider calls are wasted.
+        conflict = await _embedding_consistency_error(
+            backend, configured_model=model, configured_dim=configured_dim,
+        )
+        if conflict is not None:
+            print(f'[ERROR] {conflict}', file=sys.stderr)
             return 1
 
         missing = await _find_missing_entries(backend)
@@ -174,93 +198,115 @@ async def _embed_missing_async(source_url: str, *, dry_run: bool) -> int:
             )
             return 0
 
-        settings = get_settings()
-        model = settings.embedding.model
+        # The CLI does not run the server lifespan, so the global embedding
+        # provider + chunking service are unset. Initialize them exactly as
+        # the server does; without this, get_embedding_provider() returns None
+        # and every entry would be silently skipped.
+        provider: EmbeddingProvider | None = None
+        try:
+            provider = await initialize_cli_embedding_pipeline()
+        except EmbeddingPipelineUnavailableError as exc:
+            print(f'[ERROR] {exc}', file=sys.stderr)
+            return 1
 
-        start = time.perf_counter()
-        succeeded = 0
-        for i, (entry_id, text) in enumerate(missing, start=1):
-            chunk_embeddings = await generate_embeddings_with_timeout(text)
-            if chunk_embeddings is None:
-                print(
-                    f'[SKIP] entry {entry_id}: embedding provider not '
-                    f'configured (ENABLE_EMBEDDING_GENERATION may be true '
-                    f'but no provider returned a result)',
-                    file=sys.stderr,
-                )
-                continue
+        try:
+            start = time.perf_counter()
+            succeeded = 0
+            for i, (entry_id, text) in enumerate(missing, start=1):
+                chunk_embeddings = await generate_embeddings_with_timeout(text)
+                if chunk_embeddings is None:
+                    print(
+                        f'[SKIP] entry {entry_id}: embedding provider returned '
+                        f'no result',
+                        file=sys.stderr,
+                    )
+                    continue
 
-            # generate_compression_with_timeout is a no-op when
-            # compression.enabled is False; populates the payload field
-            # when True. Calling it unconditionally mirrors the live
-            # server's store_context / update_context code path.
-            chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
-            if chunk_embeddings is None:
-                continue
+                # generate_compression_with_timeout is a no-op when
+                # compression.enabled is False; populates the payload field
+                # when True. Calling it unconditionally mirrors the live
+                # server's store_context / update_context code path.
+                chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
+                if chunk_embeddings is None:
+                    continue
 
-            async with backend.begin_transaction() as txn:
-                await repos.embeddings.store_chunked(
-                    context_id=entry_id,
-                    chunk_embeddings=chunk_embeddings,
-                    model=model,
-                    txn=txn,
-                    upsert=False,
-                )
-            succeeded += 1
+                async with backend.begin_transaction() as txn:
+                    await repos.embeddings.store_chunked(
+                        context_id=entry_id,
+                        chunk_embeddings=chunk_embeddings,
+                        model=model,
+                        txn=txn,
+                        upsert=False,
+                    )
+                succeeded += 1
 
-            if i % 50 == 0:
-                elapsed = time.perf_counter() - start
-                rate = i / max(elapsed, 1e-6)
-                eta = (len(missing) - i) / rate if rate > 0 else 0.0
-                print(
-                    f'[PROGRESS] {i}/{len(missing)} '
-                    f'({rate:.1f} entries/s, ETA {eta:.0f}s)',
-                    file=sys.stderr,
-                )
+                if i % 50 == 0:
+                    elapsed = time.perf_counter() - start
+                    rate = i / max(elapsed, 1e-6)
+                    eta = (len(missing) - i) / rate if rate > 0 else 0.0
+                    print(
+                        f'[PROGRESS] {i}/{len(missing)} '
+                        f'({rate:.1f} entries/s, ETA {eta:.0f}s)',
+                        file=sys.stderr,
+                    )
 
-        elapsed = time.perf_counter() - start
-        print(
-            f'Backfill complete: {succeeded}/{len(missing)} entries '
-            f'embedded in {elapsed:.1f}s.',
-            file=sys.stderr,
-        )
-        return 0
+            elapsed = time.perf_counter() - start
+            print(
+                f'Backfill complete: {succeeded}/{len(missing)} entries '
+                f'embedded in {elapsed:.1f}s.',
+                file=sys.stderr,
+            )
+            return 0
+        finally:
+            await shutdown_cli_embedding_pipeline(provider)
     finally:
         await _shutdown(backend)
 
 
-async def _embedding_metadata_table_exists(backend: StorageBackend) -> bool:
-    """Probe the ``embedding_metadata`` table presence.
+async def _embedding_consistency_error(
+    backend: StorageBackend,
+    *,
+    configured_model: str,
+    configured_dim: int,
+) -> str | None:
+    """Return an actionable message if existing embeddings disagree with config.
+
+    ``--embed-missing`` fills entries that LACK embeddings and leaves existing
+    embeddings untouched. If those existing embeddings were produced by a
+    different model or dimension than the configured ``EMBEDDING_MODEL`` /
+    ``EMBEDDING_DIM``, backfilling new entries would mix incompatible embedding
+    spaces in one table and corrupt semantic search.
 
     Args:
         backend: Storage backend to query.
+        configured_model: The process's configured ``EMBEDDING_MODEL``.
+        configured_dim: The process's configured ``EMBEDDING_DIM``.
 
     Returns:
-        True when the ``embedding_metadata`` table exists in the database.
+        An operator-actionable message, or ``None`` when there is no conflict
+        (no existing embeddings -- the canonical post-cross-backend-migration
+        case -- or they already match the configured model and dimension).
     """
-    if backend.backend_type == 'sqlite':
+    # Dimension guard, shared with --re-embed so the two cannot diverge. It
+    # covers both the per-row embedding_metadata dimensions AND the seed-locked
+    # compression_metadata dimension (the latter matters even when no
+    # embeddings exist yet -- a freshly sealed compressed database).
+    dim_error = await dimension_conflict_error(backend, configured_dim=configured_dim)
+    if dim_error is not None:
+        return dim_error
 
-        def _check(conn: sqlite3.Connection) -> bool:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name='embedding_metadata'",
-            )
-            return cursor.fetchone() is not None
-
-        return await backend.execute_read(_check)
-
-    async def _check_pg(conn: asyncpg.Connection) -> bool:
-        result = await conn.fetchval(
-            '''
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_name = 'embedding_metadata'
-            )
-            ''',
+    models = await distinct_embedding_models(backend)
+    conflicting_models = sorted(m for m in models if m != configured_model)
+    if conflicting_models:
+        return (
+            f'existing embeddings were generated with model(s) '
+            f'{conflicting_models} but EMBEDDING_MODEL={configured_model!r}. '
+            f'Backfilling missing entries with a different model would mix '
+            f'incompatible embedding spaces. To re-embed the whole corpus with '
+            f'{configured_model!r}, run --re-embed. To backfill consistently, '
+            f'set EMBEDDING_MODEL to the existing model.'
         )
-        return bool(result)
-
-    return await backend.execute_read(cast(Any, _check_pg))
+    return None
 
 
 async def _find_missing_entries(backend: StorageBackend) -> list[tuple[str, str]]:

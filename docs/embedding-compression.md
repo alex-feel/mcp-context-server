@@ -381,6 +381,8 @@ The dry run reports the count of missing entries without calling the embedding p
 
 When `ENABLE_EMBEDDING_COMPRESSION=true` (the default in v3.0.0), the backfill writes compressed payloads to `vec_context_embeddings_compressed`. When `ENABLE_EMBEDDING_COMPRESSION=false`, it writes fp32 vectors to `vec_context_embeddings`.
 
+`--embed-missing` fills ONLY the entries that lack embeddings and leaves existing embeddings untouched. To prevent silently mixing incompatible embedding spaces, it runs a pre-flight check: if the database already contains embeddings produced by a different `EMBEDDING_MODEL`, or recorded at a different `EMBEDDING_DIM`, than the configured values, the CLI refuses with exit code 1 and explains the fix. The canonical post-cross-backend-migration case (where ALL embeddings were dropped) has no existing embeddings, so the check passes and the backfill proceeds. To re-embed an entire corpus under a NEW model, use `--re-embed` (below) instead.
+
 `--embed-missing` may be combined with `--compress` for a one-shot compress-then-backfill workflow against a database that has both fp32 embeddings AND entries lacking embeddings:
 
 ```bash
@@ -395,6 +397,22 @@ The compose order is fixed: `--compress` runs first (converts the existing fp32 
 `--embed-missing` is NOT combinable with `--decompress`. If you need to decompress an existing database AND backfill missing entries, run the two commands separately (decompress first, then run `--embed-missing` with `ENABLE_EMBEDDING_COMPRESSION=false`).
 
 Cost note: `--embed-missing` calls whichever embedding provider is configured via `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL`. For local Ollama the cost is zero; for cloud providers (OpenAI / Voyage / HuggingFace) the cost scales with the number of missing entries. The CLI prints a warning banner before starting that lists the source URL (with credentials masked) and reminds the operator that live provider calls will follow.
+
+### Re-embedding the whole corpus (changing the embedding model)
+
+`--embed-missing` does not touch entries that already have embeddings, so it cannot change the embedding MODEL of an existing corpus. To switch models -- for example, replacing `qwen3-embedding:0.6b` with a different model of the same dimension -- use `--re-embed`. It regenerates embeddings for EVERY `context_entries` row (deleting the old vectors first) using the currently configured `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL`, and backfills any entries that were missing embeddings along the way (it is a superset of `--embed-missing`):
+
+```bash
+# Point EMBEDDING_MODEL at the new model, keep EMBEDDING_DIM unchanged, then:
+mcp-context-server-migrate \
+  --source-url sqlite:////path/to/db.sqlite \
+  --re-embed \
+  --dry-run
+```
+
+The dry run reports the number of entries that would be re-embedded and the existing model(s) being replaced, without calling the provider. Re-run without `--dry-run` to execute. Each entry's delete + regenerate runs inside one transaction, so an entry is never left without embeddings. `--re-embed` works on both fp32 and compressed layouts and requires `ENABLE_EMBEDDING_GENERATION=true`. It is mutually exclusive with `--compress` / `--decompress`, and it supersedes `--embed-missing` (re-embedding the whole corpus already covers the gaps).
+
+`--re-embed` deliberately refuses a DIMENSION change: if the configured `EMBEDDING_DIM` differs from the stored dimension, it exits with an actionable error. A dimension change rewrites the vector-storage geometry -- the fp32 vector column width is fixed at table creation, and under compression the dimension is part of the seed-locked `compression_metadata` codebook -- so it requires the destructive rebuild documented in the [Migration Guide](migration-v2-to-v3.md#changing-the-embedding-model-or-dimensions), not an in-place re-embed.
 
 ## Bonus Benefits
 
