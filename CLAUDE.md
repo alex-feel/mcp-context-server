@@ -25,7 +25,7 @@ uv run pre-commit run --all-files   # lint + type check (Ruff, mypy, pyright)
 uv run ruff check --fix .           # Ruff autofix
 ```
 
-Note: Integration test infrastructure currently exists only for SQLite. PostgreSQL integration tests are planned for the future.
+Note: Real-server integration tests run against BOTH backends from one shared, backend-parametrized harness (`tests/integration/_harness.py`, `MCPServerIntegrationTest`): SQLite always, and PostgreSQL via a docker-compose pgvector container (the `pg_test_url` fixture / `@requires_docker_postgres` marker; skipped automatically when Docker is unavailable).
 
 ## High-Level Architecture
 
@@ -101,13 +101,13 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 
 ### Testing Strategy
 
-**Philosophy**: SQLite-only temp databases (no PostgreSQL); production supports both backends. Always add real server integration tests in `tests/integration/sqlite/test_real_server.py` for new tools.
+**Philosophy**: Unit and repository tests use SQLite temp databases; real-server integration tests run the SAME assertions against BOTH backends through the shared parametrized harness `tests/integration/_harness.py` (`MCPServerIntegrationTest(backend='sqlite'|'postgresql')`) — driven by `tests/integration/sqlite/test_real_server.py` (SQLite) and `tests/integration/postgresql/test_real_server.py` (PostgreSQL on docker-compose pgvector, isolated DB). When adding a new tool or a backend-portable behavior, add the assertion as a harness method so it runs on both backends; reserve dedicated per-backend tests for backend-specific paths (e.g. HTTP transport/auth and `/health` under `sqlite/`, PostgreSQL metadata-index creation under `postgresql/`).
 
 **Key Files**: `conftest.py` (fixtures, markers), `helpers.py` (shared utilities; uses `get_settings()`), `run_server.py` (subprocess server wrapper for integration tests).
 
 **Key Fixtures** (`conftest.py`): `test_db` (direct SQLite), `mock_server_dependencies` (mocked settings), `initialized_server` (full integration), `async_db_initialized` (async backend), `async_db_with_embeddings` (semantic search).
 
-**Skip Markers**: `@requires_ollama`, `@requires_sqlite_vec`, `@requires_numpy`, `@requires_semantic_search`. `prevent_default_db_pollution` (autouse) prevents accidental production DB access.
+**Skip Markers**: `@requires_ollama`, `@requires_sqlite_vec`, `@requires_numpy`, `@requires_semantic_search`, `@requires_docker_postgres` (PostgreSQL integration tests; skipped when Docker is unavailable). `prevent_default_db_pollution` (autouse) prevents accidental production DB access.
 
 ### Test Directory Structure
 
@@ -117,7 +117,8 @@ Tests mirror `app/`: `tests/<name>/` → `app/<name>/` (package) or `app/<name>.
 - `tests/core/` → `app/*.py` small utility root modules (models, errors, fusion, instructions, etc.)
 - `tests/server/` → `app/server.py` (dedicated directory; large/complex root modules get their own)
 - `tests/settings/` → `app/settings.py` (same reason)
-- `tests/integration/sqlite/` → real running server integration tests (no app mirror)
+- `tests/integration/_harness.py` → shared backend-parametrized real-server harness (`MCPServerIntegrationTest`); imported by the per-backend entry points and intentionally NOT named `test_*` so pytest does not collect it directly
+- `tests/integration/sqlite/` and `tests/integration/postgresql/` → per-backend real-server entry points and backend-specific tests (no app mirror); PostgreSQL gated on `@requires_docker_postgres`
 
 **Shared infrastructure** stays at `tests/` root: `conftest.py`, `helpers.py`, `run_server.py`, `__init__.py`.
 
@@ -372,7 +373,7 @@ Existing settings classes are enumerated in `app/settings.py` (one per domain, e
 
 New tools live in `app/tools/<domain>.py` as `async` functions: `Annotated[..., Field(...)]` params, `ctx: Context | None = None` last; call `repos = await ensure_repositories()` and return a serializable dict (`{'success': True, 'context_id': ...}`).
 
-**Steps**: 1) `app/tools/<domain>.py`; 2) add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py`; 3) export from `__init__.py`; 4) register in `app/server.py` lifespan(); 5) add a TypedDict to `app/types.py`; 6) add tests + real server tests in `tests/integration/sqlite/test_real_server.py`; 7) update `server.json` if new env vars; 8) backend-specific descriptions → add a generator to `app/tools/descriptions.py`; 9) store/update ops → reuse `app/tools/_shared.py` shared functions for parity.
+**Steps**: 1) `app/tools/<domain>.py`; 2) add to `TOOL_ANNOTATIONS` in `app/tools/__init__.py`; 3) export from `__init__.py`; 4) register in `app/server.py` lifespan(); 5) add a TypedDict to `app/types.py`; 6) add tests + a real-server harness method in `tests/integration/_harness.py` (runs on BOTH backends via the SQLite and PostgreSQL entry points; reserve dedicated per-backend files only for backend-specific paths); 7) update `server.json` if new env vars; 8) backend-specific descriptions → add a generator to `app/tools/descriptions.py`; 9) store/update ops → reuse `app/tools/_shared.py` shared functions for parity.
 
 **Annotation categories**: READ_ONLY (readOnlyHint=True), ADDITIVE (destructiveHint=False), UPDATE (destructiveHint=True, idempotentHint=False), DELETE (destructiveHint=True, idempotentHint=True)
 
@@ -417,11 +418,11 @@ After validation, the lifespan logs the active compression config (singleton `co
 Monkey-patch for `BaseSession._send_response()`/`send_notification()` not handling `ClosedResourceError`/`BrokenResourceError` on client disconnect. Applied in `app/server.py` lifespan (step 0).
 
 - **Upstream tracking**: [MCP SDK #2064](https://github.com/modelcontextprotocol/python-sdk/issues/2064), PRs [#2072](https://github.com/modelcontextprotocol/python-sdk/pull/2072), [#2184](https://github.com/modelcontextprotocol/python-sdk/pull/2184)
-- **Removal** (when upstream MCP SDK fixes this): bump `mcp`, delete `app/patches/` + its patch import/call in `app/server.py`, delete `tests/patches/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/integration/sqlite/test_real_server.py`, and remove this section.
+- **Removal** (when upstream MCP SDK fixes this): bump `mcp`, delete `app/patches/` + its patch import/call in `app/server.py`, delete `tests/patches/test_session_crash_patch.py`, remove `test_session_crash_patch_applied` from `tests/integration/_harness.py`, and remove this section.
 
 **Client JSON String Serialization** (`app/middleware/json_string_deserializer.py`):
 
 Schema-aware FastMCP middleware fixing MCP clients (including Claude Code) intermittently serializing list/dict parameters as JSON strings. `Middleware` base class with `on_call_tool` override; `build_schema_map()` inspects each tool's JSON Schema at startup for `array`/`object` params (incl. `Optional` via `anyOf`/`$ref`) — only those are deserialization candidates, strings are never touched. Handles double-encoding. Registered in `app/server.py` lifespan (step 25) via `mcp.add_middleware()`, after all `register_tool()` calls.
 
 - **Upstream tracking**: [Claude Code #22394](https://github.com/anthropics/claude-code/issues/22394) (closed NOT_PLANNED), [Claude Code #26094](https://github.com/anthropics/claude-code/issues/26094), [FastMCP #932](https://github.com/jlowin/fastmcp/issues/932), Claude Code #5504, #4192, #3084
-- **Removal** (when upstream clients fix serialization): delete `app/middleware/` + its import/registration block (step 25) in `app/server.py` lifespan(), delete `tests/middleware/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/integration/sqlite/test_real_server.py`, and remove this section.
+- **Removal** (when upstream clients fix serialization): delete `app/middleware/` + its import/registration block (step 25) in `app/server.py` lifespan(), delete `tests/middleware/test_middleware_json_deserializer.py`, remove middleware integration tests from `tests/integration/_harness.py`, and remove this section.

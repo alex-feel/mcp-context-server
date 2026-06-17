@@ -1,109 +1,111 @@
-"""Baseline integration tests for the real MCP server against PostgreSQL.
+"""PostgreSQL entry point for the real-server integration suite.
 
-The tests start the server via ``tests/run_server.py`` with
-``STORAGE_BACKEND=postgresql`` and ``POSTGRESQL_CONNECTION_STRING``
-pointing at the docker-compose pgvector container provided by
-``pg_test_url`` (see ``conftest.py``). They exercise the baseline tool
-surface (store, search, get_context_by_ids, list_threads, statistics) to
-catch PG-side regressions in the storage write path.
+Runs the shared backend-parametrized harness
+(:class:`tests.integration._harness.MCPServerIntegrationTest`) against a REAL
+MCP server subprocess backed by PostgreSQL, giving PostgreSQL the same
+end-to-end tool-surface coverage as SQLite. The identical assertion methods
+execute against the asyncpg backend, exercising PG-specific SQL paths that have
+no SQLite equivalent: tsvector/tsquery FTS, the pgvector ``<->`` / HNSW /
+``DISTINCT ON`` vector search, jsonb metadata operators (``->>`` / ``@>`` /
+``jsonb_typeof``), native-UUID dedup interleaving ordering, ``Decimal`` ->
+float statistics coercion, the ``jsonb_merge_patch`` deep-merge function, and
+the asyncpg UUID type codec.
 
-Compression-specific behaviour lives in
-``test_compression_round_trip.py``; this file does not enable
-compression so the test runs against the standard fp32 storage path.
+The run uses an ISOLATED database (``pg_parity_db``) rather than the shared
+``mcp_test`` database, so it is independent of the schema mutations and the
+seed-locked ``compression_metadata`` singleton that the dedicated compression
+round-trip tests apply to ``mcp_test``. The harness runs the fp32 vector layout
+(``ENABLE_EMBEDDING_COMPRESSION=false``); the compressed PG path is covered by
+``test_compression_round_trip.py`` and ``test_search_compressed_postgresql.py``.
+
+Embedding/semantic/hybrid sub-tests self-gate on Ollama model availability
+inside the harness, so the suite degrades gracefully (skip-as-pass) when no
+model is present; FTS runs unconditionally (native tsvector, no model needed).
 """
 
 from __future__ import annotations
 
-import os
-import time
-from pathlib import Path
-from typing import Any
+import contextlib
+from collections.abc import AsyncIterator
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
+import asyncpg
 import pytest
-from fastmcp import Client
-from fastmcp.client.transports import PythonStdioTransport
+import pytest_asyncio
+
+from tests.integration._harness import MCPServerIntegrationTest
 
 pytestmark = [pytest.mark.requires_docker_postgres, pytest.mark.integration]
 
 
-@pytest.mark.asyncio
-async def test_real_server_baseline_postgresql(pg_test_url: str) -> None:
-    """Smoke test: server starts against PostgreSQL and store/get round-trip works.
+def _replace_db_name(pg_url: str, new_db: str) -> str:
+    """Return ``pg_url`` with the database-name path component replaced."""
+    parts = urlsplit(pg_url)
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        f'/{new_db}',
+        parts.query,
+        parts.fragment,
+    ))
 
-    The test confirms that:
 
-    1. The lifespan completes successfully with STORAGE_BACKEND=postgresql,
-    2. ``store_context`` writes an entry via the asyncpg backend, and
-    3. ``get_context_by_ids`` returns the same entry.
+@pytest_asyncio.fixture
+async def pg_parity_db(pg_test_url: str) -> AsyncIterator[str]:
+    """Provision an isolated PostgreSQL database for the full parity run.
+
+    The harness stores roughly a hundred entries across many tool calls. An
+    isolated database keeps the run independent of the shared ``mcp_test``
+    database that other PG tests mutate (notably the compression round-trip
+    test, which seals the seed-locked ``compression_metadata`` singleton and
+    swaps ``mcp_test`` to the compressed vector layout). The database is created
+    fresh, the pgvector extension installed, and the database dropped (with
+    FORCE, terminating any lingering pool connections) at teardown.
 
     Args:
-        pg_test_url: Fixture providing the docker-compose pgvector
-            connection string (or skips when Docker is unavailable).
+        pg_test_url: docker-compose pgvector DSN (skips when Docker is absent).
+
+    Yields:
+        Connection string pointing at the isolated parity database.
     """
-    wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
+    db_name = 'mcp_real_server_parity'
+    admin = await asyncpg.connect(pg_test_url)
+    try:
+        await admin.execute(f'DROP DATABASE IF EXISTS {db_name} WITH (FORCE)')
+        await admin.execute(f'CREATE DATABASE {db_name}')
+    finally:
+        await admin.close()
 
-    server_env = {
-        **os.environ,
-        'STORAGE_BACKEND': 'postgresql',
-        'POSTGRESQL_CONNECTION_STRING': pg_test_url,
-        'MCP_TEST_MODE': '1',
-        # Disable optional features so the test does not depend on
-        # Ollama / external models.
-        'ENABLE_SEMANTIC_SEARCH': 'false',
-        'ENABLE_FTS': 'false',
-        'ENABLE_HYBRID_SEARCH': 'false',
-        'ENABLE_EMBEDDING_GENERATION': 'false',
-        'ENABLE_SUMMARY_GENERATION': 'false',
-        # Compression off in this baseline test.
-        'ENABLE_EMBEDDING_COMPRESSION': 'false',
-    }
+    target_url = _replace_db_name(pg_test_url, db_name)
+    setup = await asyncpg.connect(target_url)
+    try:
+        await setup.execute('CREATE EXTENSION IF NOT EXISTS vector')
+    finally:
+        await setup.close()
 
-    transport = PythonStdioTransport(
-        script_path=str(wrapper_script),
-        env=server_env,
-    )
-    client: Client[Any] = Client(transport)
-    async with client:
-        await client.ping()
+    yield target_url
 
-        thread_id = f'pg_baseline_{int(time.time())}'
+    admin = await asyncpg.connect(pg_test_url)
+    try:
+        with contextlib.suppress(Exception):
+            await admin.execute(f'DROP DATABASE IF EXISTS {db_name} WITH (FORCE)')
+    finally:
+        await admin.close()
 
-        store_result = await client.call_tool(
-            'store_context',
-            {
-                'thread_id': thread_id,
-                'source': 'agent',
-                'text': 'PostgreSQL baseline entry',
-            },
-        )
-        store_content: dict[str, Any] | None = None
-        if hasattr(store_result, 'structured_content'):
-            store_content = store_result.structured_content
-        assert store_content is not None
-        assert store_content.get('success') is True, store_content
-        context_id = store_content.get('context_id')
-        assert context_id, store_content
 
-        get_result = await client.call_tool(
-            'get_context_by_ids',
-            {'context_ids': [context_id]},
-        )
-        get_content: dict[str, Any] | None = None
-        if hasattr(get_result, 'structured_content'):
-            get_content = get_result.structured_content
-        assert get_content is not None
-        results = get_content.get('result') or get_content.get('results')
-        assert results, get_content
-        assert results[0]['id'] == context_id
+@pytest.mark.asyncio
+async def test_real_server_postgresql(pg_parity_db: str) -> None:
+    """Run the full real-server harness against PostgreSQL (parity with SQLite).
 
-        # Best-effort cleanup; the docker container is torn down at session
-        # end so leftover rows are harmless. delete_context may be absent
-        # via DISABLED_TOOLS.
-        import contextlib
+    Constructs the shared harness in PostgreSQL mode and runs every assertion
+    method through a real MCP server subprocess connected to the isolated
+    pgvector database. Mirrors ``tests/integration/sqlite/test_real_server.py``
+    ::``test_real_server`` so the two backends share one source of truth.
 
-        from fastmcp.exceptions import ToolError
-        with contextlib.suppress(ToolError):
-            await client.call_tool(
-                'delete_context',
-                {'thread_id': thread_id},
-            )
+    Args:
+        pg_parity_db: Isolated pgvector DSN provided by :func:`pg_parity_db`.
+    """
+    test = MCPServerIntegrationTest(backend='postgresql', pg_url=pg_parity_db)
+    success = await test.run_all_tests()
+    assert success, 'PostgreSQL integration tests failed'
