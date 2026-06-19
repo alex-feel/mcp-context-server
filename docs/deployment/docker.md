@@ -391,13 +391,13 @@ All Docker Compose files use environment variables for configuration. Key settin
 
 **Search Features:**
 
-| Variable                 | Default | Description                           |
-|--------------------------|---------|---------------------------------------|
-| `ENABLE_SEMANTIC_SEARCH` | `true`  | Enable vector similarity search       |
-| `ENABLE_FTS`             | `true`  | Enable full-text search               |
-| `ENABLE_HYBRID_SEARCH`   | `true`  | Enable combined FTS + semantic search |
-| `ENABLE_CHUNKING`        | `true`  | Enable text chunking for embeddings   |
-| `ENABLE_RERANKING`       | `true`  | Enable cross-encoder reranking        |
+| Variable                 | Default | Description                                                                                                                           |
+|--------------------------|---------|---------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_SEMANTIC_SEARCH` | `auto`  | Register vector similarity search tool — auto: when an embedding provider is available; true: force on; false: force off              |
+| `ENABLE_FTS`             | `auto`  | Register full-text search tool — auto: register (built-in, no extra deps); true: force on; false: force off                           |
+| `ENABLE_HYBRID_SEARCH`   | `auto`  | Register combined FTS + semantic search tool — auto: register when >=1 of FTS/semantic is available; true: force on; false: force off |
+| `ENABLE_CHUNKING`        | `true`  | Enable text chunking for embeddings                                                                                                   |
+| `ENABLE_RERANKING`       | `true`  | Enable cross-encoder reranking                                                                                                        |
 
 **Embedding Settings (Ollama):**
 

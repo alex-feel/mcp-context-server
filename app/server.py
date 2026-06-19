@@ -505,22 +505,28 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         # 21) Pre-warm Ollama models (load into memory for instant first-request response)
         await prewarm_ollama_models()
 
-        # 22) Register semantic search tool if enabled AND embedding provider is available
-        # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
-        if settings.semantic_search.enabled:
-            if get_embedding_provider() is not None:
-                register_tool(mcp, semantic_search_context)
-                logger.info('semantic_search_context registered')
-            else:
-                # User explicitly set ENABLE_EMBEDDING_GENERATION=false but ENABLE_SEMANTIC_SEARCH=true
-                # This is a valid configuration - user wants no embeddings but enabled the flag
-                logger.warning(
-                    'ENABLE_SEMANTIC_SEARCH=true but ENABLE_EMBEDDING_GENERATION=false - '
-                    'semantic_search_context NOT registered (no embedding provider available)',
-                )
-        else:
+        # 22) Register semantic search tool based on its mode and embedding availability.
+        # auto: register when an embedding provider is present (initialized in step
+        # 17, so its presence is the authoritative "embeddings are available" signal).
+        # true: force on, warning when no provider is available. false: force off.
+        semantic_mode = settings.semantic_search.mode
+        if semantic_mode == 'false':
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('semantic_search_context not registered (feature disabled)')
+        elif get_embedding_provider() is not None:
+            register_tool(mcp, semantic_search_context)
+            logger.info('semantic_search_context registered')
+        elif semantic_mode == 'true':
+            logger.warning(
+                'ENABLE_SEMANTIC_SEARCH=true but no embedding provider is available '
+                '(ENABLE_EMBEDDING_GENERATION=false or provider initialization failed) - '
+                'semantic_search_context NOT registered',
+            )
+        else:
+            logger.info(
+                'semantic_search_context not registered '
+                '(ENABLE_SEMANTIC_SEARCH=auto and no embedding provider available)',
+            )
 
         # 23) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration

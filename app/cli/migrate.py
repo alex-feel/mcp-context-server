@@ -1414,7 +1414,8 @@ async def initialize_target_postgresql(
 
     The semantic and chunking migrations are invoked with ``force=True`` so the
     fp32 vector layout is created regardless of the CLI process's
-    ``ENABLE_SEMANTIC_SEARCH`` value, and ``apply_semantic_search_migration``
+    ``ENABLE_EMBEDDING_GENERATION`` value (the server-side gate), and
+    ``apply_semantic_search_migration``
     receives the SOURCE-detected ``embedding_dim`` so the target vector column
     width matches the data being copied (mirrors the SQLite path's
     ``_detect_source_embedding_dim`` -> ``initialize_target_sqlite`` flow).

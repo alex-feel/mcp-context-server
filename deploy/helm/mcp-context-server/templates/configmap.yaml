@@ -24,12 +24,18 @@ data:
   POSTGRESQL_DATABASE: {{ .Values.storage.postgresql.database | quote }}
   POSTGRESQL_SSL_MODE: {{ .Values.storage.postgresql.sslMode | quote }}
   {{- end }}
-  # Search features
-  ENABLE_FTS: {{ .Values.search.fts.enabled | quote }}
+  # Search features. The search.*.enabled booleans map to the server's tri-state
+  # toggles: true -> "auto" (register the tool when its prerequisites are present),
+  # false -> "false" (force off). search.semantic.enabled additionally provisions
+  # the embedding subsystem: it drives ENABLE_EMBEDDING_GENERATION and the provider
+  # config below, so embeddings are generated only when a provider is configured
+  # (this avoids a startup failure when no embedding provider is available).
+  ENABLE_FTS: {{ ternary "auto" "false" .Values.search.fts.enabled | quote }}
   {{- if .Values.search.fts.enabled }}
   FTS_LANGUAGE: {{ .Values.search.fts.language | quote }}
   {{- end }}
-  ENABLE_SEMANTIC_SEARCH: {{ .Values.search.semantic.enabled | quote }}
+  ENABLE_EMBEDDING_GENERATION: {{ .Values.search.semantic.enabled | quote }}
+  ENABLE_SEMANTIC_SEARCH: {{ ternary "auto" "false" .Values.search.semantic.enabled | quote }}
   {{- if .Values.search.semantic.enabled }}
   EMBEDDING_PROVIDER: {{ .Values.search.semantic.provider | quote }}
   EMBEDDING_MODEL: {{ .Values.search.semantic.model | quote }}
@@ -58,7 +64,7 @@ data:
   LANGSMITH_ENDPOINT: {{ .Values.langsmith.endpoint | quote }}
   LANGSMITH_PROJECT: {{ .Values.langsmith.project | quote }}
   {{- end }}
-  ENABLE_HYBRID_SEARCH: {{ .Values.search.hybrid.enabled | quote }}
+  ENABLE_HYBRID_SEARCH: {{ ternary "auto" "false" .Values.search.hybrid.enabled | quote }}
   {{- if .Values.search.hybrid.enabled }}
   HYBRID_RRF_K: {{ .Values.search.hybrid.rrfK | quote }}
   HYBRID_RRF_OVERFETCH: {{ .Values.search.hybrid.rrfOverfetch | quote }}

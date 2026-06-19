@@ -427,7 +427,6 @@ uv sync --extra embeddings-ollama --extra summary-openai --extra reranking
       "command": "uvx",
       "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,summary-ollama,reranking]", "mcp-context-server"],
       "env": {
-        "ENABLE_SEMANTIC_SEARCH": "true",
         "ENABLE_SUMMARY_GENERATION": "true",
         "EMBEDDING_PROVIDER": "ollama",
         "EMBEDDING_MODEL": "qwen3-embedding:0.6b",

@@ -29,15 +29,15 @@ async def apply_semantic_search_migration(
     force: bool = False,
     embedding_dim: int | None = None,
 ) -> None:
-    """Apply semantic search migration if enabled.
+    """Apply the semantic-search vector storage migration when embedding generation is enabled.
 
     Args:
         backend: Storage backend instance.
         force: When True, apply the migration regardless of
-            ``settings.semantic_search.enabled``. Used by the migration CLI
+            ``settings.embedding.generation_enabled``. Used by the migration CLI
             (``app.cli.migrate``) to create the fp32 vector layout on a target
             database while preserving the server's default behavior (gated on
-            the setting) for all other callers.
+            embedding generation) for all other callers.
         embedding_dim: Explicit vector dimension to template into the migration
             SQL. When ``None`` the configured ``settings.embedding.dim`` is used.
             The CLI passes the SOURCE database's detected dimension so the target
@@ -52,7 +52,7 @@ async def apply_semantic_search_migration(
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
-    if not force and not settings.semantic_search.enabled:
+    if not force and not settings.embedding.generation_enabled:
         return
 
     backend_type = backend.backend_type

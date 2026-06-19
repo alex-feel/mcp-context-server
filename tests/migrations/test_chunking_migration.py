@@ -24,17 +24,22 @@ class TestApplyChunkingMigration:
     """Tests for apply_chunking_migration()."""
 
     @pytest.mark.asyncio
-    async def test_migration_skipped_when_semantic_search_disabled(self) -> None:
-        """Verify no-op when ENABLE_SEMANTIC_SEARCH=false."""
+    async def test_migration_skipped_when_embedding_generation_disabled(self) -> None:
+        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false.
+
+        The chunking migration provisions the 1:N embedding-storage layer from
+        embedding GENERATION (settings.embedding.generation_enabled), not from the
+        semantic-search TOOL toggle. It skips only when embedding generation is off.
+        """
         from app.migrations import apply_chunking_migration
 
         # Create mock backend
         mock_backend = MagicMock()
         mock_backend.backend_type = 'sqlite'
 
-        # Mock settings with semantic search disabled
+        # Mock settings with embedding generation disabled
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = False
+        mock_settings.embedding.generation_enabled = False
 
         with patch('app.migrations.chunking.settings', mock_settings):
             # Call should return early without doing anything

@@ -510,17 +510,78 @@ class FtsPassageSettings(CommonSettings):
     )
 
 
-class SemanticSearchSettings(CommonSettings):
-    """Semantic search feature configuration.
+def _normalize_feature_toggle(value: object) -> object:
+    """Normalize a search feature-toggle value to 'auto' | 'true' | 'false'.
 
-    Controls whether semantic_search_context tool is registered.
-    Requires embedding provider to be available.
+    Accepts the tri-state strings plus the conventional boolean spellings, so an
+    existing ENABLE_*=true/false/1/0/yes/no configuration keeps working. 'auto'
+    (the default) defers the decision to runtime capability detection. Unknown
+    values fall through to Literal validation, which rejects them with a clear
+    error.
+
+    Returns:
+        The normalized token; 'auto', 'true', or 'false' for recognized inputs,
+        otherwise the lowercased text unchanged for Literal validation to reject.
+    """
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    text = str(value).strip().lower()
+    if text in {'true', '1', 'yes', 'on', 'enabled'}:
+        return 'true'
+    if text in {'false', '0', 'no', 'off', 'disabled'}:
+        return 'false'
+    if text in {'auto', ''}:
+        return 'auto'
+    return text
+
+
+class FeatureToggleSettings(CommonSettings):
+    """Base for the search feature toggles, which are tri-state by design.
+
+    The three search tools default to 'auto' rather than being opt-in: a
+    deployment whose prerequisites are already present (an embedding provider for
+    semantic search; nothing extra for full-text search, which uses built-in
+    database capabilities) exposes the corresponding tool with no configuration,
+    while a deployment that lacks the prerequisites silently skips it. The
+    explicit 'true'/'false' values let operators force a tool on (warning when its
+    prerequisites are missing) or off (minimal tool surface). Embedding storage is
+    provisioned from ENABLE_EMBEDDING_GENERATION independently of these toggles,
+    so enabling a search tool later never requires re-embedding.
+
+    Subclasses declare ``mode`` with the feature-specific env alias.
     """
 
-    enabled: bool = Field(
-        default=False,
+    mode: Literal['auto', 'true', 'false'] = 'auto'
+
+    @field_validator('mode', mode='before')
+    @classmethod
+    def _coerce_mode(cls, value: object) -> object:
+        return _normalize_feature_toggle(value)
+
+    @property
+    def enabled(self) -> bool:
+        """True unless the feature is force-disabled (``mode == 'false'``).
+
+        'auto' and 'true' both report enabled; the runtime decides whether the
+        prerequisites are actually present before exposing the tool.
+        """
+        return self.mode != 'false'
+
+
+class SemanticSearchSettings(FeatureToggleSettings):
+    """Semantic search feature configuration.
+
+    Controls whether the semantic_search_context tool is registered. Requires an
+    embedding provider, which is initialized whenever ENABLE_EMBEDDING_GENERATION
+    resolves on.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
         alias='ENABLE_SEMANTIC_SEARCH',
-        description='Enable semantic search tool registration',
+        description='Semantic search tool registration: auto (register when an '
+                    'embedding provider is available), true (force on, warn if '
+                    'unavailable), false (force off).',
     )
 
 
@@ -680,16 +741,20 @@ class SummarySettings(CommonSettings):
     )
 
 
-class FtsSettings(CommonSettings):
+class FtsSettings(FeatureToggleSettings):
     """Full-text search feature configuration.
 
-    Controls FTS tool registration and language/tokenizer settings.
+    Controls FTS tool registration and language/tokenizer settings. Full-text
+    search uses built-in database capabilities and needs no extra dependencies,
+    so 'auto' registers it by default.
     """
 
-    enabled: bool = Field(
-        default=False,
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
         alias='ENABLE_FTS',
-        description='Enable full-text search functionality',
+        description='Full-text search tool registration: auto (register; uses '
+                    'built-in database FTS, no extra dependencies), true (force '
+                    'on), false (force off).',
     )
 
     language: str = Field(
@@ -731,16 +796,18 @@ class FtsSettings(CommonSettings):
         return v_lower
 
 
-class HybridSearchSettings(CommonSettings):
+class HybridSearchSettings(FeatureToggleSettings):
     """Hybrid search configuration using Reciprocal Rank Fusion (RRF).
 
     Combines FTS and semantic search results for improved relevance.
     """
 
-    enabled: bool = Field(
-        default=False,
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
         alias='ENABLE_HYBRID_SEARCH',
-        description='Enable hybrid search combining FTS and semantic search',
+        description='Hybrid search tool registration: auto (register when at '
+                    'least one of full-text or semantic search is available), '
+                    'true (force on), false (force off).',
     )
 
     rrf_k: int = Field(

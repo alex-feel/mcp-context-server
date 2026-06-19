@@ -613,6 +613,7 @@ class TestSummaryLifespan:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.semantic_search.enabled = False
+        mock_settings.semantic_search.mode = 'false'
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.summary.generation_enabled = True
@@ -684,6 +685,7 @@ class TestSummaryLifespan:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.semantic_search.enabled = False
+        mock_settings.semantic_search.mode = 'false'
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.summary.generation_enabled = False

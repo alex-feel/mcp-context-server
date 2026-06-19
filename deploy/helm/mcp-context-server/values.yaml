@@ -99,12 +99,20 @@ storage:
     existingSecret: ""
     existingSecretKey: "postgresql-password"
 
-# Search features
+# Search features. The fts/semantic/hybrid `enabled` flags map to the server's
+# tri-state search toggles: true renders ENABLE_*="auto" (register the tool when
+# its prerequisites are present), false renders "false" (force off). Full-text
+# search needs no extra dependencies, so it is on by default; hybrid search builds
+# on whichever of full-text/semantic is available.
 search:
   fts:
     enabled: true
     language: "english"
   semantic:
+    # Enables the embedding subsystem: drives ENABLE_EMBEDDING_GENERATION and
+    # registers the semantic search tool (ENABLE_SEMANTIC_SEARCH=auto). Requires an
+    # embedding provider (set ollama.enabled=true or configure an API key below);
+    # keep false when no provider is available.
     enabled: false
     # Embedding provider: ollama (default), openai, azure, huggingface, voyage
     provider: "ollama"
@@ -117,7 +125,7 @@ search:
     # Concurrency control
     maxConcurrent: 3     # Maximum parallel embedding requests (1-20)
   hybrid:
-    enabled: false
+    enabled: true
     rrfK: 60
     rrfOverfetch: 2  # Multiplier for over-fetching before RRF fusion
   # Text chunking for improved semantic search on long documents

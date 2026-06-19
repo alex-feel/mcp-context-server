@@ -220,7 +220,7 @@ update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"r
 
 Perform semantic similarity search using vector embeddings.
 
-Note: This tool is only available when semantic search is enabled via `ENABLE_SEMANTIC_SEARCH=true` and all dependencies are installed. The implementation varies by backend:
+Note: This tool is available by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever an embedding provider is present; set `ENABLE_SEMANTIC_SEARCH=false` to force off. The implementation varies by backend:
 - **SQLite**: Uses sqlite-vec extension with embedding model via Ollama
 - **PostgreSQL**: Uses pgvector extension (pre-installed in pgvector Docker image) with embedding model via Ollama
 
@@ -270,7 +270,7 @@ For setup instructions, see the [Semantic Search Guide](semantic-search.md).
 
 Perform full-text search with linguistic processing, relevance ranking, and highlighted snippets.
 
-Note: This tool is only available when FTS is enabled via `ENABLE_FTS=true`. The implementation varies by backend:
+Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=false` to force off. The implementation varies by backend:
 - **SQLite**: Uses FTS5 with BM25 ranking. Porter stemmer (English) or unicode61 tokenizer (multilingual).
 - **PostgreSQL**: Uses tsvector/tsquery with ts_rank_cd ranking. Supports 29 languages with full stemming.
 
@@ -328,7 +328,7 @@ For detailed configuration, see the [Full-Text Search Guide](full-text-search.md
 
 Perform hybrid search combining FTS and semantic search with Reciprocal Rank Fusion (RRF).
 
-Note: This tool is only available when hybrid search is enabled via `ENABLE_HYBRID_SEARCH=true` and at least one of FTS (`ENABLE_FTS=true`) or semantic search (`ENABLE_SEMANTIC_SEARCH=true`) is enabled. The RRF algorithm combines results from available search methods, boosting documents that appear in both.
+Note: This tool is available by default (`ENABLE_HYBRID_SEARCH=auto`) when at least one of full-text or semantic search is available; set `ENABLE_HYBRID_SEARCH=false` to force off. The RRF algorithm combines results from available search methods, boosting documents that appear in both.
 
 **Parameters:**
 - `query` (str, required): Natural language search query

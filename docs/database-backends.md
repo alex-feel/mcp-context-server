@@ -45,9 +45,10 @@ docker run --name pgvector18 \
   -p 5432:5432 \
   -d pgvector/pgvector:pg18-trixie
 
-# 2. Configure the server (minimal setup - just 2 variables)
+# 2. Configure the server (minimal setup - just 1 variable)
 export STORAGE_BACKEND=postgresql
-export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
+# Semantic search registers automatically once an embedding provider extra is installed
+# (set ENABLE_SEMANTIC_SEARCH=false to disable).
 ```
 
 **That's it!** The server will automatically:
@@ -70,8 +71,7 @@ export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
         "POSTGRESQL_HOST": "localhost",
         "POSTGRESQL_USER": "postgres",
         "POSTGRESQL_PASSWORD": "postgres",
-        "POSTGRESQL_DATABASE": "mcp_context",
-        "ENABLE_SEMANTIC_SEARCH": "true"
+        "POSTGRESQL_DATABASE": "mcp_context"
       }
     }
   }
@@ -242,8 +242,7 @@ Best for: VMs, servers, and local development with IPv6 support
            "POSTGRESQL_PORT": "5432",
            "POSTGRESQL_USER": "postgres",
            "POSTGRESQL_PASSWORD": "your-actual-password",
-           "POSTGRESQL_DATABASE": "postgres",
-           "ENABLE_SEMANTIC_SEARCH": "true"
+           "POSTGRESQL_DATABASE": "postgres"
          }
        }
      }
@@ -319,8 +318,7 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
            "POSTGRESQL_PORT": "5432",
            "POSTGRESQL_USER": "postgres.[PROJECT-REF]",
            "POSTGRESQL_PASSWORD": "your-actual-password",
-           "POSTGRESQL_DATABASE": "postgres",
-           "ENABLE_SEMANTIC_SEARCH": "true"
+           "POSTGRESQL_DATABASE": "postgres"
          }
        }
      }
@@ -491,8 +489,7 @@ If you want to use semantic search with Supabase, you must enable the pgvector e
          "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
-           "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres",
-           "ENABLE_SEMANTIC_SEARCH": "true"
+           "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres"
          }
        }
      }

@@ -11,7 +11,7 @@ Full-Text Search (FTS) enables linguistic search with stemming, ranking, and boo
 - BM25/ts_rank relevance scoring
 - Highlighted snippets in search results
 
-This feature is **optional** and can be enabled alongside or independently of semantic search.
+Full-text search is **auto-enabled by default** and can be used alongside or independently of semantic search. Because it relies only on built-in database capabilities, it needs no extra dependencies.
 
 ## Prerequisites
 
@@ -25,20 +25,20 @@ No additional Python packages or external services are required.
 
 ## Installation
 
-FTS functionality is built into the core MCP Context Server - no additional installation steps are needed. Simply enable it via environment variable.
+FTS functionality is built into the core MCP Context Server - no additional installation steps are needed. It is auto-enabled by default; no environment variable is required to turn it on.
 
 ## Configuration
 
 ### Environment Variables
 
-Enable full-text search by setting these environment variables in your MCP configuration:
+Full-text search is controlled by the following environment variables in your MCP configuration:
 
-#### ENABLE_FTS (Required)
+#### ENABLE_FTS (Optional)
 
-- **Type**: Boolean
-- **Default**: `false`
-- **Description**: Master switch for full-text search functionality
-- **Example**: `"ENABLE_FTS": "true"`
+- **Type**: Tri-state
+- **Default**: `auto`
+- **Description**: Controls registration of the `fts_search_context` tool. `auto` (default) registers it automatically (full-text search uses built-in database capabilities, so no extra dependencies are needed). `true` forces it on. `false` forces it off, for the minimal tool surface. The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted (`true` maps to force-on, `false` to force-off).
+- **Example**: `"ENABLE_FTS": "false"` (only needed to disable; default already registers the tool)
 
 #### FTS_LANGUAGE (Optional)
 
@@ -63,7 +63,7 @@ swedish, tamil, turkish, yiddish
 
 ### MCP Configuration Example
 
-Add to your `.mcp.json` file:
+Full-text search is registered by default, so no `ENABLE_FTS` entry is required. Add to your `.mcp.json` file to customize the stemming language (or set `"ENABLE_FTS": "false"` to disable the tool entirely):
 
 ```json
 {
@@ -77,7 +77,6 @@ Add to your `.mcp.json` file:
         "mcp-context-server"
       ],
       "env": {
-        "ENABLE_FTS": "true",
         "FTS_LANGUAGE": "english"
       }
     }
@@ -332,27 +331,21 @@ For more details, see [Semantic Search - Cross-Encoder Reranking](semantic-searc
 
 ### Complete Setup Checklist
 
-1. **Verify environment variable**:
+1. **Confirm FTS is not force-disabled**: FTS registers by default (`ENABLE_FTS=auto`), so no action is needed unless you previously set `ENABLE_FTS=false`. To check:
    ```bash
    echo $ENABLE_FTS  # Linux/macOS
    echo %ENABLE_FTS% # Windows
-   # Should show: true
+   # Empty or "auto" (default), or "true" forces it on; "false" disables it
    ```
 
-2. **Start server with FTS enabled**:
+2. **Start the server** (FTS auto-registers; no flag required):
    ```bash
-   # Set environment variable
-   export ENABLE_FTS=true  # Linux/macOS
-   set ENABLE_FTS=true     # Windows
-
-   # Start server
    uv run mcp-context-server
    ```
 
 3. **Check server logs** for:
    ```text
-   [OK] FTS enabled and available
-   [OK] fts_search_context registered
+   fts_search_context registered
    ```
 
 4. **Verify MCP client** - List available tools and confirm `fts_search_context` is present
@@ -387,16 +380,16 @@ Call `get_statistics` to check FTS availability:
 
 **Diagnostic Steps**:
 
-1. **Check environment variable**:
+1. **Check the environment variable**:
    ```bash
-   echo $ENABLE_FTS  # Must show: true
+   echo $ENABLE_FTS  # If it shows "false", FTS has been force-disabled
    ```
 
 2. **Check server logs** for FTS initialization messages
 
 3. **Call `get_statistics` tool**: Check `fts.available` field in response
 
-**Solution**: Ensure `ENABLE_FTS=true` is set in your environment or MCP configuration.
+**Solution**: FTS registers by default. If the tool is missing, ensure `ENABLE_FTS` is not set to `false` (remove it to fall back to `auto`, or set `ENABLE_FTS=true` to force registration).
 
 ### Issue 2: Invalid FTS_LANGUAGE Error
 
@@ -464,12 +457,12 @@ Call `get_statistics` to check FTS availability:
 
 ### Common Error Messages
 
-| Error Message                       | Cause                           | Solution                          |
-|-------------------------------------|---------------------------------|-----------------------------------|
-| `fts_search_context not available`  | FTS not enabled                 | Set `ENABLE_FTS=true`             |
-| `Invalid FTS_LANGUAGE`              | Unknown language                | Use valid language name           |
-| `FTS5 table not found`              | Migration not applied           | Restart server to apply migration |
-| `text_search_vector column missing` | PostgreSQL migration incomplete | Restart server to apply migration |
+| Error Message                       | Cause                           | Solution                                                     |
+|-------------------------------------|---------------------------------|--------------------------------------------------------------|
+| `fts_search_context not available`  | FTS force-disabled              | Unset `ENABLE_FTS` (default `auto`) or set `ENABLE_FTS=true` |
+| `Invalid FTS_LANGUAGE`              | Unknown language                | Use valid language name                                      |
+| `FTS5 table not found`              | Migration not applied           | Restart server to apply migration                            |
+| `text_search_vector column missing` | PostgreSQL migration incomplete | Restart server to apply migration                            |
 
 ## Changing FTS Language
 

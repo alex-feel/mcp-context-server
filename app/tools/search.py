@@ -328,7 +328,7 @@ async def _fts_search_raw(
     if not settings.fts.enabled:
         raise ToolError(
             'Full-text search is not available. '
-            'Set ENABLE_FTS=true to enable this feature.',
+            'Set ENABLE_FTS to auto (default) or true to enable this feature.',
         )
 
     # Check if migration is in progress
@@ -1142,8 +1142,8 @@ async def hybrid_search_context(
     if not settings.hybrid_search.enabled:
         raise ToolError(
             'Hybrid search is not available. '
-            'Set ENABLE_HYBRID_SEARCH=true to enable this feature. '
-            'Also ensure ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
+            'Set ENABLE_HYBRID_SEARCH to auto (default) or true to enable this feature. '
+            'Also ensure ENABLE_FTS and/or ENABLE_SEMANTIC_SEARCH are not force-disabled.',
         )
 
     # Use settings default if rrf_k not specified
@@ -1163,10 +1163,10 @@ async def hybrid_search_context(
     if not available_modes:
         unavailable_reasons: list[str] = []
         if not fts_available:
-            unavailable_reasons.append('FTS requires ENABLE_FTS=true')
+            unavailable_reasons.append('FTS requires ENABLE_FTS not force-disabled (auto/true)')
         if not semantic_available:
             unavailable_reasons.append(
-                f'Semantic search requires ENABLE_SEMANTIC_SEARCH=true and '
+                f'Semantic search requires ENABLE_SEMANTIC_SEARCH not force-disabled (auto/true) and '
                 f'{settings.embedding.provider} provider properly configured',
             )
         raise ToolError(

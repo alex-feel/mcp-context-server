@@ -114,7 +114,7 @@ async def apply_chunking_migration(backend: StorageBackend, *, force: bool = Fal
     Args:
         backend: Storage backend instance.
         force: When True, apply the migration regardless of
-            ``settings.semantic_search.enabled``. Used by the migration CLI to
+            ``settings.embedding.generation_enabled``. Used by the migration CLI to
             build the chunk-boundary columns on a target database; the server
             keeps its default gated behavior.
 
@@ -122,12 +122,12 @@ async def apply_chunking_migration(backend: StorageBackend, *, force: bool = Fal
         RuntimeError: If migration execution fails.
 
     Note:
-        - Only applies when semantic search is enabled (embeddings exist)
+        - Only applies when embedding generation is enabled (embeddings exist)
         - Idempotent: Uses IF NOT EXISTS / IF EXISTS patterns
         - Must be called after apply_semantic_search_migration()
     """
-    # Only apply if semantic search is enabled (embeddings exist), unless forced
-    if not force and not settings.semantic_search.enabled:
+    # Only apply when embeddings are generated (embeddings exist), unless forced
+    if not force and not settings.embedding.generation_enabled:
         return
 
     backend_type = backend.backend_type

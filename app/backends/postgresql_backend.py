@@ -402,9 +402,10 @@ class PostgreSQLBackend:
         logger.info(f'Initializing PostgreSQL backend: {self.backend_type}')
 
         try:
-            # Pre-create pgvector extension if semantic search enabled
-            # This prevents "unknown type: public.vector" warnings during pool initialization
-            if settings.semantic_search.enabled:
+            # Pre-create pgvector extension when embedding generation is enabled (the
+            # vector storage exists independently of the semantic search tool). This
+            # prevents "unknown type: public.vector" warnings during pool initialization.
+            if settings.embedding.generation_enabled:
                 await self._ensure_pgvector_extension()
 
             # Define connection initialization function for TCP keepalive and pgvector support

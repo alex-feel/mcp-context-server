@@ -99,6 +99,8 @@ Tables: `context_entries` (main; thread_id/source indexes, JSON metadata, summar
 
 Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, chunking (1:N embeddings), metadata indexing, summary column. PostgreSQL DDL uses `POSTGRESQL_MIGRATION_TIMEOUT_S` (300s). Changing `FTS_LANGUAGE` requires an FTS table rebuild.
 
+**Embedding storage is provisioned from `ENABLE_EMBEDDING_GENERATION`, decoupled from the search-tool toggles.** The vec tables and chunk columns (`app/migrations/semantic.py`, `app/migrations/chunking.py`) and the sqlite-vec / pgvector setup (`app/backends/sqlite_backend.py` `_load_sqlite_vec_extension`, `app/backends/postgresql_backend.py` pgvector pre-create) gate on `settings.embedding.generation_enabled` (default true), NOT on `settings.semantic_search.enabled`. So embedding storage exists whenever embeddings are generated, regardless of whether the `semantic_search_context` tool is exposed — turning semantic search on later never requires re-embedding, and the fp32-latent edge (generation on, semantic tool off, compression off) is closed. The FTS migration (`app/migrations/fts.py`) still gates on `settings.fts.enabled`. The migrations' `force` param (CLI bypass) is unchanged.
+
 ### Testing Strategy
 
 **Philosophy**: Unit and repository tests use SQLite temp databases; real-server integration tests run the SAME assertions against BOTH backends through the shared parametrized harness `tests/integration/_harness.py` (`MCPServerIntegrationTest(backend='sqlite'|'postgresql')`) — driven by `tests/integration/sqlite/test_real_server.py` (SQLite) and `tests/integration/postgresql/test_real_server.py` (PostgreSQL on docker-compose pgvector, isolated DB). When adding a new tool or a backend-portable behavior, add the assertion as a harness method so it runs on both backends; reserve dedicated per-backend tests for backend-specific paths (e.g. HTTP transport/auth and `/health` under `sqlite/`, PostgreSQL metadata-index creation under `postgresql/`).
@@ -214,7 +216,7 @@ Configuration via `.env` file or environment. **Canonical source**: `app/setting
 
 **FastMCP Logging** (NOT in `app/settings.py`): `FASTMCP_ENABLE_RICH_LOGGING` (true*; set `false` in Docker/cloud) — see [FASTMCP_* Governance](#fastmcp_-env-var-governance).
 
-**Feature Toggles**: `ENABLE_EMBEDDING_GENERATION` (true*), `ENABLE_SEMANTIC_SEARCH` (false*), `ENABLE_FTS` (false*), `ENABLE_HYBRID_SEARCH` (false*), `ENABLE_CHUNKING` (true*), `ENABLE_RERANKING` (true*), `ENABLE_SUMMARY_GENERATION` (true*)
+**Feature Toggles**: `ENABLE_EMBEDDING_GENERATION` (true*), `ENABLE_SEMANTIC_SEARCH` (auto*), `ENABLE_FTS` (auto*), `ENABLE_HYBRID_SEARCH` (auto*), `ENABLE_CHUNKING` (true*), `ENABLE_RERANKING` (true*), `ENABLE_SUMMARY_GENERATION` (true*). The three search toggles are tri-state `Literal['auto','true','false']` (base class `FeatureToggleSettings`; derived read-only `.enabled` property = `mode != 'false'`, so `auto` and `true` are both enabled): `auto` (default) registers the tool when prerequisites are present and skips quietly otherwise, `true` forces it on (warns if unavailable), `false` forces it off. Boolean spellings (true/false/1/0/yes/no/on/off) are coerced via `_normalize_feature_toggle()`. Default `auto` means search works out of the box: semantic registers when an embedding provider is available, FTS always (no extra deps), hybrid when at least one of FTS/semantic is available.
 
 **Embedding**: `EMBEDDING_PROVIDER` (ollama*/openai/azure/huggingface/voyage), `EMBEDDING_MODEL` (qwen3-embedding:0.6b*), `EMBEDDING_DIM` (1024*), `EMBEDDING_TIMEOUT_S` (240*), `EMBEDDING_MAX_CONCURRENT` (3*)
 
@@ -291,7 +293,7 @@ set LOG_LEVEL=DEBUG && uv run mcp-context-server  # Debug logs (Windows)
 uv run python -c "from app.startup import init_database; import asyncio; asyncio.run(init_database())"  # Test DB
 ```
 
-**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → `ENABLE_SEMANTIC_SEARCH=true` + `uv sync --extra embeddings-ollama`. FTS unavailable → `ENABLE_FTS=true`. Summary generation unavailable → `ENABLE_SUMMARY_GENERATION=true` + `uv sync --extra summary-ollama` + `ollama pull qwen3:0.6b`.
+**Common Issues**: Import errors → `uv sync`. Type errors → `uv run mypy app`. Semantic search unavailable → the tool auto-registers once an embedding provider is present, so `uv sync --extra embeddings-ollama` (provider deps); only set `ENABLE_SEMANTIC_SEARCH=false` if it was force-disabled. FTS unavailable → FTS is `auto` by default (no extra deps); check `ENABLE_FTS` is not set to `false`. Summary generation unavailable → `ENABLE_SUMMARY_GENERATION=true` + `uv sync --extra summary-ollama` + `ollama pull qwen3:0.6b`.
 
 ## Code Quality Standards
 

@@ -396,11 +396,12 @@
           "name": "POSTGRESQL_SCHEMA"
         },
         {
-          "description": "Enable semantic search functionality",
+          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it and logs a warning when no provider is available; false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_SEMANTIC_SEARCH"
+          "name": "ENABLE_SEMANTIC_SEARCH",
+          "default": "auto"
         },
         {
           "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
@@ -592,11 +593,12 @@
           "name": "ANTHROPIC_API_KEY"
         },
         {
-          "description": "Enable full-text search functionality",
+          "description": "Full-text search tool registration. Tri-state: auto (default), true, or false. auto registers full-text search by default (FTS needs no extra dependencies); true forces registration; false skips it.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_FTS"
+          "name": "ENABLE_FTS",
+          "default": "auto"
         },
         {
           "description": "Language for FTS stemming (e.g., english, german, french)",
@@ -620,11 +622,12 @@
           "name": "FTS_RERANK_GAP_MERGE"
         },
         {
-          "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
+          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto registers hybrid search when at least one of FTS or semantic search is available; true forces registration; false skips it.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_HYBRID_SEARCH"
+          "name": "ENABLE_HYBRID_SEARCH",
+          "default": "auto"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",
@@ -1396,11 +1399,12 @@
           "name": "POSTGRESQL_SCHEMA"
         },
         {
-          "description": "Enable semantic search functionality",
+          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it and logs a warning when no provider is available; false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_SEMANTIC_SEARCH"
+          "name": "ENABLE_SEMANTIC_SEARCH",
+          "default": "auto"
         },
         {
           "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
@@ -1592,11 +1596,12 @@
           "name": "ANTHROPIC_API_KEY"
         },
         {
-          "description": "Enable full-text search functionality",
+          "description": "Full-text search tool registration. Tri-state: auto (default), true, or false. auto registers full-text search by default (FTS needs no extra dependencies); true forces registration; false skips it.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_FTS"
+          "name": "ENABLE_FTS",
+          "default": "auto"
         },
         {
           "description": "Language for FTS stemming (e.g., english, german, french)",
@@ -1620,11 +1625,12 @@
           "name": "FTS_RERANK_GAP_MERGE"
         },
         {
-          "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
+          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto registers hybrid search when at least one of FTS or semantic search is available; true forces registration; false skips it.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_HYBRID_SEARCH"
+          "name": "ENABLE_HYBRID_SEARCH",
+          "default": "auto"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",

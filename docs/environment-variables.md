@@ -137,18 +137,18 @@ For detailed summary setup and provider selection, see the [Summary Generation G
 
 ## Semantic Search Settings
 
-| Variable                 | Type    | Default | Description                                                                           |
-|--------------------------|---------|---------|---------------------------------------------------------------------------------------|
-| `ENABLE_SEMANTIC_SEARCH` | boolean | `false` | Enable semantic search tool registration. Requires embedding provider to be available |
+| Variable                 | Type      | Default | Description                                                                                                                                                                                                                                                                                                                                                             |
+|--------------------------|-----------|---------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_SEMANTIC_SEARCH` | tri-state | `auto`  | Controls registration of the `semantic_search_context` tool. `auto` (default): register when an embedding provider is available (embedding generation is on by default), otherwise skip quietly. `true`: force on, warning logged if no provider is available. `false`: force off. The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted |
 
 For detailed semantic search setup, see the [Semantic Search Guide](semantic-search.md).
 
 ## Full-Text Search Settings
 
-| Variable       | Type    | Default   | Description                                                                                                                                                                                                                                                                                                                                                                                             |
-|----------------|---------|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `ENABLE_FTS`   | boolean | `false`   | Enable full-text search functionality                                                                                                                                                                                                                                                                                                                                                                   |
-| `FTS_LANGUAGE` | string  | `english` | Language for FTS stemming. PostgreSQL supports 29 languages. Valid options: `simple`, `arabic`, `armenian`, `basque`, `catalan`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hindi`, `hungarian`, `indonesian`, `irish`, `italian`, `lithuanian`, `nepali`, `norwegian`, `portuguese`, `romanian`, `russian`, `serbian`, `spanish`, `swedish`, `tamil`, `turkish`, `yiddish` |
+| Variable       | Type      | Default   | Description                                                                                                                                                                                                                                                                                                                                                                                             |
+|----------------|-----------|-----------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_FTS`   | tri-state | `auto`    | Controls registration of the `fts_search_context` tool. `auto` (default): register; full-text search uses built-in database capabilities and needs no extra dependencies. `true`: force on. `false`: force off. The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted                                                                                                    |
+| `FTS_LANGUAGE` | string    | `english` | Language for FTS stemming. PostgreSQL supports 29 languages. Valid options: `simple`, `arabic`, `armenian`, `basque`, `catalan`, `danish`, `dutch`, `english`, `finnish`, `french`, `german`, `greek`, `hindi`, `hungarian`, `indonesian`, `irish`, `italian`, `lithuanian`, `nepali`, `norwegian`, `portuguese`, `romanian`, `russian`, `serbian`, `spanish`, `swedish`, `tamil`, `turkish`, `yiddish` |
 
 For detailed full-text search setup, see the [Full-Text Search Guide](full-text-search.md).
 
@@ -161,12 +161,12 @@ For detailed full-text search setup, see the [Full-Text Search Guide](full-text-
 
 ## Hybrid Search Settings
 
-| Variable                  | Type    | Default | Constraints | Description                                                                    |
-|---------------------------|---------|---------|-------------|--------------------------------------------------------------------------------|
-| `ENABLE_HYBRID_SEARCH`    | boolean | `false` |             | Enable hybrid search combining FTS and semantic search with RRF fusion         |
-| `HYBRID_RRF_K`            | integer | `60`    | 1-1000      | RRF smoothing constant. Higher values give more uniform treatment across ranks |
-| `HYBRID_RRF_OVERFETCH`    | integer | `2`     | 1-10        | Multiplier for over-fetching results before RRF fusion                         |
-| `HYBRID_FTS_OR_THRESHOLD` | integer | `4`     | 2-20        | Minimum number of significant query terms to switch FTS from AND to OR logic   |
+| Variable                  | Type      | Default | Constraints | Description                                                                                                                                                                                                                                                                                              |
+|---------------------------|-----------|---------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_HYBRID_SEARCH`    | tri-state | `auto`  |             | Controls registration of the `hybrid_search_context` tool. `auto` (default): register when at least one of full-text or semantic search is available, otherwise skip quietly. `true`: force on. `false`: force off. The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted |
+| `HYBRID_RRF_K`            | integer   | `60`    | 1-1000      | RRF smoothing constant. Higher values give more uniform treatment across ranks                                                                                                                                                                                                                           |
+| `HYBRID_RRF_OVERFETCH`    | integer   | `2`     | 1-10        | Multiplier for over-fetching results before RRF fusion                                                                                                                                                                                                                                                   |
+| `HYBRID_FTS_OR_THRESHOLD` | integer   | `4`     | 2-20        | Minimum number of significant query terms to switch FTS from AND to OR logic                                                                                                                                                                                                                             |
 
 For detailed hybrid search setup, see the [Hybrid Search Guide](hybrid-search.md).
 

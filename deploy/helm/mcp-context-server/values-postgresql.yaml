@@ -19,10 +19,13 @@ storage:
 search:
   fts:
     enabled: true
+  # semantic.enabled provisions the embedding subsystem (ENABLE_EMBEDDING_GENERATION
+  # + ENABLE_SEMANTIC_SEARCH=auto); enable it together with an embedding provider
+  # (set ollama.enabled=true or configure an API key in values.yaml).
   semantic:
     enabled: false
   hybrid:
-    enabled: false
+    enabled: true
 
 ollama:
   enabled: false

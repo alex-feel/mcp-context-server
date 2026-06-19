@@ -52,27 +52,27 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ### Key Values
 
-| Parameter                          | Description                                    | Default                                |
-|------------------------------------|------------------------------------------------|----------------------------------------|
-| `image.repository`                 | Image repository                               | `ghcr.io/alex-feel/mcp-context-server` |
-| `image.tag`                        | Image tag                                      | `Chart.appVersion`                     |
-| `replicaCount`                     | Number of replicas                             | `1`                                    |
-| `env.FASTMCP_STATELESS_HTTP`       | Stateless HTTP mode (enabled by default)       | `"true"`                               |
-| `env.FASTMCP_ENABLE_RICH_LOGGING`  | Rich log formatting (disable for containers)   | `"false"`                              |
-| `service.type`                     | Kubernetes service type                        | `ClusterIP`                            |
-| `service.port`                     | Service port                                   | `8000`                                 |
-| `storage.backend`                  | Storage backend (sqlite/postgresql)            | `sqlite`                               |
-| `search.fts.enabled`               | Enable full-text search                        | `true`                                 |
-| `search.semantic.enabled`          | Enable semantic search                         | `false`                                |
-| `search.hybrid.enabled`            | Enable hybrid search                           | `false`                                |
-| `search.chunking.enabled`          | Enable text chunking for embeddings            | `true`                                 |
-| `search.chunking.size`             | Chunk size in characters                       | `1500`                                 |
-| `search.reranking.enabled`         | Enable cross-encoder reranking                 | `true`                                 |
-| `search.reranking.model`           | Reranking model name                           | `ms-marco-MiniLM-L-12-v2`              |
-| `search.summary.enabled`           | Enable LLM-based summary generation            | `true`                                 |
-| `search.summary.provider`          | Summary provider (ollama/openai/anthropic)     | `"ollama"`                             |
-| `search.summary.model`             | Summary generation model                       | `"qwen3:0.6b"`                         |
-| `ollama.enabled`                   | Enable Ollama sidecar                          | `false`                                |
+| Parameter                         | Description                                                      | Default                                |
+|-----------------------------------|------------------------------------------------------------------|----------------------------------------|
+| `image.repository`                | Image repository                                                 | `ghcr.io/alex-feel/mcp-context-server` |
+| `image.tag`                       | Image tag                                                        | `Chart.appVersion`                     |
+| `replicaCount`                    | Number of replicas                                               | `1`                                    |
+| `env.FASTMCP_STATELESS_HTTP`      | Stateless HTTP mode (enabled by default)                         | `"true"`                               |
+| `env.FASTMCP_ENABLE_RICH_LOGGING` | Rich log formatting (disable for containers)                     | `"false"`                              |
+| `service.type`                    | Kubernetes service type                                          | `ClusterIP`                            |
+| `service.port`                    | Service port                                                     | `8000`                                 |
+| `storage.backend`                 | Storage backend (sqlite/postgresql)                              | `sqlite`                               |
+| `search.fts.enabled`              | Full-text search tool (`true`=auto-register, `false`=off)        | `true`                                 |
+| `search.semantic.enabled`         | Semantic search + embedding subsystem (`true`=auto, `false`=off) | `false`                                |
+| `search.hybrid.enabled`           | Hybrid search tool (`true`=auto-register, `false`=off)           | `true`                                 |
+| `search.chunking.enabled`         | Enable text chunking for embeddings                              | `true`                                 |
+| `search.chunking.size`            | Chunk size in characters                                         | `1500`                                 |
+| `search.reranking.enabled`        | Enable cross-encoder reranking                                   | `true`                                 |
+| `search.reranking.model`          | Reranking model name                                             | `ms-marco-MiniLM-L-12-v2`              |
+| `search.summary.enabled`          | Enable LLM-based summary generation                              | `true`                                 |
+| `search.summary.provider`         | Summary provider (ollama/openai/anthropic)                       | `"ollama"`                             |
+| `search.summary.model`            | Summary generation model                                         | `"qwen3:0.6b"`                         |
+| `ollama.enabled`                  | Enable Ollama sidecar                                            | `false`                                |
 
 ### Storage Configuration
 

@@ -169,12 +169,12 @@ def is_fts_enabled() -> bool:
 
 requires_fts = pytest.mark.skipif(
     not is_fts_enabled(),
-    reason='FTS is not enabled (ENABLE_FTS=true not set)',
+    reason='FTS force-disabled (ENABLE_FTS=false)',
 )
 
 requires_hybrid_search = pytest.mark.skipif(
     not (is_fts_enabled() or are_semantic_search_deps_available()),
-    reason='Neither FTS nor semantic search is available for hybrid search',
+    reason='Hybrid search unavailable (FTS force-disabled and semantic search deps missing)',
 )
 
 # Load .env file to make environment variables available for PostgreSQL tests

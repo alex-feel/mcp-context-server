@@ -10088,6 +10088,122 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_force_off_removes_search_tool(self) -> bool:
+        """Verify ENABLE_FTS=false force-off removes fts_search_context end to end.
+
+        Opens a SECOND server subprocess whose environment matches connect_client()
+        except ENABLE_FTS is forced to 'false' while ENABLE_SEMANTIC_SEARCH and
+        ENABLE_HYBRID_SEARCH stay enabled. The tri-state toggle should drop
+        fts_search_context from the registered tool surface while leaving
+        semantic_search_context and hybrid_search_context registered. This proves
+        the force-off path on BOTH SQLite and PostgreSQL.
+
+        When no embedding provider is available (no Ollama model in the
+        environment), semantic_search_context cannot register and
+        hybrid_search_context has no remaining search mode (FTS is forced off),
+        so the presence assertions are skipped gracefully; the FTS absence
+        assertion -- the core force-off behavior -- always runs.
+
+        Returns:
+            bool: True if test passed (or skipped gracefully).
+        """
+        test_name = 'force_off_removes_search_tool'
+        assert self.client is not None
+        wrapper_script = Path(__file__).parent.parent / 'run_server.py'
+
+        # Build a server env mirroring connect_client(), then force FTS off.
+        # PythonStdioTransport(env=...) passes the dict explicitly on both
+        # backends (the MCP SDK env whitelist used by Client(str(...)) would
+        # strip app-specific vars), so the forced ENABLE_FTS reaches the server.
+        server_env: dict[str, str] = {
+            **os.environ,
+            'MCP_TEST_MODE': '1',
+            'DISABLED_TOOLS': '',
+            'ENABLE_SEMANTIC_SEARCH': 'true',
+            'ENABLE_FTS': 'false',
+            'ENABLE_HYBRID_SEARCH': 'true',
+            'ENABLE_EMBEDDING_COMPRESSION': 'false',
+            'SUMMARY_OPENAI_REASONING_EFFORT': 'low',
+            'SUMMARY_ANTHROPIC_EFFORT': 'low',
+        }
+
+        second_db_path: Path | None = None
+        if self.backend == 'postgresql':
+            server_env['STORAGE_BACKEND'] = 'postgresql'
+            server_env['POSTGRESQL_CONNECTION_STRING'] = self.pg_url or ''
+        else:
+            # SQLite needs an isolated temp DB so the second server does not
+            # contend with the primary client's database file.
+            server_env['STORAGE_BACKEND'] = 'sqlite'
+            second_db_dir = tempfile.mkdtemp(prefix='mcp_force_off_')
+            second_db_path = Path(second_db_dir) / 'force_off.db'
+            server_env['DB_PATH'] = str(second_db_path)
+
+        transport = PythonStdioTransport(
+            script_path=str(wrapper_script),
+            env=server_env,
+        )
+        second_client: Client[Any] = Client(transport)
+
+        try:
+            await second_client.__aenter__()
+            await second_client.ping()
+
+            # Determine whether an embedding provider is available; if not,
+            # semantic_search_context cannot register and (with FTS forced off)
+            # hybrid_search_context has no search mode, so skip those presence
+            # assertions while still asserting FTS absence.
+            stats_data = self._extract_content(await second_client.call_tool('get_statistics', {}))
+            semantic_info = stats_data.get('semantic_search', {})
+            semantic_available = bool(semantic_info.get('available', False))
+
+            tools = await second_client.list_tools()
+            tool_names = {t.name for t in tools}
+
+            if 'fts_search_context' in tool_names:
+                self.test_results.append(
+                    (test_name, False, 'fts_search_context still registered despite ENABLE_FTS=false'),
+                )
+                return False
+
+            if not semantic_available:
+                self.test_results.append(
+                    (test_name, True, 'FTS force-off verified; semantic/hybrid presence skipped (no embedding provider)'),
+                )
+                return True
+
+            if 'semantic_search_context' not in tool_names:
+                self.test_results.append(
+                    (test_name, False, 'semantic_search_context missing while ENABLE_SEMANTIC_SEARCH stayed enabled'),
+                )
+                return False
+
+            if 'hybrid_search_context' not in tool_names:
+                self.test_results.append(
+                    (test_name, False, 'hybrid_search_context missing while ENABLE_HYBRID_SEARCH stayed enabled'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'ENABLE_FTS=false removed only fts_search_context; semantic and hybrid remain'),
+            )
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await second_client.__aexit__(None, None, None)
+            if second_db_path is not None:
+                async_second_db = AsyncPath(second_db_path)
+                for suffix in ('-wal', '-shm', ''):
+                    candidate = AsyncPath(str(second_db_path) + suffix)
+                    with contextlib.suppress(Exception):
+                        if await candidate.exists():
+                            await candidate.unlink()
+                with contextlib.suppress(Exception):
+                    await AsyncPath(async_second_db.parent).rmdir()
+
     async def cleanup(self) -> None:
         """Clean up server and resources."""
         try:
@@ -10264,6 +10380,7 @@ class MCPServerIntegrationTest:
             ('Tags Lowercase Normalization', self.test_tags_lowercase_normalization),
             ('Tool Annotations Exposed To Client', self.test_tool_annotations_exposed_to_client),
             ('Search Context Offset Pagination', self.test_search_context_offset_pagination),
+            ('Force-Off Removes Search Tool', self.test_force_off_removes_search_tool),
         ]
 
         print('\nRunning tests...\n')

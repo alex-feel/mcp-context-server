@@ -506,7 +506,7 @@ class SQLiteBackend:
             self._shutdown_complete.set()
 
     def _load_sqlite_vec_extension(self, conn: sqlite3.Connection) -> None:
-        """Load sqlite-vec extension on connection if semantic search enabled.
+        """Load sqlite-vec extension on connection when embedding generation is enabled.
 
         Args:
             conn: SQLite connection
@@ -515,8 +515,10 @@ class SQLiteBackend:
             This method is safe to call even if sqlite_vec is not installed.
             It will gracefully skip loading if the package is not available.
         """
-        # Only attempt to load if semantic search is enabled
-        if not settings.semantic_search.enabled:
+        # The fp32 vec0 virtual table needs this extension; the compressed BLOB
+        # table does not, but loading it under generation_enabled is harmless and
+        # covers both layouts.
+        if not settings.embedding.generation_enabled:
             return
 
         # Check if already loaded to avoid duplicate loading

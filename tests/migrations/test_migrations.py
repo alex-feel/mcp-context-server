@@ -7,6 +7,7 @@ P0 Priority: These functions have ZERO test coverage but are critical paths.
 """
 
 import contextlib
+import importlib.util
 import os
 import sqlite3
 from pathlib import Path
@@ -16,13 +17,27 @@ from unittest.mock import patch
 
 import pytest
 
+# Conditional skip marker for tests requiring the sqlite-vec package.
+# Defined locally (mirroring tests/repositories/test_embedding_repository.py) so
+# the regression test that actually creates the vec0 virtual table self-skips on
+# platforms where the extension is not loadable.
+requires_sqlite_vec = pytest.mark.skipif(
+    importlib.util.find_spec('sqlite_vec') is None,
+    reason='sqlite-vec package not installed',
+)
+
 
 class TestApplySemanticSearchMigration:
     """Tests for apply_semantic_search_migration()."""
 
     @pytest.mark.asyncio
     async def test_migration_skipped_when_disabled(self) -> None:
-        """Verify no-op when ENABLE_SEMANTIC_SEARCH=false."""
+        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false.
+
+        The semantic-search vector-storage migration is provisioned from embedding
+        GENERATION (settings.embedding.generation_enabled), not from the search TOOL
+        toggle. It skips only when embedding generation is off.
+        """
         from app.migrations import apply_semantic_search_migration
 
         # Create mock backend
@@ -31,7 +46,7 @@ class TestApplySemanticSearchMigration:
 
         # Mock settings directly since it's already loaded at import time
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = False
+        mock_settings.embedding.generation_enabled = False
 
         with patch('app.migrations.semantic.settings', mock_settings):
             # Call should return early without doing anything
@@ -190,12 +205,14 @@ class TestApplySemanticSearchMigration:
             ''')
             conn.commit()
 
-        # Create mock settings with semantic search enabled and dimension mismatch
+        # Create mock settings with embedding generation enabled and dimension mismatch.
+        # The migration gates on settings.embedding.generation_enabled (the search TOOL
+        # toggle no longer controls whether the vector-storage migration runs).
         # NOTE: Patching os.environ has NO EFFECT because get_settings() is cached
-        # via @lru_cache at conftest.py import time with semantic_search.enabled=False.
-        # We must patch the settings object directly in the migration module.
+        # via @lru_cache at conftest.py import time. We must patch the settings object
+        # directly in the migration module.
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = True
+        mock_settings.embedding.generation_enabled = True
         mock_settings.embedding.dim = 768  # Different from stored 384
         mock_settings.storage.db_path = db_path
         mock_settings.storage.postgresql_schema = 'public'
@@ -686,7 +703,7 @@ class TestAdvisoryLockFix:
         mock_backend.execute_read = mock_execute_read
 
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = True
+        mock_settings.embedding.generation_enabled = True
         mock_settings.embedding.dim = 768
         mock_settings.storage.db_path = '/tmp/test.db'
         mock_settings.storage.postgresql_schema = 'public'
@@ -725,6 +742,7 @@ class TestAdvisoryLockFix:
         mock_backend.execute_read = AsyncMock(return_value=False)
 
         mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
         mock_settings.embedding.dim = 768
         mock_settings.storage.db_path = '/tmp/test.db'
         mock_settings.storage.postgresql_schema = 'public'
@@ -849,3 +867,138 @@ class TestAdvisoryLockFix:
                         f'{filename}:{i} contains pg_advisory_unlock '
                         f'(not needed with pg_advisory_xact_lock): {line.strip()}',
                     )
+
+
+class TestEmbeddingStorageDecoupledFromSearchTool:
+    """Regression: embedding storage is provisioned by GENERATION, not the search TOOL.
+
+    Previously the vec0 storage migrations were gated on the semantic-search tool
+    toggle. With the toggle OFF but embedding generation ON, the fp32 vector table
+    and chunk columns were silently never created, so embedding writes failed for a
+    missing-table reason. The gate now keys on ``settings.embedding.generation_enabled``,
+    so storage exists regardless of whether the search tool is exposed.
+    """
+
+    @requires_sqlite_vec
+    @pytest.mark.asyncio
+    async def test_fp32_storage_created_with_generation_on_and_search_off(self, tmp_path: Path) -> None:
+        """vec_context_embeddings + chunk columns are created and writable.
+
+        Configuration under test (the previously-latent fp32 edge):
+        - embedding generation ON (settings.embedding.generation_enabled = True)
+        - semantic-search TOOL forced OFF (mode='false', so the .enabled property is False)
+        - embedding compression OFF (fp32 vec0 layout, not the compressed table)
+        """
+        from app.settings import get_settings
+
+        db_path = tmp_path / 'test_storage_decoupled.db'
+
+        # Create the base schema first (mirrors the other SQLite migration tests).
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.executescript(schema_sql)
+
+        env = {
+            'DB_PATH': str(db_path),
+            'MCP_TEST_MODE': '1',
+            'STORAGE_BACKEND': 'sqlite',
+            # Generation ON: provisions embedding storage and loads sqlite-vec.
+            'ENABLE_EMBEDDING_GENERATION': 'true',
+            # Search TOOL OFF: the previously-coupled gate. Storage MUST still be built.
+            'ENABLE_SEMANTIC_SEARCH': 'false',
+            # Compression OFF: assert the fp32 vec0 layout, not the compressed table.
+            'ENABLE_EMBEDDING_COMPRESSION': 'false',
+            'EMBEDDING_DIM': '4',
+        }
+
+        # Build a fresh settings singleton under the env above and route every
+        # module-level ``settings`` binding involved (backend + both migrations) to
+        # it, so the backend loads sqlite-vec (generation ON) and the migrations run
+        # (generation ON) even though the search tool is off. Restore the cache after.
+        with patch.dict(os.environ, env, clear=False):
+            get_settings.cache_clear()
+            fresh_settings = get_settings()
+
+            # Sanity-check the edge configuration is exactly what we intend to exercise.
+            assert fresh_settings.embedding.generation_enabled is True
+            assert fresh_settings.semantic_search.mode == 'false'
+            assert fresh_settings.semantic_search.enabled is False
+            assert fresh_settings.compression.enabled is False
+
+            try:
+                from app.backends import sqlite_backend as sqlite_backend_module
+                from app.migrations import chunking as chunking_module
+                from app.migrations import semantic as semantic_module
+
+                with (
+                    patch.object(sqlite_backend_module, 'settings', fresh_settings),
+                    patch.object(semantic_module, 'settings', fresh_settings),
+                    patch.object(chunking_module, 'settings', fresh_settings),
+                ):
+                    from app.backends.sqlite_backend import SQLiteBackend
+
+                    backend = SQLiteBackend(db_path=str(db_path))
+                    await backend.initialize()
+
+                    try:
+                        from app.migrations import apply_chunking_migration
+                        from app.migrations import apply_semantic_search_migration
+
+                        # Storage is provisioned by GENERATION, so both migrations run
+                        # to completion even though the search TOOL is off.
+                        await apply_semantic_search_migration(backend=backend)
+                        await apply_chunking_migration(backend=backend)
+
+                        def _inspect(conn: sqlite3.Connection) -> tuple[bool, bool, list[str], list[str]]:
+                            cursor = conn.execute(
+                                "SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name='vec_context_embeddings'",
+                            )
+                            vec_table = cursor.fetchone() is not None
+
+                            cursor = conn.execute(
+                                "SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name='embedding_chunks'",
+                            )
+                            chunks_table = cursor.fetchone() is not None
+
+                            cursor = conn.execute('PRAGMA table_info(embedding_chunks)')
+                            chunk_columns = [row[1] for row in cursor.fetchall()]
+
+                            cursor = conn.execute('PRAGMA table_info(embedding_metadata)')
+                            metadata_columns = [row[1] for row in cursor.fetchall()]
+
+                            return vec_table, chunks_table, chunk_columns, metadata_columns
+
+                        vec_table, chunks_table, chunk_columns, metadata_columns = await backend.execute_read(_inspect)
+
+                        # The fp32 vector table exists despite the search tool being off.
+                        assert vec_table, 'vec_context_embeddings must exist when embedding generation is on'
+                        # The chunking layer (1:N bridge) is provisioned too.
+                        assert chunks_table, 'embedding_chunks must exist when embedding generation is on'
+                        assert 'context_id' in chunk_columns
+                        assert 'vec_rowid' in chunk_columns
+                        assert 'start_index' in chunk_columns
+                        assert 'end_index' in chunk_columns
+                        assert 'chunk_count' in metadata_columns
+
+                        # A write into the vec table must NOT fail for a missing-table reason.
+                        def _store_embedding(conn: sqlite3.Connection) -> int:
+                            embedding = bytes([1, 2, 3, 4] * 4)  # 16 bytes = 4 float32 values
+                            conn.execute(
+                                'INSERT INTO vec_context_embeddings(rowid, embedding) VALUES (1, ?)',
+                                (embedding,),
+                            )
+                            cursor = conn.execute('SELECT COUNT(*) FROM vec_context_embeddings')
+                            return int(cursor.fetchone()[0])
+
+                        stored_count = await backend.execute_write(_store_embedding)
+                        assert stored_count == 1, 'store into vec_context_embeddings should succeed'
+                    finally:
+                        await backend.shutdown()
+            finally:
+                # Restore the process-wide settings singleton to the cached default so
+                # this test does not leak its env-driven configuration into others.
+                get_settings.cache_clear()

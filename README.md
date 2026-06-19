@@ -22,9 +22,9 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Date Range Filtering**: Filter context entries by creation timestamp using ISO 8601 format
 - **Tag-Based Organization**: Efficient context retrieval with normalized, indexed tags
 - **Summary Generation**: Optional automatic LLM-based summarization returned alongside truncated `text_content` in all search tool results for better agent context efficiency (enabled by default with Ollama)
-- **Full-Text Search**: Optional linguistic search with stemming, ranking, boolean queries (FTS5/tsvector), and cross-encoder reranking
-- **Semantic Search**: Optional vector similarity search for meaning-based retrieval with cross-encoder reranking
-- **Hybrid Search**: Optional combined FTS + semantic search using Reciprocal Rank Fusion (RRF) with cross-encoder reranking
+- **Full-Text Search**: Linguistic search with stemming, ranking, boolean queries (FTS5/tsvector), and cross-encoder reranking. Auto-enabled by default (`ENABLE_FTS=auto`); needs no extra dependencies
+- **Semantic Search**: Vector similarity search for meaning-based retrieval with cross-encoder reranking. Auto-enabled by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever an embedding provider is available (embedding generation is on by default)
+- **Hybrid Search**: Combined FTS + semantic search using Reciprocal Rank Fusion (RRF) with cross-encoder reranking. Auto-enabled by default (`ENABLE_HYBRID_SEARCH=auto`) whenever at least one of full-text or semantic search is available
 - **Cross-Encoder Reranking**: Automatic result refinement using FlashRank cross-encoder models for improved search precision (enabled by default)
 - **Embedding Compression (default ON)**: Reduces embedding storage by approximately 8x out of the box in v3.0.0. Bit-packed compressed vectors keep semantic and hybrid search working without changes to the tool surface, and the read path bypasses the pgvector >2000-dimension HNSW limit. Set `ENABLE_EMBEDDING_COMPRESSION=false` to opt out and keep fp32 storage. See the [Embedding Compression Guide](docs/embedding-compression.md)
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
@@ -52,15 +52,15 @@ For detailed instructions including all providers (Ollama, OpenAI, Anthropic), m
 
 ## Semantic Search
 
-For detailed instructions on enabling optional semantic search with multiple embedding providers (Ollama, OpenAI, Azure, HuggingFace, Voyage), see the [Semantic Search Guide](docs/semantic-search.md).
+Semantic search is auto-enabled by default (`ENABLE_SEMANTIC_SEARCH=auto`): the `semantic_search_context` tool registers automatically whenever an embedding provider is available (embedding generation is on by default), and skips quietly otherwise. For detailed instructions on the multiple embedding providers (Ollama, OpenAI, Azure, HuggingFace, Voyage) and how to force the tool on or off, see the [Semantic Search Guide](docs/semantic-search.md).
 
 ## Full-Text Search
 
-For full-text search with linguistic processing, stemming, ranking, and boolean queries, see the [Full-Text Search Guide](docs/full-text-search.md).
+Full-text search is auto-enabled by default (`ENABLE_FTS=auto`) and needs no extra dependencies, using the built-in database FTS engine (FTS5 on SQLite, tsvector on PostgreSQL). For linguistic processing, stemming, ranking, and boolean queries, see the [Full-Text Search Guide](docs/full-text-search.md).
 
 ## Hybrid Search
 
-For combined FTS + semantic search using Reciprocal Rank Fusion (RRF), see the [Hybrid Search Guide](docs/hybrid-search.md).
+Hybrid search is auto-enabled by default (`ENABLE_HYBRID_SEARCH=auto`): the `hybrid_search_context` tool registers automatically whenever at least one of full-text or semantic search is available. For combined FTS + semantic search using Reciprocal Rank Fusion (RRF), see the [Hybrid Search Guide](docs/hybrid-search.md).
 
 ## Metadata Filtering
 
