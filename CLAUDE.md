@@ -18,7 +18,8 @@ uv run pytest                       # all tests
 uv run pytest tests/server/test_server.py -v   # one file
 uv run pytest tests/server/test_server.py::TestStoreContext::test_store_text_context -v   # one test
 uv run pytest --cov=app --cov-report=html   # coverage
-uv run pytest -m "not integration"  # skip slow tests
+uv run pytest -m "not integration"  # fast unit/repository suite (no Docker)
+uv run pytest -m integration        # real-server integration, BOTH backends (needs Docker)
 
 # Code quality
 uv run pre-commit run --all-files   # lint + type check (Ruff, mypy, pyright)
@@ -110,6 +111,23 @@ Auto-applied idempotent migrations in `app/migrations/`: semantic search, FTS, c
 **Key Fixtures** (`conftest.py`): `test_db` (direct SQLite), `mock_server_dependencies` (mocked settings), `initialized_server` (full integration), `async_db_initialized` (async backend), `async_db_with_embeddings` (semantic search).
 
 **Skip Markers**: `@requires_ollama`, `@requires_sqlite_vec`, `@requires_numpy`, `@requires_semantic_search`, `@requires_docker_postgres` (PostgreSQL integration tests; skipped when Docker is unavailable). `prevent_default_db_pollution` (autouse) prevents accidental production DB access.
+
+### Integration Testing (REQUIRED — run it, do not skip)
+
+Changes to tool registration, search (keyword/FTS/semantic/hybrid), embeddings, summary, compression, the storage backends, or deployment MUST be validated with integration testing — never sign off on `uv run pytest -m "not integration"` alone. Two complementary mechanisms; run both when a change is relevant.
+
+**1. pytest integration suite** (automated, self-managed containers): `uv run pytest -m integration`. Runs the shared backend-parametrized real-server harness against SQLite (stdio server subprocess) and PostgreSQL (an ephemeral pgvector container the `pg_test_url` fixture starts from `tests/integration/postgresql/docker-compose.test.yml`, gated by `@requires_docker_postgres`). Requires Docker; PostgreSQL cases skip automatically when Docker is absent.
+
+**2. Live deploy-stack end-to-end** (the real built Docker image served over HTTP, with real Ollama embeddings/summary/reranking, on both backends). Build and start both stacks — distinct ports and compose project names, so they run concurrently:
+
+```bash
+docker compose -f deploy/docker/docker-compose.sqlite.ollama.test.yml up -d --build      # SQLite, HTTP on :8001
+docker compose -f deploy/docker/docker-compose.postgresql.ollama.test.yml up -d --build  # PostgreSQL + Ollama, HTTP on :8002
+```
+
+These two compose files are intentionally SELF-CONTAINED: their `env_file` blocks were removed so a developer's `.env` cannot influence the test, and every variable needed to exercise the full feature set is set in the file itself (`ENABLE_SEMANTIC_SEARCH=true`, `ENABLE_FTS=true`, `ENABLE_HYBRID_SEARCH=true`, `EMBEDDING_PROVIDER=ollama` + `OLLAMA_HOST` + `EMBEDDING_MODEL`/`EMBEDDING_DIM`, `SUMMARY_PROVIDER`/`SUMMARY_MODEL`, `RERANKING_CACHE_DIR`; embedding generation, chunking, reranking, summary, and compression stay default-on). Keep them self-contained when changing env vars — do NOT reintroduce an `env_file` that loads `.env`, and add any new variable a tested feature needs so the full surface stays exercisable.
+
+Wait for the `mcp-context-server` containers to become healthy (Ollama's `start_period` is 120s and the first run pulls the embedding/summary models); `curl http://localhost:8001/health` and `:8002/health` return `{"status":"ok"}`. Then exercise the full tool surface over the HTTP MCP endpoint (`http://localhost:8001/mcp`, `http://localhost:8002/mcp`) with a `fastmcp` `Client` + `StreamableHttpTransport(url)`: confirm all 13 tools register (semantic/fts/hybrid included — this is what proves auto-enable in the built artifact), then `store_context` (generation-first, so a successful store proves embedding + summary + compression all ran), `get_context_by_ids`, `search_context` (browse/filter — no free-text `query` arg), `fts_search_context`, `semantic_search_context`, `hybrid_search_context`, `get_statistics` (exposes the `compression` sub-block + `embeddings_size_mb`), `update_context`, and `delete_context`. Tear down with `docker compose -f <file> down` (add `-v` to also drop that stack's data volume; the shared `ollama-models` / `flashrank-model-cache` volumes are worth keeping so models are not re-pulled).
 
 ### Test Directory Structure
 

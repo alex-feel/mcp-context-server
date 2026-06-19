@@ -17,9 +17,6 @@ services:
     pull_policy: build
     ports:
       - "8002:8002"
-    env_file:
-      - path: .env
-        required: false
     environment:
       - MCP_TRANSPORT=http
       - FASTMCP_HOST=0.0.0.0
