@@ -87,7 +87,7 @@ from app.startup.compression_validator import validate_compression_provenance
 from app.startup.validation import truncate_text
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
-from app.startup.validation import validate_pool_timeout_for_embedding
+from app.startup.validation import validate_pool_acquire_timeout
 
 # Import tool functions and registration helpers from app.tools
 from app.tools import TOOL_ANNOTATIONS
@@ -230,9 +230,9 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         # Must run before validate_compression_provenance because the validator
         # reads from the compression_metadata table created here.
         await apply_compression_migration(backend=backend)
-        # 11) Validate pool timeout for embedding operations (PostgreSQL only)
+        # 11) Validate the connection-pool acquire timeout (PostgreSQL only)
         if backend.backend_type == 'postgresql':
-            validate_pool_timeout_for_embedding()
+            validate_pool_acquire_timeout()
         # 12) Validate compression provenance: bootstrap-or-validate the
         # singleton seed/bits/variant/provider/dim row. Raises
         # ConfigurationError(exit 78) on bootstrap-missing-seed or env/DB

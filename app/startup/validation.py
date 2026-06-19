@@ -4,7 +4,7 @@ Parameter validation utilities for MCP tool functions.
 This module contains:
 - Date parameter validation and normalization
 - Text truncation for display purposes
-- Pool timeout validation for embedding operations
+- Connection-pool acquire-timeout validation
 
 These utilities are used by MCP tool functions in app/tools/ to validate
 and normalize input parameters before processing.
@@ -35,51 +35,36 @@ _SUPABASE_POOLER_HOST_FRAGMENT = 'pooler.supabase.com'
 _SUPABASE_SESSION_MODE_PORT = 5432
 
 
-def validate_pool_timeout_for_embedding() -> None:
-    """Validate POSTGRESQL_POOL_TIMEOUT_S is sufficient for embedding operations.
+def validate_pool_acquire_timeout() -> None:
+    """Validate POSTGRESQL_POOL_TIMEOUT_S is sufficient for connection acquisition.
 
-    Logs INFO-level warning if pool timeout is less than calculated minimum
-    based on embedding timeout and retry configuration. This helps operators
-    identify potential timeout issues during high-load semantic search operations.
+    POSTGRESQL_POOL_TIMEOUT_S is asyncpg's pool acquire-wait timeout: how long a
+    caller waits for a free pooled connection when every connection is busy. A
+    connection is held only for the duration of in-transaction database work
+    (bounded by POSTGRESQL_COMMAND_TIMEOUT_S), never for embedding generation,
+    which runs before any connection is acquired. The recommended floor is
+    therefore a small multiple of the command timeout, not embedding wall-time.
 
-    The calculation considers:
-    - EMBEDDING_TIMEOUT_S * EMBEDDING_RETRY_MAX_ATTEMPTS (total timeout across retries)
-    - Exponential backoff delays between retry attempts
-    - 10% safety margin for network/processing overhead
+    Logs an INFO-level advisory when the configured acquire timeout is below that
+    floor, directing operators to the levers that actually govern behavior under
+    embedding load: POSTGRESQL_POOL_MAX (pool size) and POSTGRESQL_COMMAND_TIMEOUT_S.
     """
-    if not settings.semantic_search.enabled:
-        return  # Skip validation if semantic search is disabled
-
-    # Calculate minimum required timeout
-    # Formula: timeout * retries + exponential_backoff_delays + 10% margin
-    timeout = settings.embedding.timeout_s
-    retries = settings.embedding.retry_max_attempts
-    base_delay = settings.embedding.retry_base_delay_s
-
-    # Calculate total backoff delays (with 10% jitter estimate)
-    # Backoff formula: base_delay * (2 ** attempt) for each retry
-    total_backoff = 0.0
-    for attempt in range(retries - 1):  # No delay after last attempt
-        delay = base_delay * (2**attempt)
-        jitter = delay * 0.1  # Max jitter estimate
-        total_backoff += delay + jitter
-
-    # Total maximum embedding time
-    total_embedding_time = (timeout * retries) + total_backoff
-
-    # Add 10% safety margin
-    minimum_pool_timeout = total_embedding_time * 1.1
-
+    command_timeout = settings.storage.postgresql_command_timeout_s
     pool_timeout = settings.storage.postgresql_pool_timeout_s
+
+    # A waiter blocks at most until in-flight database work frees a connection;
+    # allow headroom for several queued waiters beyond a single command's ceiling.
+    minimum_pool_timeout = max(60.0, command_timeout * 2)
 
     if pool_timeout < minimum_pool_timeout:
         logger.info(
-            f'POSTGRESQL_POOL_TIMEOUT_S ({pool_timeout}s) is below recommended minimum '
-            f'({minimum_pool_timeout:.1f}s) for embedding operations. '
-            f'Calculation: EMBEDDING_TIMEOUT_S ({timeout}s) * EMBEDDING_RETRY_MAX_ATTEMPTS ({retries}) '
-            f'+ backoff ({total_backoff:.1f}s) + 10%% safety margin. '
-            f'Consider increasing POSTGRESQL_POOL_TIMEOUT_S to avoid connection timeout errors '
-            f'during high-load semantic search operations.',
+            f'POSTGRESQL_POOL_TIMEOUT_S ({pool_timeout}s) is below the recommended '
+            f'minimum ({minimum_pool_timeout:.1f}s) for connection acquisition '
+            f'(2x POSTGRESQL_COMMAND_TIMEOUT_S={command_timeout}s). This is how long '
+            f'a caller waits for a free pooled connection. If acquire timeouts occur '
+            f'under load, raise POSTGRESQL_POOL_MAX or lower per-query time via '
+            f'POSTGRESQL_COMMAND_TIMEOUT_S; embedding generation runs outside the '
+            f'pool and does not affect this timeout.',
         )
 
 
@@ -227,7 +212,7 @@ def validate_date_range(start_date: str | None, end_date: str | None) -> None:
 
 
 __all__ = [
-    'validate_pool_timeout_for_embedding',
+    'validate_pool_acquire_timeout',
     'is_supabase_session_pooler',
     'truncate_text',
     'validate_date_param',

@@ -305,7 +305,7 @@
           "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
         },
         {
-          "description": "PostgreSQL connection pool timeout in seconds",
+          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0). This is the maximum time a request waits to acquire a connection from the pool, not the query execution timeout. For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1308,7 +1308,7 @@
           "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
         },
         {
-          "description": "PostgreSQL connection pool timeout in seconds",
+          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0). This is the maximum time a request waits to acquire a connection from the pool, not the query execution timeout. For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
