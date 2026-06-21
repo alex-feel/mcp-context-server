@@ -673,6 +673,13 @@
           "name": "GREP_REGEX_TIMEOUT_S"
         },
         {
+          "description": "Aggregate wall-clock budget in seconds across an entire is_regex=true scan (GREP_REGEX_TIMEOUT_S bounds one entry; this bounds the cumulative scan). When exceeded the scan stops and returns partial results with truncated=true, never aborting the read; default 30.0.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TOTAL_TIMEOUT_S"
+        },
+        {
           "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",
           "isRequired": false,
           "format": "string",
@@ -1769,6 +1776,13 @@
           "format": "number",
           "isSecret": false,
           "name": "GREP_REGEX_TIMEOUT_S"
+        },
+        {
+          "description": "Aggregate wall-clock budget in seconds across an entire is_regex=true scan (GREP_REGEX_TIMEOUT_S bounds one entry; this bounds the cumulative scan). When exceeded the scan stops and returns partial results with truncated=true, never aborting the read; default 30.0.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TOTAL_TIMEOUT_S"
         },
         {
           "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",

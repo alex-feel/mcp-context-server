@@ -182,6 +182,7 @@ For detailed hybrid search setup, see the [Hybrid Search Guide](hybrid-search.md
 | `GREP_MAX_ENTRIES_SCANNED`    | integer   | `1000`     | >= 1        | Hard ceiling on the number of entries a grep scan visits                                                                                                 |
 | `GREP_AGGREGATE_BYTES_BUDGET` | integer   | `67108864` | >= 1        | Approximate resident-memory cap (summed code-point length of fetched text) before a scan stops; the first entry that crosses the budget is still scanned |
 | `GREP_REGEX_TIMEOUT_S`        | float     | `5.0`      | > 0         | Per-entry timeout for `is_regex=true` matching (ReDoS guard); a timeout skips that entry, never aborts the read                                          |
+| `GREP_REGEX_TOTAL_TIMEOUT_S`  | float     | `30.0`     | > 0         | Aggregate wall-clock budget for a whole `is_regex=true` scan; when exceeded it stops with truncated=true (per-entry timeout bounds one entry)            |
 
 For when to use grep vs full-text vs semantic search, and the navigate -> read workflow, see [Grep, Navigation & Partial Reads](grep-navigation-partial-read.md).
 

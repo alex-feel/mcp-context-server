@@ -132,3 +132,29 @@ class TestTableAbsent:
             assert await repos.index_nodes.count_all_nodes() == 0
         finally:
             await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_replace_nodes_is_noop_when_table_absent(self, tmp_path: Path) -> None:
+        # The store/update write path calls replace_nodes_for_context INSIDE the
+        # atomic transaction that persists the entry. When the table is absent
+        # (feature never enabled / not migrated) the WRITE must early-return as a
+        # no-op so the missing table can never abort a store. Guards the SQLite
+        # sqlite_master / PostgreSQL to_regclass pre-check against regression -- a
+        # revert would raise "no such table" and roll back the whole store.
+        from app.schemas import load_schema
+
+        db_path = tmp_path / 'no_table_replace.db'
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(load_schema('sqlite'))
+        conn.close()
+
+        backend = create_backend(backend_type='sqlite', db_path=str(db_path))
+        await backend.initialize()
+        repos = RepositoryContainer(backend)
+        try:
+            # Writing nodes against the absent table must NOT raise; it is a no-op
+            # and the read side still degrades to empty.
+            await repos.index_nodes.replace_nodes_for_context('0' * 32, [_row('a', 'x')])
+            assert await repos.index_nodes.get_nodes_for_context('0' * 32) == {}
+        finally:
+            await backend.shutdown()

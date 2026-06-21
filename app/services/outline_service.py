@@ -44,7 +44,7 @@ class OutlineNode:
 
     node_id: str
     level: int
-    ordinal: int  # 1-based index among siblings sharing the same slug
+    ordinal: int  # 1-based disambiguation index, mirrored in the node_id suffix
     title: str
     char_start: int
     char_end: int
@@ -137,7 +137,14 @@ def _collect_headings(lines: list[str], line_starts: list[int], max_depth: int) 
         atx = _ATX_RE.match(line)
         if atx is not None:
             level = len(atx.group(1))
-            title = _ATX_TRAILING_RE.sub('', (atx.group(2) or '').strip()).strip()
+            raw_content = (atx.group(2) or '').strip()
+            title = _ATX_TRAILING_RE.sub('', raw_content).strip()
+            # A heading whose entire content is a closing '#' run (e.g. '## ###')
+            # is EMPTY per CommonMark. _ATX_TRAILING_RE only strips a closing run
+            # preceded by whitespace; when the run directly follows the opening
+            # marker the captured content is all '#', so collapse it to empty.
+            if raw_content and set(raw_content) == {'#'}:
+                title = ''
             if level <= max_depth:
                 headings.append((level, title, line_starts[index]))
             index += 1

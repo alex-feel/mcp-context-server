@@ -21,6 +21,7 @@ The two tools share ONE Unicode code-point offset contract: ``grep_context``
 
 import logging
 import re
+import time
 from typing import Annotated
 from typing import Any
 from typing import Literal
@@ -209,12 +210,14 @@ async def grep_context(
     ``read_context_range``.
 
     Matching runs in Python (identical on SQLite and PostgreSQL): literals use the
-    stdlib ``re`` engine; ``is_regex=True`` uses the ``regex`` engine bounded by a
-    real per-entry wall-clock timeout, so a catastrophic pattern is preempted and
-    that entry is skipped rather than freezing the server. Output is always bounded
-    by ``max_matches``; ``truncated`` is True only when matches or the scan were
-    genuinely capped. Scope with ``thread_id`` whenever possible -- an unscoped
-    pattern scans entries sequentially.
+    stdlib ``re`` engine; ``is_regex=True`` uses the ``regex`` engine with ``^``/``$``
+    anchored per line (line-oriented, like ripgrep), bounded by both a real per-entry
+    wall-clock timeout AND an aggregate scan budget: a catastrophic pattern is
+    preempted and that entry is skipped, and once the aggregate budget is exhausted
+    the scan stops with ``truncated`` True -- rather than freezing the server. Output
+    is always bounded by ``max_matches``; ``truncated`` is True only when matches or
+    the scan were genuinely capped. Scope with ``thread_id`` whenever possible -- an
+    unscoped pattern scans entries sequentially.
 
     Returns:
         GrepContextResultDict with ``mode``, ``total_matches``, ``truncated`` and
@@ -280,8 +283,22 @@ async def grep_context(
         # (truthful ``truncated``): a trailing candidate that yields no match must
         # NOT flip the flag. The +1 overflow is trimmed back before shaping.
         overflow_cap = max_matches + 1
+        # Aggregate wall-clock budget for a regex scan: the per-entry
+        # regex_timeout_s bounds ONE entry, but an unscoped regex can visit up to
+        # max_entries_scanned rows, so without a cumulative cap a catastrophic
+        # pattern could hold one request for max_entries_scanned * regex_timeout_s.
+        # The deadline applies only to is_regex (literals are linear-time); when it
+        # fires the scan stops and returns the matches collected so far, flagged
+        # truncated -- never aborting the read-only tool.
+        regex_deadline = (
+            time.monotonic() + grep_settings.regex_total_timeout_s if is_regex else None
+        )
+        scan_deadline_exceeded = False
         for context_id, text in rows:
             if collected >= overflow_cap:
+                break
+            if regex_deadline is not None and time.monotonic() >= regex_deadline:
+                scan_deadline_exceeded = True
                 break
             result = await match_entry(
                 context_id,
@@ -307,7 +324,7 @@ async def grep_context(
             match_truncated = True
             entry_results, collected = _trim_entry_results(entry_results, max_matches)
 
-        truncated = bool(scan_stats.get('truncated')) or match_truncated
+        truncated = bool(scan_stats.get('truncated')) or match_truncated or scan_deadline_exceeded
         return _shape_grep_output(output_mode, entry_results, collected, truncated, timed_out_ids)
     except ToolError:
         raise

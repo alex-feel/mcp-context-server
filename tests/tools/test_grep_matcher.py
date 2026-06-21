@@ -43,6 +43,26 @@ class TestCompilePattern:
         compiled = compile_pattern(upper, is_regex=False, case_sensitive=False)
         assert compiled.search(lower) is not None
 
+    def test_regex_caret_anchors_per_line_multiline(self) -> None:
+        # ^ anchors at every line boundary (MULTILINE), matching the line-oriented
+        # / ripgrep model -- NOT only at the document start. Without MULTILINE this
+        # would return just [0].
+        compiled = compile_pattern('^TODO', is_regex=True, case_sensitive=True)
+        text = 'TODO one\nTODO two\nTODO three'
+        assert [m.start() for m in compiled.finditer(text)] == [0, 9, 18]
+
+    def test_regex_dollar_anchors_per_line_multiline(self) -> None:
+        # $ anchors at every line end, not only the document end.
+        compiled = compile_pattern(r'end$', is_regex=True, case_sensitive=True)
+        text = 'the end\nanother end\nlast end'
+        assert len(list(compiled.finditer(text))) == 3
+
+    def test_regex_dot_does_not_cross_newline(self) -> None:
+        # MULTILINE governs ^/$ only; '.' must still NOT match a newline, so a
+        # pattern cannot silently span lines.
+        compiled = compile_pattern('a.b', is_regex=True, case_sensitive=True)
+        assert compiled.search('a\nb') is None
+
 
 class TestExtractAsciiLiteral:
     """extract_ascii_literal gates the optional SQL substring pre-narrow.

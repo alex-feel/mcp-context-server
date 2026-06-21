@@ -94,6 +94,31 @@ class TestDuplicateHeadings:
         assert 'c' in text[third.char_start:third.char_end]
 
 
+class TestAtxClosingSequence:
+    """ATX headings whose entire content is a closing '#' run are EMPTY (CommonMark)."""
+
+    def test_closing_only_heading_has_empty_title(self) -> None:
+        # '## ###' is an empty heading: '###' is a closing run directly following
+        # the opening marker, so _ATX_TRAILING_RE (which requires leading
+        # whitespace) cannot strip it -- the parser must still emit an empty title.
+        assert parse_outline('## ###').children[0].title == ''
+
+    def test_single_closing_hash_heading_is_empty(self) -> None:
+        assert parse_outline('### #').children[0].title == ''
+
+    def test_trailing_space_closing_run_is_empty(self) -> None:
+        assert parse_outline('# ## ').children[0].title == ''
+
+    def test_inner_hash_content_is_preserved(self) -> None:
+        # '## # #' is NOT closing-only: only the final ' #' is a closing run, so
+        # the content '#' survives (CommonMark) and must NOT be over-emptied.
+        assert parse_outline('## # #').children[0].title == '#'
+
+    def test_ordinary_trailing_hashes_still_stripped(self) -> None:
+        # The decorative trailing-'#' strip (leading whitespace + run) is unchanged.
+        assert parse_outline('# Title ###').children[0].title == 'Title'
+
+
 class TestFencedCode:
     def test_hash_inside_closed_fence_ignored(self) -> None:
         text = '# Real\n\n```\n# not a heading\n```\n\n## After\n'

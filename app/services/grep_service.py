@@ -87,8 +87,12 @@ def compile_pattern(pattern: str, *, is_regex: bool, case_sensitive: bool) -> re
     object is typed ``re.Pattern[str]`` (the shared ``finditer`` surface both
     engines expose); the ``regex`` object is cast at this boundary. ``IGNORECASE``
     is applied unless ``case_sensitive`` is requested (Unicode-aware casefolding,
-    which the ASCII-only SQLite ``LIKE`` cannot do). An invalid ``is_regex``
-    pattern propagates ``regex.error`` for the caller to map to a clean tool error.
+    which the ASCII-only SQLite ``LIKE`` cannot do). A user regex is also compiled
+    with ``MULTILINE`` so ``^`` and ``$`` anchor at every line boundary, matching
+    this tool's line-oriented / ripgrep model; ``MULTILINE`` affects only ``^``/``$``
+    (not ``.``), so an ordinary pattern still matches within a single line. An
+    invalid ``is_regex`` pattern propagates ``regex.error`` for the caller to map
+    to a clean tool error.
 
     Args:
         pattern: The raw pattern text.
@@ -101,7 +105,7 @@ def compile_pattern(pattern: str, *, is_regex: bool, case_sensitive: bool) -> re
         regular expressions), typed as ``re.Pattern[str]``.
     """
     if is_regex:
-        regex_flags = 0 if case_sensitive else regex.IGNORECASE
+        regex_flags = regex.MULTILINE if case_sensitive else regex.IGNORECASE | regex.MULTILINE
         return cast(re.Pattern[str], regex.compile(pattern, regex_flags))
     flags = 0 if case_sensitive else re.IGNORECASE
     return re.compile(re.escape(pattern), flags)

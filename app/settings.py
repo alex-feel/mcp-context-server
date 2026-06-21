@@ -657,7 +657,9 @@ class SummarySettings(CommonSettings):
         alias='SUMMARY_MAX_CONCURRENT',
         ge=1,
         le=20,
-        description='Maximum concurrent summary generation operations.',
+        description='Maximum concurrent calls against the summary model; one shared '
+                    'budget covering both the flat document summary and every '
+                    'index_tree per-node summary.',
     )
 
     prompt: str | None = Field(
@@ -1231,6 +1233,18 @@ class GrepContextSettings(FeatureToggleSettings):
         gt=0,
         description='Per-entry timeout for is_regex=True matching (ReDoS guard); a '
                     'timeout skips that entry, never aborts the read.',
+    )
+
+    regex_total_timeout_s: float = Field(
+        default=30.0,
+        alias='GREP_REGEX_TOTAL_TIMEOUT_S',
+        gt=0,
+        description='Aggregate wall-clock budget across an entire is_regex=True scan. '
+                    'GREP_REGEX_TIMEOUT_S bounds ONE entry; this bounds the cumulative '
+                    'scan so a pathological pattern over many entries cannot hold one '
+                    'request open for max_entries_scanned * the per-entry timeout. When '
+                    'exceeded the scan stops and returns the matches collected so far '
+                    'with truncated=True, never aborting the read.',
     )
 
 

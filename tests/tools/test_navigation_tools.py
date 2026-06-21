@@ -209,6 +209,59 @@ class TestGrepContextMatching:
         assert result.get('timed_out_context_ids') == [cid]
 
 
+class _FakeClock:
+    """Deterministic ``monotonic`` source for the aggregate-deadline tests."""
+
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+        self._i = 0
+
+    def monotonic(self) -> float:
+        v = self._values[min(self._i, len(self._values) - 1)]
+        self._i += 1
+        return v
+
+
+class TestGrepRegexAggregateTimeout:
+    """The is_regex scan is bounded by an AGGREGATE wall-clock budget, not only the
+    per-entry timeout: it stops early with truncated=True instead of running the
+    per-entry timeout against every one of up to max_entries_scanned rows."""
+
+    @pytest.mark.asyncio
+    async def test_aggregate_deadline_stops_scan_and_flags_truncated(
+        self, nav_backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Three matching entries; a fake clock under the deadline for the first
+        # entry's pre-check and past it for the second, so the scan stops after ONE
+        # entry with truncated=True even though more matches exist. Calls:
+        # [deadline-calc, iter1 pre-check (under), iter2 pre-check (over)].
+        for i in range(3):
+            await _store(nav_backend, f'entry {i} HIT', thread_id='tdl', offset_seconds=i + 1)
+        monkeypatch.setattr('app.tools.navigation.time', _FakeClock([100.0, 100.0, 200.0]))
+
+        result = await _grep(pattern='HIT', thread_id='tdl', is_regex=True, case_sensitive=True)
+
+        assert result['truncated'] is True
+        # Only the first scanned entry was matched before the budget fired; without
+        # the aggregate budget all three would be scanned (results len 3).
+        assert len(result['results']) == 1
+
+    @pytest.mark.asyncio
+    async def test_regex_scan_under_budget_is_not_falsely_truncated(
+        self, nav_backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A clock that never crosses the deadline must NOT truncate a normal regex
+        # scan: all three entries are scanned and truncated stays False.
+        for i in range(3):
+            await _store(nav_backend, f'entry {i} HIT', thread_id='tub', offset_seconds=i + 1)
+        monkeypatch.setattr('app.tools.navigation.time', _FakeClock([100.0]))
+
+        result = await _grep(pattern='HIT', thread_id='tub', is_regex=True, case_sensitive=True)
+
+        assert result['truncated'] is False
+        assert len(result['results']) == 3
+
+
 class TestReadContextRange:
     """Partial reads by char/line range with mandatory clamp + echo."""
 

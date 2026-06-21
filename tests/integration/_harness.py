@@ -10559,6 +10559,73 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_grep_scan_cap_boundary_truncation(self) -> bool:
+        """grep_context's cap+lookahead must distinguish exhaustion (exactly the
+        cap) from overflow (one more row) on BOTH backends.
+
+        Exercises ``grep_scan_text_contents``'s per-backend single-row lookahead at
+        the EXACT ``max_entries_scanned`` boundary: with N matching entries and
+        ``max_entries_scanned=N`` the scan is exhausted -> ``truncated`` False;
+        adding one more matching entry -> ``truncated`` True. Guards the
+        structurally-duplicated ``_scan_sqlite`` / ``_scan_postgresql`` lookahead
+        against drift (the PostgreSQL boundary branch was previously unexercised).
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'grep_scan_cap_boundary_truncation'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_grepcap'
+            token = 'GREPCAPBOUNDARY'
+            cap = 5
+            for i in range(cap):
+                store = self._extract_content(await self.client.call_tool('store_context', {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': f'entry {i} holds {token} inline',
+                }))
+                if not store.get('success'):
+                    self.test_results.append((test_name, False, f'store {i} failed: {store}'))
+                    return False
+
+            exact = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': token, 'thread_id': thread,
+                'output_mode': 'files_with_matches', 'max_matches': 1000, 'max_entries_scanned': cap,
+            }))
+            if exact.get('truncated') is not False:
+                self.test_results.append((
+                    test_name, False,
+                    f'exact-fit scan (N==cap=={cap}) should be truncated=False, got {exact.get("truncated")}',
+                ))
+                return False
+
+            # One more matching entry -> the scan caps at `cap` and the lookahead
+            # finds the overflow row -> truncated True.
+            store = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': f'entry overflow holds {token} inline',
+            }))
+            if not store.get('success'):
+                self.test_results.append((test_name, False, f'overflow store failed: {store}'))
+                return False
+
+            over = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': token, 'thread_id': thread,
+                'output_mode': 'files_with_matches', 'max_matches': 1000, 'max_entries_scanned': cap,
+            }))
+            if over.get('truncated') is not True:
+                self.test_results.append((
+                    test_name, False,
+                    f'one-over-cap scan (N==cap+1) should be truncated=True, got {over.get("truncated")}',
+                ))
+                return False
+
+            self.test_results.append((test_name, True, f'grep cap boundary correct on {self.backend}'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_force_off_removes_search_tool(self) -> bool:
         """Verify ENABLE_FTS=false force-off removes fts_search_context end to end.
 
@@ -10858,6 +10925,7 @@ class MCPServerIntegrationTest:
             ('Index Tree Node Summaries And Statistics', self.test_index_tree_node_summaries_and_statistics),
             ('Prefix Id Resolution Returns Canonical Id', self.test_prefix_id_resolution_returns_canonical_id),
             ('Grep Keyset Scan Exhaustive Beyond Limit', self.test_grep_keyset_scan_exhaustive_beyond_limit),
+            ('Grep Scan Cap Boundary Truncation', self.test_grep_scan_cap_boundary_truncation),
             ('Force-Off Removes Search Tool', self.test_force_off_removes_search_tool),
         ]
 

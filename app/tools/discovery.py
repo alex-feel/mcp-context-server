@@ -95,7 +95,8 @@ async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
         StatisticsResponseDict with total_entries (int), total_threads (int),
         total_images (int), unique_tags (int), database_size_mb (float),
         connection_metrics (dict), semantic_search (dict with enabled,
-        available, model, dimensions, embedding_count, coverage_percentage),
+        available, backend, model, dimensions, context_count, embedding_count,
+        average_chunks_per_entry, coverage_percentage),
         fts (dict with enabled, available, language, backend, engine,
         indexed_entries, coverage_percentage), chunking (dict with enabled,
         chunk_size, chunk_overlap, aggregation), reranking (dict with

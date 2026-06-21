@@ -334,8 +334,11 @@ class CompressionStatsDict(TypedDict, total=False):
 class IndexTreeStatsDict(TypedDict, total=False):
     """Type definition for the ``index_tree`` sub-block in get_statistics.
 
-    ``enabled`` reflects ENABLE_INDEX_TREE_NODE_SUMMARIES; ``node_count`` is the
-    total stored per-node summaries (0 when the table is absent).
+    ``enabled`` reflects ENABLE_INDEX_TREE_NODE_SUMMARIES. ``node_count`` is the
+    total stored per-node summaries when the feature is enabled. It is 0 whenever
+    the feature is off -- reported without querying, mirroring the compression
+    block's enabled-gated pattern, so any residual rows from a previously-enabled
+    run are intentionally NOT counted -- and 0 when the table is absent.
     """
 
     enabled: bool
@@ -382,7 +385,8 @@ class StatisticsResponseDict(TypedDict):
     reranking: RerankingStatsDict
     summary: SummaryStatsDict
     compression: CompressionStatsDict
-    index_tree: NotRequired[IndexTreeStatsDict]
+    # Always emitted by get_statistics (both toggle branches set it), so required.
+    index_tree: IndexTreeStatsDict
 
 
 class ImageDict(TypedDict, total=False):
