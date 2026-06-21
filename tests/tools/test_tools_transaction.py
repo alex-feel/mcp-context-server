@@ -818,7 +818,7 @@ class TestStatementTimeoutRetryToolLayer:
             patch('app.tools.context.ensure_repositories', AsyncMock(return_value=repos)),
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
+            patch('app.tools._shared.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
             patch(
                 'app.tools.context.execute_store_in_transaction',
                 AsyncMock(return_value=('ctx-1', False, False)),
@@ -867,10 +867,10 @@ class TestStatementTimeoutRetryToolLayer:
             patch('app.tools.context.get_embedding_provider', return_value=object()),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch(
-                'app.tools.context.generate_embeddings_with_timeout',
+                'app.tools._shared.generate_embeddings_with_timeout',
                 AsyncMock(side_effect=_fake_generate_embeddings),
             ),
-            patch('app.tools.context.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
+            patch('app.tools._shared.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
             patch(
                 'app.tools.context.execute_store_in_transaction',
                 AsyncMock(return_value=('ctx-2', False, False)),
@@ -889,7 +889,7 @@ class TestStatementTimeoutRetryToolLayer:
     async def test_update_context_retries_statement_timeout_then_succeeds(self) -> None:
         """update_context retries a 57014 cancellation, then commits once."""
         repos = MagicMock()
-        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
         state = {'calls': 0}
 
         @contextlib.asynccontextmanager
@@ -915,7 +915,7 @@ class TestStatementTimeoutRetryToolLayer:
                 'app.tools.context.resolve_or_normalize_id',
                 AsyncMock(return_value='0190abcdef1234567890abcd00000001'),
             ),
-            patch('app.tools.context.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
+            patch('app.tools._shared.generate_compression_with_timeout', AsyncMock(side_effect=lambda x: x)),
             patch(
                 'app.tools.context.execute_update_in_transaction',
                 AsyncMock(return_value=(['text'], False)),

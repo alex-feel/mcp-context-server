@@ -28,6 +28,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class VersionConflictError(Exception):
+    """Raised by ``update_context_entry`` when its optimistic-concurrency guard
+    finds the row's ``version`` changed since the caller read it.
+
+    A concurrent writer committed a newer update first, so applying this one
+    would silently overwrite it (and leave index_tree node rows describing stale
+    text). The caller re-reads the current version and retries the transaction so
+    the update applies against the latest row instead of clobbering it. It is
+    deliberately NOT a ``ToolError`` (so an ``except ToolError`` fast-path does
+    not swallow it) and NOT a connection error (so it is not treated as a
+    transient retry).
+    """
+
+    def __init__(self, context_id: str) -> None:
+        super().__init__(f'Version conflict updating context {context_id}')
+        self.context_id = context_id
+
+
 # Explicit column list to avoid exposing internal database columns (e.g., text_search_vector)
 # This constant is used in all SELECT queries that return context entries to ensure
 # only the expected columns are returned, preventing internal PostgreSQL columns from
@@ -186,6 +205,7 @@ class ContextRepository(BaseRepository):
                             content_type = {self._placeholder(2)},
                             summary = COALESCE({self._placeholder(3)}, summary),
                             content_hash = {self._placeholder(4)},
+                            version = version + 1,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {self._placeholder(5)}
                         ''',
@@ -274,6 +294,7 @@ class ContextRepository(BaseRepository):
                             content_type = {self._placeholder(2)},
                             summary = COALESCE({self._placeholder(3)}, summary),
                             content_hash = {self._placeholder(4)},
+                            version = version + 1,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {self._placeholder(5)}
                         ''',
@@ -1106,6 +1127,7 @@ class ContextRepository(BaseRepository):
         metadata: str | None = None,
         summary: str | None = None,
         clear_summary: bool = False,
+        expected_version: int | None = None,
         txn: 'TransactionContext | None' = None,
     ) -> tuple[bool, list[str]]:
         """Update text content and/or metadata of a context entry.
@@ -1172,9 +1194,19 @@ class ContextRepository(BaseRepository):
                 # Always update the updated_at timestamp
                 update_parts.append('updated_at = CURRENT_TIMESTAMP')
 
-                # Execute update
-                query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {self._placeholder(len(params) + 1)}"
+                # Optimistic concurrency: bump the version and gate the write on
+                # the version captured before generation. A concurrent writer that
+                # committed in the meantime advanced the row's version, so the CAS
+                # matches 0 rows and we raise VersionConflictError -- the caller
+                # re-reads and retries instead of silently overwriting newer text.
+                where_clause = f'id = {self._placeholder(len(params) + 1)}'
                 params.append(context_id)
+                if expected_version is not None:
+                    update_parts.append('version = version + 1')
+                    where_clause += f' AND version = {self._placeholder(len(params) + 1)}'
+                    params.append(expected_version)
+
+                query = f'UPDATE context_entries SET {", ".join(update_parts)} WHERE {where_clause}'
                 cursor.execute(query, tuple(params))
 
                 # Check if any rows were affected
@@ -1182,6 +1214,9 @@ class ContextRepository(BaseRepository):
                     logger.debug(f'Updated context entry {context_id}, fields: {updated_fields}')
                     return True, updated_fields
 
+                if expected_version is not None:
+                    # Row exists (checked above) but the version did not match.
+                    raise VersionConflictError(context_id)
                 return False, []
 
             if txn:
@@ -1232,9 +1267,15 @@ class ContextRepository(BaseRepository):
             # Always update the updated_at timestamp
             update_parts.append('updated_at = CURRENT_TIMESTAMP')
 
-            # Execute update
-            query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {self._placeholder(len(params) + 1)}"
+            # Optimistic concurrency (see SQLite branch for the full rationale).
+            where_clause = f'id = {self._placeholder(len(params) + 1)}'
             params.append(context_id)
+            if expected_version is not None:
+                update_parts.append('version = version + 1')
+                where_clause += f' AND version = {self._placeholder(len(params) + 1)}'
+                params.append(expected_version)
+
+            query = f'UPDATE context_entries SET {", ".join(update_parts)} WHERE {where_clause}'
             result = await conn.execute(query, *params)
 
             # Check if any rows were affected (asyncpg returns "UPDATE N")
@@ -1243,46 +1284,52 @@ class ContextRepository(BaseRepository):
                 logger.debug(f'Updated context entry {context_id}, fields: {updated_fields}')
                 return True, updated_fields
 
+            if expected_version is not None:
+                raise VersionConflictError(context_id)
             return False, []
 
         if txn:
             return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_entry_postgresql)
 
-    async def check_entry_exists(self, context_id: str) -> tuple[bool, str | None]:
-        """Check if a context entry exists and return its source.
+    async def check_entry_exists(self, context_id: str) -> tuple[bool, str | None, int | None]:
+        """Check if a context entry exists and return its source and version.
 
         Args:
             context_id: ID of the context entry
 
         Returns:
-            Tuple of (exists, source). Source is None when entry does not exist.
-            When exists=True, source is always 'user' or 'agent'.
+            Tuple of (exists, source, version). ``source`` and ``version`` are
+            None when the entry does not exist. When exists=True, source is
+            'user' or 'agent' and version is the current optimistic-concurrency
+            token -- update_context captures it BEFORE generation and passes it
+            to update_context_entry as the compare-and-set guard, so a concurrent
+            writer that commits during generation is detected.
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _check_exists_sqlite(conn: sqlite3.Connection) -> tuple[bool, str | None]:
+            def _check_exists_sqlite(conn: sqlite3.Connection) -> tuple[bool, str | None, int | None]:
                 cursor = conn.cursor()
                 cursor.execute(
-                    f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                    f'SELECT source, version FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                     (context_id,),
                 )
                 row = cursor.fetchone()
                 if row is None:
-                    return False, None
-                return True, cast(str, row['source'])
+                    return False, None, None
+                return True, cast(str, row['source']), cast(int, row['version'])
 
             return await self.backend.execute_read(_check_exists_sqlite)
 
         # PostgreSQL
-        async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, str | None]:
+        async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, str | None, int | None]:
             row = await conn.fetchrow(
-                f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                f'SELECT source, version FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                 context_id,
             )
             if row is None:
-                return False, None
-            return True, cast(str, row['source'])
+                return False, None, None
+            return True, cast(str, row['source']), cast(int, row['version'])
 
         return await self.backend.execute_read(_check_exists_postgresql)
 

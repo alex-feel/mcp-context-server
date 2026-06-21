@@ -1319,7 +1319,11 @@ class IndexTreeNodeSummarySettings(CommonSettings):
         alias='INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT',
         ge=1,
         le=32,
-        description='Maximum in-flight per-node summary generations. Default min(cpu_count, 4).',
+        description='Node-task fan-out cap: the maximum number of per-node index_tree summary '
+                    'coroutines in flight at once. This is NOT a second model budget -- the actual '
+                    'summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT (one shared '
+                    'budget acquired by both the flat document summary and every per-node summary). '
+                    'Default min(cpu_count, 4).',
     )
 
 

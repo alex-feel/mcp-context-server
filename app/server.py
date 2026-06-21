@@ -58,6 +58,7 @@ from app.migrations import apply_index_tree_migration
 from app.migrations import apply_jsonb_merge_patch_migration
 from app.migrations import apply_semantic_search_migration
 from app.migrations import apply_summary_migration
+from app.migrations import apply_version_migration
 from app.migrations import check_provider_dependencies
 from app.migrations import check_vector_storage_dependencies
 from app.migrations import estimate_migration_time
@@ -230,8 +231,13 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_chunking_migration(backend=backend)
         # 8) Apply summary column migration (always runs, column required for search display)
         await apply_summary_migration(backend=backend)
-        # 9) Apply content_hash column migration (deduplication optimization)
+        # 9) Apply context_entries column migrations (idempotent ADD COLUMN on
+        # in-place upgrades; a no-op on fresh DBs whose base schema already has
+        # them): content_hash (deduplication optimization) and version (the
+        # optimistic-concurrency token used by the update_context /
+        # update_context_batch compare-and-set and bumped by the dedup-store UPDATE).
         await apply_content_hash_migration(backend=backend)
+        await apply_version_migration(backend=backend)
         # 10) Apply compression migration: REPLACES fp32 vec table with compressed
         # storage when ENABLE_EMBEDDING_COMPRESSION=true; no-op when disabled.
         # Must run before validate_compression_provenance because the validator

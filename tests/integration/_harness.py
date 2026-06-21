@@ -2624,6 +2624,148 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_update_context_batch_version_guard(self) -> bool:
+        """Exercise the optimistic-concurrency version guard end-to-end on BOTH backends.
+
+        Proves the CAS + intra-batch running-version logic through the REAL server:
+        1. A single update_context_batch carrying the SAME context_id TWICE (each
+           with different text) applies BOTH updates (last wins) -- the second
+           same-id update must not collide on a stale captured version. This is the
+           cross-backend proof of the batch running-version fix
+           (``live_versions[context_id]`` advancing after each committed same-id
+           update); it runs identically on SQLite and PostgreSQL.
+        2. A short run of sequential update_context calls on one id all apply,
+           confirming the version guard does not break normal (non-contended)
+           updates.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'update_context_batch_version_guard'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            guard_thread = f'{self.test_thread_id}_version_guard'
+
+            # Create one entry to update.
+            store_result = await self.client.call_tool(
+                'store_context_batch',
+                {
+                    'entries': [
+                        {'thread_id': guard_thread, 'source': 'agent', 'text': 'Guard original'},
+                    ],
+                    'atomic': True,
+                },
+            )
+            store_data = self._extract_content(store_result)
+            if not store_data.get('success') or store_data.get('succeeded') != 1:
+                self.test_results.append((test_name, False, f'Setup store failed: {store_data}'))
+                return False
+            context_id = store_data['results'][0]['context_id']
+
+            # 1. SAME context_id twice in one atomic batch, different text each.
+            #    Both must apply; last wins (final text = the second update's).
+            dup_result = await self.client.call_tool(
+                'update_context_batch',
+                {
+                    'updates': [
+                        {'context_id': context_id, 'text': 'Guard first same-id'},
+                        {'context_id': context_id, 'text': 'Guard second same-id'},
+                    ],
+                    'atomic': True,
+                },
+            )
+            dup_data = self._extract_content(dup_result)
+            if not dup_data.get('success') or dup_data.get('succeeded') != 2:
+                self.test_results.append(
+                    (test_name, False, f'Duplicate-id atomic batch did not apply both: {dup_data}'),
+                )
+                return False
+
+            # Verify the SECOND same-id update won (last wins).
+            verify_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            verify_data = self._extract_content(verify_result)
+            entries = verify_data.get('results', [])
+            if not entries or entries[0].get('text_content') != 'Guard second same-id':
+                self.test_results.append(
+                    (test_name, False, f'Final text is not the second same-id update: {entries}'),
+                )
+                return False
+
+            # Also exercise the non-atomic duplicate-id path on a fresh entry.
+            store2_result = await self.client.call_tool(
+                'store_context_batch',
+                {
+                    'entries': [
+                        {'thread_id': guard_thread, 'source': 'user', 'text': 'Guard original 2'},
+                    ],
+                    'atomic': True,
+                },
+            )
+            store2_data = self._extract_content(store2_result)
+            context_id2 = store2_data['results'][0]['context_id']
+            dup2_result = await self.client.call_tool(
+                'update_context_batch',
+                {
+                    'updates': [
+                        {'context_id': context_id2, 'text': 'Guard2 first same-id'},
+                        {'context_id': context_id2, 'text': 'Guard2 second same-id'},
+                    ],
+                    'atomic': False,
+                },
+            )
+            dup2_data = self._extract_content(dup2_result)
+            if dup2_data.get('succeeded') != 2 or dup2_data.get('failed') != 0:
+                self.test_results.append(
+                    (test_name, False, f'Duplicate-id non-atomic batch did not apply both: {dup2_data}'),
+                )
+                return False
+            verify2_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id2]},
+            )
+            verify2_entries = self._extract_content(verify2_result).get('results', [])
+            if not verify2_entries or verify2_entries[0].get('text_content') != 'Guard2 second same-id':
+                self.test_results.append(
+                    (test_name, False, f'Non-atomic final text wrong: {verify2_entries}'),
+                )
+                return False
+
+            # 2. Sequential single update_context calls all apply (guard does not
+            #    break normal, non-contended updates).
+            for step in range(3):
+                seq_result = await self.client.call_tool(
+                    'update_context',
+                    {'context_id': context_id, 'text': f'Guard sequential {step}'},
+                )
+                seq_data = self._extract_content(seq_result)
+                if not seq_data.get('success'):
+                    self.test_results.append(
+                        (test_name, False, f'Sequential update {step} failed: {seq_data}'),
+                    )
+                    return False
+            final_result = await self.client.call_tool(
+                'get_context_by_ids',
+                {'context_ids': [context_id]},
+            )
+            final_entries = self._extract_content(final_result).get('results', [])
+            if not final_entries or final_entries[0].get('text_content') != 'Guard sequential 2':
+                self.test_results.append(
+                    (test_name, False, f'Sequential updates did not converge: {final_entries}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Version guard: duplicate-id batch (atomic+non-atomic) and sequential updates all applied'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_delete_context_batch(self) -> bool:
         """Test bulk delete context operations.
 
@@ -10610,6 +10752,7 @@ class MCPServerIntegrationTest:
             ('Get Statistics', self.test_get_statistics),
             ('Store Context Batch', self.test_store_context_batch),
             ('Update Context Batch', self.test_update_context_batch),
+            ('Update Context Batch Version Guard', self.test_update_context_batch_version_guard),
             ('Delete Context Batch', self.test_delete_context_batch),
             ('Semantic Search', self.test_semantic_search_context),
             ('Semantic Search Date Filtering', self.test_semantic_search_context_with_date_filtering),

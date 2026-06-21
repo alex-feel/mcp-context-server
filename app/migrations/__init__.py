@@ -9,6 +9,7 @@ This package contains migration orchestration and all migration implementations:
 - chunking.py: 1:N embedding relationship migration
 - summary.py: Summary column migration
 - content_hash.py: Content hash column migration for deduplication optimization
+- version.py: Optimistic-concurrency version column migration
 - compression.py: Embedding compression migration (vec_context_embeddings_compressed + compression_metadata)
 
 SQL Files (resources):
@@ -50,6 +51,7 @@ from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
 from app.migrations.semantic import apply_semantic_search_migration
 from app.migrations.summary import apply_summary_migration
+from app.migrations.version import apply_version_migration
 
 __all__ = [
     # Dependencies
@@ -78,6 +80,8 @@ __all__ = [
     'check_summary_provider_dependencies',
     # Content hash
     'apply_content_hash_migration',
+    # Version (optimistic concurrency)
+    'apply_version_migration',
     # Compression
     'apply_compression_migration',
 ]

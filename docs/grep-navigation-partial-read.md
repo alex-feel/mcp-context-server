@@ -48,7 +48,7 @@ Each node carries a stable-ish `node_id` (a heading-path slug with a sibling ord
 
 ### Optional per-node LLM summaries
 
-When `ENABLE_INDEX_TREE_NODE_SUMMARIES` is on (the default), each substantial heading section also gets a short LLM-written abstract, stored in the `context_index_nodes` table. These summaries are surfaced by `navigate_context(include_node_summaries=True)`. They are an ADDITIVE layer: generation runs in a separate, fenced, never-raise pass that reuses the configured summary provider with a dedicated short prompt, bounded by a per-node timeout. A node-summary failure or timeout simply omits that node's summary and NEVER aborts a store (unlike embeddings/summary/compression, which are abort-mandatory when enabled). Set `ENABLE_INDEX_TREE_NODE_SUMMARIES=false` to keep navigation purely code-derived with no per-store LLM cost and no node table.
+When `ENABLE_INDEX_TREE_NODE_SUMMARIES` is on (the default), each substantial heading section also gets a short LLM-written abstract, stored in the `context_index_nodes` table. These summaries are surfaced by `navigate_context(include_node_summaries=True)`. They are an ADDITIVE layer: generation runs IN-REQUEST as a never-raise leg, overlapped with the embedding/compression work and started right after the flat document summary completes — so the abort-mandatory flat summary keeps precedence on the shared summary-model budget (governed by `SUMMARY_MAX_CONCURRENT`, which bounds the flat summary and every per-node summary together). It reuses the configured summary provider with a dedicated short prompt, bounded by a per-node timeout. A node-summary failure or timeout simply omits that node's summary and NEVER aborts a store (unlike embeddings/summary/compression, which are abort-mandatory when enabled); on an abort-mandatory failure the in-flight node leg is cancelled. Set `ENABLE_INDEX_TREE_NODE_SUMMARIES=false` to keep navigation purely code-derived with no per-store LLM cost and no node table.
 
 ## read_context_range details
 
@@ -74,6 +74,6 @@ Every behavior is identical on SQLite and PostgreSQL: all matching, line splitti
 | `INDEX_TREE_NODE_SUMMARY_PROMPT`             | (built-in short prompt) | Override the per-node summary system prompt                       |
 | `INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH` | `500`                   | Skip node summaries for sections shorter than this                |
 | `INDEX_TREE_NODE_SUMMARY_TIMEOUT_S`          | `240.0`                 | Per-node summary timeout                                          |
-| `INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT`     | `min(cpu_count, 4)`     | Max in-flight per-node summary generations                        |
+| `INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT`     | `min(cpu_count, 4)`     | Node-task fan-out cap; budget = `SUMMARY_MAX_CONCURRENT`          |
 
 See [Environment Variables](environment-variables.md) for the full reference and [API Reference](api-reference.md) for exact parameters and return shapes.

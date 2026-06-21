@@ -48,7 +48,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(123, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -82,14 +82,14 @@ def reset_summary_state() -> Generator[None, None, None]:
     """Reset global summary state between tests."""
     original_summary_provider = app.startup.get_summary_provider()
     original_embedding_provider = app.startup.get_embedding_provider()
-    shared_tools._reset_summary_semaphore()
+    shared_tools._reset_summary_model_semaphore()
 
     try:
         yield
     finally:
         set_summary_provider(original_summary_provider)
         set_embedding_provider(original_embedding_provider)
-        shared_tools._reset_summary_semaphore()
+        shared_tools._reset_summary_model_semaphore()
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -176,8 +176,8 @@ class TestSummaryStoreWithMocks:
             patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
             patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
             patch('app.tools._shared.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools.context.generate_embeddings_with_timeout', side_effect=fake_embedding),
-            patch('app.tools.context.generate_summary_with_timeout', side_effect=fake_summary),
+            patch('app.tools._shared.generate_embeddings_with_timeout', side_effect=fake_embedding),
+            patch('app.tools._shared.generate_summary_with_timeout', side_effect=fake_summary),
         ):
             long_text = 'x' * 500
             result = await store_context(
@@ -648,6 +648,7 @@ class TestSummaryLifespan:
                 patch('app.server.apply_index_tree_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                patch('app.server.apply_version_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch(
@@ -720,6 +721,7 @@ class TestSummaryLifespan:
                 patch('app.server.apply_index_tree_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                patch('app.server.apply_version_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):

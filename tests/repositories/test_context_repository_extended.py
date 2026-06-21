@@ -699,13 +699,16 @@ class TestContextRepositoryUpdate:
             text_content='Exists',
         )
 
-        exists, source = await repos.context.check_entry_exists(ctx_id)
+        exists, source, version = await repos.context.check_entry_exists(ctx_id)
         assert exists is True
         assert source == 'user'
+        assert isinstance(version, int)
+        assert version == 0
 
-        not_exists, no_source = await repos.context.check_entry_exists(generate_id())
+        not_exists, no_source, no_version = await repos.context.check_entry_exists(generate_id())
         assert not_exists is False
         assert no_source is None
+        assert no_version is None
 
     @pytest.mark.asyncio
     async def test_get_content_type(
@@ -1032,6 +1035,169 @@ class TestContextRepositoryBatchDelete:
 
         # Exactly one criteria entry despite the closure running twice.
         assert criteria == ['context_ids: 1 IDs']
+
+
+class TestContextRepositoryVersionCAS:
+    """Regression tests for the optimistic-concurrency version guard on
+    ``update_context_entry`` (the new ``version`` column + ``expected_version``
+    compare-and-set landed alongside the store/update latency hardening).
+    """
+
+    async def _read_row(
+        self, context_repo: ContextRepository, context_id: str,
+    ) -> tuple[str, int]:
+        """Read (text_content, version) for an entry via a direct SELECT.
+
+        check_entry_exists returns version but NOT text_content, so a direct
+        SELECT is the most precise way to assert the row was (or was not) mutated.
+
+        Returns:
+            Tuple of (text_content, version) for the row.
+        """
+
+        def _select(conn: sqlite3.Connection) -> tuple[str, int]:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT text_content, version FROM context_entries WHERE id = ?',
+                (context_id,),
+            )
+            row = cursor.fetchone()
+            assert row is not None
+            return str(row['text_content']), int(row['version'])
+
+        return await context_repo.backend.execute_read(_select)
+
+    @pytest.mark.asyncio
+    async def test_initial_version_is_zero(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """A freshly inserted entry starts at version 0 (schema DEFAULT 0)."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='cas-init-thread',
+            source='user',
+            content_type='text',
+            text_content='Initial version content',
+        )
+
+        exists, _source, version = await repos.context.check_entry_exists(ctx_id)
+        assert exists is True
+        assert version == 0
+
+        _text, row_version = await self._read_row(context_repo, ctx_id)
+        assert row_version == 0
+
+    @pytest.mark.asyncio
+    async def test_cas_success_bumps_version(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """update with expected_version=0 succeeds and bumps version to 1."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='cas-success-thread',
+            source='user',
+            content_type='text',
+            text_content='v0',
+        )
+
+        success, fields = await repos.context.update_context_entry(
+            ctx_id, text_content='v1', expected_version=0,
+        )
+        assert success is True
+        assert 'text_content' in fields
+
+        text, version = await self._read_row(context_repo, ctx_id)
+        assert text == 'v1'
+        assert version == 1
+
+    @pytest.mark.asyncio
+    async def test_stale_expected_version_raises_and_leaves_row_unchanged(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """A second CAS with a now-stale expected_version=0 raises
+        VersionConflictError and does NOT mutate the row.
+        """
+        from app.repositories.context_repository import VersionConflictError
+
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='cas-stale-thread',
+            source='user',
+            content_type='text',
+            text_content='v0',
+        )
+
+        # First update advances version 0 -> 1.
+        await repos.context.update_context_entry(ctx_id, text_content='v1', expected_version=0)
+
+        # Second update reuses the now-stale captured version 0.
+        with pytest.raises(VersionConflictError) as exc_info:
+            await repos.context.update_context_entry(ctx_id, text_content='v2', expected_version=0)
+        assert exc_info.value.context_id == ctx_id
+
+        # Row is untouched: text stays 'v1', version stays 1 (no spurious bump).
+        text, version = await self._read_row(context_repo, ctx_id)
+        assert text == 'v1'
+        assert version == 1
+
+    @pytest.mark.asyncio
+    async def test_cas_with_current_version_succeeds(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """Re-reading the current version (1) and retrying CAS succeeds, bumping to 2."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='cas-current-thread',
+            source='user',
+            content_type='text',
+            text_content='v0',
+        )
+
+        await repos.context.update_context_entry(ctx_id, text_content='v1', expected_version=0)
+
+        success, _fields = await repos.context.update_context_entry(
+            ctx_id, text_content='v3', expected_version=1,
+        )
+        assert success is True
+
+        text, version = await self._read_row(context_repo, ctx_id)
+        assert text == 'v3'
+        assert version == 2
+
+    @pytest.mark.asyncio
+    async def test_legacy_path_no_cas_no_version_bump(
+        self, context_repo: ContextRepository, repos: RepositoryContainer,
+    ) -> None:
+        """expected_version=None keeps legacy behavior: update succeeds with NO
+        CAS predicate and does NOT bump the version column.
+        """
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='cas-legacy-thread',
+            source='user',
+            content_type='text',
+            text_content='v0',
+        )
+
+        success, fields = await repos.context.update_context_entry(
+            ctx_id, text_content='legacy', expected_version=None,
+        )
+        assert success is True
+        assert 'text_content' in fields
+
+        text, version = await self._read_row(context_repo, ctx_id)
+        assert text == 'legacy'
+        # Legacy path leaves the version untouched (no SET version = version + 1).
+        assert version == 0
+
+    @pytest.mark.asyncio
+    async def test_cas_against_nonexistent_id_returns_false(
+        self, repos: RepositoryContainer,
+    ) -> None:
+        """A CAS against a non-existent id returns (False, []), NOT a
+        VersionConflictError -- the existence pre-check distinguishes
+        "no such row" from "row exists but version moved".
+        """
+        success, fields = await repos.context.update_context_entry(
+            generate_id(), text_content='ghost', expected_version=0,
+        )
+        assert success is False
+        assert fields == []
 
 
 class TestComputeContentHash:

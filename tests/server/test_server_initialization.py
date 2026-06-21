@@ -5,10 +5,44 @@ based on configuration settings.
 """
 
 import os
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock
 from unittest.mock import patch
 
 import pytest
+
+
+def _patch_server_migrations() -> AbstractContextManager[Any]:
+    """One context manager that neutralizes ALL lifespan migration/init steps.
+
+    Consolidates the per-step ``patch('app.server.<step>', new=AsyncMock())`` block
+    into a single ``patch.multiple`` so the enclosing ``with (...)`` statement stays
+    well under CPython's static nested-block limit (each parenthesized context
+    manager is a nested block; adding the new ``apply_version_migration`` step tipped
+    the deepest block over the limit). Reproduces the EXACT set every full-migration
+    lifespan test mocked, plus ``apply_version_migration`` -- the optimistic-concurrency
+    ``version`` column migration wired into the lifespan, which otherwise runs against
+    the MagicMock backend and raises ``object MagicMock can't be used in 'await'``.
+
+    Returns:
+        The ``patch.multiple`` context manager neutralizing every lifespan step.
+    """
+    return patch.multiple(
+        'app.server',
+        init_database=AsyncMock(),
+        handle_metadata_indexes=AsyncMock(),
+        apply_semantic_search_migration=AsyncMock(),
+        apply_jsonb_merge_patch_migration=AsyncMock(),
+        apply_function_search_path_migration=AsyncMock(),
+        apply_fts_migration=AsyncMock(),
+        apply_chunking_migration=AsyncMock(),
+        apply_index_tree_migration=AsyncMock(),
+        apply_summary_migration=AsyncMock(),
+        apply_content_hash_migration=AsyncMock(),
+        apply_version_migration=AsyncMock(),
+    )
 
 
 class TestServerToolRegistration:
@@ -409,16 +443,7 @@ class TestLifespanErrorHandling:
             with (
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
-                patch('app.server.init_database', new=AsyncMock()),
-                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
-                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
-                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
-                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
-                patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server.apply_chunking_migration', new=AsyncMock()),
-                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
-                patch('app.server.apply_summary_migration', new=AsyncMock()),
-                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                _patch_server_migrations(),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
@@ -486,16 +511,7 @@ class TestLifespanErrorHandling:
             with (
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
-                patch('app.server.init_database', new=AsyncMock()),
-                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
-                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
-                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
-                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
-                patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server.apply_chunking_migration', new=AsyncMock()),
-                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
-                patch('app.server.apply_summary_migration', new=AsyncMock()),
-                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                _patch_server_migrations(),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
@@ -556,16 +572,7 @@ class TestLifespanErrorHandling:
             with (
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
-                patch('app.server.init_database', new=AsyncMock()),
-                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
-                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
-                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
-                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
-                patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server.apply_chunking_migration', new=AsyncMock()),
-                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
-                patch('app.server.apply_summary_migration', new=AsyncMock()),
-                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                _patch_server_migrations(),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):
@@ -633,16 +640,7 @@ class TestLifespanErrorHandling:
             with (
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
-                patch('app.server.init_database', new=AsyncMock()),
-                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
-                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
-                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
-                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
-                patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server.apply_chunking_migration', new=AsyncMock()),
-                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
-                patch('app.server.apply_summary_migration', new=AsyncMock()),
-                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                _patch_server_migrations(),
                 patch('app.tools.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch('app.server.check_vector_storage_dependencies', new=AsyncMock(return_value=True)),
@@ -754,16 +752,7 @@ class TestSearchToolRegistrationMatrix:
             with (
                 patch('app.server.settings', mock_settings),
                 patch('app.server.create_backend', return_value=mock_backend),
-                patch('app.server.init_database', new=AsyncMock()),
-                patch('app.server.handle_metadata_indexes', new=AsyncMock()),
-                patch('app.server.apply_semantic_search_migration', new=AsyncMock()),
-                patch('app.server.apply_jsonb_merge_patch_migration', new=AsyncMock()),
-                patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
-                patch('app.server.apply_fts_migration', new=AsyncMock()),
-                patch('app.server.apply_chunking_migration', new=AsyncMock()),
-                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
-                patch('app.server.apply_summary_migration', new=AsyncMock()),
-                patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                _patch_server_migrations(),
                 patch('app.server.register_tool', side_effect=_capture_register_tool),
                 patch('app.server.generate_fts_description', return_value='fts description'),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),

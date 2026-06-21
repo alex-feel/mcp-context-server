@@ -25,7 +25,6 @@ in app.tools._shared -- the single source of truth for logic shared with batch.p
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable
 from typing import Annotated
 from typing import Literal
 from typing import cast
@@ -37,6 +36,7 @@ from pydantic import Field
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
+from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
@@ -46,13 +46,12 @@ from app.startup import get_summary_provider
 from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
+from app.tools._shared import embed_then_compress
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
-from app.tools._shared import generate_compression_with_timeout
-from app.tools._shared import generate_embeddings_with_timeout
 from app.tools._shared import generate_index_nodes_with_timeout
-from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
+from app.tools._shared import run_generation
 from app.tools._shared import validate_and_normalize_images
 from app.types import ContextEntryDict
 from app.types import MetadataDict
@@ -135,13 +134,16 @@ async def store_context(
         # Determine content type and validate images
         validated_images, content_type, _ = validate_and_normalize_images(images, error_mode='raise')
 
-        # === PHASE 2: Generate Summary + Embedding in PARALLEL (Outside Transaction) ===
-        # CRITICAL: Both generation steps happen BEFORE any database operations.
-        # If either fails, NO data is saved - this is the core of transactional integrity.
+        # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
+        # All generation happens BEFORE any database operation: if an
+        # abort-mandatory step (embedding, compression, or the flat summary)
+        # fails, NO data is saved. The embedding->compression leg and the
+        # summary->nodes leg run CONCURRENTLY (disjoint resources); the flat
+        # summary precedes the never-raise node summaries on the shared
+        # summary-model budget, and a failure cancels the other leg cleanly
+        # (see run_generation).
 
         repos = await ensure_repositories()
-        chunk_embeddings: list[ChunkEmbedding] | None = None
-        embedding_generated = False
         summary_text: str | None = None
         summary_generated = False
 
@@ -155,33 +157,22 @@ async def store_context(
                 text_content=text,
             )
 
-        # Build parallel tasks
-        tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
-        task_names: list[str] = []
-
-        # Embedding task (existing logic with pre-check optimization)
+        # Decide which generation legs to run. The dedup pre-check lets a likely
+        # retransmit skip work it would only discard (embeddings already stored,
+        # summary reusable, node rows left untouched).
+        run_embedding = False
         if get_embedding_provider() is not None:
             if likely_duplicate_id is not None:
-                has_embeddings = await repos.embeddings.exists(likely_duplicate_id)
-                if has_embeddings:
+                run_embedding = not await repos.embeddings.exists(likely_duplicate_id)
+                if not run_embedding:
                     logger.debug(
                         'Pre-check: skipping embedding generation for likely duplicate '
-                        'of context %s in thread %s',
-                        likely_duplicate_id, thread_id,
+                        'of context %s in thread %s', likely_duplicate_id, thread_id,
                     )
-                else:
-                    logger.debug(
-                        'Pre-check: duplicate detected but no embeddings exist for context %s '
-                        'in thread %s, generating embeddings',
-                        likely_duplicate_id, thread_id,
-                    )
-                    tasks_to_run.append(generate_embeddings_with_timeout(text))
-                    task_names.append('embedding')
             else:
-                tasks_to_run.append(generate_embeddings_with_timeout(text))
-                task_names.append('embedding')
+                run_embedding = True
 
-        # Summary task (mirrors embedding pre-check pattern)
+        run_summary = False
         if get_summary_provider() is not None:
             min_content_length = settings.summary.min_content_length
             if min_content_length > 0 and len(text) < min_content_length:
@@ -192,55 +183,32 @@ async def store_context(
             elif likely_duplicate_id is not None:
                 existing_summary = await repos.context.get_summary(likely_duplicate_id)
                 if existing_summary is not None:
-                    summary_text = existing_summary
+                    summary_text = existing_summary  # reuse; no model call
                     logger.debug(
                         'Pre-check: reusing existing summary for likely duplicate '
-                        'of context %s in thread %s',
-                        likely_duplicate_id, thread_id,
+                        'of context %s in thread %s', likely_duplicate_id, thread_id,
                     )
                 else:
-                    tasks_to_run.append(generate_summary_with_timeout(text, source))
-                    task_names.append('summary')
+                    run_summary = True
             else:
-                tasks_to_run.append(generate_summary_with_timeout(text, source))
-                task_names.append('summary')
+                run_summary = True
 
-        # Execute all tasks in parallel
-        if tasks_to_run:
-            results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+        # Node summaries are gated symmetrically with embeddings/summary: a likely
+        # retransmit re-issues none and leaves stored rows untouched (index_nodes
+        # stays None). On a reconcile-divergence INSERT below they are regenerated
+        # for the diverged text.
+        run_nodes = likely_duplicate_id is None
 
-            errors: list[tuple[str, BaseException]] = []
-            for name, result in zip(task_names, results, strict=True):
-                if isinstance(result, BaseException):
-                    errors.append((name, result))
-                    logger.error('Generation failed for %s (retries exhausted): %s', name, result)
-                elif name == 'embedding':
-                    chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
-                    embedding_generated = chunk_embeddings is not None
-                elif name == 'summary':
-                    summary_text = cast(str | None, result)
-                    summary_generated = bool(summary_text)
-
-            if errors:
-                error_details = '; '.join(
-                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
-                )
-                raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
-
-        # Compress embeddings OUTSIDE the DB transaction (mirrors the
-        # generation-first invariant): on failure the entry is not saved.
-        # No-op when ENABLE_EMBEDDING_COMPRESSION=false.
-        chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
-
-        # Build index_tree per-node summaries in a SEPARATE fenced never-raise
-        # pass, physically isolated from the abort-mandatory gather above: a
-        # node-summary failure must NEVER abort the store. None when the feature
-        # is disabled OR this is a likely deduplication retransmit -- gated
-        # symmetrically with embeddings/summary above so a retransmit re-issues no
-        # per-node LLM calls and never churns stored rows (None leaves the node
-        # table untouched). On a reconcile-divergence INSERT below it is
-        # regenerated for the diverged text. Computed at most ONCE and reused.
-        index_nodes = None if likely_duplicate_id is not None else await generate_index_nodes_with_timeout(text)
+        chunk_embeddings, generated_summary, index_nodes = await run_generation(
+            text, source,
+            run_embedding=run_embedding,
+            run_summary=run_summary,
+            run_nodes=run_nodes,
+        )
+        if generated_summary is not None:
+            summary_text = generated_summary
+            summary_generated = True
+        embedding_generated = chunk_embeddings is not None
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
@@ -291,8 +259,7 @@ async def store_context(
                     'regenerating skipped embeddings before retry',
                     thread_id,
                 )
-                chunk_embeddings = await generate_embeddings_with_timeout(text)
-                chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
+                chunk_embeddings = await embed_then_compress(text)
                 embedding_generated = chunk_embeddings is not None
                 # The divergence INSERTed a new entry, so its node summaries were
                 # never computed (gated off above as a likely duplicate). Regenerate
@@ -637,15 +604,17 @@ async def update_context(
         if ctx:
             await ctx.info(f'Updating context entry {context_id}')
 
-        # Check if entry exists and retrieve source (read-only, outside transaction)
-        exists, entry_source = await repos.context.check_entry_exists(context_id)
+        # Check if entry exists; capture source and the optimistic-concurrency
+        # version BEFORE generation so a concurrent writer that commits during
+        # our (slow) generation is caught by the conditional write below.
+        exists, entry_source, expected_version = await repos.context.check_entry_exists(context_id)
         if not exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
         assert entry_source is not None  # guaranteed by exists=True
 
         # === PHASE 2: Generate Summary + Embedding FIRST (Outside Transaction) ===
-        # CRITICAL: Both generation steps happen BEFORE any database modifications.
-        # If either fails, NO data is modified - original data is preserved.
+        # CRITICAL: All generation happens BEFORE any database modification.
+        # If an abort-mandatory step fails, NO data is modified.
         chunk_embeddings: list[ChunkEmbedding] | None = None
         embedding_generated = False
         summary_text: str | None = None
@@ -656,14 +625,11 @@ async def update_context(
         index_nodes: list[IndexNodeRow] | None = None
 
         if text is not None:
-            # Text changed - regenerate both embedding and summary in parallel
-            tasks: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
-            task_names: list[str] = []
-
-            if get_embedding_provider() is not None:
-                tasks.append(generate_embeddings_with_timeout(text))
-                task_names.append('embedding')
-
+            # Text changed -> regenerate embeddings, summary, and node summaries.
+            # The embedding->compression leg overlaps the flat-summary->nodes leg
+            # (see run_generation); a node-summary failure never aborts the update.
+            run_embedding = get_embedding_provider() is not None
+            run_summary = False
             if get_summary_provider() is not None:
                 min_content_length = settings.summary.min_content_length
                 if min_content_length > 0 and len(text) < min_content_length:
@@ -674,46 +640,27 @@ async def update_context(
                         len(text), min_content_length,
                     )
                 else:
-                    tasks.append(generate_summary_with_timeout(text, entry_source))
-                    task_names.append('summary')
+                    run_summary = True
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            errors: list[tuple[str, BaseException]] = []
-            for name, result in zip(task_names, results, strict=True):
-                if isinstance(result, BaseException):
-                    errors.append((name, result))
-                    logger.error('Generation failed for %s (retries exhausted): %s', name, result)
-                elif name == 'embedding':
-                    chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
-                    embedding_generated = chunk_embeddings is not None
-                elif name == 'summary':
-                    summary_text = cast(str | None, result)
-                    summary_generated = bool(summary_text)
-
-            if errors:
-                error_details = '; '.join(
-                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
-                )
-                raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
-
-            # Compress regenerated embeddings OUTSIDE the DB transaction
-            # (generation-first invariant). No-op when compression is
-            # disabled.
-            chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
-
-            # Rebuild index_tree per-node summaries in a SEPARATE fenced
-            # never-raise pass (text changed -> sections changed). None when the
-            # feature is disabled; an empty list clears stale rows.
-            index_nodes = await generate_index_nodes_with_timeout(text)
+            chunk_embeddings, summary_text, index_nodes = await run_generation(
+                text, entry_source,
+                run_embedding=run_embedding,
+                run_summary=run_summary,
+                run_nodes=True,
+            )
+            embedding_generated = chunk_embeddings is not None
+            summary_generated = bool(summary_text)
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
         updated_fields: list[str] = []
 
         max_retries = 2
+        attempt = 0
+        version_conflicts = 0
+        max_version_conflicts = 5
 
-        for attempt in range(max_retries + 1):
+        while True:
             try:
                 async with backend.begin_transaction() as txn:
                     updated_fields, _ = await execute_update_in_transaction(
@@ -730,20 +677,44 @@ async def update_context(
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
                         index_nodes=index_nodes,
+                        expected_version=expected_version,
                     )
 
                 # Transaction committed -- break retry loop
                 break
+
+            except VersionConflictError:
+                # A concurrent writer committed a newer version of this entry
+                # during our generation. Re-read the current version and retry
+                # the write with the SAME generated artifacts (they describe the
+                # text THIS call requested), so our update applies on top of the
+                # latest row instead of silently overwriting it.
+                if version_conflicts >= max_version_conflicts:
+                    raise ToolError(
+                        f'Concurrent modification of context {context_id}: the entry kept '
+                        f'changing during the update. Retry the request.',
+                    ) from None
+                version_conflicts += 1
+                exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                if not exists:
+                    raise ToolError(f'Context entry with ID {context_id} not found') from None
+                expected_version = current_version
+                logger.info(
+                    'Version conflict updating context %s; retrying (%d/%d)',
+                    context_id, version_conflicts, max_version_conflicts,
+                )
+                continue
 
             except ToolError:
                 raise  # ToolError is a logical error, not connection error -- do not retry
             except Exception as e:
                 if is_connection_error(e) and attempt < max_retries:
                     delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    attempt += 1
                     logger.warning(
                         'Transaction failed with connection error, retrying in %.1fs '
                         '(attempt %d/%d): %s',
-                        delay, attempt + 1, max_retries, e,
+                        delay, attempt, max_retries, e,
                     )
                     await asyncio.sleep(delay)
                     continue

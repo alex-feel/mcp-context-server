@@ -62,7 +62,7 @@ def mock_repositories():
     # Mock context repository
     repos.context = Mock()
     repos.context.backend = mock_backend
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -118,6 +118,7 @@ class TestUpdateContext:
                 metadata=None,
                 summary=None,
                 clear_summary=False,
+                expected_version=0,
                 txn=ANY,
             )
 
@@ -151,6 +152,7 @@ class TestUpdateContext:
                 metadata=expected_metadata_str,
                 summary=None,
                 clear_summary=False,
+                expected_version=0,
                 txn=ANY,
             )
 
@@ -284,7 +286,7 @@ class TestUpdateContext:
     @pytest.mark.asyncio
     async def test_context_not_found_error(self, mock_context, mock_repositories):
         """Test error when context entry doesn't exist."""
-        mock_repositories.context.check_entry_exists.return_value = (False, None)
+        mock_repositories.context.check_entry_exists.return_value = (False, None, None)
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             with pytest.raises(ToolError) as exc_info:
@@ -653,7 +655,7 @@ class TestUpdateContext:
             patch('app.tools._shared.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._shared.get_summary_provider', return_value=None),
-            patch('app.tools.context.generate_embeddings_with_timeout') as mock_embed,
+            patch('app.tools._shared.generate_embeddings_with_timeout') as mock_embed,
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -682,7 +684,7 @@ class TestUpdateContext:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._shared.get_summary_provider', return_value=None),
             patch(
-                'app.tools.context.generate_embeddings_with_timeout',
+                'app.tools._shared.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=mock_embeddings_result,
             ),
@@ -710,8 +712,8 @@ class TestUpdateContext:
             patch('app.tools._shared.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._shared.get_summary_provider', return_value=None),
-            patch('app.tools.context.generate_embeddings_with_timeout') as mock_embed,
-            patch('app.tools.context.generate_summary_with_timeout') as mock_summary,
+            patch('app.tools._shared.generate_embeddings_with_timeout') as mock_embed,
+            patch('app.tools._shared.generate_summary_with_timeout') as mock_summary,
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',

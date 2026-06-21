@@ -718,7 +718,7 @@
           "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
         },
         {
-          "description": "Maximum in-flight per-node summary generations. Default min(cpu_count, 4).",
+          "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1816,7 +1816,7 @@
           "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
         },
         {
-          "description": "Maximum in-flight per-node summary generations. Default min(cpu_count, 4).",
+          "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,

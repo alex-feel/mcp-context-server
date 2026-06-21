@@ -37,6 +37,7 @@ from pydantic import Field
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
+from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
@@ -794,19 +795,25 @@ async def update_context_batch(
         # === PHASE 2: Check all entries exist (fail fast in atomic mode) ===
         existence_errors: list[tuple[int, str, str]] = []  # (index, context_id, error)
         entry_sources: dict[str, str] = {}  # context_id -> source
+        # context_id -> optimistic-concurrency version captured BEFORE generation;
+        # passed to execute_update_in_transaction as the compare-and-set guard so a
+        # concurrent writer that commits during generation is detected.
+        entry_versions: dict[str, int] = {}
 
         for update in validated_updates:
             original_idx = update['index']
             context_id = update['context_id']
 
-            exists, entry_source = await repos.context.check_entry_exists(context_id)
+            exists, entry_source, entry_version = await repos.context.check_entry_exists(context_id)
             if not exists:
                 if atomic:
                     raise ToolError(f'Context entry {context_id} not found at index {original_idx}')
                 existence_errors.append((original_idx, context_id, f'Context entry {context_id} not found'))
             else:
                 assert entry_source is not None
+                assert entry_version is not None
                 entry_sources[context_id] = entry_source
+                entry_versions[context_id] = entry_version
 
         # In non-atomic mode, add existence errors to results
         if not atomic:
@@ -1010,6 +1017,11 @@ async def update_context_batch(
             for attempt in range(max_retries + 1):
                 try:
                     results_attempt: list[BulkUpdateResultItemDict] = []
+                    # Running version per id within THIS attempt: a same-id update
+                    # later in the batch must present the version the earlier same-id
+                    # update bumped to (the CAS is against the in-transaction row).
+                    # Reset each attempt because a rolled-back attempt did not commit.
+                    live_versions = dict(entry_versions)
 
                     async with backend.begin_transaction() as txn:
                         for idx, (vu_idx, update) in enumerate(validated_updates_final):
@@ -1036,8 +1048,14 @@ async def update_context_batch(
                                     chunk_embeddings=update_embeddings.get(vu_idx),
                                     embedding_model=settings.embedding.model,
                                     index_nodes=update_index_nodes.get(vu_idx),
+                                    expected_version=live_versions.get(context_id),
                                 )
                             )
+                            bumps_version = update.get('text') is not None or update.get('metadata') is not None
+                            if bumps_version and context_id in live_versions:
+                                # update_context_entry bumped version by 1; a later
+                                # same-id update in this batch must see the new value.
+                                live_versions[context_id] += 1
 
                             results_attempt.append(BulkUpdateResultItemDict(
                                 index=original_idx,
@@ -1053,6 +1071,13 @@ async def update_context_batch(
                     results.extend(results_attempt)
                     break
 
+                except VersionConflictError as e:
+                    # A concurrent writer modified one of these entries during
+                    # generation. Atomic mode is all-or-nothing, so abort the whole
+                    # batch with a clear error; the client can retry the request.
+                    raise ToolError(
+                        f'Concurrent modification during atomic batch update: {e}. Retry the request.',
+                    ) from None
                 except ToolError:
                     raise  # Logical error -- do not retry
                 except Exception as e:
@@ -1067,13 +1092,20 @@ async def update_context_batch(
                         continue
                     raise  # Non-connection error or max retries exceeded
         else:
-            # NON-ATOMIC MODE: Each update in its own transaction (with retry)
+            # NON-ATOMIC MODE: Each update in its own transaction (with retry).
+            # Running version per id, persisting ACROSS entries (processed
+            # sequentially): a same-id update later in the batch must see the
+            # version the earlier same-id update committed.
+            live_versions = dict(entry_versions)
             for vu_idx, update in validated_updates_final:
                 original_idx = update['index']
                 context_id = update['context_id']
                 max_retries = 2
+                attempt = 0
+                version_conflicts = 0
+                max_version_conflicts = 5
 
-                for attempt in range(max_retries + 1):
+                while True:
                     try:
                         async with backend.begin_transaction() as txn:
                             update_images = update.get('images')
@@ -1092,6 +1124,7 @@ async def update_context_batch(
                                     chunk_embeddings=update_embeddings.get(vu_idx),
                                     embedding_model=settings.embedding.model,
                                     index_nodes=update_index_nodes.get(vu_idx),
+                                    expected_version=live_versions.get(context_id),
                                 )
                             )
 
@@ -1106,7 +1139,40 @@ async def update_context_batch(
                         ))
                         if summary_cleared:
                             summaries_cleared_count += 1
+                        bumps_version = update.get('text') is not None or update.get('metadata') is not None
+                        if bumps_version and context_id in live_versions:
+                            live_versions[context_id] += 1
                         break  # Success -- exit retry loop
+                    except VersionConflictError as e:
+                        # The row changed since we captured its version (a same-id
+                        # update earlier in this batch, a concurrent external writer,
+                        # or a commit whose ack was lost). Re-read the current version
+                        # and retry so this entry self-heals into a success instead of
+                        # a spurious failure (mirrors the single update_context path).
+                        if version_conflicts >= max_version_conflicts:
+                            logger.warning('Version conflict updating entry at index %d: %s', original_idx, e)
+                            results.append(BulkUpdateResultItemDict(
+                                index=original_idx,
+                                context_id=context_id,
+                                success=False,
+                                updated_fields=None,
+                                error=format_exception_message(e),
+                            ))
+                            break
+                        version_conflicts += 1
+                        exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                        if not exists:
+                            results.append(BulkUpdateResultItemDict(
+                                index=original_idx,
+                                context_id=context_id,
+                                success=False,
+                                updated_fields=None,
+                                error=f'Context entry {context_id} not found',
+                            ))
+                            break
+                        assert current_version is not None  # exists=True guarantees a version
+                        live_versions[context_id] = current_version
+                        continue
                     except ToolError as e:
                         # Logical error -- do not retry, record as failure
                         logger.error(f'Failed to update entry at index {original_idx}: {e}')
@@ -1121,10 +1187,11 @@ async def update_context_batch(
                     except Exception as e:
                         if is_connection_error(e) and attempt < max_retries:
                             delay = 0.5 * (2 ** attempt)
+                            attempt += 1
                             logger.warning(
                                 'Non-atomic batch update entry %d failed with connection error, '
                                 'retrying in %.1fs (attempt %d/%d): %s',
-                                original_idx, delay, attempt + 1, max_retries, e,
+                                original_idx, delay, attempt, max_retries, e,
                             )
                             await asyncio.sleep(delay)
                             continue

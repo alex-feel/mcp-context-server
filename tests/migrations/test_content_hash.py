@@ -78,6 +78,7 @@ async def backend_pre_migration(tmp_path: Path) -> AsyncGenerator[StorageBackend
                 text_content TEXT,
                 metadata JSON,
                 summary TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )

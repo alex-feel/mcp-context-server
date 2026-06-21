@@ -87,19 +87,29 @@ class EmbeddingsReconcileRequiredError(Exception):
 # scope is simpler than the prior lazy-init helpers and gives every caller a
 # stable reference for the lifetime of the process.
 #
-# The three semaphores are intentionally separate because:
+# The semaphores are intentionally separate, one per physical resource:
 #   * ``_embedding_semaphore``: bounds outbound HTTP concurrency to the
 #     embedding provider.
-#   * ``_summary_semaphore``: bounds outbound HTTP concurrency to the summary
-#     provider.
+#   * ``_summary_model_semaphore``: bounds outbound concurrency to the single
+#     physical SUMMARY model. It is acquired by BOTH the flat document summary
+#     (``generate_summary_with_timeout``) AND every per-node index_tree summary
+#     (``_summarize_node``) -- both hit the same model, so ONE shared budget
+#     caps global summary-model concurrency at ``SUMMARY_MAX_CONCURRENT`` no
+#     matter how the flat and node passes overlap. That is what protects a small
+#     local model (e.g. Ollama) from the overload the 3->2 de-tune fixed.
 #   * ``_compression_semaphore``: bounds CPU-bound encoding offloaded via
 #     ``asyncio.to_thread``; contention is for the GIL / CPU, not the event
 #     loop, so a separate budget applies.
+#   * ``_node_summary_semaphore``: a node-task LAUNCH / fan-out cap (NOT a second
+#     model budget). It bounds how many ``_summarize_node`` coroutines are
+#     in-flight at once so a many-heading document cannot create an unbounded
+#     fan-out; the inner ``_summary_model_semaphore`` is what actually gates the
+#     model call. Sized by ``INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT``.
 
 _embedding_semaphore: asyncio.Semaphore = asyncio.Semaphore(
     settings.embedding.max_concurrent,
 )
-_summary_semaphore: asyncio.Semaphore = asyncio.Semaphore(
+_summary_model_semaphore: asyncio.Semaphore = asyncio.Semaphore(
     settings.summary.max_concurrent,
 )
 _compression_semaphore: asyncio.Semaphore = asyncio.Semaphore(
@@ -121,15 +131,16 @@ def _reset_embedding_semaphore() -> None:
     _embedding_semaphore = asyncio.Semaphore(settings.embedding.max_concurrent)
 
 
-def _reset_summary_semaphore() -> None:
-    """Rebind the summary semaphore against the current settings value.
+def _reset_summary_model_semaphore() -> None:
+    """Rebind the shared summary-model semaphore against current settings.
 
-    Test fixtures that mutate ``settings.summary.max_concurrent`` between
-    cases call this to ensure the next ``async with _summary_semaphore``
-    block uses the freshly configured limit.
+    Test fixtures that mutate ``settings.summary.max_concurrent`` between cases
+    call this so the next ``async with _summary_model_semaphore`` block -- used
+    by BOTH the flat document summary and every per-node index_tree summary --
+    uses the freshly configured limit.
     """
-    global _summary_semaphore
-    _summary_semaphore = asyncio.Semaphore(settings.summary.max_concurrent)
+    global _summary_model_semaphore
+    _summary_model_semaphore = asyncio.Semaphore(settings.summary.max_concurrent)
 
 
 def _reset_compression_semaphore() -> None:
@@ -161,7 +172,7 @@ def _reset_node_summary_semaphore() -> None:
 # cases; production code uses the semaphores directly without rebinding.
 _RESET_HELPERS_EXPORT = (
     _reset_embedding_semaphore,
-    _reset_summary_semaphore,
+    _reset_summary_model_semaphore,
     _reset_compression_semaphore,
     _reset_node_summary_semaphore,
 )
@@ -375,7 +386,7 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
     total_timeout = compute_summary_total_timeout()
     try:
         logger.info('Generating summary: text_len=%d', len(text))
-        async with _summary_semaphore:
+        async with _summary_model_semaphore:
             result = await asyncio.wait_for(
                 summary_provider.summarize(text, source),
                 timeout=total_timeout,
@@ -459,7 +470,11 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
         if len(section) < min_len:
             return None
         try:
-            async with _node_summary_semaphore:
+            # Outer acquire = node-task fan-out cap (bounds how many node
+            # coroutines run at once). Inner acquire = the SHARED summary-model
+            # budget, so per-node calls and the flat document summary together
+            # never exceed SUMMARY_MAX_CONCURRENT on the one physical model.
+            async with _node_summary_semaphore, _summary_model_semaphore:
                 result = await asyncio.wait_for(
                     provider.summarize_with_prompt(section, prompt),
                     timeout=timeout,
@@ -497,6 +512,132 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
         return None
 
     return rows
+
+
+async def embed_then_compress(text: str) -> list[ChunkEmbedding] | None:
+    """Generate embeddings then compress them, as ONE abort-mandatory leg.
+
+    Compression has a hard data dependency on the embeddings, so chaining keeps
+    that dependency while letting the whole (embedding -> compression) leg
+    overlap the concurrently-running summary/node leg in store/update instead of
+    serializing after it. Both steps are generation-first: a failure propagates
+    so nothing is saved. Compression is a no-op passthrough when
+    ENABLE_EMBEDDING_COMPRESSION is false.
+
+    Returns:
+        The compressed ``ChunkEmbedding`` list, or ``None`` when no embedding
+        provider is configured.
+    """
+    chunk_embeddings = await generate_embeddings_with_timeout(text)
+    return await generate_compression_with_timeout(chunk_embeddings)
+
+
+async def _nodes_after_summary(
+    summary_task: asyncio.Task[str | None] | None,
+    text: str,
+) -> list[IndexNodeRow] | None:
+    """Generate index_tree node summaries AFTER the flat summary completes.
+
+    Awaiting the flat-summary task first gives the ABORT-MANDATORY flat summary
+    strict precedence on the shared summary-model budget, so the never-raise node
+    summaries can never starve it (no latency inversion). If the flat summary
+    failed there is no store to enrich, so node generation is skipped. Never
+    raises on a provider error (mirrors ``generate_index_nodes_with_timeout``); a
+    cancellation still propagates.
+
+    Returns:
+        The node rows, or ``None`` when nodes are skipped/disabled or the flat
+        summary failed.
+
+    Raises:
+        asyncio.CancelledError: Propagated (not swallowed) if this leg is cancelled.
+    """
+    if summary_task is not None:
+        try:
+            await summary_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+    return await generate_index_nodes_with_timeout(text)
+
+
+async def run_generation(
+    text: str,
+    source: str,
+    *,
+    run_embedding: bool,
+    run_summary: bool,
+    run_nodes: bool,
+) -> tuple[list[ChunkEmbedding] | None, str | None, list[IndexNodeRow] | None]:
+    """Run the embedding->compression, flat-summary, and node-summary legs concurrently.
+
+    The embedding->compression leg (embedding model + CPU) and the summary legs
+    (summary model) use disjoint resources, so they overlap genuinely -- this is
+    what removes the node-summary serial tail and the post-gather compression wait
+    from store/update latency. The node-summary leg starts only AFTER the flat
+    summary finishes, keeping the abort-mandatory flat summary's precedence on the
+    shared summary-model budget (no latency inversion).
+
+    The embedding leg and the flat summary are ABORT-MANDATORY: both are awaited
+    and ALL their errors are collected, so a failure reports every abort-mandatory
+    leg deterministically. On any such failure the never-raise node leg is
+    CANCELLED (and awaited) rather than waited out, so the abort path never blocks
+    on node-summary timeouts and no in-flight summary-model call outlives the
+    failed request.
+
+    Returns:
+        ``(chunk_embeddings, summary_text, index_nodes)``; any leg that was not
+        requested yields ``None``.
+
+    Raises:
+        ToolError: If an abort-mandatory leg (embeddings, compression, or the
+            flat summary) fails after exhausting its configured retries; the
+            message names every failed leg.
+    """
+    embed_task: asyncio.Task[list[ChunkEmbedding] | None] | None = None
+    summary_task: asyncio.Task[str | None] | None = None
+    node_task: asyncio.Task[list[IndexNodeRow] | None] | None = None
+
+    if run_embedding:
+        embed_task = asyncio.create_task(embed_then_compress(text))
+    if run_summary:
+        summary_task = asyncio.create_task(generate_summary_with_timeout(text, source))
+    if run_nodes:
+        node_task = asyncio.create_task(_nodes_after_summary(summary_task, text))
+
+    # Await the ABORT-MANDATORY legs, collecting every error (return_exceptions so
+    # one failure does not hide another); the never-raise node leg is NOT awaited
+    # here so its timeouts can never delay an abort.
+    abort_legs: list[tuple[str, asyncio.Task[Any]]] = []
+    if embed_task is not None:
+        abort_legs.append(('embedding', embed_task))
+    if summary_task is not None:
+        abort_legs.append(('summary', summary_task))
+
+    errors: list[str] = []
+    if abort_legs:
+        await asyncio.gather(*(task for _, task in abort_legs), return_exceptions=True)
+        for name, task in abort_legs:
+            exc = task.exception()
+            if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                errors.append(f'{name}: {type(exc).__name__}: {exc}')
+
+    if errors:
+        # Abort-mandatory failure: cancel and await the never-raise node leg so no
+        # in-flight summary-model call outlives the failed request, then surface a
+        # combined, deterministic error naming every failed leg.
+        if node_task is not None:
+            node_task.cancel()
+            await asyncio.gather(node_task, return_exceptions=True)
+        raise ToolError(
+            'Generation failed after exhausting configured retries: ' + '; '.join(errors),
+        )
+
+    chunk_embeddings = embed_task.result() if embed_task is not None else None
+    summary_text = summary_task.result() if summary_task is not None else None
+    index_nodes = await node_task if node_task is not None else None
+    return chunk_embeddings, summary_text, index_nodes
 
 
 # ---------------------------------------------------------------------------
@@ -986,6 +1127,7 @@ async def execute_update_in_transaction(
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
     index_nodes: list[IndexNodeRow] | None = None,
+    expected_version: int | None = None,
 ) -> tuple[list[str], bool]:
     """Execute all update operations within an existing transaction.
 
@@ -1034,6 +1176,7 @@ async def execute_update_in_transaction(
             metadata=metadata_str,
             summary=summary,
             clear_summary=clear_summary,
+            expected_version=expected_version,
             txn=txn,
         )
 

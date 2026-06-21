@@ -41,7 +41,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.store_with_deduplication = AsyncMock(return_value=(100, False))
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.get_summary = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -535,7 +535,7 @@ class TestBatchMessageAccuracy:
     async def test_update_batch_short_text_no_summary_message(self) -> None:
         """Message omits 'summaries regenerated' when all entries skip summary due to min_content_length."""
         repos = _create_mock_repositories()
-        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
         repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
 
         mock_summary = MagicMock()
@@ -566,7 +566,7 @@ class TestBatchMessageAccuracy:
     async def test_update_batch_no_text_change_no_regeneration_message(self) -> None:
         """Message omits generation info when only metadata is updated (no text changes)."""
         repos = _create_mock_repositories()
-        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
         repos.context.update_context_entry = AsyncMock(return_value=(True, ['metadata']))
 
         mock_summary = MagicMock()

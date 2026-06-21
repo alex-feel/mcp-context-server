@@ -31,6 +31,7 @@ _CREATE_TABLE_SQL = '''
         metadata TEXT,
         summary TEXT,
         content_hash TEXT,
+        version INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )

@@ -745,7 +745,7 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.generate_embeddings_with_timeout', mock_gen_embed),
+            patch('app.tools._shared.generate_embeddings_with_timeout', mock_gen_embed),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.batch.get_summary_provider', return_value=None),
             patch('app.tools.batch.generate_embeddings_with_timeout', mock_gen_embed),
@@ -793,7 +793,7 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools._shared.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
             patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),
@@ -837,7 +837,7 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools._shared.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
             patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),

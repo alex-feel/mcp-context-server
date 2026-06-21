@@ -227,7 +227,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_context_not_found(self, mock_server_dependencies):
         """Test that updating non-existent context raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (False, None)
+        mock_server_dependencies.context.check_entry_exists.return_value = (False, None, None)
 
         with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd000003e7 not found'):
             await update_context(
@@ -238,7 +238,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_update_failure(self, mock_server_dependencies):
         """Test that update failure raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
         mock_server_dependencies.context.update_context_entry.return_value = (False, [])
 
         with pytest.raises(ToolError, match='Failed to update context entry'):
@@ -250,7 +250,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_invalid_image_format(self, mock_server_dependencies):
         """Test that invalid image data raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
@@ -261,7 +261,7 @@ class TestUpdateContextErrors:
     @pytest.mark.asyncio
     async def test_invalid_base64_in_update(self, mock_server_dependencies):
         """Test that invalid base64 in update raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
@@ -432,7 +432,7 @@ class TestFieldValidation:
     @pytest.mark.asyncio
     async def test_context_id_positive(self, mock_server_dependencies):
         """Test that context_id must be positive."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
         # This would be caught by Field(gt=0) at FastMCP level
         # Testing our manual validation as fallback
         with pytest.raises(ToolError):
@@ -490,7 +490,7 @@ class TestErrorMessageConsistency:
     @pytest.mark.asyncio
     async def test_business_logic_errors_are_clear(self, mock_server_dependencies):
         """Test that business logic errors have clear messages."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (False, None)
+        mock_server_dependencies.context.check_entry_exists.return_value = (False, None, None)
 
         with pytest.raises(ToolError, match='Context entry with ID .* not found'):
             await update_context(
@@ -700,7 +700,7 @@ class TestJSONErrorConsistency:
         """
         # Set up mocks for successful database operations
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
 
         # Test cases that should raise ToolError for BUSINESS LOGIC
         test_cases = [
@@ -748,7 +748,7 @@ class TestJSONErrorConsistency:
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
 
         # Test update_context database error
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
         mock_server_dependencies.context.update_context_entry.side_effect = Exception('Update failed')
         with pytest.raises(ToolError, match='Failed to update context'):
             await update_context(context_id='0190abcdef1234567890abcd00000001', text='new text')

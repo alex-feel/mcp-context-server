@@ -248,7 +248,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(False, []))
 
@@ -286,7 +286,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.patch_metadata = AsyncMock(return_value=(False, []))
 
@@ -324,7 +324,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(False, []))
 
@@ -365,7 +365,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.patch_metadata = AsyncMock(return_value=(False, []))
 
@@ -465,7 +465,7 @@ class TestNonAtomicBatchRetry:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(True, ['text']))
             mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
@@ -660,7 +660,7 @@ class TestBatchUpdateResponseParity:
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(True, ['text']))
             mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
@@ -830,7 +830,7 @@ class TestUpdateBatchSiblingNotDropped:
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             # index 1 is a metadata-only update -> patch_metadata applies it.
             mock_repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))

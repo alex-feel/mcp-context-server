@@ -105,7 +105,7 @@ def _make_mock_repos() -> MagicMock:
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
     repos.context.get_summary = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -195,7 +195,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='generated summary',
             ),
@@ -229,7 +229,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='boundary summary',
             ) as mock_gen_summary,
@@ -290,7 +290,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='above-boundary summary',
             ) as mock_gen_summary,
@@ -333,7 +333,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='short summary',
             ) as mock_gen_summary,
@@ -365,7 +365,7 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
-            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools._shared.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000001',
@@ -397,11 +397,11 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='updated summary',
             ),
-            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools._shared.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd00000001',

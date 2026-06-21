@@ -62,12 +62,12 @@ class TestStoreContextReconcile:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools.context.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools.context.generate_embeddings_with_timeout',
+                'app.tools._shared.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ) as mock_gen_emb,
             patch(
-                'app.tools.context.generate_compression_with_timeout',
+                'app.tools._shared.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),
@@ -117,12 +117,12 @@ class TestStoreContextReconcile:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools.context.execute_store_in_transaction') as mock_exec,
             patch(
-                'app.tools.context.generate_embeddings_with_timeout',
+                'app.tools._shared.generate_embeddings_with_timeout',
                 new_callable=AsyncMock,
                 return_value=_fake_chunk_embeddings(),
             ),
             patch(
-                'app.tools.context.generate_compression_with_timeout',
+                'app.tools._shared.generate_compression_with_timeout',
                 new_callable=AsyncMock,
                 side_effect=lambda emb: emb,
             ),

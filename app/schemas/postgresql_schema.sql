@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS context_entries (
     metadata JSONB,
     summary TEXT,
     content_hash TEXT,
+    -- Monotonic optimistic-concurrency token. Bumped on every text/metadata
+    -- update (see ContextRepository.update_context_entry); a conditional
+    -- `WHERE id = ? AND version = ?` makes concurrent same-entry updates
+    -- last-writer-by-submission instead of last-writer-by-completion, so an
+    -- older-text update can never silently overwrite a newer one (and its
+    -- index_tree node rows can never describe stale text).
+    version BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
