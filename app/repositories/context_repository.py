@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from app.backends.base import StorageBackend
 from app.ids import generate_id
+from app.ids import normalize_id
 from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -48,6 +49,23 @@ def compute_content_hash(text: str) -> str:
         SHA-256 hex digest string (64 characters).
     """
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE/ILIKE wildcards in a literal so it pre-filters exactly.
+
+    Escapes the backslash escape character first, then the ``%`` (any run) and
+    ``_`` (any single char) wildcards, for use with an explicit ``ESCAPE '\\'``
+    clause on both SQLite and PostgreSQL. Keeps the optional substring pre-filter
+    a tight superset of the authoritative Python match.
+
+    Args:
+        value: The literal substring to embed in a LIKE pattern.
+
+    Returns:
+        The escaped literal (still needs ``%`` sentinels added around it).
+    """
+    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 class ContextRepository(BaseRepository):
@@ -471,6 +489,132 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_get_summary_postgresql)
 
+    def _build_context_filter_clause(
+        self,
+        *,
+        thread_id: str | None = None,
+        source: str | None = None,
+        content_type: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        params_start: int = 0,
+    ) -> tuple[str, list[Any], int, list[str]]:
+        """Build the shared ``context_entries`` WHERE clause used by search and grep.
+
+        Single source of truth for the portable filter surface (indexed
+        thread/source/content_type, date range, metadata, and the tag subquery),
+        so ``search_contexts`` and ``grep_scan_text_contents`` cannot drift. The
+        caller is expected to have already emitted ``WHERE 1=1``; the returned SQL
+        is a run of `` AND ...`` fragments (or ``''`` when no filters apply).
+
+        Args:
+            thread_id: Filter by thread id (indexed).
+            source: Filter by source ('user' or 'agent', indexed).
+            content_type: Filter by content type.
+            tags: Filter by tags (OR logic, via the indexed tag table).
+            metadata: Simple metadata equality filters.
+            metadata_filters: Advanced metadata filters with operators.
+            start_date: Filter by created_at >= date (ISO 8601).
+            end_date: Filter by created_at <= date (ISO 8601).
+            params_start: Number of bind parameters already emitted before this
+                clause, so PostgreSQL ``$n`` positions continue correctly.
+
+        Returns:
+            ``(where_sql, params, filter_count, validation_errors)``. When
+            ``validation_errors`` is non-empty the caller MUST short-circuit;
+            ``where_sql``/``params`` are then empty.
+        """
+        from app.metadata_types import MetadataFilter
+        from app.query_builder import MetadataQueryBuilder
+
+        backend_type = self.backend.backend_type
+        clauses: list[str] = []
+        params: list[Any] = []
+        validation_errors: list[str] = []
+
+        def _next_ph() -> str:
+            return self._placeholder(params_start + len(params) + 1)
+
+        # Indexed scalar filters (thread_id + source use idx_thread_source).
+        if thread_id:
+            clauses.append(f' AND thread_id = {_next_ph()}')
+            params.append(thread_id)
+        if source:
+            clauses.append(f' AND source = {_next_ph()}')
+            params.append(source)
+        if content_type:
+            clauses.append(f' AND content_type = {_next_ph()}')
+            params.append(content_type)
+
+        # Date range. SQLite normalizes ISO 8601 via datetime(); PostgreSQL needs
+        # Python datetime objects for TIMESTAMPTZ parameters.
+        if start_date:
+            if backend_type == 'sqlite':
+                clauses.append(f' AND created_at >= datetime({_next_ph()})')
+                params.append(start_date)
+            else:
+                clauses.append(f' AND created_at >= {_next_ph()}')
+                params.append(self._parse_date_for_postgresql(start_date))
+        if end_date:
+            if backend_type == 'sqlite':
+                clauses.append(f' AND created_at <= datetime({_next_ph()})')
+                params.append(end_date)
+            else:
+                clauses.append(f' AND created_at <= {_next_ph()}')
+                params.append(self._parse_date_for_postgresql(end_date))
+
+        # Metadata filtering (backend-aware; PostgreSQL needs the current param offset).
+        if backend_type == 'sqlite':
+            metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+        else:
+            metadata_builder = MetadataQueryBuilder(
+                backend_type='postgresql',
+                param_offset=params_start + len(params),
+            )
+
+        if metadata:
+            for key, value in metadata.items():
+                metadata_builder.add_simple_filter(key, value)
+
+        if metadata_filters:
+            for filter_dict in metadata_filters:
+                try:
+                    filter_spec = MetadataFilter(**filter_dict)
+                    metadata_builder.add_advanced_filter(filter_spec)
+                except ValidationError as e:
+                    validation_errors.append(f'Invalid metadata filter {filter_dict}: {e}')
+                except ValueError as e:
+                    validation_errors.append(f'Invalid metadata filter {filter_dict}: {e}')
+                except Exception as e:
+                    validation_errors.append(f'Unexpected error in metadata filter {filter_dict}: {e}')
+                    logger.error(f'Unexpected error processing metadata filter: {e}')
+
+        if validation_errors:
+            return '', [], 0, validation_errors
+
+        metadata_clause, metadata_params = metadata_builder.build_where_clause()
+        if metadata_clause:
+            clauses.append(f' AND {metadata_clause}')
+            params.extend(metadata_params)
+
+        # Tag filter via the indexed tag table (OR logic across normalized tags).
+        if tags:
+            normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+            if normalized_tags:
+                tag_placeholders = ','.join([
+                    self._placeholder(params_start + len(params) + i + 1)
+                    for i in range(len(normalized_tags))
+                ])
+                clauses.append(
+                    f' AND id IN (SELECT DISTINCT context_entry_id FROM tags WHERE tag IN ({tag_placeholders}))',
+                )
+                params.extend(normalized_tags)
+
+        return ''.join(clauses), params, metadata_builder.get_filter_count(), validation_errors
+
     async def search_contexts(
         self,
         thread_id: str | None = None,
@@ -506,9 +650,6 @@ class ContextRepository(BaseRepository):
         """
         import time as time_module
 
-        from app.metadata_types import MetadataFilter
-        from app.query_builder import MetadataQueryBuilder
-
         if self.backend.backend_type == 'sqlite':
 
             def _search_sqlite(conn: sqlite3.Connection) -> tuple[list[Any], dict[str, Any]]:
@@ -518,97 +659,25 @@ class ContextRepository(BaseRepository):
                 # Build query with indexed fields first for optimization
                 # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
                 query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
-                params: list[Any] = []
-
-                # Thread filter (indexed)
-                if thread_id:
-                    query += f' AND thread_id = {self._placeholder(len(params) + 1)}'
-                    params.append(thread_id)
-
-                # Source filter (indexed)
-                if source:
-                    query += f' AND source = {self._placeholder(len(params) + 1)}'
-                    params.append(source)
-
-                # Content type filter
-                if content_type:
-                    query += f' AND content_type = {self._placeholder(len(params) + 1)}'
-                    params.append(content_type)
-
-                # Date range filtering - Use datetime() to normalize ISO 8601 input
-                # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
-                # to SQLite's space-separated format 'YYYY-MM-DD HH:MM:SS' for proper comparison.
-                # Without datetime(), TEXT comparison fails because 'T' > ' ' in ASCII ordering.
-                if start_date:
-                    query += f' AND created_at >= datetime({self._placeholder(len(params) + 1)})'
-                    params.append(start_date)
-
-                if end_date:
-                    query += f' AND created_at <= datetime({self._placeholder(len(params) + 1)})'
-                    params.append(end_date)
-
-                # Add metadata filtering
-                metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
-
-                # Simple metadata filters
-                if metadata:
-                    for key, value in metadata.items():
-                        metadata_builder.add_simple_filter(key, value)
-
-                # Advanced metadata filters
-                if metadata_filters:
-                    validation_errors: list[str] = []
-                    for filter_dict in metadata_filters:
-                        try:
-                            # Convert dict to MetadataFilter
-                            filter_spec = MetadataFilter(**filter_dict)
-                            metadata_builder.add_advanced_filter(filter_spec)
-                        except ValidationError as e:
-                            # Collect validation errors to return to user
-                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                            validation_errors.append(error_msg)
-                        except ValueError as e:
-                            # Handle value errors (e.g., from field validators)
-                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                            validation_errors.append(error_msg)
-                        except Exception as e:
-                            # Unexpected errors - still collect them
-                            error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
-                            validation_errors.append(error_msg)
-                            logger.error(f'Unexpected error processing metadata filter: {e}')
-
-                    # If there were validation errors, return them immediately
-                    if validation_errors:
-                        error_response = {
-                            'error': 'Metadata filter validation failed',
-                            'validation_errors': validation_errors,
-                            'execution_time_ms': 0.0,
-                            'filters_applied': 0,
-                            'rows_returned': 0,
-                        }
-                        return [], error_response
-
-                # Add metadata conditions to query
-                metadata_clause, metadata_params = metadata_builder.build_where_clause()
-                if metadata_clause:
-                    query += f' AND {metadata_clause}'
-                    params.extend(metadata_params)
-
-                # Tag filter (uses subquery with indexed tag table)
-                if tags:
-                    normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                    if normalized_tags:
-                        tag_placeholders = ','.join([
-                            self._placeholder(len(params) + i + 1) for i in range(len(normalized_tags))
-                        ])
-                        query += f'''
-                            AND id IN (
-                                SELECT DISTINCT context_entry_id
-                                FROM tags
-                                WHERE tag IN ({tag_placeholders})
-                            )
-                        '''
-                        params.extend(normalized_tags)
+                where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+                    thread_id=thread_id,
+                    source=source,
+                    content_type=content_type,
+                    tags=tags,
+                    metadata=metadata,
+                    metadata_filters=metadata_filters,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                if validation_errors:
+                    return [], {
+                        'error': 'Metadata filter validation failed',
+                        'validation_errors': validation_errors,
+                        'execution_time_ms': 0.0,
+                        'filters_applied': 0,
+                        'rows_returned': 0,
+                    }
+                query += where_sql
 
                 # Order and pagination - use id as secondary sort for consistency
                 limit_placeholder = self._placeholder(len(params) + 1)
@@ -625,7 +694,7 @@ class ContextRepository(BaseRepository):
                 # Build statistics
                 stats: dict[str, Any] = {
                     'execution_time_ms': round(execution_time_ms, 2),
-                    'filters_applied': metadata_builder.get_filter_count(),
+                    'filters_applied': filter_count,
                     'rows_returned': len(rows),
                     'backend': 'sqlite',
                 }
@@ -660,94 +729,25 @@ class ContextRepository(BaseRepository):
             # Build query with indexed fields first for optimization
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
-            params: list[Any] = []
-
-            # Thread filter (indexed)
-            if thread_id:
-                query += f' AND thread_id = {self._placeholder(len(params) + 1)}'
-                params.append(thread_id)
-
-            # Source filter (indexed)
-            if source:
-                query += f' AND source = {self._placeholder(len(params) + 1)}'
-                params.append(source)
-
-            # Content type filter
-            if content_type:
-                query += f' AND content_type = {self._placeholder(len(params) + 1)}'
-                params.append(content_type)
-
-            # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
-            # asyncpg requires Python datetime objects, not strings, for TIMESTAMPTZ parameters
-            if start_date:
-                query += f' AND created_at >= {self._placeholder(len(params) + 1)}'
-                params.append(self._parse_date_for_postgresql(start_date))
-
-            if end_date:
-                query += f' AND created_at <= {self._placeholder(len(params) + 1)}'
-                params.append(self._parse_date_for_postgresql(end_date))
-
-            # Add metadata filtering
-            # Pass param_offset so metadata builder knows current parameter position
-            metadata_builder = MetadataQueryBuilder(backend_type='postgresql', param_offset=len(params))
-
-            # Simple metadata filters
-            if metadata:
-                for key, value in metadata.items():
-                    metadata_builder.add_simple_filter(key, value)
-
-            # Advanced metadata filters
-            if metadata_filters:
-                validation_errors: list[str] = []
-                for filter_dict in metadata_filters:
-                    try:
-                        # Convert dict to MetadataFilter
-                        filter_spec = MetadataFilter(**filter_dict)
-                        metadata_builder.add_advanced_filter(filter_spec)
-                    except ValidationError as e:
-                        # Collect validation errors to return to user
-                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                        validation_errors.append(error_msg)
-                    except ValueError as e:
-                        # Handle value errors (e.g., from field validators)
-                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                        validation_errors.append(error_msg)
-                    except Exception as e:
-                        # Unexpected errors - still collect them
-                        error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
-                        validation_errors.append(error_msg)
-                        logger.error(f'Unexpected error processing metadata filter: {e}')
-
-                # If there were validation errors, return them immediately
-                if validation_errors:
-                    error_response = {
-                        'error': 'Metadata filter validation failed',
-                        'validation_errors': validation_errors,
-                        'execution_time_ms': 0.0,
-                        'filters_applied': 0,
-                        'rows_returned': 0,
-                    }
-                    return [], error_response
-
-            # Add metadata conditions to query
-            metadata_clause, metadata_params = metadata_builder.build_where_clause()
-            if metadata_clause:
-                query += f' AND {metadata_clause}'
-                params.extend(metadata_params)
-
-            # Tag filter (uses subquery with indexed tag table)
-            if tags:
-                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                if normalized_tags:
-                    tag_placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(normalized_tags))])
-                    query += f'''
-                        AND id IN (
-                            SELECT DISTINCT context_entry_id
-                            FROM tags
-                            WHERE tag IN ({tag_placeholders})
-                        )
-                    '''
-                    params.extend(normalized_tags)
+            where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                tags=tags,
+                metadata=metadata,
+                metadata_filters=metadata_filters,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if validation_errors:
+                return [], {
+                    'error': 'Metadata filter validation failed',
+                    'validation_errors': validation_errors,
+                    'execution_time_ms': 0.0,
+                    'filters_applied': 0,
+                    'rows_returned': 0,
+                }
+            query += where_sql
 
             # Order and pagination - use id as secondary sort for consistency
             limit_placeholder = self._placeholder(len(params) + 1)
@@ -763,7 +763,7 @@ class ContextRepository(BaseRepository):
             # Build statistics
             stats: dict[str, Any] = {
                 'execution_time_ms': round(execution_time_ms, 2),
-                'filters_applied': metadata_builder.get_filter_count(),
+                'filters_applied': filter_count,
                 'rows_returned': len(rows),
                 'backend': 'postgresql',
             }
@@ -778,6 +778,198 @@ class ContextRepository(BaseRepository):
             return list(rows), stats
 
         return await self.backend.execute_read(_search_postgresql)
+
+    async def grep_scan_text_contents(
+        self,
+        *,
+        ascii_literal: str | None = None,
+        thread_id: str | None = None,
+        source: str | None = None,
+        content_type: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        max_entries_scanned: int = 1000,
+        aggregate_bytes_budget: int = 67108864,
+        page_size: int = 200,
+    ) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+        """Scan ``text_content`` newest-first for a server-side grep pre-filter.
+
+        Exhaustive keyset pagination ordered ``id DESC`` -- deliberately NOT
+        ``search_contexts`` (whose ``LIMIT 50`` would cap results and make grep
+        silently non-exhaustive). Returns ``(id, text_content)`` candidate rows
+        (after the portable filters and an optional pure-ASCII substring
+        pre-narrow); the authoritative regex/line/offset matching runs in Python
+        in the tool layer. The scan is bounded by ``max_entries_scanned`` and an
+        aggregate code-point budget so an unscoped thread cannot exhaust memory;
+        the first entry that crosses the budget is still returned (so a single
+        huge entry is never silently skipped).
+
+        Args:
+            ascii_literal: Optional pure-ASCII substring for an ``LIKE``/``ILIKE``
+                pre-narrow (a superset of the Python match). None disables it.
+            thread_id: Filter by thread id (indexed; bounds the scan).
+            source: Filter by source ('user' or 'agent', indexed).
+            content_type: Filter by content type.
+            tags: Filter by tags (OR logic).
+            metadata: Simple metadata equality filters.
+            metadata_filters: Advanced metadata filters with operators.
+            start_date: Filter by created_at >= date (ISO 8601).
+            end_date: Filter by created_at <= date (ISO 8601).
+            max_entries_scanned: Hard cap on candidate rows visited.
+            aggregate_bytes_budget: Approximate resident-memory cap (summed
+                code-point length of fetched text) before the scan stops.
+            page_size: Rows fetched per keyset page.
+
+        Returns:
+            ``(rows, stats)`` where ``rows`` is a list of ``(context_id,
+            text_content)`` with canonical 32-char hex ids, and ``stats`` carries
+            ``scanned`` (int), ``truncated`` (bool), ``backend`` (str), and
+            ``validation_errors`` (list, only when a metadata filter is invalid).
+        """
+        backend_type = self.backend.backend_type
+        where_sql, base_params, _filter_count, validation_errors = self._build_context_filter_clause(
+            thread_id=thread_id,
+            source=source,
+            content_type=content_type,
+            tags=tags,
+            metadata=metadata,
+            metadata_filters=metadata_filters,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if validation_errors:
+            return [], {
+                'scanned': 0,
+                'truncated': False,
+                'validation_errors': validation_errors,
+                'backend': backend_type,
+            }
+
+        if backend_type == 'sqlite':
+
+            def _scan_sqlite(conn: sqlite3.Connection) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+                cursor = conn.cursor()
+                out: list[tuple[str, str]] = []
+                scanned = 0
+                total_chars = 0
+                last_id: str | None = None
+                truncated = False
+                while scanned < max_entries_scanned:
+                    page_params: list[Any] = list(base_params)
+                    clause = where_sql
+                    if ascii_literal is not None:
+                        clause += f" AND text_content LIKE {self._placeholder(len(page_params) + 1)} ESCAPE '\\'"
+                        page_params.append(f'%{_escape_like(ascii_literal)}%')
+                    if last_id is not None:
+                        clause += f' AND id < {self._placeholder(len(page_params) + 1)}'
+                        page_params.append(last_id)
+                    page_limit = min(page_size, max_entries_scanned - scanned)
+                    query = (
+                        f'SELECT id, text_content FROM context_entries WHERE 1=1{clause} '
+                        f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
+                    )
+                    page_params.append(page_limit)
+                    cursor.execute(query, tuple(page_params))
+                    page = cursor.fetchall()
+                    if not page:
+                        break
+                    for row in page:
+                        raw_id = row['id']
+                        text_value = row['text_content']
+                        last_id = str(raw_id)
+                        scanned += 1
+                        text_str = text_value if text_value is not None else ''
+                        out.append((normalize_id(str(raw_id)), text_str))
+                        total_chars += len(text_str)
+                        if total_chars >= aggregate_bytes_budget:
+                            truncated = True
+                            break
+                    if truncated or len(page) < page_limit:
+                        break
+                    if scanned >= max_entries_scanned:
+                        # Cap reached on a full page. Distinguish exhaustion (the
+                        # matching set is EXACTLY max_entries_scanned) from overflow
+                        # (more remain) with a single-row lookahead beyond last_id,
+                        # so an exact-fit result is not falsely flagged truncated.
+                        look_params: list[Any] = list(base_params)
+                        look_clause = where_sql
+                        if ascii_literal is not None:
+                            look_clause += f" AND text_content LIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
+                            look_params.append(f'%{_escape_like(ascii_literal)}%')
+                        if last_id is not None:
+                            look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
+                            look_params.append(last_id)
+                        cursor.execute(
+                            f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                            tuple(look_params),
+                        )
+                        truncated = cursor.fetchone() is not None
+                        break
+                return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'sqlite'}
+
+            return await self.backend.execute_read(_scan_sqlite)
+
+        async def _scan_postgresql(conn: 'asyncpg.Connection') -> tuple[list[tuple[str, str]], dict[str, Any]]:
+            out: list[tuple[str, str]] = []
+            scanned = 0
+            total_chars = 0
+            last_id: Any | None = None
+            truncated = False
+            while scanned < max_entries_scanned:
+                page_params: list[Any] = list(base_params)
+                clause = where_sql
+                if ascii_literal is not None:
+                    clause += f" AND text_content ILIKE {self._placeholder(len(page_params) + 1)} ESCAPE '\\'"
+                    page_params.append(f'%{_escape_like(ascii_literal)}%')
+                if last_id is not None:
+                    clause += f' AND id < {self._placeholder(len(page_params) + 1)}'
+                    page_params.append(last_id)
+                page_limit = min(page_size, max_entries_scanned - scanned)
+                query = (
+                    f'SELECT id, text_content FROM context_entries WHERE 1=1{clause} '
+                    f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
+                )
+                page_params.append(page_limit)
+                page = await conn.fetch(query, *page_params)
+                if not page:
+                    break
+                for row in page:
+                    raw_id = row['id']
+                    text_value = row['text_content']
+                    last_id = raw_id
+                    scanned += 1
+                    text_str = text_value if text_value is not None else ''
+                    out.append((normalize_id(str(raw_id)), text_str))
+                    total_chars += len(text_str)
+                    if total_chars >= aggregate_bytes_budget:
+                        truncated = True
+                        break
+                if truncated or len(page) < page_limit:
+                    break
+                if scanned >= max_entries_scanned:
+                    # Cap reached on a full page. Single-row lookahead beyond
+                    # last_id distinguishes exhaustion (exactly the cap) from
+                    # overflow, so an exact-fit result is not falsely flagged.
+                    look_params: list[Any] = list(base_params)
+                    look_clause = where_sql
+                    if ascii_literal is not None:
+                        look_clause += f" AND text_content ILIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
+                        look_params.append(f'%{_escape_like(ascii_literal)}%')
+                    if last_id is not None:
+                        look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
+                        look_params.append(last_id)
+                    look_hit = await conn.fetchval(
+                        f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                        *look_params,
+                    )
+                    truncated = look_hit is not None
+                    break
+            return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'postgresql'}
+
+        return await self.backend.execute_read(_scan_postgresql)
 
     async def get_by_ids(self, context_ids: list[str]) -> list[Any]:
         """Get context entries by their IDs.
@@ -1570,6 +1762,10 @@ class ContextRepository(BaseRepository):
                 prefix + '%',
                 limit,
             )
-            return [row['id'] for row in rows]
+            # Canonicalize: asyncpg returns UUID columns as pgproto.UUID whose str()
+            # is the 36-char hyphenated form. normalize_id yields the 32-char hex
+            # the SQLite path already returns, so prefix resolution echoes a
+            # canonical context_id on both backends (mirrors grep_scan_text_contents).
+            return [normalize_id(str(row['id'])) for row in rows]
 
         return await self.backend.execute_read(_find_postgresql)

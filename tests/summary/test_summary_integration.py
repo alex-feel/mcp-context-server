@@ -69,6 +69,11 @@ def _create_mock_repositories() -> MagicMock:
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.delete_all_chunks = AsyncMock()
 
+    repos.index_nodes = MagicMock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock()
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+    repos.index_nodes.count_all_nodes = AsyncMock(return_value=0)
+
     return repos
 
 
@@ -640,6 +645,7 @@ class TestSummaryLifespan:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
@@ -711,6 +717,7 @@ class TestSummaryLifespan:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.server.apply_content_hash_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),

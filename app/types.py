@@ -68,6 +68,98 @@ class SearchContextResponseDict(TypedDict, total=False):
     clamped_limit: ClampedLimitDict | None
 
 
+class GrepFileDict(TypedDict):
+    """A grep result row in ``files_with_matches`` mode (locator only)."""
+
+    context_id: str
+    match_count: int
+
+
+class GrepContentMatchDict(TypedDict):
+    """A grep result row in ``content`` mode (one per match).
+
+    Offsets are Unicode code-point indices into the entry's ``text_content`` and
+    compose directly with ``read_context_range`` (start_char/end_char).
+    """
+
+    context_id: str
+    line_number: int
+    line: str
+    match_start: int
+    match_end: int
+    before: list[str]
+    after: list[str]
+
+
+class GrepCountDict(TypedDict):
+    """A grep result row in ``count`` mode (per-entry match tally)."""
+
+    context_id: str
+    count: int
+
+
+class GrepContextResultDict(TypedDict, total=False):
+    """Type definition for the grep_context response.
+
+    ``results`` holds one of the three row shapes depending on ``mode``; ``error``
+    and ``validation_errors`` appear only when a metadata filter is invalid.
+    ``timed_out_context_ids`` appears only when one or more entries were skipped
+    because their regex match exceeded the per-entry timeout (the result is then
+    incomplete for those entries).
+    """
+
+    mode: str
+    total_matches: int
+    truncated: bool
+    results: list[GrepFileDict] | list[GrepContentMatchDict] | list[GrepCountDict]
+    error: str | None
+    validation_errors: list[str] | None
+    timed_out_context_ids: list[str]
+
+
+class ReadContextRangeDict(TypedDict):
+    """Type definition for the read_context_range response.
+
+    Echoes the RESOLVED span actually returned (after clamping out-of-range
+    offsets to ``[0, len]``) so a caller always knows exactly what it received.
+    Offsets are Unicode code-point indices.
+    """
+
+    context_id: str
+    start_char: int
+    end_char: int
+    start_line: int
+    end_line: int
+    text: str
+
+
+class OutlineNodeDict(TypedDict, total=False):
+    """A node in the navigate_context outline tree.
+
+    ``char_start``/``char_end`` are Unicode code-point offsets feeding directly
+    into read_context_range. ``summary`` mirrors the entry summary on the root
+    (by reference) and carries an optional per-node LLM summary on descendants.
+    """
+
+    node_id: str
+    level: int
+    ordinal: int
+    title: str
+    char_start: int
+    char_end: int
+    summary: str | None
+    children: list['OutlineNodeDict']
+
+
+class NavigateContextResultDict(TypedDict, total=False):
+    """Type definition for the navigate_context response."""
+
+    context_id: str
+    total_chars: int
+    node_count: int
+    root: OutlineNodeDict
+
+
 class StoreContextSuccessDict(TypedDict):
     """Type definition for successful store context response."""
 
@@ -239,13 +331,24 @@ class CompressionStatsDict(TypedDict, total=False):
     message: str  # Present when available is False
 
 
+class IndexTreeStatsDict(TypedDict, total=False):
+    """Type definition for the ``index_tree`` sub-block in get_statistics.
+
+    ``enabled`` reflects ENABLE_INDEX_TREE_NODE_SUMMARIES; ``node_count`` is the
+    total stored per-node summaries (0 when the table is absent).
+    """
+
+    enabled: bool
+    node_count: int
+
+
 class StatisticsResponseDict(TypedDict):
     """Type definition for the get_statistics tool response.
 
     Top-level fields come from
     ``StatisticsRepository.get_database_statistics``; sub-blocks
     (``semantic_search``, ``fts``, ``chunking``, ``reranking``,
-    ``summary``, ``compression``) are added by
+    ``summary``, ``compression``, ``index_tree``) are added by
     ``app.tools.discovery.get_statistics`` and are always present.
 
     ``database_size_mb`` reflects the whole database on PostgreSQL
@@ -279,6 +382,7 @@ class StatisticsResponseDict(TypedDict):
     reranking: RerankingStatsDict
     summary: SummaryStatsDict
     compression: CompressionStatsDict
+    index_tree: NotRequired[IndexTreeStatsDict]
 
 
 class ImageDict(TypedDict, total=False):

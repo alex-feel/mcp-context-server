@@ -191,8 +191,8 @@ search:
     prompt: ""                # SUMMARY_PROMPT: empty uses built-in default
     timeout: 240.0            # SUMMARY_TIMEOUT_S
     retryMaxAttempts: 5       # SUMMARY_RETRY_MAX_ATTEMPTS
-    retryBaseDelay: 1.0       # SUMMARY_RETRY_BASE_DELAY_S
-    maxConcurrent: 3          # SUMMARY_MAX_CONCURRENT (1-20)
+    retryBaseDelay: 3.0       # SUMMARY_RETRY_BASE_DELAY_S
+    maxConcurrent: 2          # SUMMARY_MAX_CONCURRENT (1-20)
 ```
 
 For OpenAI or Anthropic providers, configure API keys:

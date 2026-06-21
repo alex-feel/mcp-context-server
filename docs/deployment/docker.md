@@ -385,8 +385,8 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)          |
 | `SUMMARY_TIMEOUT_S`          | `240.0`      | Timeout in seconds for summary generation API calls             |
 | `SUMMARY_RETRY_MAX_ATTEMPTS` | `5`          | Maximum retry attempts on transient errors                      |
-| `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)     |
-| `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)         |
+| `SUMMARY_RETRY_BASE_DELAY_S` | `3.0`        | Base delay in seconds between retries (exponential backoff)     |
+| `SUMMARY_MAX_CONCURRENT`     | `2`          | Maximum concurrent summary generation operations (1-20)         |
 | `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt; unset uses the optimized built-in default |
 
 **Search Features:**

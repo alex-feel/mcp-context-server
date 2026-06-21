@@ -31,6 +31,9 @@ class _CompleteSummaryProvider:
     async def summarize(self, text: str, source: str) -> str:
         return f'summary of {len(text)} chars ({source})'
 
+    async def summarize_with_prompt(self, text: str, system_prompt: str) -> str:
+        return f'summary of {len(text)} chars (prompt {len(system_prompt)} chars)'
+
     async def is_available(self) -> bool:
         return True
 

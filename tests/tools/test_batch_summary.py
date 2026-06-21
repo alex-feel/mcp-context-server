@@ -62,6 +62,11 @@ def _create_mock_repositories() -> MagicMock:
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.delete_all_chunks = AsyncMock()
 
+    repos.index_nodes = MagicMock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock()
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+    repos.index_nodes.count_all_nodes = AsyncMock(return_value=0)
+
     return repos
 
 

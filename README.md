@@ -25,6 +25,9 @@ A high-performance Model Context Protocol (MCP) server providing persistent mult
 - **Full-Text Search**: Linguistic search with stemming, ranking, boolean queries (FTS5/tsvector), and cross-encoder reranking. Auto-enabled by default (`ENABLE_FTS=auto`); needs no extra dependencies
 - **Semantic Search**: Vector similarity search for meaning-based retrieval with cross-encoder reranking. Auto-enabled by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever an embedding provider is available (embedding generation is on by default)
 - **Hybrid Search**: Combined FTS + semantic search using Reciprocal Rank Fusion (RRF) with cross-encoder reranking. Auto-enabled by default (`ENABLE_HYBRID_SEARCH=auto`) whenever at least one of full-text or semantic search is available
+- **Server-Side Grep**: Literal/regex, line-oriented, unranked pattern matching over stored records (`grep_context`) — the precise-locate complement to full-text/semantic search, with ripgrep-style output modes and bounded results. Auto-enabled by default (`ENABLE_GREP_CONTEXT=auto`), pure-Python so it behaves identically on SQLite and PostgreSQL
+- **Record Navigation (index_tree)**: `navigate_context` builds an on-demand Markdown-heading table of contents per record, with the entry summary as the root node; optional per-node LLM summaries (on by default) enrich each section. Pair with `read_context_range` to extract any section
+- **Partial Reads**: `read_context_range` returns a slice of one record by character range, line range, or outline `node_id` — so an agent can read only the relevant span of a long record instead of the whole thing
 - **Cross-Encoder Reranking**: Automatic result refinement using FlashRank cross-encoder models for improved search precision (enabled by default)
 - **Embedding Compression (default ON)**: Reduces embedding storage by approximately 8x out of the box in v3.0.0. Bit-packed compressed vectors keep semantic and hybrid search working without changes to the tool surface, and the read path bypasses the pgvector >2000-dimension HNSW limit. Set `ENABLE_EMBEDDING_COMPRESSION=false` to opt out and keep fp32 storage. See the [Embedding Compression Guide](docs/embedding-compression.md)
 - **Multiple Database Backends**: Choose between SQLite (default, zero-config) or PostgreSQL (high-concurrency, production-grade)
@@ -74,15 +77,17 @@ For detailed configuration instructions including PostgreSQL setup with Docker, 
 
 ## API Reference
 
-The MCP Context Server exposes 13 MCP tools for context management:
+The MCP Context Server exposes 16 MCP tools for context management:
 
 **Core Operations:** `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`
 
 **Search Tools:** `semantic_search_context`, `fts_search_context`, `hybrid_search_context`
 
+**Navigation Tools (locate / navigate / extract):** `grep_context`, `navigate_context`, `read_context_range`
+
 **Batch Operations:** `store_context_batch`, `update_context_batch`, `delete_context_batch`
 
-For complete tool documentation including parameters, return values, filtering options, and examples, see the [API Reference](docs/api-reference.md).
+For complete tool documentation including parameters, return values, filtering options, and examples, see the [API Reference](docs/api-reference.md). For when to use grep vs full-text vs semantic search, the index_tree, and partial reads, see [Grep, Navigation & Partial Reads](docs/grep-navigation-partial-read.md).
 
 ## Docker Deployment
 

@@ -20,6 +20,7 @@ dependencies = [
     "uuid_utils>=0.14.1,<0.15.0",
     "numpy>=2.4.1",
     "threadpoolctl>=3.5",
+    "regex>=2024.11.6",
 ]
 
 [build-system]
@@ -325,6 +326,7 @@ module = [
   'onnxruntime',
   'onnxruntime.*',
   'threadpoolctl',
+  'regex',
 ]
 ignore_missing_imports = true
 follow_imports = 'skip'

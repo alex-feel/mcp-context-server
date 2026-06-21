@@ -36,12 +36,16 @@ from fastmcp.exceptions import ToolError
 from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import format_exception_message
 from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.index_node_repository import IndexNodeRow
+from app.services.outline_service import OutlineNode
+from app.services.outline_service import parse_outline
 from app.settings import get_settings
 from app.startup import MAX_IMAGE_SIZE_MB
 from app.startup import MAX_TOTAL_SIZE_MB
 from app.startup import get_chunking_service
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.summary.instructions import resolve_index_tree_node_summary_prompt
 from app.summary.retry import compute_summary_total_timeout
 
 logger = logging.getLogger(__name__)
@@ -101,6 +105,9 @@ _summary_semaphore: asyncio.Semaphore = asyncio.Semaphore(
 _compression_semaphore: asyncio.Semaphore = asyncio.Semaphore(
     settings.compression.max_concurrent,
 )
+_node_summary_semaphore: asyncio.Semaphore = asyncio.Semaphore(
+    settings.index_tree.max_concurrent,
+)
 
 
 def _reset_embedding_semaphore() -> None:
@@ -137,6 +144,17 @@ def _reset_compression_semaphore() -> None:
     _compression_semaphore = asyncio.Semaphore(settings.compression.max_concurrent)
 
 
+def _reset_node_summary_semaphore() -> None:
+    """Rebind the node-summary semaphore against the current settings value.
+
+    Test fixtures that mutate ``settings.index_tree.max_concurrent`` between
+    cases call this to ensure the next ``async with _node_summary_semaphore``
+    block uses the freshly configured limit.
+    """
+    global _node_summary_semaphore
+    _node_summary_semaphore = asyncio.Semaphore(settings.index_tree.max_concurrent)
+
+
 # Explicit re-export so type checkers do NOT flag the reset helpers as unused.
 # These are called only by test fixtures that need to rebind the module-level
 # semaphores against patched ``settings.*.max_concurrent`` values between
@@ -145,6 +163,7 @@ _RESET_HELPERS_EXPORT = (
     _reset_embedding_semaphore,
     _reset_summary_semaphore,
     _reset_compression_semaphore,
+    _reset_node_summary_semaphore,
 )
 
 
@@ -372,6 +391,112 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
             f'Summary generation exceeded total timeout ({total_timeout:.0f}s). '
             f'This may indicate the summary provider is overloaded or unreachable.',
         ) from None
+
+
+async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | None:
+    """Build index_tree node rows with per-node LLM summaries (NEVER raises).
+
+    The code-derived outline is always parsed (pure CPU). Each heading section
+    long enough to warrant one is summarized via the existing summary provider's
+    ``summarize_with_prompt`` with a dedicated short prompt, bounded by a per-node
+    timeout and the node-summary semaphore. This is the additive, fenced layer: a
+    provider failure or timeout omits that node's summary and NEVER aborts the
+    store -- the deliberate contrast with the abort-mandatory
+    embedding/summary/compression helpers above.
+
+    Args:
+        text: The entry's full text content.
+
+    Returns:
+        ``None`` -- meaning "leave the node table untouched" -- when per-node
+        summaries are disabled, no summary provider is configured, OR every
+        attempted per-node summary failed/timed out (TOTAL degradation: a
+        transient provider outage must NOT wipe previously-good stored rows on
+        replace). Otherwise the list of node rows that received a summary --
+        possibly empty when no section qualified (no headings, or all sections
+        below the minimum length), which legitimately clears stale rows on replace.
+    """
+    if not settings.index_tree.node_summaries_enabled:
+        return None
+
+    provider = get_summary_provider()
+    if provider is None:
+        # Per-node summaries reuse the summary provider; with none configured the
+        # feature is inert, so leave the node table untouched (None = no write).
+        return None
+
+    try:
+        root = parse_outline(text)
+    except Exception as e:  # defensive: parsing is pure CPU and should not fail
+        logger.warning('Index-tree outline parse failed; skipping node summaries: %s', e)
+        return []
+
+    nodes: list[OutlineNode] = []
+    stack = list(root.children)
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        stack.extend(node.children)
+
+    if not nodes:
+        return []
+
+    min_len = settings.index_tree.min_content_length
+    timeout = settings.index_tree.timeout_s
+    prompt = resolve_index_tree_node_summary_prompt()
+
+    # A summary is ATTEMPTED only for sections that clear the minimum length;
+    # shorter sections are deliberately skipped (not a failure). Counting attempts
+    # lets us tell "nothing qualified" (attempted == 0 -> return [], legitimately
+    # clearing stale rows) apart from "every attempt failed" (attempted > 0,
+    # zero rows -> return None), so a transient provider outage cannot wipe
+    # previously-good stored rows. len(section) == char_end - char_start (offsets
+    # are code points), so this mirrors _summarize_node's own eligibility check.
+    attempted = sum(1 for node in nodes if (node.char_end - node.char_start) >= min_len)
+
+    async def _summarize_node(node: OutlineNode) -> IndexNodeRow | None:
+        section = text[node.char_start:node.char_end]
+        if len(section) < min_len:
+            return None
+        try:
+            async with _node_summary_semaphore:
+                result = await asyncio.wait_for(
+                    provider.summarize_with_prompt(section, prompt),
+                    timeout=timeout,
+                )
+        except Exception as e:
+            logger.warning('Index-tree node summary failed for %s (skipped): %s', node.node_id, e)
+            return None
+        summary = result.strip()
+        if not summary:
+            return None
+        return IndexNodeRow(
+            node_id=node.node_id,
+            level=node.level,
+            ordinal=node.ordinal,
+            title=node.title,
+            node_summary=summary,
+            char_start=node.char_start,
+            char_end=node.char_end,
+        )
+
+    # _summarize_node never raises; return_exceptions is a defensive backstop so a
+    # surprise (e.g. cancellation of a child) cannot turn into a store-aborting raise.
+    results = await asyncio.gather(*[_summarize_node(node) for node in nodes], return_exceptions=True)
+    rows = [result for result in results if isinstance(result, IndexNodeRow)]
+
+    # TOTAL degradation: sections were eligible and summaries attempted, but every
+    # one failed/timed out. Return None so callers PRESERVE existing stored rows
+    # (replace_nodes_for_context with None is a no-op) instead of wiping them.
+    if attempted > 0 and not rows:
+        logger.warning(
+            'Index-tree node summaries: all %d attempted section(s) failed; '
+            'preserving any existing stored rows (skipping replace).',
+            attempted,
+        )
+        return None
+
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +842,7 @@ async def execute_store_in_transaction(
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
     embedding_generation_enabled: bool = False,
+    index_nodes: list[IndexNodeRow] | None = None,
 ) -> tuple[str, bool, bool]:
     """Execute all store operations within an existing transaction.
 
@@ -835,6 +961,12 @@ async def execute_store_in_transaction(
             )
             embedding_stored = True
 
+    # Replace index_tree node summaries atomically. None means the per-node
+    # summary feature is off, so the node table is left untouched; an empty list
+    # clears any stale rows for this entry.
+    if index_nodes is not None:
+        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn)
+
     return context_id, was_updated, embedding_stored
 
 
@@ -853,6 +985,7 @@ async def execute_update_in_transaction(
     validated_images: list[dict[str, str]],
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
+    index_nodes: list[IndexNodeRow] | None = None,
 ) -> tuple[list[str], bool]:
     """Execute all update operations within an existing transaction.
 
@@ -967,5 +1100,12 @@ async def execute_update_in_transaction(
             txn=txn,
         )
         updated_fields.append('embedding')
+
+    # Replace index_tree node summaries atomically. None means leave the node
+    # table untouched (feature off, or text unchanged so the caller did not
+    # recompute); an empty list clears stale rows when text shrank below the
+    # summary thresholds.
+    if index_nodes is not None:
+        await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn)
 
     return updated_fields, clear_summary

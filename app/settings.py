@@ -1178,6 +1178,151 @@ class CompressionSettings(CommonSettings):
     )
 
 
+class GrepContextSettings(FeatureToggleSettings):
+    """Server-side grep tool configuration.
+
+    Controls registration of the grep_context tool plus the safety bounds that
+    keep an unranked, line-oriented scan from flooding an agent's context window
+    or exhausting memory. Matching itself runs in Python (re), so there are no
+    extra dependencies and 'auto' registers the tool by default.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
+        alias='ENABLE_GREP_CONTEXT',
+        description='grep_context tool registration: auto (register; matching is '
+                    'pure-Python, no extra dependencies), true (force on), false '
+                    '(force off).',
+    )
+
+    max_matches_cap: int = Field(
+        default=1000,
+        alias='GREP_MAX_MATCHES_CAP',
+        ge=1,
+        description='Hard ceiling applied to grep_context max_matches per request.',
+    )
+
+    max_context_lines: int = Field(
+        default=20,
+        alias='GREP_MAX_CONTEXT_LINES',
+        ge=0,
+        description='Hard ceiling applied to grep_context context_lines per request.',
+    )
+
+    max_entries_scanned: int = Field(
+        default=1000,
+        alias='GREP_MAX_ENTRIES_SCANNED',
+        ge=1,
+        description='Hard ceiling on the number of entries the grep scan visits.',
+    )
+
+    aggregate_bytes_budget: int = Field(
+        default=67108864,
+        alias='GREP_AGGREGATE_BYTES_BUDGET',
+        ge=1,
+        description='Approximate resident-memory cap (summed code-point length of '
+                    'fetched text) before a grep scan stops; the first entry that '
+                    'crosses the budget is still scanned.',
+    )
+
+    regex_timeout_s: float = Field(
+        default=5.0,
+        alias='GREP_REGEX_TIMEOUT_S',
+        gt=0,
+        description='Per-entry timeout for is_regex=True matching (ReDoS guard); a '
+                    'timeout skips that entry, never aborts the read.',
+    )
+
+
+class ContextRangeSettings(FeatureToggleSettings):
+    """Partial-read tool configuration.
+
+    Controls registration of the read_context_range tool, which slices full
+    text_content by character or line range. Backend-agnostic and dependency-free,
+    so 'auto' registers it by default.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
+        alias='ENABLE_CONTEXT_RANGE',
+        description='read_context_range tool registration: auto (register; slices '
+                    'stored text, no extra dependencies), true (force on), false '
+                    '(force off).',
+    )
+
+
+class ContextNavigationSettings(FeatureToggleSettings):
+    """Record-navigation tool configuration.
+
+    Controls registration of the navigate_context tool, which builds a
+    code-derived Markdown outline (index_tree) on demand. Pure-Python and
+    dependency-free, so 'auto' registers it by default.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
+        alias='ENABLE_CONTEXT_NAVIGATION',
+        description='navigate_context tool registration: auto (register; builds a '
+                    'code-derived Markdown outline, no extra dependencies), true '
+                    '(force on), false (force off).',
+    )
+
+
+class IndexTreeNodeSummarySettings(CommonSettings):
+    """Optional per-node LLM summaries for the navigate_context index_tree.
+
+    The code-derived heading outline is always free; this OPTIONAL layer enriches
+    each section with an LLM-written abstract. It reuses the existing summary
+    provider instance (no second client) with a dedicated SHORT prompt, runs in a
+    fenced never-raise pass that can never abort a store, and is the ONLY thing
+    that provisions the context_index_nodes table. Default ON per the chosen
+    design.
+    """
+
+    node_summaries_enabled: bool = Field(
+        default=True,
+        alias='ENABLE_INDEX_TREE_NODE_SUMMARIES',
+        description='Generate per-node LLM summaries for the index_tree and provision '
+                    'the context_index_nodes table. Additive/never-raise: a node-summary '
+                    'failure never aborts a store. Set false to keep navigation purely '
+                    'code-derived with no table and no per-store LLM cost.',
+    )
+
+    prompt: str | None = Field(
+        default=None,
+        alias='INDEX_TREE_NODE_SUMMARY_PROMPT',
+        description='Override the per-node summary system prompt. None/empty resolves to '
+                    'a dedicated SHORT prompt (one-sentence section abstract), distinct '
+                    'from the 100-250-word entry-summary prompt.',
+    )
+
+    min_content_length: int = Field(
+        default=500,
+        alias='INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH',
+        ge=0,
+        le=100000,
+        description='Heading sections shorter than this (characters) skip node-summary '
+                    'generation (0 = always summarize).',
+    )
+
+    timeout_s: float = Field(
+        default=240.0,
+        alias='INDEX_TREE_NODE_SUMMARY_TIMEOUT_S',
+        gt=0,
+        le=600,
+        description='Per-node summary timeout in seconds; a timeout omits that node, '
+                    'never aborts the store.',
+    )
+
+    max_concurrent: int = Field(
+        default_factory=lambda: min(os.cpu_count() or 4, 4),
+        alias='INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT',
+        ge=1,
+        le=32,
+        description='Maximum in-flight per-node summary generations. Default min(cpu_count, 4).',
+    )
+
+
 class AppSettings(CommonSettings):
     # Core settings
     logging: LoggingSettings = Field(default_factory=lambda: LoggingSettings())
@@ -1191,6 +1336,10 @@ class AppSettings(CommonSettings):
     hybrid_search: HybridSearchSettings = Field(default_factory=lambda: HybridSearchSettings())
     fts_passage: FtsPassageSettings = Field(default_factory=lambda: FtsPassageSettings())
     retrieval: RetrievalSettings = Field(default_factory=lambda: RetrievalSettings())
+    grep_context: GrepContextSettings = Field(default_factory=lambda: GrepContextSettings())
+    context_range: ContextRangeSettings = Field(default_factory=lambda: ContextRangeSettings())
+    context_navigation: ContextNavigationSettings = Field(default_factory=lambda: ContextNavigationSettings())
+    index_tree: IndexTreeNodeSummarySettings = Field(default_factory=lambda: IndexTreeNodeSummarySettings())
 
     # Embedding and processing settings
     embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())

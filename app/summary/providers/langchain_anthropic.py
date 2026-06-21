@@ -136,6 +136,50 @@ class AnthropicSummaryProvider:
             _summarize, f'{self.provider_name}_summarize',
         )
 
+    async def summarize_with_prompt(self, text: str, system_prompt: str) -> str:
+        """Generate a summary using an explicit system prompt (index_tree node abstracts).
+
+        Reuses the same ChatAnthropic client and retry/timeout machinery as
+        :meth:`summarize` but with a caller-supplied system prompt.
+
+        Args:
+            text: Text content to summarize.
+            system_prompt: System prompt controlling the summary.
+
+        Returns:
+            Summary string (may be empty if the model returns nothing).
+
+        Raises:
+            RuntimeError: If the provider is not initialized or output is empty
+                due to the max_tokens budget being fully consumed.
+        """
+        if self._chat_model is None:
+            raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import SystemMessage
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=text),
+        ]
+
+        async def _summarize() -> str:
+            response = await self._chat_model.ainvoke(messages)
+            result = str(response.content).strip()
+            stop_reason = response.response_metadata.get('stop_reason')
+            if stop_reason == 'max_tokens' and not result:
+                raise RuntimeError(
+                    'Anthropic node summary produced empty output (stop_reason=max_tokens); '
+                    f'the max_tokens budget ({self._max_tokens}) was consumed. '
+                    'Fix: increase SUMMARY_MAX_TOKENS.',
+                )
+            return result
+
+        return await with_summary_retry_and_timeout(
+            _summarize, f'{self.provider_name}_summarize_node',
+        )
+
     async def is_available(self) -> bool:
         """Check if Anthropic API is available.
 

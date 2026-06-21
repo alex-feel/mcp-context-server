@@ -10013,6 +10013,9 @@ class MCPServerIntegrationTest:
                 ('get_context_by_ids', 'readOnlyHint', True),
                 ('list_threads', 'readOnlyHint', True),
                 ('get_statistics', 'readOnlyHint', True),
+                ('grep_context', 'readOnlyHint', True),
+                ('navigate_context', 'readOnlyHint', True),
+                ('read_context_range', 'readOnlyHint', True),
                 ('store_context', 'readOnlyHint', False),
                 ('store_context', 'destructiveHint', False),
                 ('update_context', 'destructiveHint', True),
@@ -10083,6 +10086,332 @@ class MCPServerIntegrationTest:
                 return False
 
             self.test_results.append((test_name, True, 'search_context offset pagination: 5 unique ids, no overlap'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_grep_context_literal_regex_unicode(self) -> bool:
+        """Verify grep_context matches literal, regex, and Unicode-case patterns identically on both backends.
+
+        The Cyrillic upper-vs-lower case match is the parity-critical check: it
+        forces Python re.IGNORECASE (the ASCII-only SQL substring pre-narrow is
+        skipped for non-ASCII), so SQLite and PostgreSQL must agree.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'grep_context_literal_regex_unicode'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_grep'
+            cyr_lower = ''.join(chr(c) for c in (0x043F, 0x0440, 0x0438, 0x0432, 0x0435, 0x0442))
+            store = await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': f'alpha NEEDLE line\nbeta line\n{cyr_lower} tail',
+            })
+            if not self._extract_content(store).get('success'):
+                self.test_results.append((test_name, False, 'store failed'))
+                return False
+
+            literal = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': 'NEEDLE', 'thread_id': thread,
+            }))
+            if len(literal.get('results', [])) != 1:
+                self.test_results.append((test_name, False, f'literal grep expected 1 entry, got {literal}'))
+                return False
+
+            unicode_ci = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': cyr_lower.upper(), 'thread_id': thread,
+            }))
+            if len(unicode_ci.get('results', [])) != 1:
+                self.test_results.append((test_name, False, 'Cyrillic case-insensitive grep failed (backend parity)'))
+                return False
+
+            regex = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': 'N.+E', 'thread_id': thread, 'is_regex': True,
+            }))
+            if len(regex.get('results', [])) != 1:
+                self.test_results.append((test_name, False, 'regex grep failed'))
+                return False
+
+            self.test_results.append((test_name, True, f'grep literal+regex+unicode on {self.backend}'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_read_context_range_clamp_and_composition(self) -> bool:
+        """Verify read_context_range char/line addressing, clamp+echo, and grep->read composition.
+
+        Proves the shared code-point offset contract end to end on both backends:
+        a grep content match's offsets feed read_context_range to extract exactly
+        the matched span, and an over-range request is clamped to the document end.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'read_context_range_clamp_and_composition'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_read'
+            full_text = 'line one\nfind TARGET here\nline three'
+            store = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent', 'text': full_text,
+            }))
+            if not store.get('success'):
+                self.test_results.append((test_name, False, 'store failed'))
+                return False
+            cid = store['context_id']
+
+            char_read = self._extract_content(await self.client.call_tool('read_context_range', {
+                'context_id': cid, 'start_char': 0, 'end_char': 8,
+            }))
+            if char_read.get('text') != 'line one':
+                self.test_results.append((test_name, False, f'char range wrong: {char_read}'))
+                return False
+
+            clamped = self._extract_content(await self.client.call_tool('read_context_range', {
+                'context_id': cid, 'start_char': 0, 'end_char': 100000,
+            }))
+            if clamped.get('end_char') != len(full_text):
+                self.test_results.append((test_name, False, f'clamp not applied: {clamped}'))
+                return False
+
+            grep = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': 'TARGET', 'thread_id': thread, 'output_mode': 'content', 'case_sensitive': True,
+            }))
+            matches = grep.get('results', [])
+            if not matches:
+                self.test_results.append((test_name, False, 'grep content found no TARGET match'))
+                return False
+            match = matches[0]
+            extracted = self._extract_content(await self.client.call_tool('read_context_range', {
+                'context_id': match['context_id'],
+                'start_char': match['match_start'],
+                'end_char': match['match_end'],
+            }))
+            if extracted.get('text') != 'TARGET':
+                self.test_results.append((test_name, False, f'composition extracted wrong span: {extracted}'))
+                return False
+
+            # Multibyte composition: a Cyrillic prefix makes code-point and UTF-8
+            # byte offsets diverge, so this proves grep's match offsets are
+            # code-point indices that compose with read_context_range identically
+            # on SQLite and PostgreSQL.
+            mb_thread = f'{self.test_thread_id}_readmb'
+            cyr = ''.join(chr(c) for c in (0x0451, 0x0451, 0x0451))  # 3 two-byte chars
+            mb_store = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': mb_thread, 'source': 'agent', 'text': f'{cyr} MULTIBYTE tail',
+            }))
+            mb_cid = mb_store['context_id']
+            mb_grep = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': 'MULTIBYTE', 'thread_id': mb_thread, 'output_mode': 'content', 'case_sensitive': True,
+            }))
+            mb_matches = mb_grep.get('results', [])
+            if not mb_matches:
+                self.test_results.append((test_name, False, 'multibyte grep found no match'))
+                return False
+            mb_match = mb_matches[0]
+            # Code-point offset is 4 (3 Cyrillic + 1 space), not 7 UTF-8 bytes.
+            if mb_match['match_start'] != 4:
+                self.test_results.append((
+                    test_name, False,
+                    f'multibyte match_start is not a code-point offset (got {mb_match["match_start"]}, want 4)',
+                ))
+                return False
+            mb_extracted = self._extract_content(await self.client.call_tool('read_context_range', {
+                'context_id': mb_cid, 'start_char': mb_match['match_start'], 'end_char': mb_match['match_end'],
+            }))
+            if mb_extracted.get('text') != 'MULTIBYTE':
+                self.test_results.append((test_name, False, f'multibyte composition wrong span: {mb_extracted}'))
+                return False
+
+            self.test_results.append((test_name, True, f'read_context_range clamp+composition (+multibyte) on {self.backend}'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_navigate_context_outline_and_node_read(self) -> bool:
+        """Verify navigate_context builds a Markdown outline and node_id reads its section, on both backends.
+
+        Stores a multi-section Markdown entry, asserts the on-demand heading tree
+        (root + nested sections with code-point offsets), then resolves a node_id
+        through read_context_range to extract exactly that section -- proving the
+        navigate->extract path and the shared offset contract across backends.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'navigate_context_outline_and_node_read'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_nav'
+            text = '# Intro\nintro body\n## Details\ndetail body here\n'
+            store = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent', 'text': text,
+            }))
+            if not store.get('success'):
+                self.test_results.append((test_name, False, 'store failed'))
+                return False
+            cid = store['context_id']
+
+            nav = self._extract_content(await self.client.call_tool('navigate_context', {'context_id': cid}))
+            if nav.get('node_count') != 2:
+                self.test_results.append((test_name, False, f'expected 2 nodes, got {nav}'))
+                return False
+            root = nav.get('root', {})
+            intro = root.get('children', [{}])[0]
+            details = intro.get('children', [{}])[0]
+            if details.get('node_id') != 'intro/details':
+                self.test_results.append((test_name, False, f'node_id wrong: {details}'))
+                return False
+
+            section = self._extract_content(await self.client.call_tool('read_context_range', {
+                'context_id': cid, 'node_id': 'intro/details',
+            }))
+            if not section.get('text', '').startswith('## Details'):
+                self.test_results.append((test_name, False, f'node read wrong span: {section}'))
+                return False
+
+            self.test_results.append((test_name, True, f'navigate_context outline+node read on {self.backend}'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_index_tree_node_summaries_and_statistics(self) -> bool:
+        """Verify node summaries stay additive (never abort a store) and get_statistics exposes index_tree.
+
+        Stores a multi-section Markdown entry with per-node summaries ON (default).
+        Whether or not a summary provider is configured, the store must succeed
+        (a missing/failed node summary never aborts), and get_statistics must
+        carry an ``index_tree`` block with enabled + a non-negative node_count.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'index_tree_node_summaries_and_statistics'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_idxtree'
+            store = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent',
+                'text': '# Alpha\nalpha body\n## Beta\nbeta body here\n',
+            }))
+            if not store.get('success'):
+                self.test_results.append((test_name, False, f'store failed: {store}'))
+                return False
+
+            stats = self._extract_content(await self.client.call_tool('get_statistics', {}))
+            index_tree = stats.get('index_tree')
+            if not isinstance(index_tree, dict):
+                self.test_results.append((test_name, False, f'index_tree block missing from statistics: {stats.keys()}'))
+                return False
+            if 'enabled' not in index_tree or not isinstance(index_tree.get('node_count'), int):
+                self.test_results.append((test_name, False, f'index_tree block malformed: {index_tree}'))
+                return False
+            if index_tree['node_count'] < 0:
+                self.test_results.append((test_name, False, f'negative node_count: {index_tree}'))
+                return False
+
+            self.test_results.append((
+                test_name, True,
+                (
+                    f'index_tree additive store + statistics on {self.backend} '
+                    f'(node_count={index_tree["node_count"]})'
+                ),
+            ))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_prefix_id_resolution_returns_canonical_id(self) -> bool:
+        """A short id prefix resolves to the canonical 32-char hex context_id on both backends.
+
+        Regression for find_ids_by_prefix returning an un-normalized asyncpg UUID
+        (36-char hyphenated) on PostgreSQL: navigate_context echoes
+        response['context_id'] from the resolved prefix, which MUST be the canonical
+        32-char lowercase hex on both backends, not a hyphenated/pgproto form.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'prefix_id_resolution_returns_canonical_id'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_prefix'
+            store = self._extract_content(await self.client.call_tool('store_context', {
+                'thread_id': thread, 'source': 'agent', 'text': '# Prefix\nbody for prefix id resolution\n',
+            }))
+            if not store.get('success'):
+                self.test_results.append((test_name, False, f'store failed: {store}'))
+                return False
+            cid = store['context_id']
+            if len(cid) != 32:
+                self.test_results.append((test_name, False, f'stored id not 32-char hex: {cid!r}'))
+                return False
+
+            prefix = cid[:12]
+            nav = self._extract_content(await self.client.call_tool('navigate_context', {'context_id': prefix}))
+            echoed = nav.get('context_id')
+            if echoed != cid:
+                self.test_results.append((
+                    test_name, False,
+                    f'prefix-resolved context_id not canonical: got {echoed!r} (len {len(str(echoed))}), want {cid!r}',
+                ))
+                return False
+
+            self.test_results.append((test_name, True, f'prefix resolves to canonical 32-char id on {self.backend}'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_grep_keyset_scan_exhaustive_beyond_limit(self) -> bool:
+        """grep_context's keyset scan must cover ALL matching entries, not cap at
+        the ``search_contexts`` LIMIT 50, on both backends.
+
+        Stores 60 entries (> 50) each carrying a shared token in a dedicated
+        thread, then greps for the token and asserts every entry comes back. This
+        guards ``grep_scan_text_contents``'s exhaustive id-DESC keyset pagination
+        against a regression to the capped search path.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'grep_keyset_scan_exhaustive_beyond_limit'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_grepkeyset'
+            count = 60
+            for i in range(count):
+                store = self._extract_content(await self.client.call_tool('store_context', {
+                    'thread_id': thread, 'source': 'agent',
+                    'text': f'entry number {i} carries KEYSETTOKEN inline',
+                }))
+                if not store.get('success'):
+                    self.test_results.append((test_name, False, f'store {i} failed: {store}'))
+                    return False
+
+            result = self._extract_content(await self.client.call_tool('grep_context', {
+                'pattern': 'KEYSETTOKEN', 'thread_id': thread,
+                'output_mode': 'files_with_matches', 'max_matches': 1000, 'max_entries_scanned': 1000,
+            }))
+            rows = result.get('results', [])
+            if len(rows) != count:
+                self.test_results.append((
+                    test_name, False,
+                    (
+                        f'keyset scan returned {len(rows)} of {count} entries '
+                        f'(capped at search LIMIT?): truncated={result.get("truncated")}'
+                    ),
+                ))
+                return False
+
+            self.test_results.append((test_name, True, f'grep keyset scanned all {count} entries on {self.backend}'))
             return True
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
@@ -10380,6 +10709,12 @@ class MCPServerIntegrationTest:
             ('Tags Lowercase Normalization', self.test_tags_lowercase_normalization),
             ('Tool Annotations Exposed To Client', self.test_tool_annotations_exposed_to_client),
             ('Search Context Offset Pagination', self.test_search_context_offset_pagination),
+            ('Grep Context Literal Regex Unicode', self.test_grep_context_literal_regex_unicode),
+            ('Read Context Range Clamp And Composition', self.test_read_context_range_clamp_and_composition),
+            ('Navigate Context Outline And Node Read', self.test_navigate_context_outline_and_node_read),
+            ('Index Tree Node Summaries And Statistics', self.test_index_tree_node_summaries_and_statistics),
+            ('Prefix Id Resolution Returns Canonical Id', self.test_prefix_id_resolution_returns_canonical_id),
+            ('Grep Keyset Scan Exhaustive Beyond Limit', self.test_grep_keyset_scan_exhaustive_beyond_limit),
             ('Force-Off Removes Search Tool', self.test_force_off_removes_search_tool),
         ]
 

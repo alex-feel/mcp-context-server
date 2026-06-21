@@ -2,11 +2,12 @@
 
 ## Introduction
 
-The MCP Context Server exposes 13 MCP tools for context management, organized into core operations, search tools, and batch operations.
+The MCP Context Server exposes 16 MCP tools for context management, organized into core operations, search tools, navigation tools (locate / navigate / extract), and batch operations.
 
 **Tool Categories:**
 - **Core Operations**: `store_context`, `search_context`, `get_context_by_ids`, `delete_context`, `update_context`, `list_threads`, `get_statistics`
 - **Search Tools**: `semantic_search_context`, `fts_search_context`, `hybrid_search_context`
+- **Navigation Tools**: `grep_context`, `navigate_context`, `read_context_range`
 - **Batch Operations**: `store_context_batch`, `update_context_batch`, `delete_context_batch`
 
 ## Context Identifier Format
@@ -165,6 +166,7 @@ Get database statistics, usage metrics, and feature status.
 - Reranking status (enabled, available, provider, model)
 - Summary generation status (enabled, available, provider, model, summary count, coverage, min content length)
 - Compression status (enabled, available, provider, bits, variant, seed, dim, max_concurrent) — present when `ENABLE_EMBEDDING_COMPRESSION=true`; reduced to `{enabled: false, available: false}` shape when disabled.
+- Index-tree node-summary status (`index_tree` with `enabled`, `node_count`) — `enabled` reflects `ENABLE_INDEX_TREE_NODE_SUMMARIES`; `node_count` is the total stored per-node summaries (0 when disabled or the table is absent).
 
 ### update_context
 
@@ -421,7 +423,7 @@ All search tools return consistent response structures with common fields and to
 | `scores`                                       | No                    | Yes                        | Yes                        | Yes                        |
 | `highlighted`                                  | No                    | No                         | highlight=True             | No                         |
 
-**`summary` field**: Present in all search tool results. Populated by automatic LLM-based summary generation (enabled by default with Ollama). Contains a dense summary (token limit controlled by `SUMMARY_MAX_TOKENS`, default 2000) that is more informative than the truncated `text_content`. Empty string when summary generation is disabled or the summary has not yet been generated. See [Summary Generation Guide](summary-generation.md) for configuration.
+**`summary` field**: Present in all search tool results. Populated by automatic LLM-based summary generation (enabled by default with Ollama). Contains a dense summary (token limit controlled by `SUMMARY_MAX_TOKENS`, default 4000) that is more informative than the truncated `text_content`. Empty string when summary generation is disabled or the summary has not yet been generated. See [Summary Generation Guide](summary-generation.md) for configuration.
 
 **Scores Object Structure:**
 
@@ -442,6 +444,51 @@ All search tools (except `search_context`) return a unified `scores` object with
 - `stats` is only included when `explain_query=True` for all search tools
 - All search tools return truncated `text_content` (configurable via `SEARCH_TRUNCATION_LENGTH`, default 300 chars) with `summary` and `is_text_content_truncated` flag; use `get_context_by_ids` for full content
 - For standalone FTS and semantic searches, rank fields are always `null` (no cross-method ranking)
+
+## Navigation Tools (locate / navigate / extract)
+
+These read-only tools complement search: grep locates exact text, navigate orients within a record, and read extracts a span. They share one Unicode code-point character-offset contract, so a `grep_context` match's offsets and a `navigate_context` node's offsets both feed directly into `read_context_range`. See [Grep, Navigation & Partial Reads](grep-navigation-partial-read.md) for when to use each.
+
+### grep_context
+
+Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern matching over stored `text_content`. Unlike `fts_search_context` (stemmed, ranked) it matches raw characters and returns precise match locations. Matching runs in Python `re`, so results are identical on SQLite and PostgreSQL.
+
+**Parameters:**
+- `pattern` (str, required): Literal substring (default) or regular expression to match
+- `is_regex` (bool, optional): Treat `pattern` as a Python regular expression (default: False — literal substring, auto-escaped)
+- `case_sensitive` (bool, optional): Match case-sensitively (default: False — Unicode-aware case-insensitive)
+- `output_mode` (str, optional): `files_with_matches` (default; context_ids + match_count), `content` (each match with line + offsets + context), or `count` (per-entry tally)
+- `context_lines` (int, optional): Surrounding lines before/after each match in content mode (0-100; effectively clamped to `GREP_MAX_CONTEXT_LINES`, default 20; like `grep -C`)
+- `max_matches` (int, optional): Maximum total matches to return (default 100; clamped to the server cap)
+- `max_entries_scanned` (int, optional): Maximum entries the scan visits (clamped to the server cap)
+- `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended
+
+**Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. `truncated` is True when matches or the scan were capped.
+
+### navigate_context
+
+Build a navigable Markdown-heading outline (index_tree) for one record, computed on demand from the current text — never stale, works for every entry. The synthetic root spans the whole document and mirrors the entry summary; each node carries char offsets that feed `read_context_range`.
+
+**Parameters:**
+- `context_id` (str, required): Context entry id (32/36-char UUID or 8-31 char hex prefix)
+- `max_depth` (int, optional): Deepest Markdown heading level to include (1-6, default 6; deeper headings fold into their section)
+- `include_node_summaries` (bool, optional): Attach stored per-node LLM summaries to descendant nodes when that layer is enabled (default: False)
+
+**Returns:** `{context_id, total_chars, node_count, root}` where `root` is a recursive node `{node_id, level, ordinal, title, char_start, char_end, summary, children}`. `node_id` is a heading-path slug with a sibling ordinal (e.g. `setup/install`, `notes-2`); the root's `summary` mirrors the entry summary by reference.
+
+### read_context_range
+
+Read part of one record by character range, line range, or outline `node_id`. Slices the full stored `text_content` directly (works for every entry regardless of embeddings).
+
+**Parameters:**
+- `context_id` (str, required): Context entry id (32/36-char UUID or 8-31 char hex prefix)
+- `start_char` / `end_char` (int, optional): Character range (Unicode code-point offsets; end exclusive)
+- `start_line` / `end_line` (int, optional): Line range (1-based, inclusive)
+- `node_id` (str, optional): An outline node id from `navigate_context`
+
+Provide exactly ONE addressing mode. Pair with `grep_context` (content mode) by feeding `match_start`/`match_end` into `start_char`/`end_char`, or with `navigate_context` by passing a section's `node_id`.
+
+**Returns:** `{context_id, start_char, end_char, start_line, end_line, text}` echoing the RESOLVED span. Out-of-range offsets are clamped to `[0, len(text)]`, so a stale offset or node_id from a prior turn degrades gracefully.
 
 ## Batch Operations
 

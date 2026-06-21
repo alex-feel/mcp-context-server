@@ -115,8 +115,8 @@ For detailed embedding setup and provider selection, see the [Semantic Search Gu
 | `SUMMARY_MAX_TOKENS`              | integer | `4000`               | 50-16384    | Maximum output tokens for summary generation. Acts as a safety ceiling passed to the LLM API. Increase if summaries are truncated by reasoning models                                            |
 | `SUMMARY_TIMEOUT_S`               | float   | `240.0`              | >0, <=300   | Timeout in seconds for summary generation API calls                                                                                                                                              |
 | `SUMMARY_RETRY_MAX_ATTEMPTS`      | integer | `5`                  | 1-10        | Maximum number of retry attempts for summary generation                                                                                                                                          |
-| `SUMMARY_RETRY_BASE_DELAY_S`      | float   | `1.0`                | >0, <=30    | Base delay in seconds between retry attempts (with exponential backoff)                                                                                                                          |
-| `SUMMARY_MAX_CONCURRENT`          | integer | `3`                  | 1-20        | Maximum concurrent summary generation operations                                                                                                                                                 |
+| `SUMMARY_RETRY_BASE_DELAY_S`      | float   | `3.0`                | >0, <=30    | Base delay in seconds between retry attempts (with exponential backoff)                                                                                                                          |
+| `SUMMARY_MAX_CONCURRENT`          | integer | `2`                  | 1-20        | Maximum concurrent summary generation operations                                                                                                                                                 |
 | `SUMMARY_PROMPT`                  | string  | _(built-in default)_ |             | Custom summarization prompt. Overrides both source-specific defaults (user/agent get same prompt). For Qwen3, include `/no_think` to disable reasoning mode                                      |
 | `SUMMARY_MIN_CONTENT_LENGTH`      | integer | `500`                | 0-10000     | Minimum text content length (characters) to trigger summary generation. Content shorter than this is not summarized. Set to `0` to always generate summaries                                     |
 | `SUMMARY_OLLAMA_NUM_CTX`          | integer | `32768`              | 512-2097152 | Ollama summary context length in tokens. Must match or exceed model capabilities                                                                                                                 |
@@ -169,6 +169,33 @@ For detailed full-text search setup, see the [Full-Text Search Guide](full-text-
 | `HYBRID_FTS_OR_THRESHOLD` | integer   | `4`     | 2-20        | Minimum number of significant query terms to switch FTS from AND to OR logic                                                                                                                                                                                                                             |
 
 For detailed hybrid search setup, see the [Hybrid Search Guide](hybrid-search.md).
+
+## Grep, Navigation & Partial-Read Settings
+
+| Variable                      | Type      | Default    | Constraints | Description                                                                                                                                              |
+|-------------------------------|-----------|------------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_GREP_CONTEXT`         | tri-state | `auto`     |             | Register the `grep_context` tool. `auto` (default) and `true` register it (matching is pure-Python, no extra dependencies); `false` forces it off        |
+| `ENABLE_CONTEXT_NAVIGATION`   | tri-state | `auto`     |             | Register the `navigate_context` tool (code-derived Markdown index_tree). `auto`/`true` register; `false` forces off                                      |
+| `ENABLE_CONTEXT_RANGE`        | tri-state | `auto`     |             | Register the `read_context_range` tool (partial read by char/line/node). `auto`/`true` register; `false` forces off                                      |
+| `GREP_MAX_MATCHES_CAP`        | integer   | `1000`     | >= 1        | Hard ceiling applied to `grep_context` `max_matches` per request                                                                                         |
+| `GREP_MAX_CONTEXT_LINES`      | integer   | `20`       | >= 0        | Hard ceiling applied to `grep_context` `context_lines` per request                                                                                       |
+| `GREP_MAX_ENTRIES_SCANNED`    | integer   | `1000`     | >= 1        | Hard ceiling on the number of entries a grep scan visits                                                                                                 |
+| `GREP_AGGREGATE_BYTES_BUDGET` | integer   | `67108864` | >= 1        | Approximate resident-memory cap (summed code-point length of fetched text) before a scan stops; the first entry that crosses the budget is still scanned |
+| `GREP_REGEX_TIMEOUT_S`        | float     | `5.0`      | > 0         | Per-entry timeout for `is_regex=true` matching (ReDoS guard); a timeout skips that entry, never aborts the read                                          |
+
+For when to use grep vs full-text vs semantic search, and the navigate -> read workflow, see [Grep, Navigation & Partial Reads](grep-navigation-partial-read.md).
+
+## Index Tree Node Summary Settings
+
+| Variable                                     | Type    | Default            | Constraints | Description                                                                                                                                                    |
+|----------------------------------------------|---------|--------------------|-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_INDEX_TREE_NODE_SUMMARIES`           | boolean | `true`             |             | Generate per-node LLM summaries for the navigate_context index_tree and provision the `context_index_nodes` table. Additive/never-raise (never aborts a store) |
+| `INDEX_TREE_NODE_SUMMARY_PROMPT`             | string  | (built-in)         |             | Override the per-node summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt                                                  |
+| `INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH` | integer | `500`              | 0-100000    | Heading sections shorter than this (characters) skip node-summary generation (0 = always)                                                                      |
+| `INDEX_TREE_NODE_SUMMARY_TIMEOUT_S`          | float   | `240.0`            | > 0, <= 600 | Per-node summary timeout in seconds; a timeout omits that node, never aborts the store                                                                         |
+| `INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT`     | integer | `min(cpu_count,4)` | 1-32        | Maximum in-flight per-node summary generations                                                                                                                 |
+
+Per-node summaries reuse the configured summary provider (no second client) via a dedicated short prompt. Set `ENABLE_INDEX_TREE_NODE_SUMMARIES=false` to keep navigation purely code-derived with no per-store LLM cost and no node table.
 
 ## Search Settings
 

@@ -38,6 +38,7 @@ from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
 from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
@@ -49,6 +50,7 @@ from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
 from app.tools._shared import generate_compression_with_timeout
 from app.tools._shared import generate_embeddings_with_timeout
+from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import validate_and_normalize_images
@@ -230,6 +232,16 @@ async def store_context(
         # No-op when ENABLE_EMBEDDING_COMPRESSION=false.
         chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
 
+        # Build index_tree per-node summaries in a SEPARATE fenced never-raise
+        # pass, physically isolated from the abort-mandatory gather above: a
+        # node-summary failure must NEVER abort the store. None when the feature
+        # is disabled OR this is a likely deduplication retransmit -- gated
+        # symmetrically with embeddings/summary above so a retransmit re-issues no
+        # per-node LLM calls and never churns stored rows (None leaves the node
+        # table untouched). On a reconcile-divergence INSERT below it is
+        # regenerated for the diverged text. Computed at most ONCE and reused.
+        index_nodes = None if likely_duplicate_id is not None else await generate_index_nodes_with_timeout(text)
+
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
         metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
@@ -257,6 +269,7 @@ async def store_context(
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
                         embedding_generation_enabled=get_embedding_provider() is not None,
+                        index_nodes=index_nodes,
                     )
 
                 # Transaction committed successfully -- break retry loop
@@ -281,6 +294,11 @@ async def store_context(
                 chunk_embeddings = await generate_embeddings_with_timeout(text)
                 chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
                 embedding_generated = chunk_embeddings is not None
+                # The divergence INSERTed a new entry, so its node summaries were
+                # never computed (gated off above as a likely duplicate). Regenerate
+                # for the diverged text so the new entry gets its index_tree nodes.
+                if index_nodes is None:
+                    index_nodes = await generate_index_nodes_with_timeout(text)
                 continue
 
             except ToolError:
@@ -633,6 +651,9 @@ async def update_context(
         summary_text: str | None = None
         summary_generated = False
         clear_summary = False
+        # None leaves the index_tree node table untouched (feature off, or text
+        # unchanged); recomputed only when text changes (below).
+        index_nodes: list[IndexNodeRow] | None = None
 
         if text is not None:
             # Text changed - regenerate both embedding and summary in parallel
@@ -681,6 +702,11 @@ async def update_context(
             # disabled.
             chunk_embeddings = await generate_compression_with_timeout(chunk_embeddings)
 
+            # Rebuild index_tree per-node summaries in a SEPARATE fenced
+            # never-raise pass (text changed -> sections changed). None when the
+            # feature is disabled; an empty list clears stale rows.
+            index_nodes = await generate_index_nodes_with_timeout(text)
+
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
         updated_fields: list[str] = []
@@ -703,6 +729,7 @@ async def update_context(
                         validated_images=validated_images,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
+                        index_nodes=index_nodes,
                     )
 
                 # Transaction committed -- break retry loop

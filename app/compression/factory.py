@@ -110,7 +110,18 @@ async def get_cached_compression_provider() -> 'CompressionProvider':
         return _cached_provider
     async with _cached_provider_lock:
         if _cached_provider is None:
-            _cached_provider = create_compression_provider()
+            provider = create_compression_provider()
+            # Prime NumPy lazy submodule imports, the rotation cache, and the
+            # threadpoolctl native probe in a SINGLE worker thread before any
+            # concurrent asyncio.to_thread encode batch runs. store_context fans
+            # per-chunk encodes across threads; on a cold process that first
+            # concurrent batch would otherwise deadlock when NumPy's lazy import
+            # (triggered by rotation-matrix generation) races threadpoolctl's
+            # dl_iterate_phdr (the dynamic-loader lock taken under the import lock).
+            # Warming single-threaded here makes the later threaded encodes hit
+            # only warm caches.
+            await asyncio.to_thread(provider.warmup)
+            _cached_provider = provider
     return _cached_provider
 
 

@@ -537,7 +537,7 @@
           "name": "SUMMARY_RETRY_BASE_DELAY_S"
         },
         {
-          "description": "Maximum concurrent summary generation operations (default: 3, range: 1-20)",
+          "description": "Maximum concurrent summary generation operations (default: 2, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -628,6 +628,101 @@
           "isSecret": false,
           "name": "ENABLE_HYBRID_SEARCH",
           "default": "auto"
+        },
+        {
+          "description": "grep_context tool registration (server-side literal/regex line-oriented search). Tri-state: auto (default; pure-Python matching, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_GREP_CONTEXT",
+          "default": "auto"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context max_matches per request (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_MATCHES_CAP"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context context_lines per request (default 20).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_CONTEXT_LINES"
+        },
+        {
+          "description": "Hard ceiling on the number of entries the grep scan visits (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_ENTRIES_SCANNED"
+        },
+        {
+          "description": "Approximate resident-memory cap (summed code-point length of fetched text) before a grep scan stops; the first entry that crosses the budget is still scanned (default 67108864).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_AGGREGATE_BYTES_BUDGET"
+        },
+        {
+          "description": "Per-entry timeout in seconds for is_regex=true matching (ReDoS guard; a timeout skips that entry, never aborts the read; default 5.0).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TIMEOUT_S"
+        },
+        {
+          "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_RANGE",
+          "default": "auto"
+        },
+        {
+          "description": "navigate_context tool registration (code-derived Markdown outline / index_tree). Tri-state: auto (default; pure-Python, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_NAVIGATION",
+          "default": "auto"
+        },
+        {
+          "description": "Generate per-node LLM summaries for the navigate_context index_tree and provision the context_index_nodes table. Additive/never-raise: a node-summary failure never aborts a store. Default true.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_INDEX_TREE_NODE_SUMMARIES",
+          "default": "true"
+        },
+        {
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_PROMPT"
+        },
+        {
+          "description": "Heading sections shorter than this (characters) skip per-node summary generation (0 = always). Default 500.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
+          "description": "Per-node summary timeout in seconds; a timeout omits that node, never aborts the store. Default 240.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum in-flight per-node summary generations. Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",
@@ -1540,7 +1635,7 @@
           "name": "SUMMARY_RETRY_BASE_DELAY_S"
         },
         {
-          "description": "Maximum concurrent summary generation operations (default: 3, range: 1-20)",
+          "description": "Maximum concurrent summary generation operations (default: 2, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1631,6 +1726,101 @@
           "isSecret": false,
           "name": "ENABLE_HYBRID_SEARCH",
           "default": "auto"
+        },
+        {
+          "description": "grep_context tool registration (server-side literal/regex line-oriented search). Tri-state: auto (default; pure-Python matching, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_GREP_CONTEXT",
+          "default": "auto"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context max_matches per request (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_MATCHES_CAP"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context context_lines per request (default 20).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_CONTEXT_LINES"
+        },
+        {
+          "description": "Hard ceiling on the number of entries the grep scan visits (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_ENTRIES_SCANNED"
+        },
+        {
+          "description": "Approximate resident-memory cap (summed code-point length of fetched text) before a grep scan stops; the first entry that crosses the budget is still scanned (default 67108864).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_AGGREGATE_BYTES_BUDGET"
+        },
+        {
+          "description": "Per-entry timeout in seconds for is_regex=true matching (ReDoS guard; a timeout skips that entry, never aborts the read; default 5.0).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TIMEOUT_S"
+        },
+        {
+          "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_RANGE",
+          "default": "auto"
+        },
+        {
+          "description": "navigate_context tool registration (code-derived Markdown outline / index_tree). Tri-state: auto (default; pure-Python, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_NAVIGATION",
+          "default": "auto"
+        },
+        {
+          "description": "Generate per-node LLM summaries for the navigate_context index_tree and provision the context_index_nodes table. Additive/never-raise: a node-summary failure never aborts a store. Default true.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_INDEX_TREE_NODE_SUMMARIES",
+          "default": "true"
+        },
+        {
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_PROMPT"
+        },
+        {
+          "description": "Heading sections shorter than this (characters) skip per-node summary generation (0 = always). Default 500.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
+          "description": "Per-node summary timeout in seconds; a timeout omits that node, never aborts the store. Default 240.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum in-flight per-node summary generations. Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",

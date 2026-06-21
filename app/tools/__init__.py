@@ -31,6 +31,9 @@ from app.tools.context import update_context
 from app.tools.descriptions import generate_fts_description
 from app.tools.discovery import get_statistics
 from app.tools.discovery import list_threads
+from app.tools.navigation import grep_context
+from app.tools.navigation import navigate_context
+from app.tools.navigation import read_context_range
 from app.tools.search import fts_search_context
 from app.tools.search import hybrid_search_context
 from app.tools.search import search_context
@@ -83,6 +86,18 @@ TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
     },
     'hybrid_search_context': {
         'title': 'Hybrid Search Context',
+        'readOnlyHint': True,
+    },
+    'grep_context': {
+        'title': 'Grep Context',
+        'readOnlyHint': True,
+    },
+    'navigate_context': {
+        'title': 'Navigate Context',
+        'readOnlyHint': True,
+    },
+    'read_context_range': {
+        'title': 'Read Context Range',
         'readOnlyHint': True,
     },
     # Update tools (destructive, not idempotent)
@@ -180,6 +195,10 @@ __all__ = [
     'hybrid_search_context',
     'search_context',
     'semantic_search_context',
+    # Navigation tools (locate / navigate / extract)
+    'grep_context',
+    'navigate_context',
+    'read_context_range',
     # Discovery tools
     'get_statistics',
     'list_threads',

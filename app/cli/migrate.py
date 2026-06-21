@@ -957,6 +957,19 @@ def initialize_target_sqlite(
         except sqlite3.OperationalError as exc:
             stats.warnings.append(f'FTS target migration partial failure: {exc}')
 
+    # index_tree node-summary table: provisioned unconditionally so a migrated
+    # target matches a server-initialized DB (the server creates it at startup when
+    # ENABLE_INDEX_TREE_NODE_SUMMARIES is on, default true). Harmless when the
+    # feature is later disabled -- read methods degrade to empty. Shares the server
+    # migration's DDL (sqlite_index_tree_ddl) so the two cannot drift.
+    from app.migrations.index_tree import sqlite_index_tree_ddl
+    create_table_sql, create_index_sql = sqlite_index_tree_ddl()
+    try:
+        target.execute(create_table_sql)
+        target.execute(create_index_sql)
+    except sqlite3.OperationalError as exc:
+        stats.warnings.append(f'index_tree target migration partial failure: {exc}')
+
     target.commit()
     return vec_loaded
 
@@ -1441,6 +1454,7 @@ async def initialize_target_postgresql(
 
     from app.backends import create_backend
     from app.migrations.chunking import apply_chunking_migration
+    from app.migrations.index_tree import apply_index_tree_migration
     from app.migrations.semantic import apply_function_search_path_migration
     from app.migrations.semantic import apply_jsonb_merge_patch_migration
     from app.migrations.semantic import apply_semantic_search_migration
@@ -1485,6 +1499,11 @@ async def initialize_target_postgresql(
         await apply_function_search_path_migration(backend)
         if with_semantic:
             await apply_chunking_migration(backend, force=True)
+        # index_tree node-summary table: provisioned regardless of with_semantic
+        # (it concerns node summaries, not vectors) so a migrated target matches a
+        # server-initialized DB. force=True mirrors the SQLite path; the table is
+        # harmless when the node-summary feature is later disabled.
+        await apply_index_tree_migration(backend, force=True)
     finally:
         await backend.shutdown()
 

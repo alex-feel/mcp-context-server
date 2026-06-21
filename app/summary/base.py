@@ -80,6 +80,27 @@ class SummaryProvider(Protocol):
         """
         ...
 
+    async def summarize_with_prompt(self, text: str, system_prompt: str) -> str:
+        """Generate a summary for ``text`` using an explicit system prompt.
+
+        Reuses the same provider/model/retry machinery as :meth:`summarize` but
+        with a caller-supplied system prompt instead of the source-resolved one.
+        Used for index_tree per-node section abstracts (a dedicated short prompt),
+        so node summaries share the configured summary provider without a second
+        client.
+
+        Args:
+            text: Text content to summarize.
+            system_prompt: The system prompt controlling the summary style/length.
+
+        Returns:
+            Summary string.
+
+        Raises:
+            RuntimeError: If summary generation fails.
+        """
+        ...
+
     async def is_available(self) -> bool:
         """Check if summary provider is available.
 

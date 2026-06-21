@@ -44,6 +44,7 @@ from app.migrations.fts import apply_fts_migration
 from app.migrations.fts import estimate_migration_time
 from app.migrations.fts import get_fts_migration_status
 from app.migrations.fts import reset_fts_migration_status
+from app.migrations.index_tree import apply_index_tree_migration
 from app.migrations.metadata import handle_metadata_indexes
 from app.migrations.semantic import apply_function_search_path_migration
 from app.migrations.semantic import apply_jsonb_merge_patch_migration
@@ -70,6 +71,8 @@ __all__ = [
     'handle_metadata_indexes',
     # Chunking
     'apply_chunking_migration',
+    # Index tree
+    'apply_index_tree_migration',
     # Summary
     'apply_summary_migration',
     'check_summary_provider_dependencies',

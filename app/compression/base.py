@@ -97,6 +97,18 @@ class CompressionProvider(Protocol):
         """
         ...
 
+    def warmup(self) -> None:
+        """Prime lazy imports, caches, and native thread-pool probes single-threaded.
+
+        Implementations that lazily import native libraries (e.g. NumPy submodules)
+        or call thread-pool introspection (e.g. ``threadpoolctl``) MUST make a
+        single-threaded warmup safe and idempotent. ``get_cached_compression_provider``
+        calls this once before any concurrent ``asyncio.to_thread`` encode/decode
+        fan-out, so the first concurrent batch hits only warm caches and cannot
+        deadlock on the import-lock vs dynamic-loader-lock cycle.
+        """
+        ...
+
     # Asynchronous (event-loop-friendly) wrappers -----------------------
     async def encode(self, vectors: NDArray[np.float32]) -> bytes:
         """Async wrapper around :meth:`encode_sync` via :func:`asyncio.to_thread`.

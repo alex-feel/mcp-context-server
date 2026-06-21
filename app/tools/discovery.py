@@ -102,7 +102,8 @@ async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
         enabled, available, provider, model), summary (dict with enabled,
         available, provider, model, summary_count, coverage_percentage,
         min_content_length), compression (dict with enabled, available,
-        provider, bits, variant, seed, dim, max_concurrent).
+        provider, bits, variant, seed, dim, max_concurrent), index_tree
+        (dict with enabled, node_count).
 
     Raises:
         ToolError: If retrieving statistics fails.
@@ -292,6 +293,25 @@ async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
                 'enabled': settings.compression.enabled,
                 'available': False,
                 'message': 'Failed to read compression metadata',
+            }
+
+        # Add index_tree node-summary block. Gated on the per-node summary
+        # toggle; node_count is the total stored per-node summaries (0 when the
+        # table is absent, e.g. the feature was never enabled).
+        if settings.index_tree.node_summaries_enabled:
+            try:
+                node_count = await repos.index_nodes.count_all_nodes()
+            except Exception as e:  # pragma: no cover -- defensive fallback
+                logger.warning(f'Failed to read index_tree node count for statistics: {e}')
+                node_count = 0
+            stats['index_tree'] = {
+                'enabled': True,
+                'node_count': node_count,
+            }
+        else:
+            stats['index_tree'] = {
+                'enabled': False,
+                'node_count': 0,
             }
 
         # stats is built incrementally as a plain dict so each sub-block

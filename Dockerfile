@@ -73,8 +73,10 @@ LABEL org.opencontainers.image.source="https://github.com/alex-feel/mcp-context-
 EXPOSE 8000
 
 # Health check
+# Probe the actual configured port: FASTMCP_PORT drives the HTTP bind (default 8000),
+# so deployments that override it (e.g. the test stacks on 8001/8002) stay reportable as healthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()" || exit 1
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('FASTMCP_PORT', '8000') + '/health').read()" || exit 1
 
 # Copy entrypoint script that handles exit codes to prevent infinite restart loops
 COPY --chown=appuser:appuser deploy/docker/docker-entrypoint.sh /docker-entrypoint.sh

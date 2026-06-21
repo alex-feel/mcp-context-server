@@ -174,6 +174,33 @@ class TurboQuantProvider:
         with threadpool_limits(limits=2, user_api='blas'):
             return decoder.estimate_inner_product(decoded_payload, queries)
 
+    def warmup(self) -> None:
+        """Prime NumPy lazy imports, the rotation cache, and the threadpoolctl probe.
+
+        ``store_context`` fans per-chunk encodes across worker threads via
+        :func:`asyncio.to_thread`. On a cold process that first concurrent batch
+        would trigger NumPy's lazy submodule import (``numpy.random`` /
+        ``numpy.linalg``, reached through rotation-matrix generation) inside several
+        threads at once, deadlocking against :mod:`threadpoolctl`'s
+        ``dl_iterate_phdr`` (the dynamic-loader lock taken under the Python import
+        lock). Running one full round-trip single-threaded here populates the
+        ``(dim, seed)`` rotation cache and completes every lazy import before any
+        concurrency, so the later threaded encodes only hit warm caches. The probe
+        is best-effort: a failure is logged and swallowed because the goal is
+        priming, not validation -- a genuine encode error still surfaces on the
+        real call.
+        """
+        probe = np.ones((1, self._dim), dtype=np.float32)
+        try:
+            payload = self.encode_sync(probe)
+            self.decode_sync(payload)
+            self.estimate_inner_product_sync(payload, probe)
+        except Exception as exc:
+            logger.warning(
+                'Compression warmup round-trip failed (priming may be partial): %s',
+                exc,
+            )
+
     async def encode(self, vectors: NDArray[np.float32]) -> bytes:
         """Async wrapper around :meth:`encode_sync` via :func:`asyncio.to_thread`.
 

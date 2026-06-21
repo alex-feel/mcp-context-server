@@ -1,0 +1,166 @@
+"""Unit tests for the code-derived Markdown outline parser.
+
+Covers ATX/setext heading detection, fenced-code awareness (including the
+unclosed-fence-at-EOF and #-inside-fence regressions), the synthetic root for
+heading-light documents, sibling-ordinal node-id disambiguation, max_depth
+folding, code-point offsets, and node-span resolution.
+"""
+
+from app.services.outline_service import ROOT_NODE_ID
+from app.services.outline_service import count_nodes
+from app.services.outline_service import parse_outline
+from app.services.outline_service import resolve_node_span
+from app.services.outline_service import slugify
+
+
+class TestSlugify:
+    def test_basic(self) -> None:
+        assert slugify('Set Up The Thing') == 'set-up-the-thing'
+
+    def test_punctuation_collapses(self) -> None:
+        assert slugify('  Hello, World!!  ') == 'hello-world'
+
+    def test_empty_falls_back(self) -> None:
+        assert slugify('***') == 'section'
+
+
+class TestParseOutlineStructure:
+    def test_nested_atx_headings(self) -> None:
+        text = '# A\n\nalpha\n\n## B\n\nbeta\n'
+        root = parse_outline(text)
+        assert root.node_id == ROOT_NODE_ID
+        assert root.char_start == 0
+        assert root.char_end == len(text)
+        assert len(root.children) == 1
+        node_a = root.children[0]
+        assert node_a.title == 'A'
+        assert node_a.node_id == 'a'
+        assert node_a.level == 1
+        assert text[node_a.char_start:node_a.char_start + 3] == '# A'
+        assert len(node_a.children) == 1
+        node_b = node_a.children[0]
+        assert node_b.title == 'B'
+        assert node_b.node_id == 'a/b'
+        assert node_b.level == 2
+
+    def test_section_end_is_next_same_or_shallower(self) -> None:
+        text = '# One\nbody one\n# Two\nbody two\n'
+        root = parse_outline(text)
+        one = root.children[0]
+        two = root.children[1]
+        # One ends where Two begins.
+        assert one.char_end == two.char_start
+        assert text[two.char_start:two.char_start + 5] == '# Two'
+
+    def test_no_headings_yields_childless_root(self) -> None:
+        text = 'just a paragraph\nwith two lines'
+        root = parse_outline(text)
+        assert root.children == ()
+        assert root.char_end == len(text)
+        assert count_nodes(root) == 0
+
+    def test_single_heading(self) -> None:
+        text = '# Only\nbody'
+        root = parse_outline(text)
+        assert count_nodes(root) == 1
+        assert root.children[0].node_id == 'only'
+
+
+class TestDuplicateHeadings:
+    def test_sibling_ordinal_disambiguation(self) -> None:
+        text = '# Top\n## Notes\nx\n## Notes\ny\n'
+        root = parse_outline(text)
+        top = root.children[0]
+        assert [c.node_id for c in top.children] == ['top/notes', 'top/notes-2']
+        assert [c.ordinal for c in top.children] == [1, 2]
+
+    def test_generated_suffix_does_not_collide_with_literal_slug(self) -> None:
+        # Regression: the 2nd "Notes" generates 'notes-2'; a literal "Notes 2"
+        # heading ALSO slugifies to 'notes-2'. node_ids MUST stay unique among
+        # siblings so resolve_node_span / read_context_range maps each id to its
+        # OWN section instead of silently reading the wrong one.
+        text = '# Top\n## Notes\na\n## Notes\nb\n## Notes 2\nc\n'
+        root = parse_outline(text)
+        top = root.children[0]
+        ids = [c.node_id for c in top.children]
+        assert len(ids) == len(set(ids)), f'node_ids not unique: {ids}'
+        assert ids == ['top/notes', 'top/notes-2', 'top/notes-2-2']
+        # Each id resolves to a distinct span, and the literal "Notes 2" section
+        # keeps its own body.
+        spans = {nid: resolve_node_span(text, nid) for nid in ids}
+        assert len(set(spans.values())) == 3
+        third = top.children[2]
+        assert third.title == 'Notes 2'
+        assert 'c' in text[third.char_start:third.char_end]
+
+
+class TestFencedCode:
+    def test_hash_inside_closed_fence_ignored(self) -> None:
+        text = '# Real\n\n```\n# not a heading\n```\n\n## After\n'
+        root = parse_outline(text)
+        titles = [c.title for c in root.children]
+        # 'Real' plus its child 'After'; the fenced '# not a heading' is skipped.
+        assert titles == ['Real']
+        assert root.children[0].children[0].title == 'After'
+
+    def test_unclosed_fence_does_not_swallow_following_headings(self) -> None:
+        # The fence never closes; the lenient parser must still surface '# After'.
+        text = '# Before\n\n```python\nsome code\n# After\nmore code\n'
+        root = parse_outline(text)
+        titles = [c.title for c in root.children]
+        assert 'Before' in titles
+        assert 'After' in titles
+
+    def test_tilde_fence(self) -> None:
+        text = '# Real\n~~~\n# fake\n~~~\n## After\n'
+        root = parse_outline(text)
+        assert root.children[0].children[0].title == 'After'
+
+
+class TestSetext:
+    def test_setext_h1_and_h2(self) -> None:
+        text = 'Title\n=====\nbody\n\nSub\n---\nmore\n'
+        root = parse_outline(text)
+        assert root.children[0].title == 'Title'
+        assert root.children[0].level == 1
+        assert root.children[0].children[0].title == 'Sub'
+        assert root.children[0].children[0].level == 2
+
+
+class TestMaxDepth:
+    def test_deeper_headings_folded(self) -> None:
+        text = '# A\n## B\n### C\n'
+        root = parse_outline(text, max_depth=2)
+        node_a = root.children[0]
+        node_b = node_a.children[0]
+        assert node_b.title == 'B'
+        # '### C' exceeds max_depth=2 and is not a node.
+        assert node_b.children == ()
+
+
+class TestCodePointOffsets:
+    def test_offset_after_multibyte_prefix(self) -> None:
+        prefix = chr(0x0451) * 4  # four two-byte Cyrillic letters, one line
+        text = f'{prefix}\n# Heading\nbody'
+        root = parse_outline(text)
+        heading = root.children[0]
+        # char_start counts code points: 4 (prefix) + 1 (newline) = 5.
+        assert heading.char_start == 5
+        assert text[heading.char_start:heading.char_start + 9] == '# Heading'
+
+
+class TestResolveNodeSpan:
+    def test_resolves_known_node(self) -> None:
+        text = '# A\nbody\n## B\nmore\n'
+        root = parse_outline(text)
+        node_b = root.children[0].children[0]
+        span = resolve_node_span(text, 'a/b')
+        assert span == (node_b.char_start, node_b.char_end)
+
+    def test_root_resolves_to_whole_document(self) -> None:
+        text = '# A\nbody'
+        assert resolve_node_span(text, ROOT_NODE_ID) == (0, len(text))
+
+    def test_unknown_node_returns_none(self) -> None:
+        text = '# A\nbody'
+        assert resolve_node_span(text, 'does/not/exist') is None

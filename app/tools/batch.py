@@ -38,6 +38,7 @@ from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
 from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
@@ -49,6 +50,7 @@ from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
 from app.tools._shared import generate_compression_with_timeout
 from app.tools._shared import generate_embeddings_with_timeout
+from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import transaction_heartbeat
@@ -205,6 +207,9 @@ async def store_context_batch(
         # Entries are processed sequentially to limit provider load.
         entry_embeddings: dict[int, list[ChunkEmbedding] | None] = {}
         entry_summaries: dict[int, str | None] = {}
+        # Per-entry dedup pre-check decision, captured here so the index_tree node
+        # pass below gates symmetrically with embeddings/summary.
+        entry_likely_duplicate: dict[int, str | None] = {}
         generation_errors: list[tuple[int, str]] = []  # (original_idx, error_message)
 
         embedding_provider = get_embedding_provider()
@@ -230,6 +235,7 @@ async def store_context_batch(
                     source=entry['source'],
                     text_content=text_content,
                 )
+            entry_likely_duplicate[ve_idx] = likely_duplicate_id
 
             # Embedding task (with pre-check optimization)
             if embedding_provider is not None:
@@ -367,6 +373,24 @@ async def store_context_batch(
                 message='All entries failed validation or generation',
             )
 
+        # Build index_tree per-node summaries for each surviving entry in a
+        # SEPARATE fenced never-raise pass, isolated from the abort-mandatory
+        # embedding/summary/compression above: a node-summary failure never fails
+        # an entry. None per entry when the feature is disabled OR the entry is a
+        # likely deduplication retransmit (gated symmetrically with
+        # embeddings/summary). Computed once and reused across reconcile/connection
+        # retries below.
+        entry_index_nodes: dict[int, list[IndexNodeRow] | None] = {}
+        for ve_idx, entry in validated_entries_filtered:
+            # Skip node regeneration for a likely deduplication retransmit (None
+            # leaves stored rows untouched); reconcile-divergence INSERTs below
+            # regenerate for the diverged text.
+            entry_index_nodes[ve_idx] = (
+                None
+                if entry_likely_duplicate.get(ve_idx) is not None
+                else await generate_index_nodes_with_timeout(entry['text_content'])
+            )
+
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
 
@@ -409,6 +433,7 @@ async def store_context_batch(
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
+                                    index_nodes=entry_index_nodes.get(ve_idx),
                                 )
                             )
 
@@ -449,6 +474,13 @@ async def store_context_batch(
                         if (entry_embeddings.get(r_ve_idx) is None
                                 and r_entry['text_content'] == reconcile.text_content):
                             entry_embeddings[r_ve_idx] = regenerated
+                    # Node summaries for the diverged text were gated off as a
+                    # likely duplicate; this divergence INSERTs, so regenerate them.
+                    regenerated_nodes = await generate_index_nodes_with_timeout(reconcile.text_content)
+                    for r_ve_idx, r_entry in validated_entries_filtered:
+                        if (entry_index_nodes.get(r_ve_idx) is None
+                                and r_entry['text_content'] == reconcile.text_content):
+                            entry_index_nodes[r_ve_idx] = regenerated_nodes
                     continue
 
                 except ToolError:
@@ -490,6 +522,7 @@ async def store_context_batch(
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
+                                    index_nodes=entry_index_nodes.get(ve_idx),
                                 )
                             )
 
@@ -526,6 +559,12 @@ async def store_context_batch(
                         entry_embeddings[ve_idx] = await generate_compression_with_timeout(
                             await generate_embeddings_with_timeout(reconcile.text_content),
                         )
+                        # Node summaries were gated off as a likely duplicate; this
+                        # entry actually INSERTs, so regenerate its index_tree nodes.
+                        if entry_index_nodes.get(ve_idx) is None:
+                            entry_index_nodes[ve_idx] = await generate_index_nodes_with_timeout(
+                                reconcile.text_content,
+                            )
                         continue
 
                     except ToolError as e:
@@ -951,6 +990,16 @@ async def update_context_batch(
                 message='All updates failed validation, entry not found, or generation',
             )
 
+        # Rebuild index_tree per-node summaries for each update that changes text,
+        # in a SEPARATE fenced never-raise pass (isolated from the abort-mandatory
+        # generation above). Updates without a text change are absent from the map,
+        # so .get() yields None and leaves the node table untouched.
+        update_index_nodes: dict[int, list[IndexNodeRow] | None] = {}
+        for vu_idx, update in validated_updates_final:
+            new_text = update.get('text')
+            if new_text is not None:
+                update_index_nodes[vu_idx] = await generate_index_nodes_with_timeout(new_text)
+
         # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
 
@@ -986,6 +1035,7 @@ async def update_context_batch(
                                     validated_images=update_images or [],
                                     chunk_embeddings=update_embeddings.get(vu_idx),
                                     embedding_model=settings.embedding.model,
+                                    index_nodes=update_index_nodes.get(vu_idx),
                                 )
                             )
 
@@ -1041,6 +1091,7 @@ async def update_context_batch(
                                     validated_images=update_images or [],
                                     chunk_embeddings=update_embeddings.get(vu_idx),
                                     embedding_model=settings.embedding.model,
+                                    index_nodes=update_index_nodes.get(vu_idx),
                                 )
                             )
 
