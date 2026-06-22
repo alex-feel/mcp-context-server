@@ -20,6 +20,8 @@ complement.
 import asyncio
 import logging
 import re
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 from typing import cast
@@ -40,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 # Outer asyncio.wait_for backstop margin over the regex-level per-entry deadline.
 _REGEX_WAIT_MARGIN_S = 1.0
+
+# A literal scan over a text longer than this is offloaded to a worker thread so
+# its (linear but O(text)) CPU cannot pin the event loop; smaller entries stay
+# inline to avoid a thread hop per scanned entry. The regex path always offloads
+# (it also needs a wall-clock timeout). Unicode code points, not bytes.
+_OFFLOAD_MIN_CHARS = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,14 +164,31 @@ def _match_entry_sync(
     compiled: re.Pattern[str],
     context_lines: int,
     max_matches: int,
-    timeout: float | None = None,
+    timeout: float,
 ) -> GrepEntryResult:
-    """Find up to ``max_matches`` matches in one entry (pure CPU, no I/O).
+    """Find up to ``max_matches`` REGEX matches in one entry, PER LOGICAL LINE.
 
-    When ``timeout`` is not None, ``compiled`` is the ``regex`` engine and the
-    deadline (seconds) is forwarded to ``finditer`` so a catastrophic pattern is
-    preempted mid-scan and raises ``TimeoutError`` -- a true wall-clock bound.
-    ``timeout=None`` (the literal path) uses ``re`` with no timeout (linear time).
+    The user-regex path only. Matching runs per logical line through the shared
+    line model (:func:`app.services.text_lines.split_lines_with_offsets`) -- the
+    single source of truth that also drives line numbering and the outline parser
+    -- rather than over the whole text. Matching each line's content (terminator
+    excluded) keeps the matcher's notion of a line identical to the line model's:
+    ``^``/``$`` anchor at the same ``\\n``/``\\r\\n`` boundaries the model splits
+    on, so ``word$`` matches a line ending ``word\\r\\n`` (a whole-text ``$`` would
+    miss it, anchoring only before a bare ``\\n``); a pattern can never silently
+    span a line break (line-oriented, like ripgrep); and every reported offset
+    lands on real content, never inside a ``\\r\\n`` pair. The literal path takes
+    none of this per-line cost -- it has no anchors, so
+    :func:`_match_entry_literal_sync` matches the whole text in one pass.
+
+    ``compiled`` is the ``regex`` engine; ONE per-entry wall-clock deadline
+    (``timeout`` seconds) is shared across the lines (each line's ``finditer`` gets
+    the REMAINING budget), so a catastrophic pattern is preempted and the
+    whole-entry bound holds regardless of line count; an exhausted budget raises
+    ``TimeoutError`` (the caller maps it to a skipped, ``timed_out`` entry).
+
+    Raises:
+        TimeoutError: When the shared per-entry deadline is exhausted.
 
     Returns:
         The entry's match result.
@@ -171,14 +196,95 @@ def _match_entry_sync(
     lines, line_starts = split_lines_with_offsets(text)
     matches: list[GrepMatch] = []
     capped = False
-    # With a timeout the compiled object is the regex engine, whose finditer takes
-    # the deadline kwarg (cast to Any: the stdlib re.finditer stub lacks it).
-    iterator = cast(Any, compiled).finditer(text, timeout=timeout) if timeout is not None else compiled.finditer(text)
+    deadline = time.monotonic() + timeout
+    for idx, line in enumerate(lines):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Per-entry budget exhausted mid-scan: surface as a bounded timeout.
+            raise TimeoutError
+        # The regex engine's finditer takes the deadline kwarg (cast to Any: the
+        # stdlib re.finditer stub lacks it).
+        iterator = cast(Any, compiled).finditer(line, timeout=remaining)
+        line_start = line_starts[idx]
+        if _extend_line_matches(matches, max_matches, iterator, line, idx, lines, line_start, context_lines):
+            capped = True
+            break
+    return GrepEntryResult(
+        context_id=context_id,
+        matches=tuple(matches),
+        match_count=len(matches),
+        capped=capped,
+    )
+
+
+def _extend_line_matches(
+    matches: list[GrepMatch],
+    max_matches: int,
+    iterator: Iterator[re.Match[str]],
+    line: str,
+    idx: int,
+    lines: list[str],
+    line_start: int,
+    context_lines: int,
+) -> bool:
+    """Append one line's matches to ``matches``, stopping at ``max_matches``.
+
+    Offsets are made absolute via ``line_start``; context windows are sliced
+    from the shared ``lines`` list.
+
+    Returns:
+        True if a further match existed beyond ``max_matches`` (the caller
+        signals truncation); False otherwise.
+    """
     for match in iterator:
+        if len(matches) >= max_matches:
+            return True
+        before_start = max(0, idx - context_lines)
+        after_end = min(len(lines), idx + 1 + context_lines)
+        matches.append(
+            GrepMatch(
+                line_number=idx + 1,
+                char_start=line_start + match.start(),
+                char_end=line_start + match.end(),
+                line=line,
+                before=tuple(lines[before_start:idx]),
+                after=tuple(lines[idx + 1:after_end]),
+            ),
+        )
+    return False
+
+
+def _match_entry_literal_sync(
+    context_id: str,
+    text: str,
+    compiled: re.Pattern[str],
+    context_lines: int,
+    max_matches: int,
+) -> GrepEntryResult:
+    """Find up to ``max_matches`` LITERAL matches in one entry (whole-text, fast).
+
+    A literal pattern is ``re.escape``-d, so it has no ``^``/``$`` anchors and the
+    CRLF line-anchor concern that makes the regex path match per logical line does
+    not apply: a single C-level ``finditer`` over the whole text is both correct
+    and far cheaper than a Python-level ``finditer`` per line on newline-dense
+    content. Line attribution (number / text / context window) is derived LAZILY
+    through the shared line model only once a match is found, so a NON-matching
+    scan over a very large entry never pays the ``split_lines_with_offsets`` cost.
+
+    Returns:
+        The entry's match result.
+    """
+    matches: list[GrepMatch] = []
+    capped = False
+    line_data: tuple[list[str], list[int]] | None = None
+    for match in compiled.finditer(text):
         if len(matches) >= max_matches:
             # A further match exists beyond the budget: signal truncation.
             capped = True
             break
+        if line_data is None:
+            line_data = split_lines_with_offsets(text)
+        lines, line_starts = line_data
         idx = line_index_for_offset(line_starts, match.start())
         before_start = max(0, idx - context_lines)
         after_end = min(len(lines), idx + 1 + context_lines)
@@ -210,18 +316,21 @@ async def match_entry(
     is_regex: bool,
     regex_timeout_s: float,
 ) -> GrepEntryResult:
-    """Match one entry, bounding user regex against catastrophic backtracking.
+    """Match one entry, keeping a large scan off the event loop.
 
-    A literal pattern (``re.escape``) is linear-time and runs inline. A
-    user-supplied regex is matched by the ``regex`` engine whose ``timeout`` is
-    checked DURING matching, so a pathological pattern is preempted at
-    ``regex_timeout_s`` -- a TRUE per-entry wall-clock bound, unlike the stdlib
-    ``re`` engine which holds the GIL through a whole match and can only be
-    reported late. The bounded match runs in a worker thread under an outer
-    ``asyncio.wait_for`` backstop (``regex_timeout_s`` + a small margin) so even a
-    deadline overshoot cannot pin the loop indefinitely; on timeout the entry
-    yields no matches with ``timed_out=True`` (bounded failure -- the tool is
-    read-only and never aborts a store).
+    A literal pattern (``re.escape``) is linear-time with no backtracking risk and
+    is matched whole-text by :func:`_match_entry_literal_sync`; an entry larger
+    than ``_OFFLOAD_MIN_CHARS`` is run under ``asyncio.to_thread`` so its O(text)
+    scan cannot pin the event loop, while a small entry stays inline to avoid a
+    thread hop per scanned entry. A user-supplied regex is matched per logical line
+    by the ``regex`` engine whose ``timeout`` is checked DURING matching, so a
+    pathological pattern is preempted at ``regex_timeout_s`` -- a TRUE per-entry
+    wall-clock bound, unlike the stdlib ``re`` engine which holds the GIL through a
+    whole match and can only be reported late. The bounded regex match runs in a
+    worker thread under an outer ``asyncio.wait_for`` backstop (``regex_timeout_s``
+    + a small margin) so even a deadline overshoot cannot pin the loop
+    indefinitely; on timeout the entry yields no matches with ``timed_out=True``
+    (bounded failure -- the tool is read-only and never aborts a store).
 
     Args:
         context_id: Canonical id of the entry being matched.
@@ -238,7 +347,11 @@ async def match_entry(
     if max_matches <= 0:
         return GrepEntryResult(context_id=context_id, matches=(), match_count=0)
     if not is_regex:
-        return _match_entry_sync(context_id, text, compiled, context_lines, max_matches)
+        if len(text) > _OFFLOAD_MIN_CHARS:
+            return await asyncio.to_thread(
+                _match_entry_literal_sync, context_id, text, compiled, context_lines, max_matches,
+            )
+        return _match_entry_literal_sync(context_id, text, compiled, context_lines, max_matches)
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(

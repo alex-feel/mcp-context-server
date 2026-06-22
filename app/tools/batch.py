@@ -54,6 +54,7 @@ from app.tools._shared import generate_embeddings_with_timeout
 from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
+from app.tools._shared import node_layer_active
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
 from app.types import BulkDeleteResponseDict
@@ -1005,7 +1006,11 @@ async def update_context_batch(
         for vu_idx, update in validated_updates_final:
             new_text = update.get('text')
             if new_text is not None:
-                update_index_nodes[vu_idx] = await generate_index_nodes_with_timeout(new_text)
+                rebuilt = await generate_index_nodes_with_timeout(new_text)
+                # Text changed: a None from an ACTIVE layer is TOTAL degradation, so
+                # CLEAR the rows describing the old text ([]) rather than preserve
+                # stale summaries; a None from an inert layer leaves them untouched.
+                update_index_nodes[vu_idx] = [] if rebuilt is None and node_layer_active() else rebuilt
 
         # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend

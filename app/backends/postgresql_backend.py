@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 import asyncpg
 
 from app.errors import ConfigurationError
+from app.errors import ControlFlowError
 from app.errors import DependencyError
 from app.settings import AppSettings
 from app.settings import get_settings
@@ -1093,7 +1094,13 @@ class PostgreSQLBackend:
                 logger.debug('Transaction committed successfully')
 
             except Exception as e:
-                # Transaction rolls back automatically on exception
+                # Transaction rolls back automatically on exception.
+                if isinstance(e, ControlFlowError):
+                    # Normal control flow (optimistic-concurrency conflict / post-dedup
+                    # embedding reconciliation), NOT a database fault: rolled back
+                    # automatically, but do NOT record a circuit-breaker failure, so
+                    # normal write contention cannot open the breaker.
+                    raise
                 logger.warning(f'Transaction failed, rolling back: {e}')
                 await self.circuit_breaker.record_failure()
                 raise

@@ -34,6 +34,7 @@ import asyncpg
 from fastmcp.exceptions import ToolError
 
 from app.embeddings.retry import compute_embedding_total_timeout
+from app.errors import ControlFlowError
 from app.errors import format_exception_message
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-class EmbeddingsReconcileRequiredError(Exception):
+class EmbeddingsReconcileRequiredError(ControlFlowError):
     """Internal control-flow signal raised inside ``execute_store_in_transaction``.
 
     The read-only deduplication pre-check (performed by the caller OUTSIDE the
@@ -512,6 +513,24 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
         return None
 
     return rows
+
+
+def node_layer_active() -> bool:
+    """Whether the index_tree per-node summary layer is ACTIVE (would attempt work).
+
+    Mirrors the activation gate at the top of
+    :func:`generate_index_nodes_with_timeout`: the feature toggle is on AND a
+    summary provider is configured. Used on the TEXT-CHANGE update paths to
+    disambiguate a ``None`` node-generation result: when the layer is active,
+    ``None`` means TOTAL degradation (every eligible section's summary
+    failed/timed out), so the stored rows -- which describe the OLD text -- must
+    be CLEARED rather than preserved; when the layer is inert (feature off or no
+    provider) a ``None`` legitimately means "leave the node table untouched".
+
+    Returns:
+        True when per-node summaries are enabled and a summary provider exists.
+    """
+    return settings.index_tree.node_summaries_enabled and get_summary_provider() is not None
 
 
 async def embed_then_compress(text: str) -> list[ChunkEmbedding] | None:

@@ -418,6 +418,64 @@ class TestUpdateContextBatchWithSummary:
         assert failed_results[0]['error'] is not None
         assert 'Generation failed' in failed_results[0]['error']
 
+    @pytest.mark.asyncio
+    async def test_update_batch_text_change_total_node_degradation_clears_stale_nodes(self) -> None:
+        """Fix 5 (batch): a text-change batch update whose per-node summaries TOTALLY
+        degrade (None) from an ACTIVE node layer clears the stale rows ([] -> replace),
+        rather than preserving summaries describing the OLD text.
+        """
+        repos = _create_mock_repositories()
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='flat ok')
+
+        updates = [{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.batch.node_layer_active', return_value=True),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        # index_nodes passed positionally as (context_id, index_nodes, txn=...).
+        repos.index_nodes.replace_nodes_for_context.assert_awaited_once()
+        assert repos.index_nodes.replace_nodes_for_context.call_args.args[1] == []
+
+    @pytest.mark.asyncio
+    async def test_update_batch_text_change_inert_node_layer_preserves_nodes(self) -> None:
+        """Fix 5 (batch, negative): when the node layer is INERT, a None node result is
+        left untouched (stays None), so replace_nodes_for_context is never called and
+        existing rows are preserved.
+        """
+        repos = _create_mock_repositories()
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='flat ok')
+
+        updates = [{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.batch.node_layer_active', return_value=False),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        repos.index_nodes.replace_nodes_for_context.assert_not_awaited()
+
 
 @pytest.mark.usefixtures('mock_server_dependencies')
 class TestBatchSummaryEdgeCases:

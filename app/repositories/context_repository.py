@@ -17,6 +17,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from app.backends.base import StorageBackend
+from app.errors import ControlFlowError
 from app.ids import generate_id
 from app.ids import normalize_id
 from app.repositories.base import BaseRepository
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class VersionConflictError(Exception):
+class VersionConflictError(ControlFlowError):
     """Raised by ``update_context_entry`` when its optimistic-concurrency guard
     finds the row's ``version`` changed since the caller read it.
 

@@ -51,6 +51,7 @@ from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
 from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import is_connection_error
+from app.tools._shared import node_layer_active
 from app.tools._shared import run_generation
 from app.tools._shared import validate_and_normalize_images
 from app.types import ContextEntryDict
@@ -650,6 +651,13 @@ async def update_context(
             )
             embedding_generated = chunk_embeddings is not None
             summary_generated = bool(summary_text)
+            # On a text change, a None node result from an ACTIVE per-node layer means
+            # TOTAL degradation (every section summary failed): the stored rows
+            # describe the OLD text, so CLEAR them ([] replaces) instead of preserving
+            # stale section summaries that navigate_context would surface. A None from
+            # an inert layer (feature off / no provider) still leaves the table alone.
+            if index_nodes is None and node_layer_active():
+                index_nodes = []
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend

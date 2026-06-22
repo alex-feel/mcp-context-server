@@ -14,6 +14,7 @@ from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend import SQLiteTransactionContext
 from app.ids import generate_id
+from app.repositories.context_repository import VersionConflictError
 
 
 class TestSQLiteTransactionContext:
@@ -301,5 +302,58 @@ class TestTransactionContextIntegration:
 
             # All connection ids should be the same
             assert len(set(connection_ids)) == 1
+        finally:
+            await backend.shutdown()
+
+
+class TestControlFlowSignalCircuitBreaker:
+    """A ControlFlowError inside begin_transaction must NOT trip the circuit breaker.
+
+    Regression: VersionConflictError / EmbeddingsReconcileRequiredError are normal
+    optimistic-concurrency / dedup control-flow signals raised inside the
+    transaction body. They roll the transaction back WITHOUT recording a
+    circuit-breaker failure, so sustained-but-normal write contention cannot open
+    the breaker and start rejecting healthy writes. A genuine fault still trips it.
+    """
+
+    @staticmethod
+    async def _initialized_backend(tmp_path: Path, name: str) -> SQLiteBackend:
+        db_path = tmp_path / name
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.executescript(schema_sql)
+        backend = SQLiteBackend(db_path=str(db_path))
+        await backend.initialize()
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_control_flow_signal_does_not_trip_breaker(self, tmp_path: Path) -> None:
+        backend = await self._initialized_backend(tmp_path, 'cb_control_flow.db')
+        try:
+            # Far more than failure_threshold consecutive control-flow rollbacks.
+            for _ in range(backend.circuit_breaker.failure_threshold + 5):
+                with pytest.raises(VersionConflictError):
+                    async with backend.begin_transaction():
+                        raise VersionConflictError('ctx-under-contention')
+            # No failure recorded for any control-flow rollback: breaker stays HEALTHY.
+            assert backend.circuit_breaker.failures == 0
+            assert backend.circuit_breaker.is_open() is False
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_genuine_fault_still_trips_breaker(self, tmp_path: Path) -> None:
+        backend = await self._initialized_backend(tmp_path, 'cb_fault.db')
+        try:
+            # A real (non-control-flow) error in each transaction DOES record a
+            # failure; failure_threshold consecutive faults open the breaker.
+            for _ in range(backend.circuit_breaker.failure_threshold):
+                with pytest.raises(ValueError, match='genuine fault'):
+                    async with backend.begin_transaction():
+                        raise ValueError('genuine fault')
+            assert backend.circuit_breaker.failures >= backend.circuit_breaker.failure_threshold
+            assert backend.circuit_breaker.is_open() is True
         finally:
             await backend.shutdown()

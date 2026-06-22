@@ -13,6 +13,7 @@ is not allowed to swallow every subsequent heading -- because a stray unterminat
 fence should not blind the whole navigation tree.
 """
 
+import bisect
 import re
 from dataclasses import dataclass
 from dataclasses import field
@@ -26,6 +27,10 @@ _ATX_RE = re.compile(r'^[ ]{0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$')
 _ATX_TRAILING_RE = re.compile(r'[ \t]+#+[ \t]*$')
 # Opening code fence (3+ backticks or tildes) with an optional info string.
 _FENCE_OPEN_RE = re.compile(r'^[ ]{0,3}(`{3,}|~{3,})(.*)$')
+# A bare fence line (a run of one fence char, <=3 indent, only trailing whitespace)
+# -- the only lines that can CLOSE a fence. Precomputed once so a run of unclosable
+# openers does not rescan to EOF each (the source of an O(n^2) parse blowup).
+_FENCE_CLOSE_RE = re.compile(r'^[ ]{0,3}(`{3,}|~{3,})[ \t]*$')
 # Setext underlines: a run of '=' (level 1) or '-' (level 2) on its own line.
 _SETEXT_H1_RE = re.compile(r'^[ ]{0,3}=+[ \t]*$')
 _SETEXT_H2_RE = re.compile(r'^[ ]{0,3}-+[ \t]*$')
@@ -101,13 +106,61 @@ def _match_fence_open(line: str) -> tuple[str, int] | None:
     return marker[0], len(marker)
 
 
-def _find_fence_close(lines: list[str], start: int, fence: tuple[str, int]) -> int | None:
-    """Return the index of the closing fence at or after ``start``, else None."""
-    char, length = fence
-    close_re = re.compile(r'^[ ]{0,3}(' + re.escape(char) + r'{' + str(length) + r',})[ \t]*$')
-    for index in range(start, len(lines)):
-        if close_re.match(lines[index]):
-            return index
+def _collect_fence_candidates(lines: list[str]) -> dict[str, tuple[list[int], list[int]]]:
+    """Map each fence char to the ascending line indices and run lengths of every
+    bare fence line (a potential CLOSING fence).
+
+    Built in one O(n) pass so the heading scan resolves a fence's closer without
+    rescanning the document per opener.
+
+    Returns:
+        ``{char: (indices, runs)}`` with ``indices`` ascending and ``runs[i]`` the
+        run length of the bare fence line at ``indices[i]``.
+    """
+    cands: dict[str, tuple[list[int], list[int]]] = {}
+    for index, line in enumerate(lines):
+        match = _FENCE_CLOSE_RE.match(line)
+        if match is None:
+            continue
+        run = match.group(1)
+        indices, runs = cands.setdefault(run[0], ([], []))
+        indices.append(index)
+        runs.append(len(run))
+    return cands
+
+
+def _fence_closer_index(
+    cands: dict[str, tuple[list[int], list[int]]],
+    no_closer_len: dict[str, int],
+    char: str,
+    length: int,
+    opener_index: int,
+) -> int | None:
+    """Index of the first bare fence line after ``opener_index`` that closes a
+    ``(char, length)`` fence (same char, run >= ``length``), or None if unclosed.
+
+    Matches the exact per-opener semantics of the original linear scan: the first
+    bare fence of the same char with a long-enough run, searched strictly after the
+    opener. ``no_closer_len`` memoizes, per char, the smallest opener length already
+    proven to have no closer ahead; since the heading scan advances monotonically,
+    once an opener of length L has no closer to EOF, every later opener of length
+    >= L also has none -- so a run of unclosable openers costs O(1) each instead of
+    rescanning, removing the O(n^2) blowup.
+
+    Returns:
+        The closing fence line index, or None when the fence is unclosed.
+    """
+    proven = no_closer_len.get(char)
+    if proven is not None and length >= proven:
+        return None
+    entry = cands.get(char)
+    if entry is not None:
+        indices, runs = entry
+        start = bisect.bisect_right(indices, opener_index)
+        for pos in range(start, len(indices)):
+            if runs[pos] >= length:
+                return indices[pos]
+    no_closer_len[char] = length
     return None
 
 
@@ -123,6 +176,8 @@ def _setext_level(line: str) -> int | None:
 def _collect_headings(lines: list[str], line_starts: list[int], max_depth: int) -> list[tuple[int, str, int]]:
     """Collect (level, title, char_start) for each heading, fenced-code aware."""
     headings: list[tuple[int, str, int]] = []
+    fence_candidates = _collect_fence_candidates(lines)
+    no_closer_len: dict[str, int] = {}
     index = 0
     total = len(lines)
     while index < total:
@@ -130,7 +185,8 @@ def _collect_headings(lines: list[str], line_starts: list[int], max_depth: int) 
 
         fence = _match_fence_open(line)
         if fence is not None:
-            close_index = _find_fence_close(lines, index + 1, fence)
+            char, length = fence
+            close_index = _fence_closer_index(fence_candidates, no_closer_len, char, length, index)
             if close_index is not None:
                 index = close_index + 1  # skip the whole closed fence
                 continue
@@ -204,6 +260,13 @@ def _assign_canonical_ids(headings: list[tuple[int, str, int]]) -> dict[int, tup
         A map from each heading's ``char_start`` to its ``(node_id, ordinal)``.
     """
     root = _BuildNode(node_id=ROOT_NODE_ID, level=0, ordinal=1, title='', char_start=0, char_end=0)
+    # Reserve the synthetic root's id so a top-level heading whose title slugifies
+    # to ROOT_NODE_ID (e.g. "# Root") cannot claim it: the disambiguation loop below
+    # then renames such a heading to 'root-2', keeping every node_id unique so
+    # resolve_node_span's ROOT short-circuit addresses only the true synthetic root
+    # while the heading's own section still round-trips through read_context_range.
+    root.assigned.add(ROOT_NODE_ID)
+    root.slugs[ROOT_NODE_ID] = 1
     stack: list[_BuildNode] = [root]
     ids: dict[int, tuple[str, int]] = {}
 

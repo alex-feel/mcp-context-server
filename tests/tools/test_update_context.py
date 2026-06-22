@@ -728,6 +728,67 @@ class TestUpdateContext:
         mock_embed.assert_not_called()
         mock_summary.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_text_change_total_node_degradation_clears_stale_nodes(self, mock_context, mock_repositories):
+        """Fix 5: a text-change update whose per-node summaries TOTALLY degrade (None)
+        from an ACTIVE node layer remaps index_nodes to [] so the transaction CLEARS
+        the stale rows, rather than preserving summaries describing the OLD text.
+
+        A regression dropping the node_layer_active() clear remap would pass None
+        through and leave the stale rows -- this asserts the [] is threaded in.
+        """
+        captured: dict[str, object] = {}
+
+        async def capture_update(_repos, _txn, **kwargs):
+            captured['index_nodes'] = kwargs.get('index_nodes')
+            return (['text_content'], 1)
+
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
+            patch('app.tools.context.node_layer_active', return_value=True),
+            patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
+        ):
+            result = await update_context(
+                context_id='0190abcdef1234567890abcd0000007b',
+                text='brand new body',
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        assert captured['index_nodes'] == []  # total degradation on text change -> cleared
+
+    @pytest.mark.asyncio
+    async def test_text_change_inert_node_layer_preserves_nodes(self, mock_context, mock_repositories):
+        """Fix 5 (negative): when the node layer is INERT (feature off / no provider),
+        a None node result is LEFT UNTOUCHED (stays None), so the transaction skips
+        replace_nodes_for_context and existing rows are preserved.
+        """
+        captured: dict[str, object] = {}
+
+        async def capture_update(_repos, _txn, **kwargs):
+            captured['index_nodes'] = kwargs.get('index_nodes')
+            return (['text_content'], 1)
+
+        with (
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
+            patch('app.tools.context.node_layer_active', return_value=False),
+            patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
+        ):
+            result = await update_context(
+                context_id='0190abcdef1234567890abcd0000007b',
+                text='brand new body',
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        assert captured['index_nodes'] is None  # inert layer -> untouched
+
 
 class TestMetadataPatchIntegration:
     """Integration tests for metadata_patch parameter in update_context.

@@ -112,3 +112,42 @@ class TestGenerateIndexNodes:
         finally:
             _set_provider(None)
             get_settings.cache_clear()
+
+
+class TestNodeLayerActive:
+    """node_layer_active() gates the text-change None->[] (clear-stale) remap.
+
+    On a text-change update, a None node-generation result is ambiguous: it means
+    TOTAL degradation when the layer is active (clear the stale rows) but "leave
+    untouched" when the layer is inert. node_layer_active() resolves that, so the
+    update paths only clear when the layer is genuinely active.
+    """
+
+    def test_active_when_enabled_with_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        _refresh_shared_settings(monkeypatch)
+        _set_provider(_FakeProvider())
+        try:
+            assert shared_module.node_layer_active() is True
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+
+    def test_inert_without_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        _refresh_shared_settings(monkeypatch)
+        _set_provider(None)
+        try:
+            assert shared_module.node_layer_active() is False
+        finally:
+            get_settings.cache_clear()
+
+    def test_inert_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'false')
+        _refresh_shared_settings(monkeypatch)
+        _set_provider(_FakeProvider())
+        try:
+            assert shared_module.node_layer_active() is False
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()

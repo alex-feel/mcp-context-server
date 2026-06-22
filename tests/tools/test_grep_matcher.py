@@ -6,6 +6,7 @@ code-point match offsets, context-line windows, the max_matches cap signalling
 truncation, and the per-entry regex timeout (ReDoS guard).
 """
 
+import asyncio
 import time
 
 import pytest
@@ -204,3 +205,98 @@ class TestMatchEntry:
         assert result.timed_out is True
         # Bounded to ~regex_timeout_s + the outer wait_for margin (1.0s) + overhead.
         assert elapsed < 3.0
+
+    @pytest.mark.asyncio
+    async def test_regex_dollar_matches_crlf_line_ends(self) -> None:
+        # Matching runs per logical line through the shared LF/CRLF line model, so
+        # $ anchors before a CRLF terminator (like rg --crlf): EVERY line ending in
+        # 'end' matches, not only the final line that lacks a terminator. A
+        # whole-text MULTILINE $ anchors only before a bare \n and would miss the
+        # CRLF lines, reporting 1 instead of 3.
+        text = 'the end\r\nanother end\r\nlast end'
+        compiled = compile_pattern(r'end$', is_regex=True, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=10, is_regex=True, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 3
+        for match in result.matches:
+            # Offsets land on real content, never inside a \r\n pair.
+            assert text[match.char_start:match.char_end] == 'end'
+            assert '\r' not in match.line
+            assert '\n' not in match.line
+
+    @pytest.mark.asyncio
+    async def test_regex_caret_matches_after_crlf(self) -> None:
+        text = 'TODO one\r\nTODO two\r\nTODO three'
+        compiled = compile_pattern(r'^TODO', is_regex=True, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=10, is_regex=True, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 3
+        assert [m.line_number for m in result.matches] == [1, 2, 3]
+
+    @pytest.mark.asyncio
+    async def test_literal_match_offsets_correct_across_crlf(self) -> None:
+        # Line numbering and code-point offsets stay correct across a CRLF
+        # terminator (the \r\n is consumed as ONE terminator by the line model).
+        text = 'alpha\r\nbeta target\r\ngamma'
+        compiled = compile_pattern('target', is_regex=False, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=10, is_regex=False, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 1
+        match = result.matches[0]
+        assert match.line_number == 2
+        assert match.line == 'beta target'
+        assert text[match.char_start:match.char_end] == 'target'
+
+    @pytest.mark.asyncio
+    async def test_pattern_does_not_span_line_break(self) -> None:
+        # Line-oriented: matching is per logical line, so a pattern containing an
+        # explicit newline cannot match across a line break (like default ripgrep
+        # without -U). This pins the line-oriented contract a whole-text matcher
+        # would violate by matching 'foo\nbar' across the LF.
+        text = 'foo\nbar'
+        compiled = compile_pattern(r'foo\nbar', is_regex=True, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=10, is_regex=True, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 0
+
+    @pytest.mark.asyncio
+    async def test_large_literal_scan_is_offloaded_correct_and_non_blocking(self) -> None:
+        # A literal scan over a >_OFFLOAD_MIN_CHARS entry is offloaded to a worker
+        # thread, so it must NOT starve the event loop while remaining correct.
+        # Pre-fix the per-line literal scan ran inline and pinned the loop for
+        # seconds on newline-dense content. 'NEEDLE' sits after a large filler.
+        filler = 'x\n' * 800_000  # ~1.6MB, exceeds the 1M-char offload threshold
+        text = filler + 'NEEDLE\n'
+        compiled = compile_pattern('NEEDLE', is_regex=False, case_sensitive=True)
+
+        ticks = 0
+        keep_ticking = True
+
+        async def heartbeat() -> None:
+            nonlocal ticks
+            while keep_ticking:
+                ticks += 1
+                await asyncio.sleep(0.005)
+
+        hb = asyncio.create_task(heartbeat())
+        try:
+            result = await match_entry(
+                'cid', text, compiled, context_lines=0, max_matches=10, is_regex=False, regex_timeout_s=5.0,
+            )
+        finally:
+            keep_ticking = False
+            await hb
+
+        # Correctness on the offloaded path: exact match, line number, code-point offset.
+        assert result.match_count == 1
+        match = result.matches[0]
+        assert text[match.char_start:match.char_end] == 'NEEDLE'
+        assert match.char_start == 1_600_000  # 800_000 'x\n' lines * 2 code points
+        assert match.line_number == 800_001
+        # The loop kept ticking DURING the offloaded scan (an inline scan would
+        # have starved the heartbeat until the scan finished).
+        assert ticks >= 2

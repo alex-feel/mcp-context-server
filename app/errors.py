@@ -55,6 +55,22 @@ class DependencyError(Exception):
     EXIT_CODE = 69  # BSD sysexits.h EX_UNAVAILABLE
 
 
+class ControlFlowError(Exception):
+    """Base for internal control-flow signals that are NOT database faults.
+
+    A storage backend's transaction wrapper records a circuit-breaker failure on
+    any exception escaping the transaction body. But some exceptions are NORMAL
+    control flow -- an optimistic-concurrency conflict or a post-deduplication
+    embedding reconciliation -- raised intentionally to roll back and retry, not
+    because the database is unhealthy. ``begin_transaction`` catches subclasses of
+    this marker, rolls the transaction back, and re-raises WITHOUT tripping the
+    circuit breaker, so sustained-but-normal write contention cannot open the
+    breaker and start rejecting healthy writes. It is deliberately neither a
+    ``ToolError`` (so an ``except ToolError`` fast-path does not swallow it) nor a
+    connection error (so it is not treated as a transient retry).
+    """
+
+
 def is_client_error(exc: Exception) -> bool:
     """Detect HTTP 4xx client errors from API provider exceptions.
 

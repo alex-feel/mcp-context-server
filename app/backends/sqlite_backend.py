@@ -31,6 +31,7 @@ from typing import cast
 from typing import overload
 from typing import override
 
+from app.errors import ControlFlowError
 from app.settings import get_settings
 
 if TYPE_CHECKING:
@@ -1173,13 +1174,20 @@ class SQLiteBackend:
                 logger.debug('Transaction committed successfully')
 
             except Exception as e:
-                # Failure: rollback transaction
-                logger.warning(f'Transaction failed, rolling back: {e}')
+                # Roll back either way; only a genuine DB fault trips the breaker.
                 try:
                     await loop.run_in_executor(None, writer.rollback)
                 except Exception as rollback_error:
                     logger.error(f'Rollback failed: {rollback_error}')
 
+                if isinstance(e, ControlFlowError):
+                    # Normal control flow (optimistic-concurrency conflict / post-dedup
+                    # embedding reconciliation), NOT a database fault: rolled back, but
+                    # do NOT record a circuit-breaker failure, so normal write
+                    # contention cannot open the breaker and reject healthy writes.
+                    raise
+
+                logger.warning(f'Transaction failed, rolling back: {e}')
                 self.circuit_breaker.record_failure()
                 raise
 

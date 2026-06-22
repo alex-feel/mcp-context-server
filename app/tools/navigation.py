@@ -211,7 +211,9 @@ async def grep_context(
 
     Matching runs in Python (identical on SQLite and PostgreSQL): literals use the
     stdlib ``re`` engine; ``is_regex=True`` uses the ``regex`` engine with ``^``/``$``
-    anchored per line (line-oriented, like ripgrep), bounded by both a real per-entry
+    anchored per line (line-oriented: matching runs per logical line split on LF/CRLF,
+    so a pattern never spans a line break and ``^``/``$`` anchor at CRLF as well as LF
+    boundaries, like ripgrep with ``--crlf``), bounded by both a real per-entry
     wall-clock timeout AND an aggregate scan budget: a catastrophic pattern is
     preempted and that entry is skipped, and once the aggregate budget is exhausted
     the scan stops with ``truncated`` True -- rather than freezing the server. Output
@@ -407,8 +409,10 @@ async def navigate_context(
         text_value = row['text_content']
         text = text_value if text_value is not None else ''
 
-        # Root summary mirrors the live summary column by reference (normalize
-        # empty/whitespace to None, matching the search-tool contract); the flat
+        # Root summary mirrors the live summary column by reference; an empty or
+        # whitespace-only stored summary normalizes to None per the optional-field
+        # convention (OutlineNodeDict.summary is str | None), which is distinct from
+        # the search tools' '' (empty string) for an absent summary. The flat
         # summary column is never overloaded.
         summary_value = row['summary']
         root_summary = summary_value if isinstance(summary_value, str) and summary_value.strip() else None

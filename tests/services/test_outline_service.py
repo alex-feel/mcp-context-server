@@ -6,6 +6,8 @@ heading-light documents, sibling-ordinal node-id disambiguation, max_depth
 folding, code-point offsets, and node-span resolution.
 """
 
+import time
+
 from app.services.outline_service import ROOT_NODE_ID
 from app.services.outline_service import OutlineNode
 from app.services.outline_service import count_nodes
@@ -241,3 +243,84 @@ class TestResolveNodeSpan:
     def test_unknown_node_returns_none(self) -> None:
         text = '# A\nbody'
         assert resolve_node_span(text, 'does/not/exist') is None
+
+
+class TestRootHeadingCollision:
+    """A heading whose title slugifies to ROOT_NODE_ID must not shadow the root.
+
+    Regression: a top-level ``# Root`` once received node_id ``'root'``, colliding
+    with the synthetic document root, so ``resolve_node_span(node_id='root')``
+    returned the whole document instead of that heading's section -- breaking the
+    node_id round-trip surfaced by navigate_context. The synthetic root reserves
+    ``'root'`` so a colliding heading bumps to ``'root-2'``.
+    """
+
+    def test_root_titled_heading_gets_disambiguated_id(self) -> None:
+        text = 'preamble\n# Root\nrootbody\n# Other\notherbody\n'
+        root = parse_outline(text)
+        first, second = root.children
+        assert first.title == 'Root'
+        assert first.node_id == 'root-2'  # 'root' is reserved for the synthetic root
+        assert second.node_id == 'other'
+
+    def test_root_titled_heading_round_trips_to_its_own_section(self) -> None:
+        text = 'preamble\n# Root\nrootbody\n# Other\notherbody\n'
+        root = parse_outline(text)
+        heading = root.children[0]
+        # The heading's section is a strict subset of the document...
+        assert heading.char_start > 0
+        assert heading.char_end < len(text)
+        # ...and its node_id resolves to that subset, NOT the whole document.
+        assert resolve_node_span(text, 'root-2') == (heading.char_start, heading.char_end)
+        # The synthetic root id still resolves to the whole document.
+        assert resolve_node_span(text, ROOT_NODE_ID) == (0, len(text))
+
+    def test_multiple_root_titled_headings_get_distinct_ids(self) -> None:
+        text = '# Root\na\n# ROOT\nb\n# Root!\nc\n'
+        root = parse_outline(text)
+        ids = [child.node_id for child in root.children]
+        # All three titles slugify to 'root'; none may reuse the reserved synthetic
+        # id, and all must be distinct so each round-trips to its own section.
+        assert ids == ['root-2', 'root-3', 'root-4']
+        assert len(set(ids)) == 3
+        for child in root.children:
+            assert resolve_node_span(text, child.node_id) == (child.char_start, child.char_end)
+
+
+class TestUnclosableFenceComplexity:
+    """Pathological unclosable-fence input must parse in near-linear time.
+
+    Regression for the O(n^2) blowup where a naive per-opener scan rescanned to EOF
+    for every unclosable fence opener. The fix precomputes closer candidates and
+    memoizes the no-closer result, so even tens of thousands of openers parse fast.
+    """
+
+    def test_many_identical_unclosable_openers_are_fast(self) -> None:
+        # Each '~~~ x' is an unclosable opener (info string blocks any close);
+        # pre-fix this O(n^2) scan took tens of seconds for this N.
+        text = '~~~~~\n' + '\n'.join('~~~ x' for _ in range(20000))
+        start = time.perf_counter()
+        root = parse_outline(text)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 2.0
+        assert root.node_id == ROOT_NODE_ID
+        assert len(root.children) == 0  # every line is a fence-opener, not a heading
+
+    def test_varied_length_unclosable_openers_are_fast(self) -> None:
+        # Varying opener lengths defeats a per-length-only memo; the candidate
+        # precompute still keeps it linear (no bare fence/closer lines exist).
+        text = '\n'.join(f'{"~" * (3 + (n % 9))} x' for n in range(20000))
+        start = time.perf_counter()
+        parse_outline(text)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 2.0
+
+    def test_unclosed_then_closed_fence_still_suppresses_interior(self) -> None:
+        # An early UNCLOSED fence must NOT disable detection of a LATER closed
+        # fence: the closed fence's interior heading stays suppressed, and only the
+        # real heading after it surfaces. (The linear fix preserves this exact
+        # per-opener semantics rather than disabling fence detection after the
+        # first unclosed opener.)
+        text = '~~~ x\n```\n# Inside\n```\n# Real\n'
+        root = parse_outline(text)
+        assert [child.title for child in root.children] == ['Real']
