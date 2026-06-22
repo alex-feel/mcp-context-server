@@ -247,6 +247,78 @@ class TestSharedSummarySemaphore:
         assert provider.cancelled >= 1
         assert not hold.is_set()
 
+    @pytest.mark.asyncio
+    async def test_outer_cancellation_releases_node_leg_when_summary_disabled(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """OUTER cancellation with ``run_summary=False`` must not orphan the node leg.
+
+        This is the leak window the abort-ERROR test does NOT cover. With
+        ``run_summary=False`` (the common short-text path -- ``update_context``
+        hardcodes it) the node leg does not transitively cancel via the flat
+        summary, so when an outer cancellation (MCP client disconnect / request
+        timeout) lands on the abort-legs gather -- kept suspended here by a slow
+        embedding leg -- ``run_generation`` must still cancel and await the node leg
+        in its ``finally``. Otherwise the node task is orphaned holding the shared
+        summary-model permit, and repeated cancellations starve all summary
+        generation. The test asserts (a) the shared semaphore is restored, (b) the
+        in-flight node call was genuinely cancelled, and (c) no node task is leaked.
+        """
+        _apply_low_summary_budget(monkeypatch, 2)
+
+        # Node summaries block in flight on ``hold`` (never released here) so they
+        # are pinned holding the shared summary-model permit when we cancel.
+        hold = asyncio.Event()
+        provider = _ConcurrencyTrackingProvider(hold=hold)
+
+        async def slow_embed(_text: str) -> object:
+            # Keep the abort-legs gather suspended so the outer cancel lands THERE
+            # (the exact leak window), not on the final ``await node_task``.
+            await asyncio.sleep(5)
+            return None
+
+        monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
+        monkeypatch.setattr(shared_tools, 'compute_summary_total_timeout', lambda: 5.0)
+        monkeypatch.setattr(shared_tools, 'embed_then_compress', slow_embed)
+
+        task = asyncio.create_task(
+            shared_tools.run_generation(
+                MULTI_HEADING_TEXT, 'agent',
+                run_embedding=True,
+                run_summary=False,
+                run_nodes=True,
+            ),
+        )
+
+        # Wait until at least one per-node summary is in flight holding a permit.
+        for _ in range(400):
+            if provider.current >= 1:
+                break
+            await asyncio.sleep(0.005)
+        assert provider.current >= 1, 'node summary never reached its in-flight hold'
+        assert shared_tools._summary_model_semaphore._value < 2  # a permit is held
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The finally cancelled and awaited the node leg: shared budget fully
+        # restored, no node-summary call left running, the in-flight call genuinely
+        # cancelled (its hold was never released), and no node task leaked.
+        assert shared_tools._summary_model_semaphore._value == 2
+        assert provider.current == 0
+        assert provider.cancelled >= 1
+        assert not hold.is_set()
+        leaked_node_tasks = [
+            t for t in asyncio.all_tasks()
+            if not t.done() and (
+                '_nodes_after_summary' in repr(t.get_coro())
+                or 'generate_index_nodes_with_timeout' in repr(t.get_coro())
+                or '_summarize_node' in repr(t.get_coro())
+            )
+        ]
+        assert leaked_node_tasks == []
+
 
 class _PrecedenceTrackingProvider:
     """Fake summary provider that records, in order, the lifecycle events of the

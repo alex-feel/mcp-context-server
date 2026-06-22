@@ -7,6 +7,7 @@ folding, code-point offsets, and node-span resolution.
 """
 
 from app.services.outline_service import ROOT_NODE_ID
+from app.services.outline_service import OutlineNode
 from app.services.outline_service import count_nodes
 from app.services.outline_service import parse_outline
 from app.services.outline_service import resolve_node_span
@@ -161,6 +162,57 @@ class TestMaxDepth:
         assert node_b.title == 'B'
         # '### C' exceeds max_depth=2 and is not a node.
         assert node_b.children == ()
+
+
+class TestNodeIdDepthInvariance:
+    """Node ids are assigned over the full canonical heading set, so they are
+    stable across ``max_depth`` -- a folded (lower-``max_depth``) view reuses the
+    same ids the canonical depth produces. This guards the contract that lets
+    per-node summaries (generated at the canonical depth) attach to the right
+    sections and a node_id from ``navigate_context(max_depth<6)`` round-trip
+    through ``read_context_range`` (which resolves at the canonical depth).
+    """
+
+    # Deeper duplicate-slug heading BEFORE the shallower same-slug siblings: the
+    # regression structure where folding '### Notes' out used to shift the
+    # surviving '## Notes' ids from notes-2/notes-3 down to notes/notes-2.
+    _TEXT = '# Top\n### Notes\n## Notes\n## Notes'
+
+    @staticmethod
+    def _ids_by_span(root: OutlineNode) -> dict[tuple[int, int], str]:
+        spans: dict[tuple[int, int], str] = {}
+        stack = list(root.children)
+        while stack:
+            node = stack.pop()
+            spans[(node.char_start, node.char_end)] = node.node_id
+            stack.extend(node.children)
+        return spans
+
+    def test_node_ids_stable_across_max_depth(self) -> None:
+        deep = self._ids_by_span(parse_outline(self._TEXT, max_depth=6))
+        shallow = self._ids_by_span(parse_outline(self._TEXT, max_depth=2))
+        # Every section present at BOTH depths keeps the same node_id.
+        shared = set(deep) & set(shallow)
+        assert shared  # the two L2 "## Notes" sections survive the fold
+        for span in shared:
+            assert deep[span] == shallow[span]
+        # Concretely, the [16:25] section is notes-2 at BOTH depths -- before the
+        # fix the depth-2 parse shifted it to 'top/notes'.
+        assert shallow[(16, 25)] == 'top/notes-2'
+
+    def test_folded_node_id_round_trips_through_resolve(self) -> None:
+        # A node_id surfaced by a max_depth=2 parse resolves (at the canonical
+        # default depth, exactly as read_context_range does) to the SAME span it
+        # showed -- not a different section.
+        shallow_root = parse_outline(self._TEXT, max_depth=2)
+        stack = list(shallow_root.children)
+        checked = 0
+        while stack:
+            node = stack.pop()
+            assert resolve_node_span(self._TEXT, node.node_id) == (node.char_start, node.char_end)
+            checked += 1
+            stack.extend(node.children)
+        assert checked >= 2  # the surviving L2 sections were actually exercised
 
 
 class TestCodePointOffsets:

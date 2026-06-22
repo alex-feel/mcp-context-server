@@ -32,6 +32,11 @@ _SETEXT_H2_RE = re.compile(r'^[ ]{0,3}-+[ \t]*$')
 
 ROOT_NODE_ID = 'root'
 
+# The canonical heading depth (Markdown's deepest ATX level). Node ids are always
+# assigned over the full level-1..6 heading set so an id is independent of the
+# max_depth a caller folds the displayed tree to -- see _assign_canonical_ids.
+_CANONICAL_HEADING_DEPTH = 6
+
 
 @dataclass(frozen=True, slots=True)
 class OutlineNode:
@@ -184,41 +189,33 @@ def _freeze(node: _BuildNode) -> OutlineNode:
     )
 
 
-def parse_outline(text: str, *, max_depth: int = 6) -> OutlineNode:
-    """Parse ``text`` into a Markdown outline tree rooted at a synthetic document node.
+def _assign_canonical_ids(headings: list[tuple[int, str, int]]) -> dict[int, tuple[str, int]]:
+    """Assign a depth-invariant ``(node_id, ordinal)`` to every heading.
 
-    The returned root spans the whole document (node_id ``'root'``); its
-    descendants are the headings (<= ``max_depth``) nested by level. A document
-    with no headings yields a childless root. Node ids are heading-path slugs
-    (e.g. ``setup/install``) with a sibling ordinal disambiguating duplicate
-    slugs (``notes``, ``notes-2``); they are regenerated wholesale on every parse
-    and are not stable across heading inserts or renames.
-
-    Args:
-        text: The record's full text.
-        max_depth: Deepest heading level to include (1-6); deeper headings fold
-            into the nearest enclosing section.
+    Walks the FULL heading set (every level present, not a ``max_depth``-filtered
+    view) with the same parent-path slug disambiguation :func:`parse_outline`
+    uses, and returns a map keyed by each heading's ``char_start`` (unique per
+    heading). A heading's id therefore depends only on the document, never on the
+    ``max_depth`` a caller later folds the tree to, so node ids stay stable across
+    ``navigate_context`` depths and match the canonical depth at which per-node
+    summaries are generated and ``read_context_range`` resolves.
 
     Returns:
-        The root OutlineNode of the tree.
+        A map from each heading's ``char_start`` to its ``(node_id, ordinal)``.
     """
-    doc_len = len(text)
-    lines, line_starts = split_lines_with_offsets(text)
-    headings = _collect_headings(lines, line_starts, max_depth)
-
-    root = _BuildNode(node_id=ROOT_NODE_ID, level=0, ordinal=1, title='', char_start=0, char_end=doc_len)
+    root = _BuildNode(node_id=ROOT_NODE_ID, level=0, ordinal=1, title='', char_start=0, char_end=0)
     stack: list[_BuildNode] = [root]
+    ids: dict[int, tuple[str, int]] = {}
 
-    for k, (level, title, start) in enumerate(headings):
-        end = _section_end(headings, k, doc_len)
+    for level, title, start in headings:
         while len(stack) > 1 and stack[-1].level >= level:
             stack.pop()
         parent = stack[-1]
         base = slugify(title)
         count = parent.slugs.get(base, 0) + 1
         segment = base if count == 1 else f'{base}-{count}'
-        # A generated suffix (e.g. 'notes-2' for the 2nd "Notes") can collide with a
-        # literal sibling heading whose own slug is already 'notes-2' ("Notes 2").
+        # A generated suffix (e.g. 'notes-2' for the 2nd "Notes") can collide with
+        # a literal sibling heading whose own slug is already 'notes-2' ("Notes 2").
         # Bump until the segment is unique among THIS parent's children so every
         # node_id is unambiguous and read_context_range resolves the intended span.
         while segment in parent.assigned:
@@ -228,10 +225,71 @@ def parse_outline(text: str, *, max_depth: int = 6) -> OutlineNode:
         parent.assigned.add(segment)
         parent_path = '' if parent.node_id == ROOT_NODE_ID else parent.node_id
         node_id = f'{parent_path}/{segment}' if parent_path else segment
+        ids[start] = (node_id, count)
         node = _BuildNode(
             node_id=node_id,
             level=level,
             ordinal=count,
+            title=title,
+            char_start=start,
+            char_end=start,
+        )
+        parent.children.append(node)
+        stack.append(node)
+
+    return ids
+
+
+def parse_outline(text: str, *, max_depth: int = 6) -> OutlineNode:
+    """Parse ``text`` into a Markdown outline tree rooted at a synthetic document node.
+
+    The returned root spans the whole document (node_id ``'root'``); its
+    descendants are the headings (<= ``max_depth``) nested by level. A document
+    with no headings yields a childless root. Node ids are heading-path slugs
+    (e.g. ``setup/install``) with a sibling ordinal disambiguating duplicate
+    slugs (``notes``, ``notes-2``).
+
+    Node ids and ordinals are assigned over the FULL canonical heading set (levels
+    1-6), so a given heading's id is INDEPENDENT of ``max_depth``: a folded
+    (lower-``max_depth``) view reuses exactly the ids the canonical parse produces.
+    This is load-bearing -- per-node summaries are generated, and
+    ``read_context_range`` resolves, at the canonical depth, so a
+    ``navigate_context`` call with a lower ``max_depth`` must surface the same ids
+    for stored summaries to attach to the right sections and for a returned
+    ``node_id`` to round-trip. Ids are still regenerated wholesale on every parse
+    and are NOT stable across heading inserts or renames.
+
+    Args:
+        text: The record's full text.
+        max_depth: Deepest heading level to include (1-6); deeper headings fold
+            into the nearest enclosing section (whose span extends over them). This
+            only affects which nodes appear and their spans -- never the node ids.
+
+    Returns:
+        The root OutlineNode of the tree.
+    """
+    doc_len = len(text)
+    lines, line_starts = split_lines_with_offsets(text)
+    # Assign ids/ordinals over the full canonical heading set so they are
+    # max_depth-invariant (see _assign_canonical_ids), then build the (possibly
+    # folded) display tree from the headings within max_depth, reusing those ids.
+    canonical_headings = _collect_headings(lines, line_starts, _CANONICAL_HEADING_DEPTH)
+    canonical_ids = _assign_canonical_ids(canonical_headings)
+    headings = [h for h in canonical_headings if h[0] <= max_depth]
+
+    root = _BuildNode(node_id=ROOT_NODE_ID, level=0, ordinal=1, title='', char_start=0, char_end=doc_len)
+    stack: list[_BuildNode] = [root]
+
+    for k, (level, title, start) in enumerate(headings):
+        end = _section_end(headings, k, doc_len)
+        while len(stack) > 1 and stack[-1].level >= level:
+            stack.pop()
+        parent = stack[-1]
+        node_id, ordinal = canonical_ids[start]
+        node = _BuildNode(
+            node_id=node_id,
+            level=level,
+            ordinal=ordinal,
             title=title,
             char_start=start,
             char_end=end,
@@ -257,7 +315,10 @@ def resolve_node_span(text: str, node_id: str, *, max_depth: int = 6) -> tuple[i
     Args:
         text: The record's full text.
         node_id: A node id from a prior :func:`parse_outline` / navigate_context.
-        max_depth: Must match the depth used when the id was produced.
+        max_depth: Tree depth to resolve against. Node ids are depth-invariant
+            (assigned over the full canonical heading set), so the default
+            canonical depth resolves ids produced by navigate_context at ANY
+            max_depth.
 
     Returns:
         The node's code-point span, or None when no node matches.

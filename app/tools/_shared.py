@@ -581,10 +581,13 @@ async def run_generation(
 
     The embedding leg and the flat summary are ABORT-MANDATORY: both are awaited
     and ALL their errors are collected, so a failure reports every abort-mandatory
-    leg deterministically. On any such failure the never-raise node leg is
-    CANCELLED (and awaited) rather than waited out, so the abort path never blocks
-    on node-summary timeouts and no in-flight summary-model call outlives the
-    failed request.
+    leg deterministically. On EVERY exit path -- a normal return, the combined
+    abort ToolError, OR an outer cancellation (MCP client disconnect / request
+    timeout) landing on the abort-legs gather -- the ``finally`` cancels and awaits
+    every created task that is not yet done. So no in-flight summary-model or
+    embedding call outlives the request: in particular the never-raise node leg,
+    which when ``run_summary=False`` does NOT transitively cancel via the flat
+    summary, can never be orphaned holding the shared summary-model permit.
 
     Returns:
         ``(chunk_embeddings, summary_text, index_nodes)``; any leg that was not
@@ -599,45 +602,62 @@ async def run_generation(
     summary_task: asyncio.Task[str | None] | None = None
     node_task: asyncio.Task[list[IndexNodeRow] | None] | None = None
 
-    if run_embedding:
-        embed_task = asyncio.create_task(embed_then_compress(text))
-    if run_summary:
-        summary_task = asyncio.create_task(generate_summary_with_timeout(text, source))
-    if run_nodes:
-        node_task = asyncio.create_task(_nodes_after_summary(summary_task, text))
+    try:
+        if run_embedding:
+            embed_task = asyncio.create_task(embed_then_compress(text))
+        if run_summary:
+            summary_task = asyncio.create_task(generate_summary_with_timeout(text, source))
+        if run_nodes:
+            node_task = asyncio.create_task(_nodes_after_summary(summary_task, text))
 
-    # Await the ABORT-MANDATORY legs, collecting every error (return_exceptions so
-    # one failure does not hide another); the never-raise node leg is NOT awaited
-    # here so its timeouts can never delay an abort.
-    abort_legs: list[tuple[str, asyncio.Task[Any]]] = []
-    if embed_task is not None:
-        abort_legs.append(('embedding', embed_task))
-    if summary_task is not None:
-        abort_legs.append(('summary', summary_task))
+        # Await the ABORT-MANDATORY legs, collecting every error (return_exceptions so
+        # one failure does not hide another); the never-raise node leg is NOT awaited
+        # here so its timeouts can never delay an abort.
+        abort_legs: list[tuple[str, asyncio.Task[Any]]] = []
+        if embed_task is not None:
+            abort_legs.append(('embedding', embed_task))
+        if summary_task is not None:
+            abort_legs.append(('summary', summary_task))
 
-    errors: list[str] = []
-    if abort_legs:
-        await asyncio.gather(*(task for _, task in abort_legs), return_exceptions=True)
-        for name, task in abort_legs:
-            exc = task.exception()
-            if exc is not None and not isinstance(exc, asyncio.CancelledError):
-                errors.append(f'{name}: {type(exc).__name__}: {exc}')
+        errors: list[str] = []
+        if abort_legs:
+            await asyncio.gather(*(task for _, task in abort_legs), return_exceptions=True)
+            for name, task in abort_legs:
+                exc = task.exception()
+                if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                    errors.append(f'{name}: {type(exc).__name__}: {exc}')
 
-    if errors:
-        # Abort-mandatory failure: cancel and await the never-raise node leg so no
-        # in-flight summary-model call outlives the failed request, then surface a
-        # combined, deterministic error naming every failed leg.
-        if node_task is not None:
-            node_task.cancel()
-            await asyncio.gather(node_task, return_exceptions=True)
-        raise ToolError(
-            'Generation failed after exhausting configured retries: ' + '; '.join(errors),
-        )
+        if errors:
+            # Abort-mandatory failure: surface a combined, deterministic error
+            # naming every failed leg. The never-raise node leg (and any other
+            # in-flight leg) is cancelled and awaited by the ``finally`` below, so
+            # no in-flight summary-model call outlives the failed request.
+            raise ToolError(
+                'Generation failed after exhausting configured retries: ' + '; '.join(errors),
+            )
 
-    chunk_embeddings = embed_task.result() if embed_task is not None else None
-    summary_text = summary_task.result() if summary_task is not None else None
-    index_nodes = await node_task if node_task is not None else None
-    return chunk_embeddings, summary_text, index_nodes
+        chunk_embeddings = embed_task.result() if embed_task is not None else None
+        summary_text = summary_task.result() if summary_task is not None else None
+        index_nodes = await node_task if node_task is not None else None
+        return chunk_embeddings, summary_text, index_nodes
+    finally:
+        # Guarantee NO created task outlives this coroutine on ANY exit path. On a
+        # normal return every task is already done (no-op). On the abort ToolError
+        # the node leg may still be running. On OUTER cancellation, CancelledError
+        # propagates straight out of the abort-legs gather BEFORE the final
+        # ``await node_task`` runs, so without this cleanup the node leg -- when
+        # run_summary=False it never transitively cancels via the flat summary --
+        # would be orphaned and keep holding its shared summary-model permit,
+        # progressively starving all summary generation. Cancelling and awaiting
+        # every not-done task here always releases the embedding/summary-model
+        # permits and ensures no orphaned model call survives the request.
+        pending: list[asyncio.Task[Any]] = [
+            task for task in (embed_task, summary_task, node_task) if task is not None and not task.done()
+        ]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
