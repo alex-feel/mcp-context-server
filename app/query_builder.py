@@ -8,6 +8,18 @@ from typing import Any
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 
+# Match the metadata COLUMN token only, so a table alias can qualify the column
+# WITHOUT ever rewriting a user-supplied JSON key (a global str.replace corrupted
+# keys containing the substring 'metadata', e.g. 'metadata_version'). The column
+# position is backend-specific: PostgreSQL accesses it via ``->``/``#>`` (a JSON
+# key is [A-Za-z0-9_.-] only, so it never contains those), while SQLite passes it
+# as the first ``json_extract``/``json_type``/``json_each`` argument, i.e.
+# immediately followed by a comma (a SQLite JSON path never contains a comma). The
+# PG pattern deliberately omits the comma so a nested array-path segment like
+# ``{metadata,x}`` is NOT mistaken for the column.
+_PG_METADATA_COLUMN_RE = re.compile(r"(?<![\w.'])metadata(?=->|#>)")
+_SQLITE_METADATA_COLUMN_RE = re.compile(r"(?<![\w.'])metadata(?=\s*,)")
+
 
 class MetadataQueryBuilder:
     """Build SQL WHERE clauses for metadata filtering with security validation.
@@ -21,6 +33,7 @@ class MetadataQueryBuilder:
         backend_type: str = 'sqlite',
         json_extract_fn: str | None = None,
         param_offset: int = 0,
+        table_alias: str | None = None,
     ) -> None:
         """Initialize the query builder.
 
@@ -28,6 +41,11 @@ class MetadataQueryBuilder:
             backend_type: Backend type ('sqlite' or 'postgresql') for placeholder generation
             json_extract_fn: Optional JSON extraction function name override
             param_offset: Starting position for PostgreSQL placeholders (for combining queries)
+            table_alias: Optional table alias for the ``metadata`` column. When set
+                (e.g. ``'ce'`` for a query that JOINs ``context_entries ce``), the
+                built clause qualifies the column as ``<alias>.metadata`` so callers
+                never rewrite the built SQL. Only column positions are qualified;
+                JSON keys (even ones containing 'metadata') are left untouched.
         """
         self.conditions: list[str] = []
         self.parameters: list[Any] = []
@@ -35,6 +53,7 @@ class MetadataQueryBuilder:
         self.backend_type = backend_type
         self.json_extract_fn = json_extract_fn or ('json_extract' if backend_type == 'sqlite' else 'jsonb_extract_path_text')
         self.param_offset = param_offset
+        self.table_alias = table_alias
 
     def _placeholder(self) -> str:
         """Generate placeholder for current parameter position.
@@ -165,6 +184,14 @@ class MetadataQueryBuilder:
 
         operator = ' AND ' if use_and else ' OR '
         where_clause = f'({operator.join(self.conditions)})'
+        if self.table_alias:
+            # Qualify the metadata COLUMN with the caller's table alias so the
+            # clause matches a JOINed target (e.g. 'ce.metadata'). Only column
+            # positions are rewritten -- a JSON key containing 'metadata' (e.g.
+            # 'metadata_version', or a nested '{metadata,x}' segment) is never
+            # touched (see the backend-specific column patterns above).
+            column_re = _SQLITE_METADATA_COLUMN_RE if self.backend_type == 'sqlite' else _PG_METADATA_COLUMN_RE
+            where_clause = column_re.sub(f'{self.table_alias}.metadata', where_clause)
         return (where_clause, self.parameters)
 
     def get_filter_count(self) -> int:

@@ -286,6 +286,22 @@ class TestContentHashMigration:
         columns = await backend.execute_read(_check)
         assert 'content_hash' in columns
 
+    @pytest.mark.asyncio
+    async def test_base_schema_provisions_dedup_index_sqlite(self, backend: StorageBackend) -> None:
+        """The base schema alone provisions the dedup index (no migration applied).
+
+        The ``backend`` fixture loads only ``load_schema('sqlite')`` and never calls
+        apply_content_hash_migration, so the index existing here proves a target
+        initialized purely from the base schema -- including the migration CLI's
+        target init -- has it from inception, not only after a later server start.
+        """
+        def _check_index(conn: sqlite3.Connection) -> list[str]:
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+            return [row[0] for row in cursor.fetchall()]
+
+        indexes = await backend.execute_read(_check_index)
+        assert 'idx_context_entries_dedup_hash' in indexes
+
 
 # ===========================================================================
 # Hash stored on insert

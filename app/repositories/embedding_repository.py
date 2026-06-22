@@ -1015,6 +1015,7 @@ class EmbeddingRepository(BaseRepository):
                 metadata_builder = MetadataQueryBuilder(
                     backend_type='postgresql',
                     param_offset=len(filter_params),
+                    table_alias='ce',
                 )
 
                 # Simple metadata filters (key=value equality)
@@ -1052,12 +1053,13 @@ class EmbeddingRepository(BaseRepository):
                             validation_errors,
                         )
 
-                # Add metadata conditions to filter with 'ce.' table alias prefix
+                # The builder emits the metadata conditions already qualified with the
+                # 'ce.' table alias (table_alias='ce'), matching the context_entries
+                # JOIN target without rewriting the built SQL (a global str.replace
+                # would corrupt JSON keys that contain the substring 'metadata').
                 metadata_clause, metadata_params = metadata_builder.build_where_clause()
                 if metadata_clause:
-                    # Prefix metadata conditions with 'ce.' table alias for the context_entries table
-                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
-                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_conditions.append(metadata_clause)
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
                     filter_count += metadata_filter_count
@@ -1388,6 +1390,7 @@ class EmbeddingRepository(BaseRepository):
                     builder = MetadataQueryBuilder(
                         backend_type='postgresql',
                         param_offset=len(params),
+                        table_alias='ce',
                     )
                     if metadata:
                         for key, value in metadata.items():
@@ -1425,9 +1428,10 @@ class EmbeddingRepository(BaseRepository):
                             )
                     clause, mparams = builder.build_where_clause()
                     if clause:
-                        # Match the alias prefix the fp32 PG path uses so
-                        # the WHERE clause references the JOIN target.
-                        conditions.append(clause.replace('metadata', 'ce.metadata'))
+                        # The builder emits the clause already qualified with the 'ce.'
+                        # alias (table_alias='ce'), matching the JOIN target -- no
+                        # str.replace that would corrupt 'metadata'-containing keys.
+                        conditions.append(clause)
                         params.extend(mparams)
                         position += len(mparams)
 

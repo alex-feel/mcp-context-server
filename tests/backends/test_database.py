@@ -66,6 +66,8 @@ class TestDatabaseInitialization:
                 'idx_tags_tag',
                 'idx_thread_id',
                 'idx_thread_source',
+                # Deduplication lookup index, provisioned from the base schema.
+                'idx_context_entries_dedup_hash',
                 # Metadata filtering indexes (configurable via METADATA_INDEXED_FIELDS)
                 'idx_metadata_status',
                 'idx_metadata_agent_name',

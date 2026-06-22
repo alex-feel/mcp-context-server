@@ -657,3 +657,57 @@ class TestSqliteBooleanBackwardCompatibility:
         where_clause, params = builder.build_where_clause()
         assert 'json_extract' in where_clause
         assert params == [0]
+
+
+class TestMetadataQueryBuilderTableAlias:
+    """table_alias qualifies the metadata COLUMN, never a JSON key.
+
+    Regression for a global ``clause.replace('metadata', 'ce.metadata')`` that
+    corrupted any JSON key containing the substring 'metadata' (e.g. a filter on
+    'metadata_version' became 'ce.metadata_version', so PostgreSQL semantic search
+    silently matched no rows). The builder now qualifies only column positions.
+    """
+
+    def test_no_alias_emits_bare_column(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_simple_filter('status', 'active')
+        where_clause, _ = builder.build_where_clause()
+        assert "metadata->>'status'" in where_clause
+        assert 'ce.metadata' not in where_clause
+
+    def test_alias_qualifies_column(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('status', 'active')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata->>'status'" in where_clause
+
+    def test_alias_does_not_corrupt_metadata_substring_key(self) -> None:
+        # The bug: a 'metadata_version' key was rewritten to 'ce.metadata_version'.
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('metadata_version', '1')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata->>'metadata_version'" in where_clause
+        assert "'ce.metadata_version'" not in where_clause
+
+    def test_alias_does_not_corrupt_key_named_exactly_metadata(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('metadata', 'x')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata->>'metadata'" in where_clause
+        assert "->>'ce.metadata'" not in where_clause
+
+    def test_alias_does_not_corrupt_nested_metadata_segment(self) -> None:
+        # A nested array-path segment named 'metadata' (followed by a comma) must
+        # NOT be mistaken for the column.
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('metadata.version', 'x')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata#>>'{metadata,version}'" in where_clause
+        assert '{ce.metadata,version}' not in where_clause
+
+    def test_alias_qualifies_sqlite_json_extract_column(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='sqlite', table_alias='ce')
+        builder.add_simple_filter('metadata_version', '1')
+        where_clause, _ = builder.build_where_clause()
+        assert "json_extract(ce.metadata, '$.metadata_version')" in where_clause
+        assert '$.ce.metadata_version' not in where_clause

@@ -46,6 +46,10 @@ CREATE INDEX IF NOT EXISTS idx_thread_id ON context_entries(thread_id);
 CREATE INDEX IF NOT EXISTS idx_source ON context_entries(source);
 CREATE INDEX IF NOT EXISTS idx_created_at ON context_entries(created_at);
 CREATE INDEX IF NOT EXISTS idx_thread_source ON context_entries(thread_id, source);
+-- Deduplication lookup index (mirrors apply_content_hash_migration). Kept in the
+-- base schema so every initialization path -- server startup AND the migration CLI
+-- target init -- provisions it from inception, not only on a later server start.
+CREATE INDEX IF NOT EXISTS idx_context_entries_dedup_hash ON context_entries(thread_id, source, content_hash);
 
 -- Tags table (many-to-many relationship)
 CREATE TABLE IF NOT EXISTS tags (
