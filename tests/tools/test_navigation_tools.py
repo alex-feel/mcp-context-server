@@ -7,6 +7,7 @@ mandatory clamp+echo of read_context_range, and the locate->extract composition
 """
 
 import sqlite3
+import threading
 from collections.abc import AsyncGenerator
 from datetime import UTC
 from datetime import datetime
@@ -14,6 +15,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -28,6 +30,7 @@ from app.repositories import RepositoryContainer
 from app.repositories.index_node_repository import IndexNodeRow
 from app.services.grep_service import GrepEntryResult
 from app.startup import ensure_repositories
+from app.tools.navigation import _OFFLOAD_MIN_CHARS
 from app.tools.navigation import grep_context
 from app.tools.navigation import navigate_context
 from app.tools.navigation import read_context_range
@@ -460,3 +463,76 @@ class TestGrepCaseFoldParity:
         await _store(nav_backend, 'meaſure')
         result = await _grep(pattern='s', thread_id='t', output_mode='content')
         assert result['total_matches'] == 1
+
+
+class TestLargeEntryOffloadNonBlocking:
+    """A large entry's O(text) outline/line parse runs OFF the event loop (in a
+    worker thread) so a multi-megabyte navigate/read cannot pin the single event
+    loop; a small entry stays inline to avoid a thread hop. Mirrors the grep
+    matcher's _OFFLOAD_MIN_CHARS discipline
+    (test_grep_matcher.py::test_large_literal_scan_is_offloaded_correct_and_non_blocking).
+    """
+
+    @pytest.mark.asyncio
+    async def test_navigate_offloads_large_entry_parse(self, nav_backend: StorageBackend) -> None:
+        from app.services.outline_service import OutlineNode
+        from app.services.outline_service import parse_outline as real_parse
+        big = 'a' * (_OFFLOAD_MIN_CHARS + 10)  # exceeds the offload threshold
+        cid = await _store(nav_backend, big)
+        seen: dict[str, bool] = {}
+
+        def spy(text: str, max_depth: int = 6) -> OutlineNode:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_parse(text, max_depth=max_depth)
+
+        with patch('app.tools.navigation.parse_outline', spy):
+            result = await _navigate(context_id=cid)
+        assert seen['on_main'] is False  # parsed on a worker thread, not the event loop
+        assert result['total_chars'] == len(big)
+
+    @pytest.mark.asyncio
+    async def test_navigate_small_entry_runs_inline(self, nav_backend: StorageBackend) -> None:
+        from app.services.outline_service import OutlineNode
+        from app.services.outline_service import parse_outline as real_parse
+        cid = await _store(nav_backend, '# Intro\nbody\n')
+        seen: dict[str, bool] = {}
+
+        def spy(text: str, max_depth: int = 6) -> OutlineNode:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_parse(text, max_depth=max_depth)
+
+        with patch('app.tools.navigation.parse_outline', spy):
+            await navigate_context(context_id=cid)
+        assert seen['on_main'] is True  # small entry stays inline (no thread hop)
+
+    @pytest.mark.asyncio
+    async def test_read_range_offloads_large_entry_line_split(self, nav_backend: StorageBackend) -> None:
+        from app.services.text_lines import split_lines_with_offsets as real_split
+        big = 'a' * (_OFFLOAD_MIN_CHARS + 10)
+        cid = await _store(nav_backend, big)
+        seen: dict[str, bool] = {}
+
+        def spy(text: str) -> tuple[list[str], list[int]]:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_split(text)
+
+        with patch('app.tools.navigation.split_lines_with_offsets', spy):
+            result = await read_context_range(context_id=cid, start_char=0, end_char=5)
+        assert seen['on_main'] is False  # line split offloaded to a worker thread
+        assert result['text'] == 'aaaaa'
+
+    @pytest.mark.asyncio
+    async def test_read_range_offloads_large_entry_node_resolution(self, nav_backend: StorageBackend) -> None:
+        from app.services.outline_service import resolve_node_span as real_resolve
+        big = '# Title\n' + 'a' * (_OFFLOAD_MIN_CHARS + 10)
+        cid = await _store(nav_backend, big)
+        seen: dict[str, bool] = {}
+
+        def spy(text: str, node_id: str) -> tuple[int, int] | None:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_resolve(text, node_id)
+
+        with patch('app.tools.navigation.resolve_node_span', spy):
+            result = await read_context_range(context_id=cid, node_id='root')
+        assert seen['on_main'] is False  # node-span re-parse offloaded to a worker thread
+        assert result['text']  # root span returned

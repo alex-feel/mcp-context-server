@@ -19,6 +19,7 @@ The two tools share ONE Unicode code-point offset contract: ``grep_context``
 ``read_context_range`` ``start_char``/``end_char`` -- locate, then extract.
 """
 
+import asyncio
 import logging
 import re
 import time
@@ -56,6 +57,14 @@ from app.types import ReadContextRangeDict
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Outline parsing and line splitting are CPU-bound and O(text), and the stored
+# entry text is unbounded, so for a large entry the work is offloaded to a worker
+# thread -- otherwise a single multi-megabyte parse would pin the event loop and
+# starve every other concurrent MCP request. Mirrors the same discipline the
+# sibling grep matcher applies (grep_service._OFFLOAD_MIN_CHARS); small entries
+# stay inline to avoid a per-call thread hop. Unicode code points, not bytes.
+_OFFLOAD_MIN_CHARS = 1_000_000
 
 
 def _shape_grep_output(
@@ -417,16 +426,28 @@ async def navigate_context(
         summary_value = row['summary']
         root_summary = summary_value if isinstance(summary_value, str) and summary_value.strip() else None
 
-        root = parse_outline(text, max_depth=max_depth)
-
+        # Stored per-node summaries are fetched by id and do NOT depend on the
+        # parse, so they are loaded first; the whole CPU-bound parse + serialize
+        # block can then run as a single (optionally offloaded) unit.
         node_summaries: dict[str, str] = {}
         if include_node_summaries and settings.index_tree.node_summaries_enabled:
             node_summaries = await repos.index_nodes.get_nodes_for_context(resolved_id)
 
-        if ctx:
-            await ctx.info(f'navigate_context {resolved_id}: {count_nodes(root)} nodes')
+        def _build_outline() -> tuple[OutlineNodeDict, int]:
+            built = parse_outline(text, max_depth=max_depth)
+            return _outline_to_dict(built, node_summaries), count_nodes(built)
 
-        root_dict = _outline_to_dict(root, node_summaries)
+        # parse_outline + serialization are O(text) CPU work over unbounded entry
+        # text; a large entry is offloaded to a worker thread so it cannot pin the
+        # event loop (see _OFFLOAD_MIN_CHARS).
+        if len(text) > _OFFLOAD_MIN_CHARS:
+            root_dict, node_count = await asyncio.to_thread(_build_outline)
+        else:
+            root_dict, node_count = _build_outline()
+
+        if ctx:
+            await ctx.info(f'navigate_context {resolved_id}: {node_count} nodes')
+
         # The root mirrors the entry summary by reference; node_summaries never
         # contains the synthetic root id.
         root_dict['summary'] = root_summary
@@ -434,7 +455,7 @@ async def navigate_context(
         return {
             'context_id': resolved_id,
             'total_chars': len(text),
-            'node_count': count_nodes(root),
+            'node_count': node_count,
             'root': root_dict,
         }
     except ToolError:
@@ -516,7 +537,12 @@ async def read_context_range(
         text_value = rows[0]['text_content']
         text = text_value if text_value is not None else ''
         length = len(text)
-        lines, line_starts = split_lines_with_offsets(text)
+        # Line splitting is O(text); offload a large entry so it cannot pin the
+        # event loop (see _OFFLOAD_MIN_CHARS).
+        if length > _OFFLOAD_MIN_CHARS:
+            lines, line_starts = await asyncio.to_thread(split_lines_with_offsets, text)
+        else:
+            lines, line_starts = split_lines_with_offsets(text)
 
         # In line mode the clamped line numbers ARE the resolved span; echo them
         # verbatim. Recomputing from the exclusive end offset would under-report by
@@ -540,8 +566,13 @@ async def read_context_range(
             resolved_lines = (first_line, last_line)
         else:
             # node_id mode: resolve against the on-demand outline (node_id is not
-            # None here because exactly one mode is active).
-            span = resolve_node_span(text, node_id or '')
+            # None here because exactly one mode is active). resolve_node_span
+            # re-parses the outline (O(text)); offload a large entry so the parse
+            # cannot pin the event loop (see _OFFLOAD_MIN_CHARS).
+            if length > _OFFLOAD_MIN_CHARS:
+                span = await asyncio.to_thread(resolve_node_span, text, node_id or '')
+            else:
+                span = resolve_node_span(text, node_id or '')
             if span is None:
                 raise ToolError(
                     f'node_id {node_id!r} did not resolve to a section in this entry '
