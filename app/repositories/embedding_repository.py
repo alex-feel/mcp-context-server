@@ -41,6 +41,18 @@ _compression_metadata: 'CompressionMetadata | None' = None
 _compression_metadata_init_lock: asyncio.Lock = asyncio.Lock()
 
 
+# Decoding the stored TurboQuant payloads (payload_from_bytes per chunk row, each
+# doing struct.unpack + np.frombuffer().copy()) and concatenating them is O(N-chunks)
+# pure-Python CPU on the compressed read path (search_compressed). For a large
+# candidate set this would pin the asyncio event loop and starve other concurrent
+# MCP requests, so it is offloaded to a worker thread above this row count -- the
+# same discipline the read-path (navigation/grep) and write-leg (chunking/index_tree)
+# offloads apply, here measured in chunk rows rather than characters. Small searches
+# stay inline to avoid a per-call thread hop. The vectorized provider GEMM
+# (estimate_inner_product / decode) is already offloaded inside the provider.
+_COMPRESSED_OFFLOAD_MIN_ROWS = 2048
+
+
 async def _get_cached_compression_metadata(
     backend: StorageBackend,
 ) -> 'CompressionMetadata':
@@ -1440,7 +1452,17 @@ class EmbeddingRepository(BaseRepository):
                     f'SELECT ce.id FROM context_entries ce WHERE {where_clause}'
                 )
                 rows = await conn.fetch(cand_sql, *params)
-                cand_ids = [str(row['id']) for row in rows]
+
+                def _build_ids() -> list[str]:
+                    return [str(row['id']) for row in rows]
+
+                # O(N-contexts) id construction on the event loop for PostgreSQL;
+                # offload a large candidate set, mirroring _read_compressed_pg.
+                cand_ids = (
+                    await asyncio.to_thread(_build_ids)
+                    if len(rows) > _COMPRESSED_OFFLOAD_MIN_ROWS
+                    else _build_ids()
+                )
 
                 plan: str | None = None
                 if explain_query:
@@ -1496,16 +1518,29 @@ class EmbeddingRepository(BaseRepository):
                     'WHERE context_id = ANY($1::uuid[])',
                     candidate_ids,
                 )
-                return [
-                    (
-                        str(r['context_id']),
-                        int(r['chunk_index']),
-                        int(r['start_index']),
-                        int(r['end_index']),
-                        bytes(r['payload']),
-                    )
-                    for r in rows
-                ]
+
+                def _build_rows() -> list[tuple[str, int, int, int, bytes]]:
+                    return [
+                        (
+                            str(r['context_id']),
+                            int(r['chunk_index']),
+                            int(r['start_index']),
+                            int(r['end_index']),
+                            bytes(r['payload']),
+                        )
+                        for r in rows
+                    ]
+
+                # Building payload_rows copies each BYTEA payload (bytes(...)) and is
+                # O(N-chunks) pure-Python over the unbounded candidate set; on
+                # PostgreSQL this async read callable runs on the event loop (the
+                # SQLite callable already runs inside execute_read's worker thread), so
+                # a large candidate set is offloaded so it cannot pin the loop (see
+                # _COMPRESSED_OFFLOAD_MIN_ROWS). The fetched asyncpg Records are fully
+                # materialized and detached, so accessing them off-loop is safe.
+                if len(rows) > _COMPRESSED_OFFLOAD_MIN_ROWS:
+                    return await asyncio.to_thread(_build_rows)
+                return _build_rows()
 
             payload_rows = await self.backend.execute_read(cast(Any, _read_compressed_pg))
 
@@ -1520,46 +1555,32 @@ class EmbeddingRepository(BaseRepository):
                 stats['query_plan'] = query_plan
             return [], stats
 
-        # Decode every stored payload bytes via the wire-format dispatcher
-        # and concatenate same-variant payloads into ONE synthetic payload
-        # so the provider's scoring call runs exactly ONCE per query
-        # instead of ONCE per candidate row. This collapses the hot-path
-        # from O(N) provider invocations to O(1) and lets the provider's
-        # vectorized GEMM dominate the cost profile.
-        # Distance polarity convention (matches the fp32 read path):
-        #   smaller distance = closer / more similar.
-        # For variant='ip' the IP estimate is negated so a larger IP
-        # (more similar) maps to a smaller distance.
         from app.compression.providers.turboquant._types import IPPayload
         from app.compression.providers.turboquant._types import MSEPayload
         from app.compression.providers.turboquant._types import payload_from_bytes
 
-        decoded_payloads: list[MSEPayload | IPPayload] = [
-            payload_from_bytes(payload_bytes)
-            for _, _, _, _, payload_bytes in payload_rows
-        ]
-
-        distances: list[float] = []
-        if variant == 'ip':
-            ip_subtypes: list[IPPayload] = []
-            for p in decoded_payloads:
-                if not isinstance(p, IPPayload):
-                    raise RuntimeError(
-                        f'Compression metadata variant=ip but stored payload is '
-                        f'{type(p).__name__}; storage corruption suspected',
-                    )
-                ip_subtypes.append(p)
-            combined_ip = IPPayload.concat(ip_subtypes)
-            # estimate_inner_product returns shape (nq, n_total). With
-            # nq=1 this slices to a 1-D array of length n_total in the order
-            # of payload_rows (concat preserves input order). The async
-            # wrapper offloads the GEMM via asyncio.to_thread so the event
-            # loop stays responsive for multi-tenant HTTP/SSE transports.
-            ip_estimates = await provider.estimate_inner_product(
-                combined_ip.to_bytes(), query_matrix,
-            )
-            distances = [-float(x) for x in ip_estimates[0].tolist()]
-        else:  # variant == 'mse'
+        def _decode_and_concat() -> bytes:
+            # Decode every stored payload via the wire-format dispatcher and
+            # concatenate same-variant payloads into ONE synthetic payload so the
+            # provider's scoring call runs exactly ONCE per query (O(1) GEMM)
+            # instead of once per candidate row. This decode+concat is O(N-chunks)
+            # pure-Python CPU (payload_from_bytes does struct.unpack + frombuffer
+            # copies per row); the caller offloads it for a large candidate set
+            # (see _COMPRESSED_OFFLOAD_MIN_ROWS) so it cannot pin the event loop.
+            decoded_payloads: list[MSEPayload | IPPayload] = [
+                payload_from_bytes(payload_bytes)
+                for _, _, _, _, payload_bytes in payload_rows
+            ]
+            if variant == 'ip':
+                ip_subtypes: list[IPPayload] = []
+                for p in decoded_payloads:
+                    if not isinstance(p, IPPayload):
+                        raise RuntimeError(
+                            f'Compression metadata variant=ip but stored payload is '
+                            f'{type(p).__name__}; storage corruption suspected',
+                        )
+                    ip_subtypes.append(p)
+                return IPPayload.concat(ip_subtypes).to_bytes()
             mse_subtypes: list[MSEPayload] = []
             for p in decoded_payloads:
                 if not isinstance(p, MSEPayload):
@@ -1568,28 +1589,50 @@ class EmbeddingRepository(BaseRepository):
                         f'{type(p).__name__}; storage corruption suspected',
                     )
                 mse_subtypes.append(p)
-            combined_mse = MSEPayload.concat(mse_subtypes)
-            # decode returns (n_total, d); compute L2 distance to the
-            # single query vector in one vectorized pass. The async wrapper
-            # offloads work via asyncio.to_thread so the event loop stays
-            # responsive for multi-tenant HTTP/SSE transports.
-            decoded_matrix = await provider.decode(combined_mse.to_bytes())
-            diff = decoded_matrix - query_matrix[0]
-            distances = [float(x) for x in np.linalg.norm(diff, axis=1).tolist()]
+            return MSEPayload.concat(mse_subtypes).to_bytes()
 
-        # Aggregate per context_id (best/min distance per context).
-        best_by_context: dict[str, tuple[float, int, int]] = {}
-        for (context_id, _chunk_index, start_index, end_index, _payload), dist in zip(
-            payload_rows, distances, strict=True,
-        ):
-            current = best_by_context.get(context_id)
-            if current is None or dist < current[0]:
-                best_by_context[context_id] = (dist, start_index, end_index)
+        if len(payload_rows) > _COMPRESSED_OFFLOAD_MIN_ROWS:
+            combined_bytes = await asyncio.to_thread(_decode_and_concat)
+        else:
+            combined_bytes = _decode_and_concat()
 
-        # Sort and paginate.
-        ranked = sorted(
-            best_by_context.items(), key=lambda kv: kv[1][0],
-        )
+        # Distance polarity convention (matches the fp32 read path):
+        #   smaller distance = closer / more similar. The provider's async GEMM
+        # wrapper offloads the matmul via asyncio.to_thread; the per-chunk distances
+        # + per-context MIN aggregation + sort below are themselves O(N-chunks)
+        # pure-Python/numpy work over the same unbounded candidate set, so they are
+        # offloaded too (see _COMPRESSED_OFFLOAD_MIN_ROWS). Together with the decode
+        # above, this leaves NO per-chunk work on the event loop for a large search;
+        # only the bounded offset/limit page slice + hydration run inline.
+        if variant == 'ip':
+            # estimate_inner_product returns shape (nq, n_total); nq=1 slices to a
+            # 1-D array of length n_total in payload_rows order (concat preserves it).
+            gemm_output = await provider.estimate_inner_product(combined_bytes, query_matrix)
+        else:  # variant == 'mse'
+            # decode returns (n_total, d) for an L2 distance to the single query vector.
+            gemm_output = await provider.decode(combined_bytes)
+
+        def _rank_from_gemm() -> list[tuple[str, tuple[float, int, int]]]:
+            if variant == 'ip':
+                # IP negated so a larger IP (more similar) maps to a smaller distance.
+                distances = [-float(x) for x in gemm_output[0].tolist()]
+            else:
+                diff = gemm_output - query_matrix[0]
+                distances = [float(x) for x in np.linalg.norm(diff, axis=1).tolist()]
+            best_by_context: dict[str, tuple[float, int, int]] = {}
+            for (context_id, _chunk_index, start_index, end_index, _payload), dist in zip(
+                payload_rows, distances, strict=True,
+            ):
+                current = best_by_context.get(context_id)
+                if current is None or dist < current[0]:
+                    best_by_context[context_id] = (dist, start_index, end_index)
+            return sorted(best_by_context.items(), key=lambda kv: kv[1][0])
+
+        if len(payload_rows) > _COMPRESSED_OFFLOAD_MIN_ROWS:
+            ranked = await asyncio.to_thread(_rank_from_gemm)
+        else:
+            ranked = _rank_from_gemm()
+
         page = ranked[offset : offset + limit]
         if not page:
             stats = {

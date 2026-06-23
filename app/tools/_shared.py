@@ -167,6 +167,16 @@ def _reset_node_summary_semaphore() -> None:
     _node_summary_semaphore = asyncio.Semaphore(settings.index_tree.max_concurrent)
 
 
+# The code-derived outline parse (parse_outline) is CPU-bound and O(text) over
+# UNBOUNDED stored entry text, and the index_tree node leg runs it on the store/
+# update (and batch) write path. A large entry is offloaded to a worker thread so
+# the parse cannot pin the event loop and starve every other concurrent MCP
+# request -- the same discipline the read paths apply (navigation._OFFLOAD_MIN_CHARS,
+# grep_service._OFFLOAD_MIN_CHARS). Small entries stay inline to avoid a per-call
+# thread hop. Unicode code points, not bytes.
+_OFFLOAD_MIN_CHARS = 1_000_000
+
+
 # Explicit re-export so type checkers do NOT flag the reset helpers as unused.
 # These are called only by test fixtures that need to rebind the module-level
 # semaphores against patched ``settings.*.max_concurrent`` values between
@@ -213,8 +223,17 @@ async def _generate_embeddings_for_text(text: str) -> list[ChunkEmbedding] | Non
         )
 
         if chunking_service is not None and chunking_service.is_enabled:
-            # Chunked embedding for long documents
-            chunks = chunking_service.split_text(text)
+            # Chunked embedding for long documents. split_text (->
+            # RecursiveCharacterTextSplitter.create_documents) is O(text) pure CPU
+            # over unbounded entry text; offload a large entry to a worker thread so
+            # it cannot pin the event loop on the store/update embedding leg (see
+            # _OFFLOAD_MIN_CHARS), matching the read-path and index_tree node-leg
+            # offloads. split_text's own len<=chunk_size fast path keeps small
+            # entries inline regardless, so the threshold only spares the thread hop.
+            if len(text) > _OFFLOAD_MIN_CHARS:
+                chunks = await asyncio.to_thread(chunking_service.split_text, text)
+            else:
+                chunks = chunking_service.split_text(text)
             chunk_texts = [chunk.text for chunk in chunks]
             logger.info(f'Generating embeddings: text_len={len(text)}, chunks={len(chunks)}')
             embeddings = await embedding_provider.embed_documents(chunk_texts)
@@ -438,7 +457,13 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
         return None
 
     try:
-        root = parse_outline(text)
+        # parse_outline is O(text) pure CPU over unbounded entry text; offload a
+        # large entry to a worker thread so it cannot pin the event loop (see
+        # _OFFLOAD_MIN_CHARS), matching the read-path offload discipline.
+        if len(text) > _OFFLOAD_MIN_CHARS:
+            root = await asyncio.to_thread(parse_outline, text)
+        else:
+            root = parse_outline(text)
     except Exception as e:  # defensive: parsing is pure CPU and should not fail
         logger.warning('Index-tree outline parse failed; skipping node summaries: %s', e)
         return []

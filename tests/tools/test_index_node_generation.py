@@ -5,8 +5,10 @@ get summaries via summarize_with_prompt; a provider failure or timeout omits tha
 node WITHOUT raising (never aborts a store); short sections are skipped.
 """
 
+import threading
 from typing import Any
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -148,6 +150,65 @@ class TestNodeLayerActive:
         _set_provider(_FakeProvider())
         try:
             assert shared_module.node_layer_active() is False
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+
+
+class TestLargeEntryWritePathOffloadNonBlocking:
+    """The write-path index_tree outline parse offloads a large entry off the loop.
+
+    ``generate_index_nodes_with_timeout`` parses the code-derived outline
+    (``parse_outline``), which is O(text) pure CPU over UNBOUNDED stored entry
+    text and runs on the store/update (and batch) write path. A large entry is
+    offloaded to a worker thread so a multi-megabyte store cannot pin the single
+    event loop and starve concurrent MCP requests; a small entry stays inline to
+    avoid a per-call thread hop. This mirrors the read-path discipline
+    (test_navigation_tools.py::TestLargeEntryOffloadNonBlocking) and the grep
+    matcher (test_grep_matcher.py::test_large_literal_scan_is_offloaded_correct_and_non_blocking).
+    """
+
+    @pytest.mark.asyncio
+    async def test_large_entry_parse_offloaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.outline_service import OutlineNode
+        from app.services.outline_service import parse_outline as real_parse
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
+        _refresh_shared_settings(monkeypatch)
+        _set_provider(_FakeProvider())
+        big = 'a' * (shared_module._OFFLOAD_MIN_CHARS + 10)  # exceeds the offload threshold
+        seen: dict[str, bool] = {}
+
+        def spy(text: str) -> OutlineNode:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_parse(text)
+
+        try:
+            with patch('app.tools._shared.parse_outline', spy):
+                await generate_index_nodes_with_timeout(big)
+            assert seen['on_main'] is False  # parsed on a worker thread, not the event loop
+        finally:
+            _set_provider(None)
+            get_settings.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_small_entry_parse_inline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.outline_service import OutlineNode
+        from app.services.outline_service import parse_outline as real_parse
+        monkeypatch.setenv('ENABLE_INDEX_TREE_NODE_SUMMARIES', 'true')
+        monkeypatch.setenv('INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH', '0')
+        _refresh_shared_settings(monkeypatch)
+        _set_provider(_FakeProvider())
+        seen: dict[str, bool] = {}
+
+        def spy(text: str) -> OutlineNode:
+            seen['on_main'] = threading.current_thread() is threading.main_thread()
+            return real_parse(text)
+
+        try:
+            with patch('app.tools._shared.parse_outline', spy):
+                await generate_index_nodes_with_timeout('# Intro\nbody\n')
+            assert seen['on_main'] is True  # small entry stays inline (no thread hop)
         finally:
             _set_provider(None)
             get_settings.cache_clear()

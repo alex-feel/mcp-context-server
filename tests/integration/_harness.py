@@ -3754,6 +3754,104 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_fts_metadata_filter_key_substring(self) -> bool:
+        """Regression: FTS metadata filter on a key whose NAME contains 'metadata'.
+
+        Guards against the global ``str.replace('metadata', 'ce.metadata')`` bug
+        class: rewriting every 'metadata' substring corrupts a JSON key such as
+        ``metadata_version`` (it became ``ce.metadata_version``), so the filter
+        matched a non-existent key and returned nothing on BOTH backends. The fix
+        qualifies only the column via ``table_alias='ce'``. Runs on SQLite and
+        PostgreSQL through the shared harness.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_metadata_filter_key_substring'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+            fts_info = stats_data.get('fts', {})
+            is_enabled = fts_info.get('enabled', False)
+            is_available = fts_info.get('available', False)
+            if not is_enabled or not is_available:
+                self.test_results.append(
+                    (test_name, True, f'Skipped (enabled={is_enabled}, available={is_available})'),
+                )
+                return True
+
+            sub_thread = f'{self.test_thread_id}_fts_meta_substr'
+            # Keys 'metadata_version' / 'metadata_tags' (both contain the substring
+            # 'metadata') and the ordinary 'status' key; all share the FTS term
+            # 'versioning'. The 'metadata_tags' array key exercises array_contains,
+            # whose qualified SQL has the structurally hardest forms (SQLite's TWO
+            # column positions json_type+json_each, PostgreSQL's '->' accessor).
+            test_entries = [
+                {'text': 'metadata versioning alpha record',
+                 'metadata': {'metadata_version': 1, 'status': 'active', 'metadata_tags': ['python', 'rust']}},
+                {'text': 'metadata versioning beta record',
+                 'metadata': {'metadata_version': 2, 'status': 'active', 'metadata_tags': ['go']}},
+                {'text': 'metadata versioning gamma record',
+                 'metadata': {'metadata_version': 1, 'status': 'archived', 'metadata_tags': ['python']}},
+            ]
+            for entry in test_entries:
+                result = await self.client.call_tool(
+                    'store_context',
+                    {'thread_id': sub_thread, 'source': 'agent', 'text': entry['text'], 'metadata': entry['metadata']},
+                )
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, f'Failed to store: {self._extract_content(result)}'))
+                    return False
+
+            async def _count(filters: list[dict[str, Any]] | None = None, simple: dict[str, Any] | None = None) -> int:
+                assert self.client is not None  # Type guard for Pyright/mypy (narrowing lost in closure)
+                args: dict[str, Any] = {'query': 'versioning', 'mode': 'match', 'thread_id': sub_thread, 'limit': 10}
+                if filters is not None:
+                    args['metadata_filters'] = filters
+                if simple is not None:
+                    args['metadata'] = simple
+                data = self._extract_content(await self.client.call_tool('fts_search_context', args))
+                if 'results' not in data:
+                    raise AssertionError(f'fts_search_context failed: {data}')
+                return len(data.get('results', []))
+
+            # eq on the 'metadata'-substring key: pre-fix this returned 0 (corrupted key).
+            n_v1 = await _count(filters=[{'key': 'metadata_version', 'operator': 'eq', 'value': 1}])
+            if n_v1 != 2:
+                self.test_results.append((test_name, False, f'metadata_version=1 expected 2, got {n_v1}'))
+                return False
+            n_v2 = await _count(filters=[{'key': 'metadata_version', 'operator': 'eq', 'value': 2}])
+            if n_v2 != 1:
+                self.test_results.append((test_name, False, f'metadata_version=2 expected 1, got {n_v2}'))
+                return False
+            n_gt = await _count(filters=[{'key': 'metadata_version', 'operator': 'gt', 'value': 1}])
+            if n_gt != 1:
+                self.test_results.append((test_name, False, f'metadata_version>1 expected 1, got {n_gt}'))
+                return False
+            # Ordinary key path stays correct.
+            n_active = await _count(simple={'status': 'active'})
+            if n_active != 2:
+                self.test_results.append((test_name, False, f'status=active expected 2, got {n_active}'))
+                return False
+            # array_contains on a 'metadata'-substring array key: exercises the
+            # multi-column-position (SQLite) / '->'-form (PostgreSQL) qualification
+            # end-to-end through the real FTS JOIN.
+            n_py = await _count(filters=[{'key': 'metadata_tags', 'operator': 'array_contains', 'value': 'python'}])
+            if n_py != 2:
+                self.test_results.append((test_name, False, f"array_contains 'python' expected 2, got {n_py}"))
+                return False
+            n_java = await _count(filters=[{'key': 'metadata_tags', 'operator': 'array_contains', 'value': 'java'}])
+            if n_java != 0:
+                self.test_results.append((test_name, False, f"array_contains 'java' expected 0, got {n_java}"))
+                return False
+
+            self.test_results.append((test_name, True, "FTS 'metadata'-substring key filter working (eq/gt/array_contains)"))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_fts_metadata_filter(self) -> bool:
         """Test FTS simple metadata equality filtering.
 
@@ -10831,6 +10929,7 @@ class MCPServerIntegrationTest:
             ('FTS Boolean Mode', self.test_fts_boolean_mode),
             ('FTS Date Range Filter', self.test_fts_date_range_filter),
             ('FTS Metadata Filter', self.test_fts_metadata_filter),
+            ('FTS Metadata Filter Key Substring', self.test_fts_metadata_filter_key_substring),
             ('FTS Advanced Metadata Filters', self.test_fts_advanced_metadata_filters),
             ('FTS Pagination Offset', self.test_fts_pagination_offset),
             ('FTS Highlight Snippets', self.test_fts_highlight_snippets),

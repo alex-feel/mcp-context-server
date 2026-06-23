@@ -14,12 +14,14 @@ which runs against a Docker-compose container.
 import asyncio
 import contextlib
 import sqlite3
+import threading
 from collections.abc import AsyncGenerator
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Generator
 from pathlib import Path
 from typing import Literal
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -30,6 +32,7 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.migrations.compression import apply_compression_migration
 from app.repositories import RepositoryContainer
+from app.repositories.embedding_repository import _COMPRESSED_OFFLOAD_MIN_ROWS
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.embedding_repository import EmbeddingRepository
 from app.repositories.embedding_repository import _reset_compression_cache
@@ -380,3 +383,95 @@ async def test_search_compressed_offset_pagination(
     assert cid_b in returned
     assert cid_c in returned
     assert stats['rows_returned'] == 2
+
+
+@pytest.mark.asyncio
+async def test_search_compressed_offloads_large_candidate_decode(
+    compressed_backend_factory: BackendFactory,
+) -> None:
+    """A large candidate set decodes/concats OFF the event loop (worker thread).
+
+    payload_from_bytes per chunk row (struct.unpack + frombuffer copies) plus the
+    concat is O(N-chunks) pure-Python CPU; above _COMPRESSED_OFFLOAD_MIN_ROWS the
+    decode+concat is offloaded via asyncio.to_thread so a large compressed search
+    cannot pin the single event loop and starve concurrent MCP requests. Mirrors
+    the read-path (navigation/grep) and write-leg (chunking/index_tree) offloads.
+    """
+    from app.compression.providers.turboquant._types import payload_from_bytes as real_payload
+
+    backend, repos = await compressed_backend_factory('ip', 4)
+    repo = EmbeddingRepository(backend)
+
+    rng = np.random.default_rng(SEED)
+    query = rng.standard_normal(DIM).astype(np.float32)
+    query /= np.linalg.norm(query)
+    payload = _encode_vector(query, variant='ip', bits=4)
+
+    cid, _ = await repos.context.store_with_deduplication(
+        thread_id='t-offload', source='user', content_type='text',
+        text_content='big', metadata=None,
+    )
+    n = _COMPRESSED_OFFLOAD_MIN_ROWS + 1  # exceed the offload threshold
+    chunks = [
+        ChunkEmbedding(embedding=query.tolist(), start_index=i, end_index=i + 1, payload=payload)
+        for i in range(n)
+    ]
+    await repo.store_chunked(cid, chunks, model='test-model')
+
+    seen: dict[str, bool] = {}
+    offloaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    def spy(b: bytes) -> object:
+        seen.setdefault('on_main', threading.current_thread() is threading.main_thread())
+        return real_payload(b)
+
+    async def recording_to_thread(fn: Callable[..., object], /, *args: object, **kwargs: object) -> object:
+        offloaded.append(getattr(fn, '__name__', ''))
+        return await real_to_thread(fn, *args, **kwargs)
+
+    with (
+        patch('app.compression.providers.turboquant._types.payload_from_bytes', spy),
+        patch('asyncio.to_thread', recording_to_thread),
+    ):
+        results, _ = await repo.search_compressed(query_embedding=query.tolist(), limit=5)
+    assert seen.get('on_main') is False  # decode ran on a worker thread, not the event loop
+    # BOTH O(N-chunks) halves offload: the decode+concat AND the post-GEMM
+    # distances+aggregation+sort, so no per-chunk work runs on the event loop.
+    assert '_decode_and_concat' in offloaded
+    assert '_rank_from_gemm' in offloaded
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_compressed_small_candidate_decode_inline(
+    compressed_backend_factory: BackendFactory,
+) -> None:
+    """A small candidate set decodes inline (no per-call thread hop)."""
+    from app.compression.providers.turboquant._types import payload_from_bytes as real_payload
+
+    backend, repos = await compressed_backend_factory('ip', 4)
+    repo = EmbeddingRepository(backend)
+    _a, _b, _c, query = await _seed_three_entries(repos, repo, variant='ip', bits=4)
+
+    seen: dict[str, bool] = {}
+    offloaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    def spy(b: bytes) -> object:
+        seen.setdefault('on_main', threading.current_thread() is threading.main_thread())
+        return real_payload(b)
+
+    async def recording_to_thread(fn: Callable[..., object], /, *args: object, **kwargs: object) -> object:
+        offloaded.append(getattr(fn, '__name__', ''))
+        return await real_to_thread(fn, *args, **kwargs)
+
+    with (
+        patch('app.compression.providers.turboquant._types.payload_from_bytes', spy),
+        patch('asyncio.to_thread', recording_to_thread),
+    ):
+        await repo.search_compressed(query_embedding=query.tolist(), limit=5)
+    assert seen.get('on_main') is True  # small candidate set decodes inline
+    # Neither O(N) half is offloaded for a small candidate set (no thread hop).
+    assert '_decode_and_concat' not in offloaded
+    assert '_rank_from_gemm' not in offloaded

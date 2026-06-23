@@ -235,7 +235,7 @@ class FtsRepository(BaseRepository):
                 from app.metadata_types import MetadataFilter
                 from app.query_builder import MetadataQueryBuilder
 
-                metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+                metadata_builder = MetadataQueryBuilder(backend_type='sqlite', table_alias='ce')
 
                 # Simple metadata filters (key=value equality)
                 if metadata:
@@ -270,12 +270,14 @@ class FtsRepository(BaseRepository):
                             validation_errors,
                         )
 
-                # Add metadata conditions to filter
+                # The builder emits the metadata conditions already qualified with
+                # the 'ce.' table alias (table_alias='ce'), matching the
+                # context_entries JOIN target without rewriting the built SQL (a
+                # global str.replace would corrupt JSON keys that contain the
+                # substring 'metadata', e.g. 'metadata_version').
                 metadata_clause, metadata_params = metadata_builder.build_where_clause()
                 if metadata_clause:
-                    # Replace 'metadata' with 'ce.metadata' for table alias
-                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
-                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_conditions.append(metadata_clause)
                     filter_params.extend(metadata_params)
 
                 # Track metadata filter count for stats
@@ -447,6 +449,7 @@ class FtsRepository(BaseRepository):
                 metadata_builder = MetadataQueryBuilder(
                     backend_type='postgresql',
                     param_offset=len(filter_params),
+                    table_alias='ce',
                 )
 
                 # Simple metadata filters
@@ -481,10 +484,14 @@ class FtsRepository(BaseRepository):
                             validation_errors,
                         )
 
+                # The builder emits the metadata conditions already qualified with
+                # the 'ce.' table alias (table_alias='ce'), matching the
+                # context_entries JOIN target without rewriting the built SQL (a
+                # global str.replace would corrupt JSON keys that contain the
+                # substring 'metadata', e.g. 'metadata_version').
                 metadata_clause, metadata_params = metadata_builder.build_where_clause()
                 if metadata_clause:
-                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
-                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_conditions.append(metadata_clause)
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
 
