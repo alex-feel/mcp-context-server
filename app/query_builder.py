@@ -84,34 +84,19 @@ class MetadataQueryBuilder:
         if self.backend_type == 'sqlite':
             self.conditions.append(f"json_extract(metadata, '{json_path}') = {placeholder}")
         else:  # postgresql
-            # For nested paths, use #>> with array notation
-            key_path = json_path[2:]  # Remove $. prefix
-            if '.' in key_path:
-                # Nested path: convert 'user.preferences.theme' to array notation '{user,preferences,theme}'
-                path_parts = key_path.split('.')
-                array_path = '{' + ','.join(path_parts) + '}'
-                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
-                if isinstance(value, bool):
-                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
-                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
-                elif isinstance(value, (int, float)):
-                    # Numeric comparison
-                    self.conditions.append(f"(metadata#>>'{array_path}')::NUMERIC = {placeholder}")
-                else:
-                    # Text comparison
-                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
+            # Route through the shared accessor so a nested key traverses via
+            # #>> array notation instead of being read as a literal top-level key.
+            acc = self._pg_text_accessor(json_path[2:])  # strip $. prefix
+            # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
+            if isinstance(value, bool):
+                # JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                self.conditions.append(f'{acc} = {placeholder}::TEXT')
+            elif isinstance(value, (int, float)):
+                # Numeric comparison: cast JSON field to numeric
+                self.conditions.append(f'({acc})::NUMERIC = {placeholder}')
             else:
-                # Single-level path
-                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
-                if isinstance(value, bool):
-                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
-                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
-                elif isinstance(value, (int, float)):
-                    # Numeric comparison: cast JSON field to numeric
-                    self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC = {placeholder}")
-                else:
-                    # Text comparison
-                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
+                # Text comparison
+                self.conditions.append(f'{acc} = {placeholder}::TEXT')
         self.parameters.append(self._normalize_value(value))
         self._filter_count += 1
 
@@ -234,6 +219,47 @@ class MetadataQueryBuilder:
             key = f'$.{key}'
         return key
 
+    @staticmethod
+    def _pg_text_accessor(key_path: str) -> str:
+        """PostgreSQL ``->>``/``#>>`` accessor extracting a key as TEXT.
+
+        A dotted ``key_path`` is split into ``#>>'{a,b,c}'`` array notation so a
+        nested path is TRAVERSED. PostgreSQL ``->>'a.b.c'`` would instead look up
+        a single top-level key literally named ``a.b.c`` (never traversing), so
+        every operator that accesses metadata as TEXT MUST route through this
+        helper to stay consistent with the SQLite ``json_extract`` traversal and
+        with one another. A flat key uses ``->>'key'``.
+
+        Args:
+            key_path: Dot-separated key WITHOUT the ``$.`` JSONPath prefix.
+
+        Returns:
+            A PostgreSQL JSON text accessor expression for the metadata column.
+        """
+        if '.' in key_path:
+            array_path = '{' + ','.join(key_path.split('.')) + '}'
+            return f"metadata#>>'{array_path}'"
+        return f"metadata->>'{key_path}'"
+
+    @staticmethod
+    def _pg_json_accessor(key_path: str) -> str:
+        """PostgreSQL ``->``/``#>`` accessor extracting a key as JSONB.
+
+        Nested ``key_path`` becomes ``#>'{a,b,c}'`` array notation; a flat key
+        uses ``->'key'``. Used where the JSONB value itself is needed rather than
+        its text form (for example ``jsonb_typeof``).
+
+        Args:
+            key_path: Dot-separated key WITHOUT the ``$.`` JSONPath prefix.
+
+        Returns:
+            A PostgreSQL JSONB accessor expression for the metadata column.
+        """
+        if '.' in key_path:
+            array_path = '{' + ','.join(key_path.split('.')) + '}'
+            return f"metadata#>'{array_path}'"
+        return f"metadata->'{key_path}'"
+
     def _normalize_value(self, value: str | float | bool | None) -> str | int | float | None:
         """Normalize value for SQL comparison based on backend type.
 
@@ -276,33 +302,21 @@ class MetadataQueryBuilder:
             else:
                 self.conditions.append(f"json_extract(metadata, '{json_path}') = {placeholder}")
         else:  # postgresql
-            # For nested paths, use #>> with array notation
-            if '.' in key_path:
-                path_parts = key_path.split('.')
-                array_path = '{' + ','.join(path_parts) + '}'
-                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
-                if isinstance(value, bool):
-                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
-                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
-                elif isinstance(value, (int, float)):
-                    self.conditions.append(f"(metadata#>>'{array_path}')::NUMERIC = {placeholder}")
-                elif isinstance(value, str) and not case_sensitive:
-                    self.conditions.append(f"LOWER(metadata#>>'{array_path}') = LOWER({placeholder}::TEXT)")
-                else:
-                    self.conditions.append(f"metadata#>>'{array_path}' = {placeholder}::TEXT")
+            # Route through the shared accessor so a nested key traverses via
+            # #>> array notation rather than being read as a literal top-level key.
+            acc = self._pg_text_accessor(key_path)
+            # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
+            if isinstance(value, bool):
+                # JSONB ->> returns 'true' or 'false' as TEXT for booleans
+                self.conditions.append(f'{acc} = {placeholder}::TEXT')
+            elif isinstance(value, (int, float)):
+                # Numeric comparison: cast JSON field to numeric
+                self.conditions.append(f'({acc})::NUMERIC = {placeholder}')
+            elif isinstance(value, str) and not case_sensitive:
+                self.conditions.append(f'LOWER({acc}) = LOWER({placeholder}::TEXT)')
             else:
-                # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
-                if isinstance(value, bool):
-                    # JSONB ->> returns 'true' or 'false' as TEXT for booleans
-                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
-                elif isinstance(value, (int, float)):
-                    # Numeric comparison: cast JSON field to numeric
-                    self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC = {placeholder}")
-                elif isinstance(value, str) and not case_sensitive:
-                    self.conditions.append(f"LOWER(metadata->>'{key_path}') = LOWER({placeholder}::TEXT)")
-                else:
-                    # String comparison
-                    self.conditions.append(f"metadata->>'{key_path}' = {placeholder}::TEXT")
+                # String comparison
+                self.conditions.append(f'{acc} = {placeholder}::TEXT')
         self.parameters.append(self._normalize_value(value))
 
     def _add_not_equal_condition(
@@ -321,17 +335,18 @@ class MetadataQueryBuilder:
             else:
                 self.conditions.append(f"json_extract(metadata, '{json_path}') != {placeholder}")
         else:  # postgresql
+            acc = self._pg_text_accessor(key_path)
             # CRITICAL: Check bool BEFORE int/float (bool is subclass of int in Python)
             if isinstance(value, bool):
                 # JSONB ->> returns 'true' or 'false' as TEXT for booleans
-                self.conditions.append(f"metadata->>'{key_path}' != {placeholder}::TEXT")
+                self.conditions.append(f'{acc} != {placeholder}::TEXT')
             elif isinstance(value, (int, float)):
                 # Numeric comparison
-                self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC != {placeholder}")
+                self.conditions.append(f'({acc})::NUMERIC != {placeholder}')
             elif isinstance(value, str) and not case_sensitive:
-                self.conditions.append(f"LOWER(metadata->>'{key_path}') != LOWER({placeholder}::TEXT)")
+                self.conditions.append(f'LOWER({acc}) != LOWER({placeholder}::TEXT)')
             else:
-                self.conditions.append(f"metadata->>'{key_path}' != {placeholder}::TEXT")
+                self.conditions.append(f'{acc} != {placeholder}::TEXT')
         self.parameters.append(self._normalize_value(value))
 
     def _add_comparison_condition(
@@ -354,14 +369,14 @@ class MetadataQueryBuilder:
         if isinstance(value, (int, float)):
             if self.backend_type == 'sqlite':
                 self.conditions.append(f"CAST(json_extract(metadata, '{json_path}') AS NUMERIC) {sql_op} {placeholder}")
-            else:  # postgresql - use ->> and cast
-                self.conditions.append(f"(metadata->>'{key_path}')::NUMERIC {sql_op} {placeholder}")
+            else:  # postgresql - use the text accessor and cast
+                self.conditions.append(f'({self._pg_text_accessor(key_path)})::NUMERIC {sql_op} {placeholder}')
             self.parameters.append(value)
         else:
             if self.backend_type == 'sqlite':
                 self.conditions.append(f"json_extract(metadata, '{json_path}') {sql_op} {placeholder}")
             else:  # postgresql
-                self.conditions.append(f"metadata->>'{key_path}' {sql_op} {placeholder}::TEXT")
+                self.conditions.append(f'{self._pg_text_accessor(key_path)} {sql_op} {placeholder}::TEXT')
             self.parameters.append(str(value))
 
     def _add_in_condition(
@@ -399,14 +414,15 @@ class MetadataQueryBuilder:
                 # Convert all values to strings for consistent TEXT comparison
                 self.parameters.extend([str(v) for v in values])
         else:  # postgresql
+            acc = self._pg_text_accessor(key_path)
             # Generate placeholders with proper numbering BEFORE extending parameters
             start_pos = self.param_offset + len(self.parameters) + 1
             cast_placeholders = ', '.join([f'${start_pos + i}::TEXT' for i in range(len(values))])
             if not case_sensitive and any(isinstance(v, str) for v in values):
-                self.conditions.append(f"LOWER(metadata->>'{key_path}') IN ({cast_placeholders})")
+                self.conditions.append(f'LOWER({acc}) IN ({cast_placeholders})')
                 self.parameters.extend([str(v).lower() for v in values])
             else:
-                self.conditions.append(f"metadata->>'{key_path}' IN ({cast_placeholders})")
+                self.conditions.append(f'{acc} IN ({cast_placeholders})')
                 # Convert all values to strings for asyncpg TEXT parameter binding
                 self.parameters.extend([str(v) for v in values])
 
@@ -444,13 +460,14 @@ class MetadataQueryBuilder:
                 # Convert all values to strings for consistent TEXT comparison
                 self.parameters.extend([str(v) for v in values])
         else:  # postgresql
+            acc = self._pg_text_accessor(key_path)
             start_pos = self.param_offset + len(self.parameters) + 1
             cast_placeholders = ', '.join([f'${start_pos + i}::TEXT' for i in range(len(values))])
             if not case_sensitive and any(isinstance(v, str) for v in values):
-                self.conditions.append(f"LOWER(metadata->>'{key_path}') NOT IN ({cast_placeholders})")
+                self.conditions.append(f'LOWER({acc}) NOT IN ({cast_placeholders})')
                 self.parameters.extend([str(v).lower() for v in values])
             else:
-                self.conditions.append(f"metadata->>'{key_path}' NOT IN ({cast_placeholders})")
+                self.conditions.append(f'{acc} NOT IN ({cast_placeholders})')
                 # Convert all values to strings for asyncpg TEXT parameter binding
                 self.parameters.extend([str(v) for v in values])
 
@@ -460,7 +477,7 @@ class MetadataQueryBuilder:
         if self.backend_type == 'sqlite':
             self.conditions.append(f"json_extract(metadata, '{json_path}') IS NOT NULL")
         else:  # postgresql
-            self.conditions.append(f"metadata->>'{key_path}' IS NOT NULL")
+            self.conditions.append(f'{self._pg_text_accessor(key_path)} IS NOT NULL')
 
     def _add_not_exists_condition(self, json_path: str) -> None:
         """Add a condition to check if a key does not exist."""
@@ -468,7 +485,7 @@ class MetadataQueryBuilder:
         if self.backend_type == 'sqlite':
             self.conditions.append(f"json_extract(metadata, '{json_path}') IS NULL")
         else:  # postgresql
-            self.conditions.append(f"metadata->>'{key_path}' IS NULL")
+            self.conditions.append(f'{self._pg_text_accessor(key_path)} IS NULL')
 
     def _add_contains_condition(self, json_path: str, value: str | None, case_sensitive: bool) -> None:
         """Add a string contains condition."""
@@ -480,16 +497,21 @@ class MetadataQueryBuilder:
 
         if self.backend_type == 'sqlite':
             if case_sensitive:
+                # INSTR matches a literal substring; no LIKE wildcards to escape.
                 self.conditions.append(f"INSTR(json_extract(metadata, '{json_path}'), {placeholder}) > 0")
+                self.parameters.append(value)
             else:
-                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER({placeholder}) || '%'")
-            self.parameters.append(value)
+                self.conditions.append(
+                    f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER({placeholder}) || '%' ESCAPE '\\'",
+                )
+                self.parameters.append(self._escape_like_value(value))
         else:  # postgresql
+            acc = self._pg_text_accessor(key_path)
             if case_sensitive:
-                self.conditions.append(f"metadata->>'{key_path}' LIKE '%' || {placeholder}::TEXT || '%'")
+                self.conditions.append(f"{acc} LIKE '%' || {placeholder}::TEXT || '%' ESCAPE '\\'")
             else:
-                self.conditions.append(f"LOWER(metadata->>'{key_path}') LIKE '%' || LOWER({placeholder}::TEXT) || '%'")
-            self.parameters.append(value)
+                self.conditions.append(f"LOWER({acc}) LIKE '%' || LOWER({placeholder}::TEXT) || '%' ESCAPE '\\'")
+            self.parameters.append(self._escape_like_value(value))
 
     def _add_starts_with_condition(self, json_path: str, value: str | None, case_sensitive: bool) -> None:
         """Add a string starts-with condition."""
@@ -505,14 +527,17 @@ class MetadataQueryBuilder:
                 self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB {placeholder} || '*'")
                 self.parameters.append(escaped_value)
             else:
-                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE LOWER({placeholder}) || '%'")
-                self.parameters.append(value)
+                self.conditions.append(
+                    f"LOWER(json_extract(metadata, '{json_path}')) LIKE LOWER({placeholder}) || '%' ESCAPE '\\'",
+                )
+                self.parameters.append(self._escape_like_value(value))
         else:  # postgresql
+            acc = self._pg_text_accessor(key_path)
             if case_sensitive:
-                self.conditions.append(f"metadata->>'{key_path}' LIKE {placeholder}::TEXT || '%'")
+                self.conditions.append(f"{acc} LIKE {placeholder}::TEXT || '%' ESCAPE '\\'")
             else:
-                self.conditions.append(f"LOWER(metadata->>'{key_path}') LIKE LOWER({placeholder}::TEXT) || '%'")
-            self.parameters.append(value)
+                self.conditions.append(f"LOWER({acc}) LIKE LOWER({placeholder}::TEXT) || '%' ESCAPE '\\'")
+            self.parameters.append(self._escape_like_value(value))
 
     def _add_ends_with_condition(self, json_path: str, value: str | None, case_sensitive: bool) -> None:
         """Add a string ends-with condition."""
@@ -528,14 +553,17 @@ class MetadataQueryBuilder:
                 self.conditions.append(f"json_extract(metadata, '{json_path}') GLOB '*' || {placeholder}")
                 self.parameters.append(escaped_value)
             else:
-                self.conditions.append(f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER({placeholder})")
-                self.parameters.append(value)
+                self.conditions.append(
+                    f"LOWER(json_extract(metadata, '{json_path}')) LIKE '%' || LOWER({placeholder}) ESCAPE '\\'",
+                )
+                self.parameters.append(self._escape_like_value(value))
         else:  # postgresql
+            acc = self._pg_text_accessor(key_path)
             if case_sensitive:
-                self.conditions.append(f"metadata->>'{key_path}' LIKE '%' || {placeholder}::TEXT")
+                self.conditions.append(f"{acc} LIKE '%' || {placeholder}::TEXT ESCAPE '\\'")
             else:
-                self.conditions.append(f"LOWER(metadata->>'{key_path}') LIKE '%' || LOWER({placeholder}::TEXT)")
-            self.parameters.append(value)
+                self.conditions.append(f"LOWER({acc}) LIKE '%' || LOWER({placeholder}::TEXT) ESCAPE '\\'")
+            self.parameters.append(self._escape_like_value(value))
 
     def _add_regex_condition(self, json_path: str, pattern: str | None, case_sensitive: bool) -> None:
         """Add a regex match condition (not supported).
@@ -572,7 +600,7 @@ class MetadataQueryBuilder:
             # SQL NULL for a missing key, so a missing key does NOT match. The earlier
             # "->>key IS NULL OR ..." form conflated absent-key with JSON-null and, being
             # an unparenthesized OR, also risked AND/OR precedence bugs when combined.
-            self.conditions.append(f"jsonb_typeof(metadata->'{key_path}') = 'null'")
+            self.conditions.append(f"jsonb_typeof({self._pg_json_accessor(key_path)}) = 'null'")
 
     def _add_is_not_null_condition(self, json_path: str) -> None:
         """Add a condition to check if value is not JSON null."""
@@ -580,27 +608,55 @@ class MetadataQueryBuilder:
         if self.backend_type == 'sqlite':
             self.conditions.append(f"json_type(metadata, '{json_path}') != 'null'")
         else:  # postgresql
-            self.conditions.append(f"metadata->>'{key_path}' IS NOT NULL AND metadata->'{key_path}' != 'null'::jsonb")
+            self.conditions.append(
+                f"{self._pg_text_accessor(key_path)} IS NOT NULL "
+                f"AND {self._pg_json_accessor(key_path)} != 'null'::jsonb",
+            )
+
+    @staticmethod
+    def _escape_like_value(value: str) -> str:
+        """Escape LIKE wildcards in a literal so it matches as a literal substring.
+
+        Escapes the backslash escape character first, then the ``%`` (any run) and
+        ``_`` (any single char) wildcards, for use with an explicit ``ESCAPE '\\'``
+        clause on BOTH backends. Without this a filter value containing ``%`` or
+        ``_`` (e.g. ``"50%"``) would be interpreted as a pattern and return
+        over-broad/wrong results. Mirrors ``_escape_like`` in context_repository.py.
+
+        Args:
+            value: The literal substring to embed in a LIKE pattern.
+
+        Returns:
+            The escaped literal (the ``%`` sentinels are added in the SQL).
+        """
+        return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
     @staticmethod
     def _escape_glob_pattern(value: str) -> str:
-        """Escape special characters in GLOB patterns.
+        """Neutralize SQLite GLOB metacharacters so a value matches literally.
 
-        GLOB special characters are: * ? [ ]
-        We need to escape them with backslash.
+        SQLite GLOB has NO ESCAPE clause and treats backslash as a LITERAL
+        character, so backslash-escaping (the previous approach) produced patterns
+        demanding a literal backslash absent from the data and silently mismatched.
+        The only safe way to make the GLOB metacharacters ``*``, ``?`` and ``[``
+        literal is to wrap each in a single-character bracket class (``[*]``,
+        ``[?]``, ``[[]``). ``]`` is literal outside a class and backslash is
+        literal, so neither needs escaping. GLOB stays case-sensitive (its intended
+        behavior for case-sensitive STARTS_WITH/ENDS_WITH).
 
         Args:
-            value: String value to escape
+            value: String value to escape.
 
         Returns:
-            Escaped string safe for GLOB patterns
+            A GLOB pattern fragment that matches ``value`` literally.
         """
-        # Escape special GLOB characters
-        escaped = value.replace('\\', '\\\\')
-        escaped = escaped.replace('*', '\\*')
-        escaped = escaped.replace('?', '\\?')
-        escaped = escaped.replace('[', '\\[')
-        return escaped.replace(']', '\\]')
+        out: list[str] = []
+        for ch in value:
+            if ch in '*?[':
+                out.append(f'[{ch}]')
+            else:
+                out.append(ch)
+        return ''.join(out)
 
     def _add_array_contains_condition(
         self,

@@ -797,6 +797,25 @@ class TestPostgresqlSubqueryStructure:
         assert 'OFFSET' in inner_sql
 
     @pytest.mark.asyncio
+    async def test_outer_query_orders_by_score_desc(
+        self, repo: FtsRepository, mock_backend: MagicMock,
+    ) -> None:
+        """The PG outer query has an explicit top-level ORDER BY sub.score DESC.
+
+        Regression: an inner-subquery ORDER BY does NOT constrain the enclosing
+        query's output order (SQL standard), so without an outer ORDER BY the PG
+        FTS results could come back out of best-first order -- diverging from SQLite
+        (guaranteed score-DESC) and corrupting hybrid RRF, which ranks by list
+        position.
+        """
+        for highlight in (True, False):
+            sql = await self._capture_sql(repo, mock_backend, highlight=highlight)
+            outer_tail = sql[sql.index(') sub'):]
+            assert 'ORDER BY sub.score DESC' in outer_tail, (
+                f'outer query must order by score DESC (highlight={highlight}): {outer_tail}'
+            )
+
+    @pytest.mark.asyncio
     async def test_subquery_preserves_column_order(
         self, repo: FtsRepository, mock_backend: MagicMock,
     ) -> None:

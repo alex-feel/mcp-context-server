@@ -800,6 +800,13 @@ async def _execute_compress_sqlite(
         # deterministic across runs and per-batch memory is bounded.
         rows_processed = 0
         offset = 0
+        # chunk_index is the per-context sequential position (0, 1, 2, ...),
+        # matching the live compressed write path so the on-disk contract is
+        # identical regardless of how a compressed row was produced. The
+        # streamed read is ordered by (context_id, id), so a context's chunks
+        # arrive contiguously and in order across batch boundaries.
+        current_ctx: str | None = None
+        chunk_seq = 0
         while True:
             cur = conn.execute(
                 'SELECT ec.context_id, ec.id, ec.start_index, ec.end_index, '
@@ -812,7 +819,13 @@ async def _execute_compress_sqlite(
             batch = cur.fetchall()
             if not batch:
                 break
-            for ctx_id, chunk_id, start_index, end_index, blob in batch:
+            for ctx_id, _chunk_id, start_index, end_index, blob in batch:
+                ctx_str = str(ctx_id)
+                if ctx_str != current_ctx:
+                    current_ctx = ctx_str
+                    chunk_seq = 0
+                else:
+                    chunk_seq += 1
                 vec_list = _fp32_blob_to_list_sqlite(bytes(blob), dim)
                 payload = provider.encode_sync(_make_2d_array(vec_list))
                 conn.execute(
@@ -820,7 +833,7 @@ async def _execute_compress_sqlite(
                     '(context_id, chunk_index, start_index, end_index, payload) '
                     'VALUES (?, ?, ?, ?, ?)',
                     (
-                        str(ctx_id), int(chunk_id), int(start_index),
+                        ctx_str, chunk_seq, int(start_index),
                         int(end_index), payload,
                     ),
                 )
@@ -934,6 +947,12 @@ async def _execute_compress_postgresql(
         # per-batch read cost stays bounded.
         rows_processed = 0
         offset = 0
+        # chunk_index is the per-context sequential position (0, 1, 2, ...),
+        # matching the live compressed write path. The streamed read is ordered
+        # by (context_id, id), so a context's chunks arrive contiguously and in
+        # order across batch boundaries.
+        current_ctx: str | None = None
+        chunk_seq = 0
         while True:
             batch = await conn.fetch(
                 'SELECT context_id, id, start_index, end_index, embedding '
@@ -945,13 +964,19 @@ async def _execute_compress_postgresql(
             if not batch:
                 break
             for r in batch:
+                ctx_str = str(r['context_id'])
+                if ctx_str != current_ctx:
+                    current_ctx = ctx_str
+                    chunk_seq = 0
+                else:
+                    chunk_seq += 1
                 vec_list = [float(x) for x in r['embedding']]
                 payload = provider.encode_sync(_make_2d_array(vec_list))
                 await conn.execute(
                     'INSERT INTO vec_context_embeddings_compressed '
                     '(context_id, chunk_index, start_index, end_index, payload) '
                     'VALUES ($1, $2, $3, $4, $5)',
-                    str(r['context_id']), int(r['id']),
+                    ctx_str, chunk_seq,
                     int(r['start_index']), int(r['end_index']), payload,
                 )
             rows_processed += len(batch)
@@ -1015,8 +1040,16 @@ async def _execute_decompress_sqlite(
     batches of :data:`_MIGRATION_BATCH_SIZE` from
     ``vec_context_embeddings_compressed`` (ordered by
     ``(context_id, chunk_index)``), decodes each batch in-process, and
-    INSERTs each batch into the recreated ``vec_context_embeddings``
-    table. Provenance DELETE + compressed source DROP run last inside
+    rebuilds BOTH the recreated ``vec_context_embeddings`` fp32 table and
+    the ``embedding_chunks`` bridge directly from each compressed row's own
+    ``context_id``/``start_index``/``end_index``. The rebuild does NOT depend
+    on any pre-existing ``embedding_chunks`` row: a server-compressed-from-
+    start database never wrote ``embedding_chunks`` (the live compressed
+    write path stores only ``vec_context_embeddings_compressed`` with a
+    per-context sequential ``chunk_index``), so the earlier "look up
+    ``embedding_chunks`` by ``chunk_index`` and skip on miss" approach
+    skipped every row and silently dropped all embeddings on a default
+    deployment. Provenance DELETE + compressed source DROP run last inside
     the same transaction.
     """
     batch_size = _MIGRATION_BATCH_SIZE
@@ -1043,6 +1076,20 @@ async def _execute_decompress_sqlite(
             )
             return
 
+        # Clear the (possibly stale or empty) chunk->vec bridge and rebuild
+        # it alongside vec_context_embeddings from the compressed rows
+        # themselves, mirroring the context_id-based PostgreSQL reverse path.
+        # A fresh running rowid links each decoded fp32 vector to its new
+        # embedding_chunks row so the SQLite fp32 search join
+        # (embedding_chunks.vec_rowid = vec_context_embeddings.rowid) resolves
+        # after decompress regardless of how the compressed rows were produced.
+        conn.execute('DELETE FROM embedding_chunks')
+        next_rowid = int(
+            conn.execute(
+                'SELECT COALESCE(MAX(rowid), 0) + 1 FROM vec_context_embeddings',
+            ).fetchone()[0],
+        )
+
         # Stream compressed rows; decode and INSERT each batch.
         rows_processed = 0
         offset = 0
@@ -1057,28 +1104,23 @@ async def _execute_decompress_sqlite(
             batch = cur.fetchall()
             if not batch:
                 break
-            for ctx_id, chunk_idx, _start, _end, payload in batch:
+            for ctx_id, _chunk_idx, start_index, end_index, payload in batch:
                 vec = provider.decode_sync(bytes(payload))[0]
                 blob = _list_to_fp32_blob_sqlite(
                     [float(x) for x in vec.tolist()],
                 )
-                lookup = conn.execute(
-                    'SELECT id FROM embedding_chunks '
-                    'WHERE context_id = ? AND id = ?',
-                    (str(ctx_id), int(chunk_idx)),
-                ).fetchone()
-                if lookup is None:
-                    continue
-                chunk_row_id = int(lookup[0])
                 conn.execute(
                     'INSERT INTO vec_context_embeddings (rowid, embedding) '
                     'VALUES (?, ?)',
-                    (chunk_row_id, blob),
+                    (next_rowid, blob),
                 )
                 conn.execute(
-                    'UPDATE embedding_chunks SET vec_rowid = ? WHERE id = ?',
-                    (chunk_row_id, chunk_row_id),
+                    'INSERT INTO embedding_chunks '
+                    '(context_id, vec_rowid, start_index, end_index) '
+                    'VALUES (?, ?, ?, ?)',
+                    (str(ctx_id), next_rowid, int(start_index), int(end_index)),
                 )
+                next_rowid += 1
             rows_processed += len(batch)
             offset += len(batch)
 

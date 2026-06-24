@@ -442,3 +442,219 @@ def test_streaming_decompress_roundtrip_sqlite(
     finally:
         conn.close()
     assert chunk_count == n_docs
+
+
+def _seed_compressed_database(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    n_docs: int,
+) -> None:
+    """Write ``n_docs`` server-compressed rows (Lineage B) to an isolated DB.
+
+    Mirrors the LIVE compressed write path (``_store_chunked_compressed``): one
+    ``vec_context_embeddings_compressed`` row per chunk with a per-context
+    sequential ``chunk_index``, NO ``embedding_chunks`` rows, and NO fp32
+    ``vec_context_embeddings`` table -- the default v3 deployment shape. The
+    singleton ``compression_metadata`` provenance row matches the IP-4 seed-42
+    encode so ``run_decompress`` reconstructs the same provider.
+    """
+    monkeypatch.setenv('DB_PATH', str(db_path))
+    monkeypatch.setenv('STORAGE_BACKEND', 'sqlite')
+    monkeypatch.setenv('EMBEDDING_DIM', str(DIM))
+    monkeypatch.delenv('ENABLE_SEMANTIC_SEARCH', raising=False)
+    _enable_compression(monkeypatch)
+
+    async def _setup() -> None:
+        from app.compression import factory as compression_factory
+        from app.schemas import load_schema
+
+        provider = compression_factory.create_compression_provider()
+        settings = get_settings()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(load_schema('sqlite'))
+            conn.executescript(
+                '''
+                CREATE TABLE IF NOT EXISTS embedding_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    context_id TEXT NOT NULL,
+                    vec_rowid INTEGER NOT NULL,
+                    start_index INTEGER NOT NULL DEFAULT 0,
+                    end_index INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS embedding_metadata (
+                    context_id TEXT NOT NULL PRIMARY KEY,
+                    model_name TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    chunk_count INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS vec_context_embeddings_compressed (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    context_id TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    start_index INTEGER NOT NULL DEFAULT 0,
+                    end_index INTEGER NOT NULL DEFAULT 0,
+                    payload BLOB NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS compression_metadata (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    provider TEXT NOT NULL,
+                    bits INTEGER NOT NULL,
+                    variant TEXT NOT NULL,
+                    seed INTEGER NOT NULL,
+                    dim INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                ''',
+            )
+        finally:
+            conn.close()
+
+        backend = create_backend(backend_type='sqlite', db_path=str(db_path))
+        await backend.initialize()
+        try:
+            repos = RepositoryContainer(backend)
+            rng = np.random.default_rng(11)
+            for i in range(n_docs):
+                vec = rng.standard_normal(DIM).astype(np.float32)
+                vec /= np.linalg.norm(vec)
+                cid, _ = await repos.context.store_with_deduplication(
+                    thread_id='lineage-b',
+                    source='user',
+                    content_type='text',
+                    text_content=f'doc-{i}',
+                    metadata=None,
+                )
+                payload = provider.encode_sync(vec.reshape(1, DIM))
+
+                def _write(
+                    conn: sqlite3.Connection,
+                    *,
+                    context_id: str = cid,
+                    blob: bytes = payload,
+                ) -> None:
+                    # chunk_index = 0 (single chunk per context); the live path
+                    # never writes embedding_chunks.
+                    conn.execute(
+                        'INSERT INTO vec_context_embeddings_compressed '
+                        '(context_id, chunk_index, start_index, end_index, payload) '
+                        'VALUES (?, ?, ?, ?, ?)',
+                        (context_id, 0, 0, DIM, blob),
+                    )
+                    conn.execute(
+                        'INSERT INTO embedding_metadata '
+                        '(context_id, model_name, dimensions, chunk_count) '
+                        'VALUES (?, ?, ?, ?)',
+                        (context_id, 'test-model', DIM, 1),
+                    )
+
+                await backend.execute_write(_write)
+
+            def _write_provenance(conn: sqlite3.Connection) -> None:
+                conn.execute(
+                    'INSERT INTO compression_metadata '
+                    '(id, provider, bits, variant, seed, dim) '
+                    'VALUES (1, ?, ?, ?, ?, ?)',
+                    (
+                        settings.compression.provider,
+                        settings.compression.bits,
+                        settings.compression.variant,
+                        settings.compression.seed,
+                        DIM,
+                    ),
+                )
+
+            await backend.execute_write(_write_provenance)
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    asyncio.run(_setup())
+
+
+def _count_fp32_vec0(db_path: Path) -> int:
+    """Count rows in the vec0 virtual ``vec_context_embeddings`` table."""
+    import sqlite_vec
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        return int(
+            conn.execute('SELECT COUNT(*) FROM vec_context_embeddings').fetchone()[0],
+        )
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
+def test_streaming_decompress_recovers_server_compressed_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--decompress recovers a server-compressed (Lineage B) database.
+
+    Regression for the silent total-data-loss bug: the old reverse loop looked
+    up a pre-existing ``embedding_chunks`` row by ``(context_id, chunk_index)``
+    and ``continue``d on a miss. A server-compressed-from-start database -- the
+    v3 default -- has NO ``embedding_chunks`` rows and ``chunk_index=0`` per
+    context, so EVERY row missed and was skipped, then the compressed source was
+    DROPped and provenance DELETEd: zero embeddings recovered with a success exit
+    code. The fix rebuilds both the fp32 table and the ``embedding_chunks`` bridge
+    directly from the compressed rows, so every embedding is recovered.
+    """
+    db = tmp_path / 'lineage_b.db'
+    n_docs = 12
+    monkeypatch.setattr(migrate_compression, '_MIGRATION_BATCH_SIZE', 5)
+    _seed_compressed_database(db, monkeypatch, n_docs=n_docs)
+    assert _count_compressed(db) == n_docs
+
+    # Reverse compression (abandon-compression flow): disable the toggle so the
+    # post-decompress validator does not reject the disabled state; the provider
+    # is reconstructed from the provenance row, not the env.
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
+    get_settings.cache_clear()
+    _reset_compression_cache()
+    import app.backends.sqlite_backend as sqlite_backend_module
+    monkeypatch.setattr(sqlite_backend_module, 'settings', get_settings())
+
+    rc = run_decompress(f'sqlite:///{db}', dry_run=False)
+    assert rc == 0
+    assert _table_exists(db, 'vec_context_embeddings')
+    assert not _table_exists(db, 'vec_context_embeddings_compressed')
+    assert _count_provenance(db) == 0
+
+    # The core regression assertions: every embedding recovered into BOTH the
+    # fp32 vec table and the rebuilt embedding_chunks bridge (the old code
+    # recovered ZERO rows into either).
+    assert _count_fp32_vec0(db) == n_docs
+    import sqlite_vec
+
+    conn = sqlite3.connect(str(db))
+    try:
+        # The bridge join touches the vec0 virtual table, so load the extension.
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        chunk_count = int(
+            conn.execute('SELECT COUNT(*) FROM embedding_chunks').fetchone()[0],
+        )
+        # Bridge consistency: every embedding_chunks row points at a real fp32
+        # rowid (no orphaned vec_rowid).
+        orphans = int(
+            conn.execute(
+                'SELECT COUNT(*) FROM embedding_chunks ec '
+                'LEFT JOIN vec_context_embeddings ve ON ve.rowid = ec.vec_rowid '
+                'WHERE ve.rowid IS NULL',
+            ).fetchone()[0],
+        )
+    finally:
+        conn.close()
+    assert chunk_count == n_docs
+    assert orphans == 0

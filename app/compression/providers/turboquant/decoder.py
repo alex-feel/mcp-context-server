@@ -14,9 +14,7 @@ from app.compression.providers.turboquant._qjl import get_cached_qjl
 from app.compression.providers.turboquant._types import CompressedPayload
 from app.compression.providers.turboquant._types import IPPayload
 from app.compression.providers.turboquant._types import MSEPayload
-from app.compression.providers.turboquant._types import QuantizedIP
 from app.compression.providers.turboquant._types import QuantizedMSE
-from app.compression.providers.turboquant.encoder import get_ip_quantizer
 from app.compression.providers.turboquant.encoder import get_mse_quantizer
 
 
@@ -47,23 +45,23 @@ def decode(payload: CompressedPayload) -> NDArray[np.float32]:
             )
             return q_mse.dequantize(qt)
         case IPPayload():
-            q_ip = get_ip_quantizer(payload.dim, payload.bits, payload.seed)
-            mse_data = QuantizedMSE(
+            # decode() returns the MSE reconstruction only (the QJL residual is
+            # lossy and not recovered here -- use estimate_inner_product for
+            # IP-preserving search). Decode the inner MSE component at the
+            # bit-width stored EXPLICITLY in the wire format (mse_bits) rather
+            # than deriving the codebook from bits-1, so a future encoder that
+            # varies mse_bits independently decodes correctly; this mirrors
+            # estimate_inner_product, which builds its synthetic MSE payload from
+            # mse_bits. Behavior is unchanged while mse_bits == bits-1 (today).
+            q_mse = get_mse_quantizer(payload.dim, payload.mse_bits, payload.seed)
+            qt = QuantizedMSE(
                 packed_indices=payload.packed_indices,
                 norms=payload.norms.reshape(payload.n_rows, 1),
                 dim=payload.dim,
                 bits=payload.mse_bits,
                 seed=payload.seed,
             )
-            qt_ip = QuantizedIP(
-                mse_data=mse_data,
-                qjl_bits=payload.qjl_bits,
-                residual_norms=payload.residual_norms,
-                dim=payload.dim,
-                bits=payload.bits,
-                seed=payload.seed,
-            )
-            return q_ip.dequantize(qt_ip)
+            return q_mse.dequantize(qt)
         case _:
             raise TypeError(
                 f'Unsupported payload type: {type(payload).__name__}',

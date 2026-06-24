@@ -488,9 +488,18 @@ class IPPayload:
         # qjl_bits has shape (n_rows, n_bytes) where n_bytes is constant
         # for a fixed dim because n_bytes = ceil(dim / 8). Concatenate
         # along axis 0 so the combined array has shape
-        # (sum(n_rows), n_bytes).
+        # (sum(n_rows), n_bytes). A zero-row payload reshapes to an
+        # explicit (0, ceil(dim/8)) rather than reshape(0, -1) -- numpy
+        # cannot infer the -1 dimension at size 0 -- mirroring
+        # MSEPayload.concat's tolerance of the documented "one or more"
+        # contract; n_rows >= 1 is unaffected.
+        n_bytes = (head.dim + 7) // 8
         combined_qjl = np.concatenate(
-            [p.qjl_bits.reshape(p.n_rows, -1) for p in payloads],
+            [
+                p.qjl_bits.reshape(p.n_rows, -1) if p.n_rows
+                else p.qjl_bits.reshape(0, n_bytes)
+                for p in payloads
+            ],
             axis=0,
         ).astype(np.uint8)
         combined_packed = np.concatenate(

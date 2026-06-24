@@ -76,8 +76,12 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
     """
     resolved = app_settings if app_settings is not None else get_settings()
     storage = resolved.storage
+    # Escape embedded double quotes by doubling them (PostgreSQL quoted-identifier
+    # rule) so a schema name that itself contains a double quote produces a valid
+    # quoted identifier rather than a malformed startup search_path parameter.
+    escaped_schema = storage.postgresql_schema.replace('"', '""')
     server_settings: dict[str, str] = {
-        'search_path': f'"{storage.postgresql_schema}", public',
+        'search_path': f'"{escaped_schema}", public',
     }
     tcp_idle_guc = storage.postgresql_tcp_keepalives_idle_s
     tcp_interval_guc = storage.postgresql_tcp_keepalives_interval_s
@@ -717,6 +721,18 @@ class PostgreSQLBackend:
             parsed = urlsplit(self.connection_string)
             host = (parsed.hostname or '').lower()
             port = parsed.port if parsed.port is not None else 5432
+            if not host and '://' not in self.connection_string:
+                # libpq key-value DSN form ("host=... port=..."), which asyncpg
+                # also accepts: urlsplit yields no hostname, so parse the
+                # whitespace-separated key=value tokens directly so the advisory
+                # fires for this spelling too.
+                kv = dict(
+                    token.split('=', 1)
+                    for token in self.connection_string.split()
+                    if '=' in token
+                )
+                host = kv.get('host', '').lower()
+                port = int(kv['port']) if kv.get('port') else 5432
         except Exception as e:
             # Malformed connection string is non-fatal for this advisory;
             # the pool creation above already succeeded with this string.

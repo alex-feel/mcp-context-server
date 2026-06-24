@@ -85,6 +85,21 @@ class TestBuildAsyncpgConnectKwargs:
         kwargs = build_asyncpg_connect_kwargs(AppSettings())
         assert kwargs['server_settings']['search_path'] == '"public", public'
 
+    def test_search_path_escapes_embedded_double_quote(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A schema name containing a double quote is escaped by doubling it.
+
+        Regression: the unescaped ``f'"{schema}", public'`` produced a malformed
+        quoted identifier (and thus a malformed startup search_path parameter) for
+        a schema like ``my"schema``. PostgreSQL escapes an embedded double quote by
+        doubling it.
+        """
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_SCHEMA', 'my"schema')
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['server_settings']['search_path'] == '"my""schema", public'
+
     def test_statement_cache_zero_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """statement_cache_size=0 (transaction-pooler mode) propagates verbatim."""
         from app.backends.postgresql_backend import build_asyncpg_connect_kwargs

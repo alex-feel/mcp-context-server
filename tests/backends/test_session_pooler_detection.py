@@ -29,6 +29,36 @@ class TestSessionModePoolerDetection:
         assert backend._session_mode_pooler is True
         assert any('MaxClientsInSessionMode' in r.message for r in caplog.records)
 
+    def test_detects_session_pooler_from_libpq_keyvalue_dsn(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A libpq key-value DSN (no URL scheme) is parsed for host/port too.
+
+        Regression: ``urlsplit`` yields an empty hostname for the
+        ``host=... port=...`` spelling that asyncpg also accepts, so the advisory
+        silently never fired even on a real Supabase Session Pooler set via a
+        key-value POSTGRESQL_CONNECTION_STRING.
+        """
+        from app.backends import postgresql_backend
+        from app.backends.postgresql_backend import PostgreSQLBackend
+
+        monkeypatch.setattr(
+            postgresql_backend.settings.storage, 'postgresql_pool_max', 20, raising=False,
+        )
+
+        backend = PostgreSQLBackend(
+            connection_string=(
+                'host=aws-0-us-east-1.pooler.supabase.com port=5432 '
+                'user=u password=p dbname=postgres'
+            ),
+        )
+
+        caplog.set_level(logging.WARNING)
+        backend._detect_session_mode_pooler()
+
+        assert backend._session_mode_pooler is True
+        assert any('MaxClientsInSessionMode' in r.message for r in caplog.records)
+
     def test_no_warn_for_session_pooler_within_cap(
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

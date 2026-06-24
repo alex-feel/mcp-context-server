@@ -157,3 +157,46 @@ def test_ip_payload_from_bytes_rejects_mse_variant() -> None:
     mse_blob = _build_mse_payload().to_bytes()
     with pytest.raises(ValueError, match='Unexpected variant code'):
         IPPayload.from_bytes(mse_blob)
+
+
+def test_decode_ip_reads_stored_mse_bits_for_codebook(monkeypatch: pytest.MonkeyPatch) -> None:
+    """decode() selects the inner MSE codebook from the stored mse_bits byte, not bits-1.
+
+    Mutation guard for the R1 decoder fix: since the encoder always sets
+    ``mse_bits == bits - 1``, a normal round-trip cannot distinguish the fixed
+    decoder from one that derives ``bits - 1``. This constructs a payload whose
+    ``mse_bits`` DIVERGES from ``bits - 1`` and asserts the decode path selects the
+    inner MSE quantizer from the stored ``mse_bits``. Reverting the fix (deriving
+    ``bits - 1`` via ``get_ip_quantizer``) never calls ``get_mse_quantizer`` in the
+    IP branch, so ``captured`` would stay empty.
+    """
+    import contextlib
+
+    from app.compression.providers.turboquant import decoder as decoder_mod
+
+    diverged = IPPayload(
+        bits=4,
+        mse_bits=2,  # explicit; differs from bits - 1 = 3
+        dim=8,
+        seed=42,
+        n_rows=2,
+        norms=np.array([1.0, 2.0], dtype=np.float32),
+        packed_indices=np.array([0x12, 0x34], dtype=np.uint8),
+        qjl_bits=np.array([[0x01], [0x02]], dtype=np.uint8),
+        residual_norms=np.array([0.1, 0.2], dtype=np.float32),
+    )
+
+    captured: list[int] = []
+
+    class _StopError(Exception):
+        pass
+
+    def _spy(_dim: int, bits: int, _seed: int) -> object:
+        captured.append(bits)
+        raise _StopError
+
+    monkeypatch.setattr(decoder_mod, 'get_mse_quantizer', _spy)
+    with contextlib.suppress(_StopError):
+        decoder_mod.decode(diverged)
+    # The inner MSE codebook is selected from mse_bits (2), NOT bits - 1 (3).
+    assert captured == [2]

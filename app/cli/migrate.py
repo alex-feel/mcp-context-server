@@ -1539,8 +1539,12 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     stats = MigrationStats()
     pg_kwargs = _pg_connect_kwargs()
     source_conn = await asyncpg.connect(options.source_url, **pg_kwargs)
-    target_conn = await asyncpg.connect(options.target_url, **pg_kwargs)
+    # Open the target connection INSIDE the try so a failed target connect
+    # (unreachable host, bad credentials, role/connection limit, SSL) closes the
+    # already-open source connection via the finally instead of leaking it.
+    target_conn: asyncpg.Connection | None = None
     try:
+        target_conn = await asyncpg.connect(options.target_url, **pg_kwargs)
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
         if not options.dry_run and await _target_pg_has_data(target_conn):
@@ -1751,7 +1755,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             raise
     finally:
         await source_conn.close()
-        await target_conn.close()
+        if target_conn is not None:
+            await target_conn.close()
     return stats
 
 
@@ -1780,8 +1785,11 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
 
     _, source_address = parse_backend_url(options.source_url)
     source = open_source_sqlite(source_address)
-    target_conn = await asyncpg.connect(options.target_url, **_pg_connect_kwargs())
+    # Open the target connection INSIDE the try so a failed target connect closes
+    # the already-open SQLite source via the finally instead of leaking it.
+    target_conn: asyncpg.Connection | None = None
     try:
+        target_conn = await asyncpg.connect(options.target_url, **_pg_connect_kwargs())
         id_kind = detect_source_id_kind(source)
         if id_kind != 'integer':
             stats.warnings.append(
@@ -1927,7 +1935,8 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
             raise
     finally:
         source.close()
-        await target_conn.close()
+        if target_conn is not None:
+            await target_conn.close()
     return stats
 
 

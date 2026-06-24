@@ -573,6 +573,267 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_metadata_filter_nested_path(self) -> bool:
+        """Nested-JSON-path metadata operators traverse on BOTH backends.
+
+        Regression for the cross-backend divergence where PostgreSQL advanced
+        operators read ``metadata->>'a.b.c'`` (a literal top-level key) instead of
+        traversing ``metadata#>>'{a,b,c}'``. SQLite always traversed, so a nested
+        ``ne``/``gt``/``contains``/``exists``/``is_not_null`` filter silently
+        returned wrong/empty results on PostgreSQL only. Run on both backends so
+        the counts agree.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter Nested Path'
+        print('Testing nested-path metadata filtering...')
+        thread = f'{self.test_thread_id}_nested_meta'
+        entries = [
+            {
+                'thread_id': thread, 'source': 'agent', 'text': 'nested A',
+                'metadata': {'user': {'preferences': {'theme': 'dark'}}, 'settings': {'level': 10}},
+            },
+            {
+                'thread_id': thread, 'source': 'agent', 'text': 'nested B',
+                'metadata': {'user': {'preferences': {'theme': 'light'}}, 'settings': {'level': 5}},
+            },
+            {
+                'thread_id': thread, 'source': 'agent', 'text': 'nested C',
+                'metadata': {'user': {'preferences': {'theme': 'dark'}}, 'settings': {'level': 1}},
+            },
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store nested entries'))
+                    return False
+
+            # Each previously-broken operator on a NESTED key must return the
+            # SQLite-correct count on PostgreSQL too.
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('eq dark', [{'key': 'user.preferences.theme', 'operator': 'eq', 'value': 'dark'}], 2),
+                ('ne dark', [{'key': 'user.preferences.theme', 'operator': 'ne', 'value': 'dark'}], 1),
+                ('gt level 4', [{'key': 'settings.level', 'operator': 'gt', 'value': 4}], 2),
+                ('contains ar', [{'key': 'user.preferences.theme', 'operator': 'contains', 'value': 'ar'}], 2),
+                ('exists theme', [{'key': 'user.preferences.theme', 'operator': 'exists', 'value': None}], 3),
+                ('is_not_null theme', [{'key': 'user.preferences.theme', 'operator': 'is_not_null', 'value': None}], 3),
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'nested {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            # The returned metadata must be a TRAVERSABLE nested dict, not a string.
+            res = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50, 'thread_id': thread,
+                    'metadata_filters': [{'key': 'settings.level', 'operator': 'eq', 'value': 10}],
+                },
+            )
+            rows = self._extract_content(res).get('results', [])
+            if len(rows) != 1 or rows[0].get('metadata', {}).get('user', {}).get('preferences', {}).get('theme') != 'dark':
+                self.test_results.append((test_name, False, 'nested metadata not returned as a dict'))
+                return False
+
+            print('[OK] All nested-path metadata filtering tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_filter_like_wildcard_literal(self) -> bool:
+        """contains/starts_with/ends_with treat %/_ in the value as LITERAL chars.
+
+        Regression for the unescaped LIKE branches: a value like ``50%`` was a
+        pattern, so CONTAINS ``"50%"`` matched any value with ``"50"`` followed by
+        anything (over-broad). The value is now escaped with an ESCAPE clause, so it
+        matches literally on BOTH backends.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter LIKE Wildcard Literal'
+        print('Testing LIKE-wildcard-literal metadata filtering...')
+        thread = f'{self.test_thread_id}_like_lit'
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'pct A', 'metadata': {'note': 'discount 50% off'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'pct B', 'metadata': {'note': 'discount 5000 dollars'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'und C', 'metadata': {'note': 'file_name.txt'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'und D', 'metadata': {'note': 'fileXname.txt'}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store like-literal entries'))
+                    return False
+
+            # '50%' must match ONLY the literal '50% off' (A), NOT '5000' (B);
+            # the old wildcard behavior matched both.
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('contains 50% literal', [{'key': 'note', 'operator': 'contains', 'value': '50%'}], 1),
+                # '_' must be literal: 'file_name' matches C only, not 'fileXname' (D).
+                ('contains file_name literal', [{'key': 'note', 'operator': 'contains', 'value': 'file_name'}], 1),
+                # sanity: a wildcard-free substring still matches both percent rows.
+                ('contains discount', [{'key': 'note', 'operator': 'contains', 'value': 'discount'}], 2),
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'like-literal {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All LIKE-wildcard-literal metadata filtering tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_filter_glob_special_literal(self) -> bool:
+        """Case-sensitive starts_with/ends_with treat GLOB specials (* ? [) literally.
+
+        Regression for the SQLite case-sensitive GLOB branch: a value containing a
+        GLOB metacharacter must be bracket-escaped so it matches literally on SQLite
+        (PostgreSQL uses LIKE+ESCAPE), agreeing across backends.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter GLOB Special Literal'
+        print('Testing case-sensitive GLOB-literal metadata filtering...')
+        thread = f'{self.test_thread_id}_glob_lit'
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'glob A', 'metadata': {'code': 'a*b token'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'glob B', 'metadata': {'code': 'aXXb token'}},
+        ]
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store glob entries'))
+                    return False
+
+            # Case-sensitive starts_with 'a*b' must match ONLY 'a*b token' (A),
+            # not 'aXXb token' (B). The old SQLite backslash-escaping returned 0.
+            res = await self.client.call_tool(
+                'search_context',
+                {
+                    'limit': 50, 'thread_id': thread,
+                    'metadata_filters': [
+                        {'key': 'code', 'operator': 'starts_with', 'value': 'a*b', 'case_sensitive': True},
+                    ],
+                },
+            )
+            rows = self._extract_content(res).get('results', [])
+            codes = sorted(r.get('metadata', {}).get('code', '') for r in rows)
+            if codes != ['a*b token']:
+                msg = f'glob starts_with a*b literal: expected [a*b token], got {codes}'
+                print(f'[FAIL] {msg}')
+                self.test_results.append((test_name, False, msg))
+                return False
+
+            print('[OK] Case-sensitive GLOB-literal metadata filtering test passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_semantic_hybrid_metadata_is_dict(self) -> bool:
+        """semantic_search_context and hybrid_search_context return metadata as a dict.
+
+        Regression guard for the R1 fix that parses metadata in _semantic_search_raw:
+        without it the repository's JSON-string metadata (SQLite TEXT; PostgreSQL
+        JSONB-as-str via asyncpg) would surface as a string. Asserts the type AND a
+        nested read, so reverting the fix fails on BOTH backends.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Semantic Hybrid Metadata Dict'
+        print('Testing semantic/hybrid metadata-is-dict...')
+        thread = f'{self.test_thread_id}_meta_dict'
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            text = (
+                'Vector embeddings map text into a high dimensional space for semantic '
+                'similarity search across stored context entries. '
+            ) * 6
+            store = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': thread, 'source': 'agent', 'text': text,
+                    'metadata': {'project': 'meta-dict', 'nested': {'level': 3, 'label': 'deep'}},
+                },
+            )
+            cid = self._extract_content(store).get('context_id')
+            if not cid:
+                self.test_results.append((test_name, False, 'store failed'))
+                return False
+
+            for tool in ('semantic_search_context', 'hybrid_search_context'):
+                res = await self.client.call_tool(
+                    tool,
+                    {'query': 'semantic similarity vector embeddings', 'thread_id': thread, 'limit': 5},
+                )
+                rows = self._extract_content(res).get('results', [])
+                hit = next((x for x in rows if x.get('id') == cid), None)
+                if hit is None:
+                    self.test_results.append((test_name, False, f'{tool} did not find entry'))
+                    return False
+                meta = hit.get('metadata')
+                if not isinstance(meta, dict) or meta.get('nested', {}).get('label') != 'deep':
+                    msg = f'{tool} metadata not a traversable dict: {type(meta).__name__}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] semantic/hybrid metadata-is-dict test passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_array_contains_operator(self) -> bool:
         """Test the array_contains operator for metadata filtering.
 
@@ -10904,6 +11165,10 @@ class MCPServerIntegrationTest:
             ('Search Context', self.test_search_context),
             ('Search Context Date Filtering', self.test_search_context_with_date_filtering),
             ('Metadata Filtering', self.test_metadata_filtering),
+            ('Metadata Filter Nested Path', self.test_metadata_filter_nested_path),
+            ('Metadata Filter LIKE Wildcard Literal', self.test_metadata_filter_like_wildcard_literal),
+            ('Metadata Filter GLOB Special Literal', self.test_metadata_filter_glob_special_literal),
+            ('Semantic Hybrid Metadata Dict', self.test_semantic_hybrid_metadata_is_dict),
             ('Array Contains Operator', self.test_array_contains_operator),
             ('Array Contains Non-Array Field', self.test_array_contains_non_array_field),
             ('Get Context by IDs', self.test_get_context_by_ids),

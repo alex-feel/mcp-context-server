@@ -481,31 +481,28 @@ async def delete_context(
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
-            # Get all context IDs in thread for embedding cleanup.
+            # Embedding cleanup for the whole thread. On PostgreSQL the embedding
+            # rows cascade-delete with the context rows, so explicit cleanup is
+            # SQLite-only (vec0 virtual tables lack CASCADE). Use the UNBOUNDED
+            # criteria query rather than a capped search so a thread with more than
+            # 10000 entries does not leave orphaned embeddings.
             # Gate matches the context_ids branch above: see comment there
             # for why semantic_search.enabled is NOT the correct gate.
             if settings.embedding.generation_enabled or settings.compression.enabled:
-                try:
-                    # Get all context IDs in this thread
-                    results = await repos.context.search_contexts(
-                        thread_id=thread_id,
-                        limit=10000,  # Large limit to get all
-                        offset=0,
-                        explain_query=False,
-                    )
-                    rows, _ = results
-
-                    # Delete embeddings for all contexts in thread
-                    for row in rows:
-                        context_id = row['id']  # sqlite3.Row supports __getitem__
-                        if context_id:
+                backend = repos.context.backend
+                if backend.backend_type == 'sqlite':
+                    try:
+                        thread_ids_to_clean = await repos.context.get_ids_matching_batch_criteria(
+                            thread_ids=[thread_id],
+                        )
+                        for cid in thread_ids_to_clean:
                             try:
-                                await repos.embeddings.delete(str(context_id))
+                                await repos.embeddings.delete(cid)
                             except Exception as e:
-                                logger.warning(f'Failed to delete embedding for context {context_id}: {e}')
-                except Exception as e:
-                    logger.warning(f'Failed to cleanup embeddings for thread {thread_id}: {e}')
-                    # Non-blocking: continue with context deletion
+                                logger.warning(f'Failed to delete embedding for context {cid}: {e}')
+                    except Exception as e:
+                        logger.warning(f'Failed to cleanup embeddings for thread {thread_id}: {e}')
+                        # Non-blocking: continue with context deletion
 
             deleted = await repos.context.delete_by_thread(thread_id)
             logger.info(f'Deleted {deleted} entries from thread {thread_id}')

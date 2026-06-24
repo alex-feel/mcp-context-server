@@ -682,7 +682,27 @@ async def run_generation(
 
         chunk_embeddings = embed_task.result() if embed_task is not None else None
         summary_text = summary_task.result() if summary_task is not None else None
-        index_nodes = await node_task if node_task is not None else None
+        # The index_tree node leg is contractually NEVER-RAISE: a node-summary
+        # failure or timeout must never abort a store (None preserves existing
+        # node rows). _nodes_after_summary already swallows its own non-Cancelled
+        # exceptions, so this guard is defense-in-depth that keeps the structural
+        # generation-first guarantee intact against any future regression in the
+        # node helpers -- a surprise node-leg exception is coerced to None rather
+        # than aborting an otherwise-successful store.
+        # ``except Exception`` deliberately does NOT catch ``CancelledError``
+        # (it subclasses ``BaseException``), so an inner/outer cancellation still
+        # propagates and is cleaned up by the ``finally`` below.
+        index_nodes: list[IndexNodeRow] | None = None
+        if node_task is not None:
+            try:
+                index_nodes = await node_task
+            except Exception:
+                logger.warning(
+                    'Index-tree node leg raised unexpectedly; preserving existing '
+                    'node rows (None).',
+                    exc_info=True,
+                )
+                index_nodes = None
         return chunk_embeddings, summary_text, index_nodes
     finally:
         # Guarantee NO created task outlives this coroutine on ANY exit path. On a
@@ -1147,7 +1167,7 @@ async def execute_store_in_transaction(
 
         should_store = True
         if was_updated:
-            embedding_exists = await repos.embeddings.exists(context_id)
+            embedding_exists = await repos.embeddings.exists(context_id, txn=txn)
             should_store = not embedding_exists
             if not should_store:
                 logger.debug(
@@ -1287,9 +1307,9 @@ async def execute_update_in_transaction(
 
     # Auto-correct content_type when images not explicitly changed
     if images is None and (text is not None or metadata is not None):
-        image_count = await repos.images.count_images_for_context(context_id)
+        image_count = await repos.images.count_images_for_context(context_id, txn=txn)
         current_content_type = 'multimodal' if image_count > 0 else 'text'
-        stored_content_type = await repos.context.get_content_type(context_id)
+        stored_content_type = await repos.context.get_content_type(context_id, txn=txn)
         if stored_content_type != current_content_type:
             await repos.context.update_content_type(
                 context_id, current_content_type, txn=txn,

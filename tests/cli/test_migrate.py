@@ -955,3 +955,44 @@ class TestUrlHelpers:
         parser = build_parser()
         actions = {action.dest for action in parser._actions}
         assert {'source_url', 'target_url', 'dry_run', 'report'}.issubset(actions)
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_migration_closes_source_when_target_connect_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed target connect closes the source and propagates the original error.
+
+    Mutation guard for the R2 None-guard fix (run_migration_postgresql): target_conn
+    is opened INSIDE the try with a None-guarded finally, so a target connect failure
+    does NOT leak the already-open source connection and does NOT raise
+    UnboundLocalError / AttributeError from a None.close() in the finally.
+    """
+    import asyncpg as asyncpg_mod
+
+    from app.cli.migrate import run_migration_postgresql
+
+    closed = {'source': False}
+
+    class _FakeConn:
+        async def close(self) -> None:
+            closed['source'] = True
+
+    calls = {'n': 0}
+
+    async def _fake_connect(_url: str, **_kwargs: object) -> _FakeConn:
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return _FakeConn()  # source connection succeeds
+        raise OSError('target unreachable')  # target connect fails
+
+    monkeypatch.setattr(asyncpg_mod, 'connect', _fake_connect)
+
+    options = MigrationOptions(
+        source_url='postgresql://u:p@localhost/src',
+        target_url='postgresql://u:p@localhost/tgt',
+    )
+    with pytest.raises(OSError, match='target unreachable'):
+        await run_migration_postgresql(options)
+    # The source was closed by the finally; no UnboundLocalError / None.close().
+    assert closed['source'] is True

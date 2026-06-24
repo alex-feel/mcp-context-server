@@ -883,18 +883,24 @@ class EmbeddingRepository(BaseRepository):
                         JOIN vec_context_embeddings ve ON ve.rowid = ec.vec_rowid
                     ),
                     best_chunks AS (
-                        SELECT
-                            cd.context_id,
-                            cd.start_index,
-                            cd.end_index,
-                            cd.distance as best_distance
-                        FROM chunk_distances cd
-                        INNER JOIN (
-                            SELECT context_id, MIN(distance) as min_distance
-                            FROM chunk_distances
-                            GROUP BY context_id
-                        ) min_cd ON cd.context_id = min_cd.context_id
-                                AND cd.distance = min_cd.min_distance
+                        -- One row per context (the nearest chunk). ROW_NUMBER picks a
+                        -- single chunk even when two chunks tie at the minimum
+                        -- distance, matching the PostgreSQL DISTINCT ON path; the old
+                        -- MIN-equality join emitted duplicate rows for one context on
+                        -- a tie.
+                        SELECT context_id, start_index, end_index, best_distance
+                        FROM (
+                            SELECT
+                                cd.context_id,
+                                cd.start_index,
+                                cd.end_index,
+                                cd.distance as best_distance,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY cd.context_id ORDER BY cd.distance
+                                ) as rn
+                            FROM chunk_distances cd
+                        )
+                        WHERE rn = 1
                     )
                     SELECT
                         ce.id,
@@ -1734,22 +1740,29 @@ class EmbeddingRepository(BaseRepository):
         """
         await self.delete_all_chunks(context_id)
 
-    async def exists(self, context_id: str) -> bool:
+    async def exists(self, context_id: str, txn: 'TransactionContext | None' = None) -> bool:
         """Check if embedding exists for context entry.
 
         Args:
             context_id: ID of the context entry
+            txn: Optional transaction context. When provided the check runs on the
+                transaction's own connection instead of acquiring a second pooled
+                connection, avoiding a nested pool acquire while a transaction
+                connection is already held (PostgreSQL pool-starvation hazard).
 
         Returns:
             True if embedding exists, False otherwise
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if backend_type == 'sqlite':
 
             def _exists_sqlite(conn: sqlite3.Connection) -> bool:
                 query = f'SELECT 1 FROM embedding_metadata WHERE context_id = {self._placeholder(1)} LIMIT 1'
                 cursor = conn.execute(query, (context_id,))
                 return cursor.fetchone() is not None
 
+            if txn is not None:
+                return _exists_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_exists_sqlite)
 
         # postgresql
@@ -1758,6 +1771,8 @@ class EmbeddingRepository(BaseRepository):
             row = await conn.fetchrow(query, context_id)
             return row is not None
 
+        if txn is not None:
+            return await _exists_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_exists_postgresql)
 
     async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:

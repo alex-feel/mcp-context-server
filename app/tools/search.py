@@ -273,6 +273,22 @@ async def _semantic_search_raw(
             result.pop('matched_chunk_start', None)
             result.pop('matched_chunk_end', None)
 
+    # Parse JSON metadata to a dict for EVERY semantic result so this shared
+    # helper returns the same metadata shape as search_context/fts_search_context.
+    # The repository returns metadata as a JSON string on BOTH backends (SQLite
+    # TEXT; PostgreSQL JSONB decoded as str because asyncpg registers no jsonb
+    # codec), so without this both semantic_search_context and the semantic leg
+    # of hybrid_search_context would emit a string where the result contract
+    # types metadata as a dict. The hasattr(..., 'strip') guard makes this
+    # idempotent: an already-parsed dict has no 'strip' and is left untouched.
+    for result in search_results:
+        metadata_raw = result.get('metadata')
+        if metadata_raw is not None and hasattr(metadata_raw, 'strip'):
+            try:
+                result['metadata'] = json.loads(str(metadata_raw))
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                result['metadata'] = None
+
     return search_results, search_stats
 
 

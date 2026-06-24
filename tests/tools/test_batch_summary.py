@@ -590,6 +590,57 @@ class TestBatchMessageAccuracy:
         mock_summary.summarize.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_store_batch_preserved_summary_not_counted_as_generated(self) -> None:
+        """A reused (preserved) summary is not also counted as 'generated'.
+
+        Regression: when a likely-duplicate entry reuses its existing summary AND
+        has absent embeddings, an embedding task is queued so the gather runs; the
+        success block then mis-counted the preserved summary as generated, so the
+        message claimed BOTH 'summaries generated' and 'summaries preserved' for the
+        same entry. The count is now gated on a summary task having actually run.
+        """
+        repos = _create_mock_repositories()
+        repos.context.store_with_deduplication = AsyncMock(return_value=(500, True))
+        # Likely-duplicate with an existing summary to REUSE, but absent embeddings
+        # (so an embedding task IS queued and the gather runs).
+        repos.context.check_latest_is_duplicate = AsyncMock(
+            return_value='0190abcdef1234567890abcd00000009',
+        )
+        repos.context.get_summary = AsyncMock(return_value='Existing preserved summary')
+        repos.embeddings.exists = AsyncMock(return_value=False)
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should NOT be generated')
+
+        entries = [
+            {'thread_id': 'preserve-sum', 'source': 'user', 'text': 'x' * 500},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.startup.get_chunking_service', return_value=None),
+            patch('app.tools._shared.get_chunking_service', return_value=None),
+        ):
+            result = await store_context_batch(entries=entries, atomic=True)
+
+        assert result['success'] is True
+        # The reused summary is reported as preserved, NEVER as generated.
+        assert 'summaries preserved' in result['message']
+        assert 'summaries generated' not in result['message']
+        # No summary model call ran for the reused summary.
+        mock_summary.summarize.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_update_batch_short_text_no_summary_message(self) -> None:
         """Message omits 'summaries regenerated' when all entries skip summary due to min_content_length."""
         repos = _create_mock_repositories()

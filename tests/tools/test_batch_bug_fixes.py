@@ -595,8 +595,10 @@ class TestBatchStoreResponseParity:
             mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
             mock_repos.context.get_summary = AsyncMock(return_value=None)
 
-            # For entry 2 (deduplicated), embeddings already exist
-            async def mock_embedding_exists(context_id):
+            # For entry 2 (deduplicated), embeddings already exist.
+            # Accept the optional txn kwarg the store path now passes.
+            async def mock_embedding_exists(context_id, txn=None):
+                _ = txn
                 return context_id == 101  # entry 2 has existing embeddings
 
             mock_repos.embeddings.exists = AsyncMock(side_effect=mock_embedding_exists)
@@ -728,6 +730,7 @@ class TestBatchDeleteEmbeddingCleanup:
 
             # Verify get_ids_matching_batch_criteria was called with correct args
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
+                context_ids=None,
                 thread_ids=['thread-abc'],
                 source=None,
                 older_than_days=None,
@@ -773,6 +776,7 @@ class TestBatchDeleteEmbeddingCleanup:
 
             # Verify get_ids_matching_batch_criteria was called with correct args
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
+                context_ids=None,
                 thread_ids=None,
                 source=None,
                 older_than_days=30,

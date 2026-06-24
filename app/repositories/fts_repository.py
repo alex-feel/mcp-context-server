@@ -555,6 +555,7 @@ class FtsRepository(BaseRepository):
                     ORDER BY score DESC
                     LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 ) sub
+                ORDER BY sub.score DESC
             '''
 
             # Transform query based on mode (for prefix mode, adds :* suffix)

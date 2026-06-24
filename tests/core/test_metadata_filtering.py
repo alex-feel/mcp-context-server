@@ -258,7 +258,9 @@ class TestMetadataQueryBuilder:
         where_clause, params = builder.build_where_clause()
         assert 'LIKE' in where_clause
         assert "|| '%'" in where_clause
-        assert params == ['test_']
+        # The '_' in the value is escaped so starts_with matches it literally,
+        # not as a single-char wildcard (paired with the ESCAPE clause).
+        assert params == ['test\\_']
 
     def test_operator_ends_with(self) -> None:
         """Test ENDS_WITH operator."""

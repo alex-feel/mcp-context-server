@@ -1334,16 +1334,21 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_check_exists_postgresql)
 
-    async def get_content_type(self, context_id: str) -> str | None:
+    async def get_content_type(self, context_id: str, txn: 'TransactionContext | None' = None) -> str | None:
         """Get the content type of a context entry.
 
         Args:
             context_id: ID of the context entry
+            txn: Optional transaction context. When provided the read runs on the
+                transaction's own connection instead of acquiring a second pooled
+                connection, avoiding a nested pool acquire while a transaction
+                connection is already held (PostgreSQL pool-starvation hazard).
 
         Returns:
             Content type ('text' or 'multimodal') or None if entry doesn't exist
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if backend_type == 'sqlite':
 
             def _get_content_type_sqlite(conn: sqlite3.Connection) -> str | None:
                 cursor = conn.cursor()
@@ -1354,6 +1359,8 @@ class ContextRepository(BaseRepository):
                 row = cursor.fetchone()
                 return row['content_type'] if row else None
 
+            if txn is not None:
+                return _get_content_type_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_get_content_type_sqlite)
 
         # PostgreSQL
@@ -1364,6 +1371,8 @@ class ContextRepository(BaseRepository):
             )
             return row['content_type'] if row else None
 
+        if txn is not None:
+            return await _get_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_get_content_type_postgresql)
 
     async def update_content_type(
@@ -1582,17 +1591,21 @@ class ContextRepository(BaseRepository):
 
     async def get_ids_matching_batch_criteria(
         self,
+        context_ids: list[str] | None = None,
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
     ) -> list[str]:
         """Return context entry IDs matching batch deletion criteria.
 
-        Builds the same WHERE clause as delete_contexts_batch but executes
-        a SELECT instead of DELETE. Used to pre-query affected IDs for
-        embedding cleanup on SQLite (where vec0 virtual tables lack CASCADE).
+        Builds the same AND-combined WHERE clause as delete_contexts_batch but
+        executes a SELECT instead of DELETE. Used to pre-query the exact IDs that a
+        delete will remove for embedding cleanup on SQLite (where vec0 virtual
+        tables lack CASCADE), so the cleanup targets only the to-be-deleted subset
+        and never orphans a surviving entry's embeddings.
 
         Args:
+            context_ids: Filter by these context IDs (intersected with the others)
             thread_ids: Filter by these thread IDs
             source: Filter by source ('user' or 'agent')
             older_than_days: Filter entries older than N days
@@ -1606,6 +1619,13 @@ class ContextRepository(BaseRepository):
                 cursor = conn.cursor()
                 conditions: list[str] = []
                 params: list[Any] = []
+
+                if context_ids:
+                    placeholders = ','.join([
+                        self._placeholder(len(params) + i + 1) for i in range(len(context_ids))
+                    ])
+                    conditions.append(f'id IN ({placeholders})')
+                    params.extend(context_ids)
 
                 if thread_ids:
                     placeholders = ','.join([

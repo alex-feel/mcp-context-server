@@ -306,7 +306,16 @@ async def store_context_batch(
             if not errors:
                 if entry_embeddings.get(ve_idx) is not None:
                     embeddings_generated_count += 1
-                if entry_summaries.get(ve_idx) and isinstance(entry_summaries[ve_idx], str):
+                # Only count a summary as GENERATED when a summary model call
+                # actually ran for this entry; a reused/preserved summary (no
+                # 'summary' task queued, accounted by summaries_preserved_count)
+                # must not be double-counted here, mirroring the single-store
+                # generated-vs-preserved split.
+                if (
+                    'summary' in task_names
+                    and entry_summaries.get(ve_idx)
+                    and isinstance(entry_summaries[ve_idx], str)
+                ):
                     summaries_generated_count += 1
 
             if errors:
@@ -1330,31 +1339,22 @@ async def delete_context_batch(
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
 
-        # Delete embeddings first if context_ids are specified.
-        # Gate on embedding generation OR compression: either toggle being
-        # true implies embedding rows MAY exist on disk and the explicit
-        # cleanup SHOULD run. ``settings.semantic_search.enabled`` only
-        # controls ``semantic_search_context`` tool registration -- NOT
-        # whether embeddings exist -- so it is the wrong gate.
-        if (settings.embedding.generation_enabled or settings.compression.enabled) and context_ids:
-            for cid in context_ids:
-                try:
-                    await repos.embeddings.delete(cid)
-                except Exception as e:
-                    logger.warning(f'Failed to delete embedding for context {cid}: {e}')
-
-        # Pre-query affected context IDs for embedding cleanup when using non-ID criteria.
-        # Only needed for SQLite. On PostgreSQL the embedding rows cascade-delete
-        # automatically: fp32 `vec_context_embeddings` (compression disabled) and
-        # compressed `vec_context_embeddings_compressed` (compression enabled) both
-        # declare ON DELETE CASCADE on the `context_id` foreign key, so the
-        # surviving table for the current compression mode is covered without an
-        # explicit cleanup call.
-        if (settings.embedding.generation_enabled or settings.compression.enabled) and not context_ids:
+        # Delete embeddings for the contexts the COMBINED criteria will actually
+        # delete. On PostgreSQL the embedding rows cascade-delete with the context
+        # row (ON DELETE CASCADE on the surviving vec table for the active
+        # compression mode), so explicit cleanup is SQLite-only (vec0 virtual tables
+        # lack CASCADE). The cleanup pre-queries the exact to-be-deleted subset, so
+        # combining context_ids with source/older_than_days never deletes embeddings
+        # for a context_id those filters exclude (which would orphan a surviving
+        # entry). Gate on embedding generation OR compression -- ``settings.
+        # semantic_search.enabled`` only controls tool registration, not whether
+        # embedding rows exist on disk.
+        if settings.embedding.generation_enabled or settings.compression.enabled:
             backend = repos.context.backend
             if backend.backend_type == 'sqlite':
                 try:
                     affected_ids = await repos.context.get_ids_matching_batch_criteria(
+                        context_ids=context_ids,
                         thread_ids=thread_ids,
                         source=source,
                         older_than_days=older_than_days,

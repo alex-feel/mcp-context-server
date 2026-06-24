@@ -445,3 +445,74 @@ class TestBackwardCompatibility:
 
         # Cleanup
         await repos.context.delete_by_ids([context_id, mm_id])
+
+
+class TestTxnAwareReadsUseTransactionConnection:
+    """Transaction-internal reads run on the txn connection, not a 2nd pool conn.
+
+    Regression: get_content_type / count_images_for_context / EmbeddingRepository.exists
+    were called inside the store/update transaction WITHOUT ``txn=txn``, so on
+    PostgreSQL they acquired a second pooled connection while the transaction
+    connection was held -- a nested-pool-acquire starvation hazard under saturation.
+    They now accept ``txn`` and run on the transaction's own connection.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reads_with_txn_avoid_second_connection(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        import sqlite3 as stdlib_sqlite3
+        from unittest.mock import AsyncMock
+        from unittest.mock import patch
+
+        backend, repos = backend_with_repos
+
+        # embedding_metadata is created by a migration, not the base schema; create
+        # it (empty) so EmbeddingRepository.exists has a table to query.
+        def _create_embedding_metadata(conn: stdlib_sqlite3.Connection) -> None:
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS embedding_metadata ('
+                '  context_id TEXT NOT NULL PRIMARY KEY,'
+                '  model_name TEXT NOT NULL,'
+                '  dimensions INTEGER NOT NULL,'
+                '  chunk_count INTEGER NOT NULL DEFAULT 1,'
+                '  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,'
+                '  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP'
+                ')',
+            )
+
+        await backend.execute_write(_create_embedding_metadata)
+
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='conc-1', source='user', content_type='text',
+            text_content='txn read target', metadata=None,
+        )
+
+        async with backend.begin_transaction() as txn:
+            # Any pool-acquiring read fails loudly; the txn-aware reads must use the
+            # transaction connection instead, so execute_read is never called.
+            guard = AsyncMock(side_effect=AssertionError('acquired a second connection'))
+            with patch.object(backend, 'execute_read', new=guard):
+                content_type = await repos.context.get_content_type(context_id, txn=txn)
+                image_count = await repos.images.count_images_for_context(context_id, txn=txn)
+                embedding_exists = await repos.embeddings.exists(context_id, txn=txn)
+
+        assert content_type == 'text'
+        assert image_count == 0
+        assert embedding_exists is False
+        guard.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reads_without_txn_use_pool_path(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        # Backward compatibility: omitting txn keeps the pooled-read path unchanged.
+        backend, repos = backend_with_repos
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='conc-1b', source='user', content_type='text',
+            text_content='pool read target', metadata=None,
+        )
+        assert await repos.context.get_content_type(context_id) == 'text'
+        assert await repos.images.count_images_for_context(context_id) == 0

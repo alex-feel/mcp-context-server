@@ -37,9 +37,11 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
         backend: Storage backend instance.
 
     Raises:
-        ConfigurationError: When ``COMPRESSION_SEED`` is missing at bootstrap
-            (exit 78), or when env-derived configuration disagrees with the
-            stored provenance row (exit 78).
+        ConfigurationError: When the env-derived compression configuration
+            disagrees with the stored provenance row (exit 78). On the first
+            start (no provenance row yet) the current configuration is recorded
+            as the singleton row instead of raising; ``COMPRESSION_SEED`` always
+            resolves (it defaults to 0) so it is never "missing" at bootstrap.
     """
     settings = get_settings()
     comp = settings.compression

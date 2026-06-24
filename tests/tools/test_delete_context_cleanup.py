@@ -17,7 +17,6 @@ CASCADE.
 """
 
 from collections.abc import Generator
-from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -83,7 +82,10 @@ class _FakeRepos:
                 'delete_by_thread': AsyncMock(return_value=0),
                 'backend': type('_Backend', (), {'backend_type': 'sqlite'})(),
                 'search_contexts': AsyncMock(return_value=([], None)),
-                'get_ids_matching_batch_criteria': AsyncMock(return_value=[]),
+                # The criteria query returns the ids the combined delete will remove;
+                # for these single-id tests that is exactly VALID_ID. The cleanup
+                # (SQLite-only) deletes embeddings for this returned subset.
+                'get_ids_matching_batch_criteria': AsyncMock(return_value=[VALID_ID]),
                 'delete_contexts_batch': AsyncMock(return_value=(1, ['context_ids'])),
             },
         )()
@@ -167,7 +169,7 @@ async def test_delete_context_cleanup_skipped_only_when_both_disabled(
 
     await context_module.delete_context(context_ids=[VALID_ID])
 
-    cast(AsyncMock, fake_repos_factory.embeddings.delete).assert_not_awaited()
+    fake_repos_factory.embeddings.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -186,3 +188,34 @@ async def test_delete_context_cleanup_runs_when_only_compression_enabled(
     await context_module.delete_context(context_ids=[VALID_ID])
 
     fake_repos_factory.embeddings.delete.assert_awaited_once_with(VALID_ID)
+
+
+@pytest.mark.asyncio
+async def test_delete_context_batch_cleanup_respects_combined_criteria(
+    monkeypatch: pytest.MonkeyPatch, fake_repos_factory: _FakeRepos,
+) -> None:
+    """Combined context_ids + source deletes embeddings only for the matching subset.
+
+    Regression: deleting embeddings for EVERY context_id while the row-delete is
+    AND-combined with source/older_than_days orphaned a surviving entry. The cleanup
+    now pre-queries the exact to-be-deleted ids and deletes embeddings only for those.
+    """
+    _flip_env_and_refresh_bindings(
+        monkeypatch,
+        embedding_generation_enabled=True,
+        semantic_search_enabled=False,
+        compression_enabled=True,
+    )
+    other_id = '0190abcdef1234567890abcdef654321'
+    # Only VALID_ID matches the combined criteria; other_id is excluded by source.
+    fake_repos_factory.context.get_ids_matching_batch_criteria = AsyncMock(return_value=[VALID_ID])
+
+    await batch_module.delete_context_batch(context_ids=[VALID_ID, other_id], source='user')
+
+    # Embeddings deleted ONLY for the matching id, never the excluded one.
+    fake_repos_factory.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    # The criteria query received BOTH context_ids and the source filter.
+    fake_repos_factory.context.get_ids_matching_batch_criteria.assert_awaited_once()
+    call_kwargs = fake_repos_factory.context.get_ids_matching_batch_criteria.await_args.kwargs
+    assert call_kwargs.get('context_ids') == [VALID_ID, other_id]
+    assert call_kwargs.get('source') == 'user'

@@ -52,6 +52,27 @@ def _random_vectors(
 # ---------------------------------------------------------------------------
 
 
+def test_ip_concat_tolerates_zero_row_payload() -> None:
+    """IPPayload.concat handles an n_rows==0 payload (mirrors MSEPayload).
+
+    Regression: ``p.qjl_bits.reshape(p.n_rows, -1)`` raised ValueError for a
+    zero-row payload because numpy cannot infer the ``-1`` dimension at size 0.
+    The empty payload now reshapes to an explicit ``(0, ceil(dim/8))``; a
+    non-empty concat is unaffected. Mirrors MSEPayload.concat's tolerance of the
+    documented "one or more" contract.
+    """
+    dim = 16
+    empty = encode(np.zeros((0, dim), dtype=np.float32), bits=4, variant='ip', seed=17)
+    full = encode(_random_vectors(3, dim, seed=2), bits=4, variant='ip', seed=17)
+    assert isinstance(empty, IPPayload)
+    assert isinstance(full, IPPayload)
+    assert empty.n_rows == 0
+    assert full.n_rows == 3
+    # Both orderings must succeed (no ValueError) and preserve the non-empty rows.
+    assert IPPayload.concat([empty, full]).n_rows == 3
+    assert IPPayload.concat([full, empty]).n_rows == 3
+
+
 def test_mse_concat_roundtrip() -> None:
     """MSE concat then to_bytes then payload_from_bytes preserves decode parity."""
     dim = 16

@@ -399,16 +399,21 @@ class ImageRepository(BaseRepository):
 
         return await self.backend.execute_read(_get_images_batch_postgresql)
 
-    async def count_images_for_context(self, context_id: str) -> int:
+    async def count_images_for_context(self, context_id: str, txn: 'TransactionContext | None' = None) -> int:
         """Count the number of images for a context entry.
 
         Args:
             context_id: ID of the context entry
+            txn: Optional transaction context. When provided the count runs on the
+                transaction's own connection instead of acquiring a second pooled
+                connection, avoiding a nested pool acquire while a transaction
+                connection is already held (PostgreSQL pool-starvation hazard).
 
         Returns:
             Number of images attached to the context
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if backend_type == 'sqlite':
 
             def _count_images_sqlite(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
@@ -417,6 +422,8 @@ class ImageRepository(BaseRepository):
                 result = cursor.fetchone()
                 return int(result['count']) if result else 0
 
+            if txn is not None:
+                return _count_images_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_count_images_sqlite)
 
         # postgresql
@@ -426,6 +433,8 @@ class ImageRepository(BaseRepository):
             result = await conn.fetchrow(query, context_id)
             return int(result['count']) if result else 0
 
+        if txn is not None:
+            return await _count_images_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_count_images_postgresql)
 
     async def replace_images_for_context(
