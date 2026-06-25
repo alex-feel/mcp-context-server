@@ -632,9 +632,26 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         logger.info(f'MCP Context Server initialized (backend: {backend.backend_type})')
     except Exception as e:
         logger.error(f'Failed to initialize server: {e}')
+        # Shut down any provider already initialized before the failing step so a
+        # startup failure does not leak its HTTP client / thread pools (mirrors
+        # the clean-shutdown cleanup below). Each shutdown is isolated so one
+        # provider's shutdown error cannot mask the original startup exception.
+        for _startup_provider in (
+            get_reranking_provider(),
+            get_embedding_provider(),
+            get_summary_provider(),
+        ):
+            if _startup_provider is not None:
+                try:
+                    await _startup_provider.shutdown()
+                except Exception as shutdown_error:
+                    logger.error(f'Error shutting down provider during startup failure: {shutdown_error}')
         startup_backend = get_backend()
         if startup_backend:
-            await startup_backend.shutdown()
+            try:
+                await startup_backend.shutdown()
+            except Exception as shutdown_error:
+                logger.error(f'Error shutting down backend during startup failure: {shutdown_error}')
         raise
 
     # Yield control to FastMCP

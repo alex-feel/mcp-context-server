@@ -131,6 +131,43 @@ class TestMatchEntry:
         assert second.line_number == 4
 
     @pytest.mark.asyncio
+    async def test_literal_newline_pattern_is_line_oriented(self) -> None:
+        # A literal pattern containing a newline cannot match WITHIN a logical line, so the
+        # line-oriented contract yields zero matches (it must not span a line break).
+        text = 'foo\nbar\nfoo\nbar'
+        compiled = compile_pattern('foo\nbar', is_regex=False, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=100, is_regex=False, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 0
+
+    @pytest.mark.asyncio
+    async def test_literal_lone_carriage_return_matches_in_line(self) -> None:
+        # A LONE '\r' (one not followed by '\n') is ordinary line CONTENT per the line
+        # splitter (_NEWLINE_RE = r'\r\n|\n'), so a literal pattern containing it must STILL
+        # match within the single logical line, not be dropped by the newline short-circuit.
+        text = 'abc\rdef ghi'
+        compiled = compile_pattern('c\rd', is_regex=False, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=100, is_regex=False, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 1
+        assert result.matches[0].line_number == 1
+
+    @pytest.mark.asyncio
+    async def test_literal_cr_does_not_match_crlf_terminator(self) -> None:
+        # A literal pattern ending in '\r' must NOT match the '\r' that forms the first half
+        # of a source CRLF ('\r\n') line terminator -- that '\r' is the terminator, not line
+        # content, so matching it would diverge from the per-line regex path and place the
+        # offset inside the terminator.
+        text = 'foo\r\nbar\r\nbaz'
+        compiled = compile_pattern('foo\r', is_regex=False, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=100, is_regex=False, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 0
+
+    @pytest.mark.asyncio
     async def test_context_lines_window(self) -> None:
         text = 'l1\nl2\nNEEDLE\nl4\nl5'
         compiled = compile_pattern('NEEDLE', is_regex=False, case_sensitive=True)

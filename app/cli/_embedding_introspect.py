@@ -45,7 +45,8 @@ async def embedding_metadata_table_exists(backend: StorageBackend) -> bool:
             '''
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
-                WHERE table_name = 'embedding_metadata'
+                WHERE table_schema = current_schema()
+                  AND table_name = 'embedding_metadata'
             )
             ''',
         )

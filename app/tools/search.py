@@ -26,6 +26,7 @@ from pydantic import Field
 
 from app.errors import format_exception_message
 from app.migrations import get_fts_migration_status
+from app.repositories.fts_repository import sanitize_sqlite_fts_terms
 from app.services.passage_extraction_service import extract_rerank_passage
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -1033,28 +1034,42 @@ def _prepare_hybrid_fts_query(
     """
     tokens = re.findall(r'"[^"]*"|\S+', query.strip())
     significant = [t for t in tokens if len(t.strip('"')) > 1]
+    use_or = len(significant) >= or_threshold
 
-    if len(significant) < or_threshold:
+    if backend_type == 'sqlite':
+        # EVERY SQLite path (short 'match' AND long 'OR') runs through the SAME term sanitizer:
+        # a bare FTS5 operator/special char left on ANY path raises 'fts5: syntax error' (the
+        # recurring crash). Short queries AND the surviving terms (space-joined, still stemmed);
+        # long queries OR them for partial-match recall.
+        source = significant if use_or else tokens
+        terms = sanitize_sqlite_fts_terms(source)
+        if not terms:
+            # Every term was an operator bareword: return a harmless literal phrase (zero
+            # results, no crash) instead of a raw operator that would crash MATCH -- matching
+            # PostgreSQL's tolerance of the same all-operator input.
+            return '"' + query.replace('"', '""') + '"', 'match'
+        if use_or:
+            return ' OR '.join(terms), 'boolean'  # FTS5 OR is uppercase (case-sensitive)
+        return ' '.join(terms), 'match'
+
+    # PostgreSQL: plainto_tsquery / websearch_to_tsquery sanitize operators and stopwords
+    # server-side, so a raw query never raises -- only the OR-mode join needs building. Hyphens
+    # are replaced to prevent websearch_to_tsquery NOT interpretation; quoted phrases preserved.
+    if not use_or:
         return query, 'match'
-
-    # Sanitize: replace hyphens to prevent websearch_to_tsquery NOT interpretation
-    # Preserve quoted phrases intact
     sanitized: list[str] = []
     for token in significant:
-        if token.startswith('"') and token.endswith('"'):
+        # >= 2 chars so a lone '"' is never treated as a balanced phrase (consistent with the
+        # shared SQLite sanitizer; the `significant` filter already excludes it here too).
+        if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
             sanitized.append(token)
         else:
             clean = token.replace('-', ' ').strip()
             if clean:
                 sanitized.append(clean)
-
     if not sanitized:
         return query, 'match'
-
-    # SQLite FTS5: OR must be uppercase (case-sensitive operators)
-    # PostgreSQL websearch_to_tsquery: or must be lowercase
-    or_keyword = 'OR' if backend_type == 'sqlite' else 'or'
-    return f' {or_keyword} '.join(sanitized), 'boolean'
+    return ' or '.join(sanitized), 'boolean'  # websearch_to_tsquery 'or' is lowercase
 
 
 async def hybrid_search_context(
@@ -1330,18 +1345,25 @@ async def hybrid_search_context(
                 'Semantic sub-search failed; results may be based on FTS only',
             )
 
-        # Check if both searches failed
-        if fts_error and semantic_error:
-            raise ToolError(
-                f'All search modes failed. FTS: {fts_error}. Semantic: {semantic_error}',
-            )
-
-        # Determine which modes executed successfully (not errored)
+        # Determine which available modes executed successfully (not errored).
         modes_used: list[str] = []
         if 'fts' in available_modes and not fts_error:
             modes_used.append('fts')
         if 'semantic' in available_modes and not semantic_error:
             modes_used.append('semantic')
+
+        # If NO available mode succeeded, surface the error instead of returning
+        # an empty success. The old `fts_error and semantic_error` guard missed a
+        # single-mode deployment whose only available mode errored (e.g. an
+        # invalid metadata_filters), masking the failure as zero results.
+        if not modes_used:
+            details = '. '.join(
+                part for part in (
+                    f'FTS: {fts_error}' if fts_error else '',
+                    f'Semantic: {semantic_error}' if semantic_error else '',
+                ) if part
+            )
+            raise ToolError(f'All available search modes failed. {details}')
 
         # Parse FTS metadata (returned as JSON strings from DB)
         for result in fts_results:

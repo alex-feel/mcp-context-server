@@ -69,7 +69,8 @@ class TestMetadataQueryBuilderPostgresql:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert 'LOWER' in where_clause
+        # Case-insensitive fold is ASCII-only via translate() (parity with SQLite LOWER).
+        assert 'translate' in where_clause
         # PostgreSQL uses ->> or #>> for JSON access
         assert '->>' in where_clause or '#>>' in where_clause
         # Value is passed as-is, LOWER is applied in SQL to both sides
@@ -163,7 +164,10 @@ class TestMetadataQueryBuilderPostgresql:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert 'NOT IN (' in where_clause
+        # NOT_IN is now a presence guard + negated membership (so boolean members can be
+        # type-guarded without colliding with same-text non-booleans).
+        assert 'IS NOT NULL AND NOT (' in where_clause
+        assert 'IN (' in where_clause
         assert len(params) == 2
 
     def test_operator_exists_postgresql(self) -> None:
@@ -479,7 +483,7 @@ class TestMetadataQueryBuilderPostgresql:
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata->'technologies') = 'array'" in where_clause
         assert "jsonb_array_elements_text(metadata->'technologies')" in where_clause
-        assert 'LOWER(elem) = LOWER($1)' in where_clause
+        assert 'translate(elem' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
         assert 'CASE WHEN' in where_clause
         assert 'ELSE FALSE END' in where_clause
         assert params == ['python']
@@ -517,7 +521,7 @@ class TestMetadataQueryBuilderPostgresql:
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata#>'{user,preferences,tags}') = 'array'" in where_clause
         assert "jsonb_array_elements_text(metadata#>'{user,preferences,tags}')" in where_clause
-        assert 'LOWER(elem) = LOWER($1)' in where_clause
+        assert 'translate(elem' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
         assert params == ['favorite']
 
     def test_operator_array_contains_integer_postgresql(self) -> None:

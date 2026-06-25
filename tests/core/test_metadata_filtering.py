@@ -29,7 +29,9 @@ class TestMetadataQueryBuilder:
         builder.add_simple_filter('status', 'active')
 
         where_clause, params = builder.build_where_clause()
-        assert where_clause == "(json_extract(metadata, '$.status') = ?)"
+        # A string value is guarded so a stored JSON boolean is excluded (cross-backend parity).
+        assert "json_type(metadata, '$.status') NOT IN ('true', 'false')" in where_clause
+        assert "CAST(json_extract(metadata, '$.status') AS TEXT) = ?" in where_clause
         assert params == ['active']
 
     def test_multiple_simple_filters(self) -> None:
@@ -44,6 +46,215 @@ class TestMetadataQueryBuilder:
         assert 'active' in params
         assert 5 in params
 
+    @pytest.mark.parametrize(
+        ('backend', 'expected'),
+        [('sqlite', ['1', '0']), ('postgresql', ['true', 'false'])],
+    )
+    def test_in_operator_normalizes_booleans(self, backend: str, expected: list[str]) -> None:
+        """IN with boolean members binds the per-backend stored boolean text.
+
+        A blanket str(bool) would bind 'True'/'False', matching neither backend.
+        """
+        builder = MetadataQueryBuilder(backend_type=backend)
+        builder.add_advanced_filter(
+            MetadataFilter(key='flag', operator=MetadataOperator.IN, value=[True, False]),
+        )
+        _clause, params = builder.build_where_clause()
+        assert params == expected
+
+    @pytest.mark.parametrize(
+        ('backend', 'expected'),
+        [('sqlite', ['1']), ('postgresql', ['true'])],
+    )
+    def test_not_in_operator_normalizes_booleans(self, backend: str, expected: list[str]) -> None:
+        """NOT_IN with a boolean member binds the per-backend stored boolean text."""
+        builder = MetadataQueryBuilder(backend_type=backend)
+        builder.add_advanced_filter(
+            MetadataFilter(key='flag', operator=MetadataOperator.NOT_IN, value=[True]),
+        )
+        _clause, params = builder.build_where_clause()
+        assert params == expected
+
+    @pytest.mark.parametrize(
+        'operator',
+        [
+            MetadataOperator.EQ, MetadataOperator.NE,
+            MetadataOperator.GT, MetadataOperator.GTE, MetadataOperator.LT, MetadataOperator.LTE,
+        ],
+    )
+    def test_pg_numeric_guards_number_type(self, operator: MetadataOperator) -> None:
+        """Numeric operators are number-typed-only on PostgreSQL: the cast is guarded
+        by ``jsonb_typeof(...) = 'number'`` yielding NULL for every non-number value
+        (text/bool/json-null/absent), so the query never aborts and a non-number never
+        matches. There is no ``ELSE 0`` coercion (that diverged from SQLite for booleans
+        and numeric-prefix strings); both backends use the same number-only contract."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_advanced_filter(
+            MetadataFilter(key='priority', operator=operator, value=5),
+        )
+        clause, _params = builder.build_where_clause()
+        assert "jsonb_typeof(metadata->'priority') = 'number'" in clause
+        assert 'ELSE NULL' in clause
+        assert 'ELSE 0' not in clause
+        assert '::NUMERIC' in clause
+
+    @pytest.mark.parametrize(
+        'operator',
+        [
+            MetadataOperator.EQ, MetadataOperator.NE,
+            MetadataOperator.GT, MetadataOperator.GTE, MetadataOperator.LT, MetadataOperator.LTE,
+        ],
+    )
+    def test_sqlite_numeric_guards_number_type(self, operator: MetadataOperator) -> None:
+        """Numeric operators are number-typed-only on SQLite too: each is guarded by
+        ``json_type(metadata, '$.priority') IN ('integer', 'real')`` so a non-number
+        value (text/bool/json-null/absent) never matches -- the parity counterpart to
+        the PostgreSQL ``jsonb_typeof(...) = 'number'`` guard."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(
+            MetadataFilter(key='priority', operator=operator, value=5),
+        )
+        clause, _params = builder.build_where_clause()
+        assert "json_type(metadata, '$.priority') IN ('integer', 'real')" in clause
+
+    @pytest.mark.parametrize(
+        'operator',
+        [
+            MetadataOperator.EQ, MetadataOperator.NE,
+            MetadataOperator.GT, MetadataOperator.GTE, MetadataOperator.LT, MetadataOperator.LTE,
+        ],
+    )
+    def test_pg_float_param_casts_double_precision(self, operator: MetadataOperator) -> None:
+        """A FLOAT numeric param casts the stored value through DOUBLE PRECISION on
+        PostgreSQL so the bound IEEE double matches SQLite (asyncpg would otherwise encode
+        a float in a NUMERIC context as its full Decimal expansion, diverging for non-dyadic
+        fractions like 0.3); an INTEGER param keeps NUMERIC for exact equality past 2**53."""
+        fbuilder = MetadataQueryBuilder(backend_type='postgresql')
+        fbuilder.add_advanced_filter(MetadataFilter(key='score', operator=operator, value=0.3))
+        fclause, _ = fbuilder.build_where_clause()
+        assert '::DOUBLE PRECISION' in fclause
+        assert '::NUMERIC' not in fclause
+
+        ibuilder = MetadataQueryBuilder(backend_type='postgresql')
+        ibuilder.add_advanced_filter(MetadataFilter(key='score', operator=operator, value=5))
+        iclause, _ = ibuilder.build_where_clause()
+        assert '::NUMERIC' in iclause
+        assert '::DOUBLE PRECISION' not in iclause
+
+    @pytest.mark.parametrize('operator', [MetadataOperator.EQ, MetadataOperator.NE])
+    def test_boolean_guards_boolean_type(self, operator: MetadataOperator) -> None:
+        """Boolean EQ/NE are JSON-boolean-typed-only on both backends: SQLite guards on
+        ``json_type(...) IN ('true', 'false')`` and PostgreSQL on
+        ``jsonb_typeof(...) = 'boolean'`` so a numeric 0/1 or a string 'true'/'false' never
+        matches a boolean param -- the parity counterpart to the number-only contract."""
+        sbuilder = MetadataQueryBuilder(backend_type='sqlite')
+        sbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value=True))
+        sclause, _ = sbuilder.build_where_clause()
+        assert "json_type(metadata, '$.flag') IN ('true', 'false')" in sclause
+
+        pbuilder = MetadataQueryBuilder(backend_type='postgresql')
+        pbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value=True))
+        pclause, _ = pbuilder.build_where_clause()
+        assert "jsonb_typeof(metadata->'flag') = 'boolean'" in pclause
+
+    @pytest.mark.parametrize('operator', [MetadataOperator.IN, MetadataOperator.NOT_IN])
+    def test_in_boolean_member_is_type_guarded(self, operator: MetadataOperator) -> None:
+        """A boolean member of IN/NOT_IN is matched JSON-boolean-only on both backends so
+        it cannot collide with a same-text non-boolean (SQLite renders a JSON boolean and a
+        JSON integer 1/0 BOTH as '1'/'0'; PostgreSQL renders a JSON boolean and a JSON string
+        'true'/'false' BOTH as that text). The guard mirrors the EQ/NE boolean contract."""
+        sbuilder = MetadataQueryBuilder(backend_type='sqlite')
+        sbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value=[True]))
+        sclause, _ = sbuilder.build_where_clause()
+        assert "json_type(metadata, '$.flag') IN ('true', 'false')" in sclause
+
+        pbuilder = MetadataQueryBuilder(backend_type='postgresql')
+        pbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value=[True]))
+        pclause, _ = pbuilder.build_where_clause()
+        assert "jsonb_typeof(metadata->'flag') = 'boolean'" in pclause
+
+    @pytest.mark.parametrize('operator', [MetadataOperator.EQ, MetadataOperator.NE])
+    def test_string_value_excludes_stored_boolean(self, operator: MetadataOperator) -> None:
+        """A STRING EQ/NE value must not match a stored JSON boolean: PostgreSQL ``->>``
+        renders a boolean as 'true'/'false' text, so without a guard a string 'true' would
+        match a stored boolean on PostgreSQL but not SQLite. Both backends now guard the
+        string branch so a stored boolean is excluded -- parity by construction."""
+        sbuilder = MetadataQueryBuilder(backend_type='sqlite')
+        sbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='true'))
+        sclause, _ = sbuilder.build_where_clause()
+        assert "json_type(metadata, '$.flag') NOT IN ('true', 'false')" in sclause
+
+        pbuilder = MetadataQueryBuilder(backend_type='postgresql')
+        pbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='true'))
+        pclause, _ = pbuilder.build_where_clause()
+        assert "jsonb_typeof(metadata->'flag') <> 'boolean'" in pclause
+
+    @pytest.mark.parametrize(
+        'operator',
+        [
+            MetadataOperator.CONTAINS, MetadataOperator.STARTS_WITH, MetadataOperator.ENDS_WITH,
+            MetadataOperator.GT, MetadataOperator.GTE, MetadataOperator.LT, MetadataOperator.LTE,
+        ],
+    )
+    def test_string_comparing_operators_exclude_stored_boolean(self, operator: MetadataOperator) -> None:
+        """contains/starts_with/ends_with and a STRING-valued gt/gte/lt/lte must not match a
+        stored JSON boolean either (PostgreSQL ``->>`` renders it 'true'/'false'; SQLite
+        json_extract is 1/0). The nonbool guard is applied on both backends for parity."""
+        sbuilder = MetadataQueryBuilder(backend_type='sqlite')
+        sbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='tru'))
+        sclause, _ = sbuilder.build_where_clause()
+        assert "json_type(metadata, '$.flag') NOT IN ('true', 'false')" in sclause
+
+        pbuilder = MetadataQueryBuilder(backend_type='postgresql')
+        pbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='tru'))
+        pclause, _ = pbuilder.build_where_clause()
+        assert "jsonb_typeof(metadata->'flag') <> 'boolean'" in pclause
+
+    def test_simple_filter_string_excludes_stored_boolean(self) -> None:
+        """add_simple_filter (the ``metadata`` dict path) guards a string value against a
+        stored JSON boolean too, matching the advanced EQ contract on both backends."""
+        sbuilder = MetadataQueryBuilder(backend_type='sqlite')
+        sbuilder.add_simple_filter('flag', 'true')
+        sclause, _ = sbuilder.build_where_clause()
+        assert "json_type(metadata, '$.flag') NOT IN ('true', 'false')" in sclause
+
+        pbuilder = MetadataQueryBuilder(backend_type='postgresql')
+        pbuilder.add_simple_filter('flag', 'true')
+        pclause, _ = pbuilder.build_where_clause()
+        assert "jsonb_typeof(metadata->'flag') <> 'boolean'" in pclause
+
+    def test_case_insensitive_fold_is_ascii_only(self) -> None:
+        """Case-insensitive matching folds ASCII A-Z ONLY on both backends so they agree on
+        non-ASCII data: PostgreSQL uses translate() (not its full-Unicode LOWER()), SQLite keeps
+        its ASCII-only LOWER(), and IN/NOT_IN members are ASCII-folded in Python (not str.lower)."""
+        pbuilder = MetadataQueryBuilder(backend_type='postgresql')
+        pbuilder.add_advanced_filter(MetadataFilter(key='k', operator=MetadataOperator.EQ, value='ACTIVE'))
+        pclause, _ = pbuilder.build_where_clause()
+        assert 'translate(' in pclause
+        assert 'LOWER(' not in pclause  # PG must NOT use full-Unicode LOWER()
+
+        sbuilder = MetadataQueryBuilder(backend_type='sqlite')
+        sbuilder.add_advanced_filter(MetadataFilter(key='k', operator=MetadataOperator.EQ, value='ACTIVE'))
+        sclause, _ = sbuilder.build_where_clause()
+        assert 'LOWER(' in sclause  # SQLite's built-in LOWER() is ASCII-only (the reference)
+
+        # IN string members are ASCII-folded, NOT str.lower() (full-Unicode): 'CAFÉ' (CAFE
+        # with uppercase E-acute) folds to 'cafÉ' -- C/A/F lowered, the accent untouched,
+        # matching the SQL accessor fold so both backends agree.
+        ibuilder = MetadataQueryBuilder(backend_type='postgresql')
+        ibuilder.add_advanced_filter(MetadataFilter(key='k', operator=MetadataOperator.IN, value=['CAFÉ']))
+        _clause, iparams = ibuilder.build_where_clause()
+        assert iparams == ['cafÉ']
+
+    def test_array_contains_boolean_is_type_guarded_sqlite(self) -> None:
+        """array_contains with a boolean member guards json_each.type on SQLite so a JSON
+        boolean array element (whose json_each.value is 1/0) is not confused with a numeric
+        1/0 element -- matching PostgreSQL's type-exact ``@> '<json bool>'::jsonb``."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(MetadataFilter(key='flags', operator=MetadataOperator.ARRAY_CONTAINS, value=True))
+        clause, _ = builder.build_where_clause()
+        assert "json_each.type IN ('true', 'false')" in clause
+
     def test_operator_eq(self) -> None:
         """Test equality operator."""
         builder = MetadataQueryBuilder()
@@ -52,7 +263,9 @@ class TestMetadataQueryBuilder:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert where_clause == "(json_extract(metadata, '$.status') = ?)"
+        # String EQ is guarded so a stored JSON boolean is excluded (cross-backend parity).
+        assert "json_type(metadata, '$.status') NOT IN ('true', 'false')" in where_clause
+        assert "CAST(json_extract(metadata, '$.status') AS TEXT) = ?" in where_clause
         assert params == ['active']
 
         # Test default case-insensitive behavior
@@ -167,7 +380,8 @@ class TestMetadataQueryBuilder:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert 'NOT IN (' in where_clause
+        assert 'IS NOT NULL AND NOT (' in where_clause  # NOT_IN = presence guard + negated membership
+        assert 'IN (' in where_clause
         assert len(params) == 2
 
     def test_operator_not_in_with_integers(self) -> None:
@@ -186,7 +400,8 @@ class TestMetadataQueryBuilder:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert 'NOT IN (' in where_clause
+        assert 'IS NOT NULL AND NOT (' in where_clause  # NOT_IN = presence guard + negated membership
+        assert 'IN (' in where_clause
         assert len(params) == 3
         # All values should be converted to strings for TEXT comparison
         assert all(isinstance(p, str) for p in params)
@@ -205,7 +420,8 @@ class TestMetadataQueryBuilder:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert 'NOT IN (' in where_clause
+        assert 'IS NOT NULL AND NOT (' in where_clause  # NOT_IN = presence guard + negated membership
+        assert 'IN (' in where_clause
         assert len(params) == 4
         # All values should be converted to strings
         assert all(isinstance(p, str) for p in params)
@@ -1496,7 +1712,8 @@ class TestArrayContainsQueryBuilder:
         where_clause, params = builder.build_where_clause()
         assert 'EXISTS' in where_clause
         assert 'jsonb_array_elements_text' in where_clause
-        assert 'LOWER' in where_clause
+        # Case-insensitive fold is ASCII-only via translate() (parity with SQLite LOWER).
+        assert 'translate' in where_clause
         assert params == ['PYTHON']
 
     def test_postgresql_array_contains_nested_path(self) -> None:
@@ -1622,7 +1839,7 @@ class TestArrayContainsNonArrayHandling:
         assert 'jsonb_array_elements_text' in where_clause
         assert 'CASE WHEN' in where_clause
         assert 'ELSE FALSE END' in where_clause
-        assert 'LOWER' in where_clause
+        assert 'translate' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
 
     def test_postgresql_nested_path_includes_type_check(self) -> None:
         """Test PostgreSQL nested path array_contains SQL includes jsonb_typeof check."""
@@ -1656,4 +1873,4 @@ class TestArrayContainsNonArrayHandling:
         assert 'jsonb_array_elements_text' in where_clause
         assert 'CASE WHEN' in where_clause
         assert 'ELSE FALSE END' in where_clause
-        assert 'LOWER' in where_clause
+        assert 'translate' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)

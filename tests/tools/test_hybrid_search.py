@@ -582,6 +582,104 @@ class TestAdaptiveFtsMode:
         assert mode == 'boolean'
         assert 'or' in query.lower()
 
+    def test_sqlite_boolean_mode_neutralizes_fts5_operators(self) -> None:
+        """SQLite boolean-mode terms are quoted so operator barewords / special chars
+        cannot form malformed FTS5 (which raised a syntax error while PostgreSQL's
+        websearch_to_tsquery tolerated the same input -- a recall-parity divergence)."""
+        import sqlite3
+
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        db = sqlite3.connect(':memory:')
+        db.execute('CREATE VIRTUAL TABLE docs USING fts5(body)')
+        db.execute("INSERT INTO docs(body) VALUES('foo bar near baz qux')")
+        # Each query has >= 4 significant terms and embeds FTS5 operators / specials that
+        # would be a syntax error unquoted; all must run cleanly and stay in boolean mode.
+        for raw in [
+            'foo bar near baz qux',
+            'alpha AND beta OR gamma delta',
+            'find foo:bar (baz) term here',
+            'one two NOT three four',
+        ]:
+            transformed, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+            assert mode == 'boolean'
+            assert ' OR ' in transformed
+            # No raw operator bareword survives outside quotes (it is wrapped as a string).
+            db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (transformed,)).fetchall()
+
+    def test_sqlite_all_operator_query_does_not_crash(self) -> None:
+        """A query whose significant terms are ALL operator stopwords (and/or/not) empties
+        the OR list; the SQLite empty-fallback must NOT return the raw query (an uppercase
+        FTS5 operator would raise a MATCH syntax error) but a harmless literal phrase that
+        runs with zero results -- matching PostgreSQL's tolerance for the same input."""
+        import sqlite3
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+        from app.repositories.fts_repository import FtsRepository
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        class _FB:
+            backend_type = 'sqlite'
+
+        repo = FtsRepository(cast(StorageBackend, _FB()))
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
+        db.execute("INSERT INTO docs(body) VALUES('hello world')")
+        for raw in ['AND OR NOT AND', 'NOT NOT NOT NOT', 'OR OR OR OR']:
+            adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+            fts = repo._transform_query_sqlite(adaptive, mode)
+            # Must execute without an FTS5 syntax error (and match nothing).
+            rows = db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
+            assert rows == []
+
+    def test_sqlite_short_query_operators_do_not_crash(self) -> None:
+        """A SHORT query (below the OR threshold) containing bare FTS5 operators -- including
+        leading/trailing/all-operator forms -- must not crash SQLite MATCH: the short 'match'
+        path runs through the same term sanitizer as the OR path. A normal short query keeps
+        AND-of-terms recall."""
+        import sqlite3
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+        from app.repositories.fts_repository import FtsRepository
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        class _FB:
+            backend_type = 'sqlite'
+
+        repo = FtsRepository(cast(StorageBackend, _FB()))
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
+        db.execute("INSERT INTO docs(body) VALUES('python async world')")
+        # All have < or_threshold(4) significant terms, so they take the short 'match' path.
+        for raw, expect_match in [('AND OR', False), ('OR cat', False), ('cat OR', False),
+                                  ('OR NOT AND', False), ('python async', True)]:
+            adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+            assert mode == 'match'
+            fts = repo._transform_query_sqlite(adaptive, mode)
+            rows = db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
+            assert (len(rows) > 0) is expect_match, f'{raw!r} -> {fts!r}'
+
+    def test_sqlite_boolean_mode_drops_operator_stopwords(self) -> None:
+        """The FTS5 operator barewords and/or/not are DROPPED on the SQLite branch (not
+        quoted) so they are not literal searchable terms -- matching PostgreSQL's
+        websearch_to_tsquery, which removes them as stopwords (cross-backend recall parity).
+        'near' is KEPT (websearch_to_tsquery keeps it)."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        transformed, mode = _prepare_hybrid_fts_query(
+            'alpha AND beta OR gamma NOT delta near epsilon',
+            or_threshold=4,
+            backend_type='sqlite',
+        )
+        assert mode == 'boolean'
+        for dropped in ('"and"', '"or"', '"not"', '"AND"', '"OR"', '"NOT"'):
+            assert dropped not in transformed
+        # Real terms (including 'near') survive as quoted literals.
+        for kept in ('"alpha"', '"beta"', '"gamma"', '"delta"', '"near"', '"epsilon"'):
+            assert kept in transformed
+
     def test_long_query_uses_boolean_mode(self) -> None:
         """Long queries above threshold use boolean mode (OR logic)."""
         from app.tools.search import _prepare_hybrid_fts_query

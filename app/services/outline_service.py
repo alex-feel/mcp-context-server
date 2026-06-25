@@ -34,6 +34,18 @@ _FENCE_CLOSE_RE = re.compile(r'^[ ]{0,3}(`{3,}|~{3,})[ \t]*$')
 # Setext underlines: a run of '=' (level 1) or '-' (level 2) on its own line.
 _SETEXT_H1_RE = re.compile(r'^[ ]{0,3}=+[ \t]*$')
 _SETEXT_H2_RE = re.compile(r'^[ ]{0,3}-+[ \t]*$')
+# A setext heading's content line cannot itself begin a list item or blockquote
+# (CommonMark): such a line followed by a '-' run is a thematic break, not an H2.
+_BLOCK_START_RE = re.compile(r'^\s*([-*+](\s|$)|\d{1,9}[.)](\s|$)|>)')
+# A line indented 4+ spaces (or a leading tab) is an indented code block per
+# CommonMark and cannot be a setext heading content line either.
+_INDENT_CODE_RE = re.compile(r'^(?: {4,}|\t)')
+# A CommonMark thematic break: <=3 leading spaces then a run of >=3 of a single char in
+# {*, _, -}, optionally separated by spaces/tabs. It is a BLOCK (not paragraph text), so it
+# can neither be a setext content line nor be absorbed into a setext paragraph by the
+# multi-line walk-back. ('---'/'===' are also caught by the setext-underline checks; '*'/'_'
+# runs are not, so this guard is what stops the walk-back at a '***' / '___' break.)
+_THEMATIC_BREAK_RE = re.compile(r'^[ ]{0,3}([*_-])(?:[ \t]*\1){2,}[ \t]*$')
 
 ROOT_NODE_ID = 'root'
 
@@ -211,11 +223,45 @@ def _collect_headings(lines: list[str], line_starts: list[int], max_depth: int) 
             index += 1
             continue
 
-        # Setext: a non-blank text line underlined by '=' (H1) or '-' (H2).
-        if line.strip() and index + 1 < total:
+        # Setext: a non-blank text line underlined by '=' (H1) or '-' (H2). Per
+        # CommonMark the content line cannot begin a list item or blockquote, so a
+        # '- item' followed by '---' is a thematic break, not a heading node.
+        if (
+            line.strip()
+            and not _BLOCK_START_RE.match(line)
+            and not _INDENT_CODE_RE.match(line)
+            and not _THEMATIC_BREAK_RE.match(line)
+            and index + 1 < total
+        ):
             level = _setext_level(lines[index + 1]) or 0
             if level and level <= max_depth:
-                headings.append((level, line.strip(), line_starts[index]))
+                # A setext underline applies to the WHOLE preceding paragraph (CommonMark),
+                # which may span several lines; the heading content and section start at the
+                # FIRST line of that paragraph. Walk back over the contiguous run of paragraph
+                # lines (non-blank, and not a list/blockquote/indented-code/ATX/fence start,
+                # all of which would break the paragraph) so a multi-line paragraph is not
+                # truncated to just the line above the underline.
+                start = index
+                while (
+                    start - 1 >= 0
+                    and lines[start - 1].strip()
+                    and not _BLOCK_START_RE.match(lines[start - 1])
+                    and not _INDENT_CODE_RE.match(lines[start - 1])
+                    and not _ATX_RE.match(lines[start - 1])
+                    and _match_fence_open(lines[start - 1]) is None
+                    # Stop at a PRECEDING setext underline ('==='/'---'): it is the heading
+                    # marker of the previous setext heading, not paragraph text. Without this
+                    # the walk-back would swallow that prior heading's content line into this
+                    # heading (duplicate node_ids, corrupted titles, a lost prior section).
+                    and _setext_level(lines[start - 1]) is None
+                    # Stop at a thematic break ('***'/'___'/'* * *'): it is a BLOCK that ends
+                    # the paragraph, not paragraph text. ('---'/'===' are already caught above
+                    # as setext underlines; this covers the '*'/'_' runs they miss.)
+                    and not _THEMATIC_BREAK_RE.match(lines[start - 1])
+                ):
+                    start -= 1
+                title = ' '.join(lines[i].strip() for i in range(start, index + 1))
+                headings.append((level, title, line_starts[start]))
                 index += 2
                 continue
 

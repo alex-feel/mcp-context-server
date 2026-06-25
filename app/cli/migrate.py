@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -277,6 +278,30 @@ def open_target_sqlite(path: str) -> sqlite3.Connection:
     return conn
 
 
+def _open_sqlite_target(path: str, dry_run: bool) -> sqlite3.Connection:
+    """Open the target SQLite database, or an in-memory database on dry-run.
+
+    A dry run must issue no writes against the target, so it operates against an
+    ephemeral in-memory database instead of creating and schema-committing a file
+    at the target path (schema init commits before the data-copy rollback and
+    would otherwise persist an empty database file on disk).
+
+    Args:
+        path: Filesystem path to the target SQLite database file.
+        dry_run: When True, open an in-memory database and touch no disk file.
+
+    Returns:
+        A read-write ``sqlite3.Connection`` with ``row_factory`` set to
+        :class:`sqlite3.Row` and foreign-key enforcement enabled.
+    """
+    if dry_run:
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA foreign_keys = ON')
+        return conn
+    return open_target_sqlite(path)
+
+
 def detect_source_id_kind(conn: sqlite3.Connection) -> str:
     """Inspect the source ``context_entries`` schema and classify the
     primary-key column.
@@ -383,7 +408,52 @@ def _coerce_datetime(value: object) -> datetime:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed
+    # A bool is a degenerate int and is NOT a valid timestamp -- reject it explicitly.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Some non-app source databases store created_at as Unix epoch SECONDS. Coerce via
+        # epoch + timedelta (NOT datetime.fromtimestamp, which raises OSError for negative /
+        # out-of-range epochs on Windows) so a numeric -- including pre-1970 -- created_at
+        # never aborts the whole migration; _created_at_for_id anchors a resulting pre-1970
+        # value for id derivation while the stored created_at value is preserved verbatim.
+        try:
+            return _NULL_CREATED_AT_ANCHOR + timedelta(seconds=float(value))
+        except (OverflowError, ValueError):
+            # An out-of-range epoch (extreme future/past) cannot derive a datetime: anchor
+            # it rather than abort, matching the NULL / pre-1970 handling.
+            return _NULL_CREATED_AT_ANCHOR
     raise ValueError(f'unsupported created_at value: {value!r}')
+
+
+# A schema-legal NULL created_at in an arbitrary non-app source row cannot derive
+# a UUIDv7 id (the id embeds a timestamp), so it is anchored to a fixed epoch
+# rather than aborting the whole migration. The stored created_at VALUE is kept
+# NULL (not invented); only id derivation uses the anchor.
+_NULL_CREATED_AT_ANCHOR = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _created_at_for_id(value: object) -> datetime:
+    """Coerce a source ``created_at`` to a datetime for UUIDv7 id derivation.
+
+    Unlike :func:`_coerce_datetime`, a missing (NULL) ``created_at`` is tolerated:
+    it falls back to :data:`_NULL_CREATED_AT_ANCHOR` so one NULL row in an
+    arbitrary non-app source database cannot abort the entire migration.
+
+    Args:
+        value: A source ``created_at`` value (datetime, ISO text, or None).
+
+    Returns:
+        A timezone-aware :class:`datetime.datetime`, or the epoch anchor when
+        ``value`` is None.
+    """
+    if value is None:
+        return _NULL_CREATED_AT_ANCHOR
+    coerced = _coerce_datetime(value)
+    # A pre-1970 (negative-epoch) timestamp makes uuid_utils.uuid7 raise
+    # OverflowError on the negative seconds; anchor it like NULL for id
+    # derivation while the stored created_at value is preserved verbatim.
+    if coerced < _NULL_CREATED_AT_ANCHOR:
+        return _NULL_CREATED_AT_ANCHOR
+    return coerced
 
 
 def build_id_mapping(source_rows: Iterable[sqlite3.Row]) -> dict[int, str]:
@@ -404,10 +474,20 @@ def build_id_mapping(source_rows: Iterable[sqlite3.Row]) -> dict[int, str]:
         lowercase hex UUIDv7 string.
     """
     mapping: dict[int, str] = {}
+    null_created_at = 0
     for row in source_rows:
         source_id = int(row['id'])
-        created_at = _coerce_datetime(row['created_at'])
+        if row['created_at'] is None:
+            null_created_at += 1
+        created_at = _created_at_for_id(row['created_at'])
         mapping[source_id] = generate_id_with_timestamp(created_at)
+    if null_created_at:
+        logger.warning(
+            '%d source context_entries row(s) had NULL created_at; their ids '
+            'were anchored to %s (the stored created_at is preserved as NULL)',
+            null_created_at,
+            _NULL_CREATED_AT_ANCHOR.isoformat(),
+        )
     return mapping
 
 
@@ -1049,7 +1129,7 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
     _, source_address = parse_backend_url(options.source_url)
     _, target_address = parse_backend_url(options.target_url)
 
-    if not options.dry_run and target_already_has_data_sqlite(target_address):
+    if target_already_has_data_sqlite(target_address):
         stats.errors.append(
             f'target database already contains context_entries rows: {target_address}. '
             f'Recovery: if a prior run was interrupted, delete the target file and rerun; '
@@ -1077,7 +1157,7 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
         source_rows = cursor.fetchall()
 
         if source_rows:
-            first_created_at = _coerce_datetime(source_rows[0]['created_at'])
+            first_created_at = _created_at_for_id(source_rows[0]['created_at'])
             if first_created_at.microsecond == 0:
                 logger.info(
                     'source created_at precision appears to be seconds; '
@@ -1086,7 +1166,7 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
 
         id_mapping = build_id_mapping(source_rows)
 
-        target = open_target_sqlite(target_address)
+        target = _open_sqlite_target(target_address, options.dry_run)
         initialize_target_sqlite(
             target,
             optional_tables,
@@ -1158,13 +1238,17 @@ async def _target_pg_has_data(conn: 'asyncpg.Connection[asyncpg.Record]') -> boo
     """Return True if the PostgreSQL target ``context_entries`` table
     has any rows. Returns False when the table does not exist.
 
+    The existence probe reuses the schema-aware :func:`_pg_table_exists` (gated on
+    ``current_schema()``) so it resolves against the SAME schema as the unqualified
+    ``COUNT(*)`` below -- both honor the ``search_path`` applied by
+    :func:`_pg_connect_kwargs`. A schema-blind probe could otherwise see a
+    ``context_entries`` in another schema (e.g. ``public``) while the count reads the
+    configured one, mis-classifying an empty target as populated (or vice versa).
+
     Returns:
         True iff the target already has rows.
     """
-    exists = await conn.fetchval(
-        "SELECT 1 FROM information_schema.tables WHERE table_name='context_entries' LIMIT 1",
-    )
-    if not exists:
+    if not await _pg_table_exists(conn, 'context_entries'):
         return False
     count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
     return int(count or 0) > 0
@@ -1251,7 +1335,8 @@ async def copy_embedding_metadata_pg(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'embedding_metadata' AND column_name = 'chunk_count'
+            WHERE table_schema = current_schema()
+              AND table_name = 'embedding_metadata' AND column_name = 'chunk_count'
         )
         ''',
     )
@@ -1265,7 +1350,8 @@ async def copy_embedding_metadata_pg(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'embedding_metadata' AND column_name = 'chunk_count'
+            WHERE table_schema = current_schema()
+              AND table_name = 'embedding_metadata' AND column_name = 'chunk_count'
         )
         ''',
     )
@@ -1332,7 +1418,8 @@ async def copy_vec_embeddings_pg(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
-            WHERE table_name = 'vec_context_embeddings'
+            WHERE table_schema = current_schema()
+              AND table_name = 'vec_context_embeddings'
         )
         ''',
     )
@@ -1347,7 +1434,8 @@ async def copy_vec_embeddings_pg(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'vec_context_embeddings' AND column_name = 'start_index'
+            WHERE table_schema = current_schema()
+              AND table_name = 'vec_context_embeddings' AND column_name = 'start_index'
         )
         ''',
     )
@@ -1355,7 +1443,8 @@ async def copy_vec_embeddings_pg(
         '''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'vec_context_embeddings' AND column_name = 'start_index'
+            WHERE table_schema = current_schema()
+              AND table_name = 'vec_context_embeddings' AND column_name = 'start_index'
         )
         ''',
     )
@@ -1547,7 +1636,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         target_conn = await asyncpg.connect(options.target_url, **pg_kwargs)
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
-        if not options.dry_run and await _target_pg_has_data(target_conn):
+        if await _target_pg_has_data(target_conn):
             stats.errors.append(
                 'target PostgreSQL database already contains context_entries rows. '
                 'Recovery: if a prior run was interrupted, drop and recreate the target database '
@@ -1557,8 +1646,8 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             return stats
 
         id_column_type = await source_conn.fetchval(
-            "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name='context_entries' AND column_name='id'",
+            'SELECT data_type FROM information_schema.columns '
+            "WHERE table_schema = current_schema() AND table_name = 'context_entries' AND column_name = 'id'",
         )
         if id_column_type is None:
             stats.errors.append("source PostgreSQL database lacks 'context_entries.id' column")
@@ -1573,11 +1662,28 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             'SELECT id, created_at FROM context_entries ORDER BY created_at ASC, id ASC',
         )
         id_mapping: dict[int, str] = {}
+        null_created_at = 0
         for row in source_rows:
-            id_mapping[int(row['id'])] = generate_id_with_timestamp(row['created_at'])
+            if row['created_at'] is None:
+                null_created_at += 1
+            id_mapping[int(row['id'])] = generate_id_with_timestamp(_created_at_for_id(row['created_at']))
+        if null_created_at:
+            logger.warning(
+                '%d source context_entries row(s) had NULL created_at; their ids '
+                'were anchored to %s (the stored created_at is preserved as NULL)',
+                null_created_at,
+                _NULL_CREATED_AT_ANCHOR.isoformat(),
+            )
 
         # Detect what the SOURCE carries so the target can be shaped to match.
         source_has_embeddings = await _pg_table_exists(source_conn, 'embedding_metadata')
+        # The vector table is detected INDEPENDENTLY of embedding_metadata: a source can
+        # carry the metadata table without a vec_context_embeddings table (e.g. semantic
+        # search was provisioned but never populated, or the vec table was dropped). The
+        # vector copy and its dry-run COUNT must gate on THIS, not on embedding_metadata,
+        # or `SELECT ... FROM vec_context_embeddings` crashes the whole migration -- the
+        # SQLite path already detects the vec table separately.
+        source_has_vec = await _pg_table_exists(source_conn, 'vec_context_embeddings')
         source_dim = await _detect_source_embedding_dim_pg(source_conn)
 
         # Auto-initialize the target schema when it has no context_entries table,
@@ -1723,6 +1829,12 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             # (UUID FK). Guarded by source table existence so a v2 source
             # that never enabled semantic search (no embedding_metadata
             # table) does not crash the migration.
+            if source_has_embeddings and not source_has_vec:
+                stats.warnings.append(
+                    'source PostgreSQL database has an embedding_metadata table but no '
+                    'vec_context_embeddings table; vector rows not copied (re-embed the '
+                    'target afterward). Metadata rows are still migrated.',
+                )
             if source_has_embeddings:
                 if options.dry_run and not target_initialized:
                     # The target would be auto-initialized on a real run, so its
@@ -1736,16 +1848,20 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     stats.embedding_metadata_migrated = int(
                         await source_conn.fetchval('SELECT COUNT(*) FROM embedding_metadata') or 0,
                     )
-                    stats.vec_rows_migrated = int(
-                        await source_conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings') or 0,
-                    )
+                    if source_has_vec:
+                        stats.vec_rows_migrated = int(
+                            await source_conn.fetchval('SELECT COUNT(*) FROM vec_context_embeddings') or 0,
+                        )
                 else:
                     await copy_embedding_metadata_pg(
                         source_conn, target_conn, id_mapping, stats, options.dry_run,
                     )
-                    await copy_vec_embeddings_pg(
-                        source_conn, target_conn, id_mapping, stats, options.dry_run,
-                    )
+                    # Gate the vector copy on the SOURCE vec table (copy_vec_embeddings_pg
+                    # reads FROM vec_context_embeddings, which would crash if absent).
+                    if source_has_vec:
+                        await copy_vec_embeddings_pg(
+                            source_conn, target_conn, id_mapping, stats, options.dry_run,
+                        )
 
             if not options.dry_run:
                 await target_conn.execute('COMMIT')
@@ -1799,7 +1915,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
 
         optional_tables = detect_optional_tables(source)
 
-        if not options.dry_run and await _target_pg_has_data(target_conn):
+        if await _target_pg_has_data(target_conn):
             stats.errors.append(
                 'target PostgreSQL database already contains context_entries rows. '
                 'Recovery: if a prior run was interrupted, drop and recreate the target database '
@@ -1865,8 +1981,8 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         rewritten_metadata,
                         row['summary'],
                         row['content_hash'],
-                        _coerce_datetime(row['created_at']),
-                        _coerce_datetime(row['updated_at']),
+                        _coerce_datetime(row['created_at']) if row['created_at'] is not None else None,
+                        _coerce_datetime(row['updated_at']) if row['updated_at'] is not None else None,
                     )
                 stats.rows_migrated += 1
 
@@ -1963,7 +2079,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
     )
 
     _, target_address = parse_backend_url(options.target_url)
-    if not options.dry_run and target_already_has_data_sqlite(target_address):
+    if target_already_has_data_sqlite(target_address):
         stats.errors.append(
             f'target database already contains context_entries rows: {target_address}. '
             f'Recovery: if a prior run was interrupted, delete the target file and rerun; '
@@ -1978,8 +2094,8 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
         id_column_type = await source_conn.fetchval(
-            "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name='context_entries' AND column_name='id'",
+            'SELECT data_type FROM information_schema.columns '
+            "WHERE table_schema = current_schema() AND table_name = 'context_entries' AND column_name = 'id'",
         )
         if id_column_type is None:
             stats.errors.append("source PostgreSQL database lacks 'context_entries.id' column")
@@ -1994,8 +2110,18 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
             'SELECT id, created_at FROM context_entries ORDER BY created_at ASC, id ASC',
         )
         id_mapping: dict[int, str] = {}
+        null_created_at = 0
         for row in source_rows:
-            id_mapping[int(row['id'])] = generate_id_with_timestamp(row['created_at'])
+            if row['created_at'] is None:
+                null_created_at += 1
+            id_mapping[int(row['id'])] = generate_id_with_timestamp(_created_at_for_id(row['created_at']))
+        if null_created_at:
+            logger.warning(
+                '%d source context_entries row(s) had NULL created_at; their ids '
+                'were anchored to %s (the stored created_at is preserved as NULL)',
+                null_created_at,
+                _NULL_CREATED_AT_ANCHOR.isoformat(),
+            )
 
         # Detect which optional tables the PostgreSQL source carries so the
         # SQLite target is shaped to match. FTS is offered on the target (it is
@@ -2003,7 +2129,7 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         # the index is rebuilt locally from the copied rows below).
         source_has_tags = await _pg_table_exists(source_conn, 'tags')
         source_has_images = await _pg_table_exists(source_conn, 'image_attachments')
-        target = open_target_sqlite(target_address)
+        target = _open_sqlite_target(target_address, options.dry_run)
         initialize_target_sqlite(
             target,
             optional_tables={
@@ -2047,8 +2173,8 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                             rewritten_metadata,
                             row['summary'],
                             row['content_hash'],
-                            row['created_at'].isoformat(),
-                            row['updated_at'].isoformat(),
+                            row['created_at'].isoformat() if row['created_at'] is not None else None,
+                            row['updated_at'].isoformat() if row['updated_at'] is not None else None,
                         ),
                     )
                 stats.rows_migrated += 1
@@ -2243,7 +2369,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def print_summary(stats: MigrationStats, source_url: str, target_url: str) -> None:
+def print_summary(stats: MigrationStats, source_url: str, target_url: str, dry_run: bool = False) -> None:
     """Print a human-readable summary of the migration to stdout."""
     source_display = mask_credentials(source_url)
     target_display = mask_credentials(target_url)
@@ -2268,7 +2394,9 @@ def print_summary(stats: MigrationStats, source_url: str, target_url: str) -> No
         print(f'  errors: {len(stats.errors)}')
         for message in stats.errors:
             print(f'    - {message}')
-    if stats.rows_migrated > 0 and not stats.errors:
+    if dry_run:
+        print('Dry run: no changes were written to the target.')
+    elif stats.rows_migrated > 0 and not stats.errors:
         print(
             'Next steps: point the server at the new target database '
             '(DB_PATH=... for SQLite or POSTGRESQL_CONNECTION_STRING=... for PostgreSQL).',
@@ -2361,7 +2489,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.exception('migration failed: %s', exc)
         return 2
 
-    print_summary(stats, options.source_url, options.target_url)
+    print_summary(stats, options.source_url, options.target_url, options.dry_run)
     if options.report_path is not None:
         try:
             options.report_path.write_text(

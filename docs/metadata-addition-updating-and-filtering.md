@@ -523,6 +523,10 @@ Match all values except the specified one.
 
 ### Comparison Operators
 
+The comparison operators (`gt`, `gte`, `lt`, `lte`) -- and numeric `eq`/`ne` with a numeric value -- match **JSON-number-typed values only**, identically on SQLite and PostgreSQL. A stored value that is not a JSON number for the filtered key (a string such as `"12abc"`, a boolean, JSON `null`, or an absent key) never matches a numeric operator on either backend; the query is not aborted and the value is not coerced. So `{"key": "score", "operator": "gt", "value": 5}` returns only entries whose `score` is a number greater than 5, never an entry whose `score` is the string `"12abc"`. Float values are compared at IEEE double precision on both backends, so `{"key": "score", "operator": "eq", "value": 0.3}` matches a stored `0.3` (and `gt 0.3` excludes a stored `0.3`) identically on SQLite and PostgreSQL.
+
+The same type-restriction applies to booleans: a boolean value in `eq`/`ne`, as an `in`/`not_in` member, or in `array_contains` matches **JSON-boolean-typed values only** on both backends. A stored numeric `0`/`1` or a string `"true"`/`"false"` never matches a boolean filter (and a boolean `array_contains` matches only a JSON-boolean array element, never a numeric `1`/`0`); only a real JSON `true`/`false` does. Use `{"key": "flag", "operator": "eq", "value": true}` to match entries whose `flag` is the JSON boolean `true`.
+
 #### `gt` - Greater Than
 
 Numeric comparison, exclusive.
@@ -1152,6 +1156,8 @@ String operations are case-insensitive by default:
 # Matches "Active", "active", "ACTIVE"
 {"key": "status", "operator": "eq", "value": "active"}
 ```
+
+Case-insensitive matching folds **ASCII letters (A-Z) only** -- this is identical on SQLite and PostgreSQL so the two backends always return the same result set. Non-ASCII letters are NOT case-folded: `"café"` and `"CAFÉ"` do NOT match case-insensitively (the `É`/`é` differ), though `"cafe"` and `"CAFE"` do. (SQLite's built-in `LOWER()` is ASCII-only and cannot fold Unicode without an ICU extension, so ASCII-only folding is the portable cross-backend contract; use `case_sensitive: true` when you need exact, byte-for-byte matching.)
 
 ### Case-Sensitive Matching
 

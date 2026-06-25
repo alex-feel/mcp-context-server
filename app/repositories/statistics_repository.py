@@ -17,6 +17,7 @@ from typing import cast
 from anyio import Path as AsyncPath
 
 from app.backends.base import StorageBackend
+from app.ids import normalize_id
 from app.repositories.base import BaseRepository
 from app.types import ThreadInfoDict
 
@@ -103,8 +104,8 @@ class StatisticsRepository(BaseRepository):
                         COUNT(*) as entry_count,
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry,
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MIN(created_at)) as first_entry,
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MAX(created_at)) as last_entry,
                         MAX(id) as last_id
                     FROM context_entries
                     GROUP BY thread_id
@@ -129,8 +130,8 @@ class StatisticsRepository(BaseRepository):
                         COUNT(*) as entry_count,
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry,
+                        to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as first_entry,
+                        to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_entry,
                         (array_agg(id ORDER BY id DESC))[1] as last_id
                     FROM context_entries
                     GROUP BY thread_id
@@ -139,8 +140,14 @@ class StatisticsRepository(BaseRepository):
 
             threads: list[ThreadInfoDict] = []
             for row in rows:
-                thread = cast(ThreadInfoDict, dict(row))
-                threads.append(thread)
+                d = dict(row)
+                # asyncpg returns last_id as a native (hyphenated 36-char) UUID; normalize
+                # to the canonical 32-char hyphen-free lowercase hex the SQLite branch
+                # already emits, so list_threads' last_id is identical and contract-valid
+                # (str id format) on both backends.
+                if d.get('last_id') is not None:
+                    d['last_id'] = normalize_id(str(d['last_id']))
+                threads.append(cast(ThreadInfoDict, d))
 
             return threads
 
@@ -310,8 +317,8 @@ class StatisticsRepository(BaseRepository):
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'text' THEN 1 ELSE 0 END) as text_count,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MIN(created_at)) as first_entry,
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MAX(created_at)) as last_entry
                     FROM context_entries
                     WHERE thread_id = {self._placeholder(1)}
                 '''
@@ -367,8 +374,8 @@ class StatisticsRepository(BaseRepository):
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'text' THEN 1 ELSE 0 END) as text_count,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry
+                        to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as first_entry,
+                        to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_entry
                     FROM context_entries
                     WHERE thread_id = {self._placeholder(1)}
                 '''

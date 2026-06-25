@@ -21,6 +21,49 @@ from app.repositories.base import BaseRepository
 # Matches word characters connected by one or more hyphens
 HYPHENATED_WORD_PATTERN = re.compile(r'\b(\w+(?:-\w+)+)\b')
 
+# Tokenizer for FTS5 sanitization: a "quoted phrase" OR a run of non-whitespace.
+_FTS_TOKEN_RE = re.compile(r'"[^"]*"|\S+')
+
+
+def sanitize_sqlite_fts_terms(tokens: list[str]) -> list[str]:
+    """Sanitize query tokens into crash-safe SQLite FTS5 terms.
+
+    SQLite FTS5 MATCH treats AND/OR/NOT/NEAR as case-sensitive operators and rejects bare
+    special characters, so an unsanitized token can raise ``fts5: syntax error`` in match,
+    prefix, or boolean-OR contexts. Each token is made safe and aligned with PostgreSQL's
+    plainto_tsquery (which drops operator stopwords and ANDs the remaining lexemes):
+
+    - A quoted-phrase token (``"..."``) is preserved as-is.
+    - An operator bareword (and/or/not, case-insensitive) is DROPPED.
+    - Every other bare term is wrapped as an FTS5 string literal (embedded quotes doubled), so
+      an operator-cased NEAR or a special char ( ( ) " : * ^ ) is a LITERAL term, never syntax.
+      A quoted single word is still tokenized/stemmed, so ordinary-word recall is unchanged.
+
+    Shared by the standalone FTS transform (``_transform_query_sqlite`` match/prefix modes) and
+    the hybrid adaptive query builder so the two never diverge.
+
+    Args:
+        tokens: Raw whitespace/quote tokens from the query.
+
+    Returns:
+        The list of safe FTS5 term strings (operator barewords removed).
+    """
+    terms: list[str] = []
+    for token in tokens:
+        # Require >= 2 chars: a LONE '"' satisfies both startswith AND endswith (they test the
+        # SAME character), so without the length check it would pass through as a "balanced
+        # phrase" and produce an unterminated FTS5 string literal (MATCH syntax error). With the
+        # check it falls through to the doubling path below -> '""""' (a balanced empty literal).
+        if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
+            terms.append(token)
+            continue
+        clean = token.replace('-', ' ').strip()
+        if not clean or clean.lower() in ('and', 'or', 'not'):
+            continue
+        terms.append('"' + clean.replace('"', '""') + '"')
+    return terms
+
+
 if TYPE_CHECKING:
     import asyncpg
 
@@ -236,18 +279,20 @@ class FtsRepository(BaseRepository):
                 from app.query_builder import MetadataQueryBuilder
 
                 metadata_builder = MetadataQueryBuilder(backend_type='sqlite', table_alias='ce')
+                validation_errors: list[str] = []
 
-                # Simple metadata filters (key=value equality)
+                # Simple metadata filters (key=value equality). An invalid KEY is reported
+                # as a structured validation error (NOT silently dropped, which would widen
+                # the result set), consistent with search_context and the advanced filters.
                 if metadata:
                     for key, value in metadata.items():
                         try:
                             metadata_builder.add_simple_filter(key, value)
                         except ValueError as e:
-                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+                            validation_errors.append(f'Invalid metadata key {key!r}: {e}')
 
                 # Advanced metadata filters with operators
                 if metadata_filters:
-                    validation_errors: list[str] = []
                     for filter_dict in metadata_filters:
                         try:
                             filter_spec = MetadataFilter(**filter_dict)
@@ -263,12 +308,12 @@ class FtsRepository(BaseRepository):
                             validation_errors.append(error_msg)
                             logger.error(f'Unexpected error processing metadata filter: {e}')
 
-                    # Raise exception if validation fails
-                    if validation_errors:
-                        raise FtsValidationError(
-                            'Metadata filter validation failed',
-                            validation_errors,
-                        )
+                # Raise if ANY (simple key or advanced filter) validation failed.
+                if validation_errors:
+                    raise FtsValidationError(
+                        'Metadata filter validation failed',
+                        validation_errors,
+                    )
 
                 # The builder emits the metadata conditions already qualified with
                 # the 'ce.' table alias (table_alias='ce'), matching the
@@ -452,17 +497,20 @@ class FtsRepository(BaseRepository):
                     table_alias='ce',
                 )
 
-                # Simple metadata filters
+                validation_errors: list[str] = []
+
+                # Simple metadata filters (key=value equality). An invalid KEY is reported
+                # as a structured validation error (NOT silently dropped, which would widen
+                # the result set), consistent with search_context and the advanced filters.
                 if metadata:
                     for key, value in metadata.items():
                         try:
                             metadata_builder.add_simple_filter(key, value)
                         except ValueError as e:
-                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+                            validation_errors.append(f'Invalid metadata key {key!r}: {e}')
 
                 # Advanced metadata filters
                 if metadata_filters:
-                    validation_errors: list[str] = []
                     for filter_dict in metadata_filters:
                         try:
                             filter_spec = MetadataFilter(**filter_dict)
@@ -478,11 +526,12 @@ class FtsRepository(BaseRepository):
                             validation_errors.append(error_msg)
                             logger.error(f'Unexpected error processing metadata filter: {e}')
 
-                    if validation_errors:
-                        raise FtsValidationError(
-                            'Metadata filter validation failed',
-                            validation_errors,
-                        )
+                # Raise if ANY (simple key or advanced filter) validation failed.
+                if validation_errors:
+                    raise FtsValidationError(
+                        'Metadata filter validation failed',
+                        validation_errors,
+                    )
 
                 # The builder emits the metadata conditions already qualified with
                 # the 'ce.' table alias (table_alias='ce'), matching the
@@ -680,28 +729,41 @@ class FtsRepository(BaseRepository):
             return f'"{escaped}"'
 
         if mode == 'prefix':
-            # Prefix matching - handle hyphenated words specially
-            # First quote hyphenated words, then add wildcards
-            quoted = self._quote_hyphenated_words_sqlite(query)
-            words = quoted.split()
-            result_words: list[str] = []
-            for word in words:
-                if word.startswith('"') and word.endswith('"'):
-                    # Hyphenated word already quoted, add wildcard after
-                    result_words.append(f'{word}*')
-                else:
-                    # Regular word, add wildcard
-                    result_words.append(f'{word.rstrip("*")}*')
-            return ' '.join(result_words)
+            # Prefix (autocomplete): wrap each token as a safe FTS5 string literal, then add the
+            # prefix wildcard ( "term"* matches terms starting with the token). Operator barewords
+            # are dropped and special chars neutralized (so 'cat(' / 'foo:bar' are literal
+            # prefixes, never an FTS5 syntax error); a user-supplied trailing '*' is stripped so
+            # it is not doubled. A quoted-phrase token keeps its phrase and gets the wildcard.
+            prefix_terms: list[str] = []
+            for token in _FTS_TOKEN_RE.findall(query):
+                # >= 2 chars so a lone '"' is not mistaken for a balanced phrase (see
+                # sanitize_sqlite_fts_terms) -- otherwise it yields an unterminated FTS5 string.
+                if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
+                    prefix_terms.append(f'{token}*')
+                    continue
+                clean = token.replace('-', ' ').rstrip('*').strip()
+                if not clean or clean.lower() in ('and', 'or', 'not'):
+                    continue
+                prefix_terms.append('"' + clean.replace('"', '""') + '"*')
+            if not prefix_terms:
+                return f'"{self._escape_double_quotes(query)}"'  # all-operator -> literal phrase
+            return ' '.join(prefix_terms)
 
         if mode == 'boolean':
             # Boolean mode - pass through as-is (user provides AND/OR/NOT)
             # User is responsible for quoting hyphenated words
             return query
 
-        # 'match' - default
-        # Quote hyphenated words to prevent NOT operator interpretation
-        return self._quote_hyphenated_words_sqlite(query)
+        # 'match' - default (AND logic). Sanitize each token to a safe FTS5 string literal so a
+        # bare FTS5 operator (AND/OR/NOT, case-sensitive) or special char ((): "*^) becomes a
+        # LITERAL term -- never 'fts5: syntax error'. This matches PostgreSQL's plainto_tsquery
+        # (drops operator stopwords, ANDs the remaining lexemes); a quoted single word is still
+        # stemmed, so ordinary-word recall is unchanged. Shared with the hybrid query builder.
+        terms = sanitize_sqlite_fts_terms(_FTS_TOKEN_RE.findall(query))
+        if not terms:
+            # Every token was an operator bareword -> a harmless literal phrase (zero results).
+            return f'"{self._escape_double_quotes(query)}"'
+        return ' '.join(terms)
 
     def _transform_query_postgresql(
         self,

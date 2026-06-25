@@ -111,13 +111,48 @@ class MetadataFilter(BaseModel):
         if operator in (MetadataOperator.IN, MetadataOperator.NOT_IN) and isinstance(v, list) and not v:
             raise ValueError(f'Operator {operator} requires a non-empty list')
 
-        # String operators require string values
+        # String operators require string values. None is rejected too: a
+        # missing value would otherwise produce no SQL condition and silently
+        # drop the filter, leaving the query unrestricted (over-broad results).
         if (
             operator in (MetadataOperator.CONTAINS, MetadataOperator.STARTS_WITH, MetadataOperator.ENDS_WITH)
-            and v is not None
             and not isinstance(v, str)
         ):
             raise ValueError(f'Operator {operator} requires a string value')
+
+        # Equality and comparison operators require a scalar value. A list here
+        # matches no dispatch branch and silently drops the filter; callers that
+        # want membership must use IN / NOT_IN instead.
+        if (
+            operator in (
+                MetadataOperator.EQ,
+                MetadataOperator.NE,
+                MetadataOperator.GT,
+                MetadataOperator.GTE,
+                MetadataOperator.LT,
+                MetadataOperator.LTE,
+            )
+            and isinstance(v, list)
+        ):
+            raise ValueError(f'Operator {operator} requires a scalar value, not a list')
+
+        # Equality and comparison operators require a non-null value. For
+        # GT/GTE/LT/LTE None would be str()-coerced to the literal 'None'; for
+        # EQ/NE None binds SQL NULL, and `<expr> = NULL` / `<expr> != NULL` are
+        # never TRUE under SQL three-valued logic, so the filter always returns
+        # zero rows. Use IS_NULL / IS_NOT_NULL for null checks instead.
+        if (
+            operator in (
+                MetadataOperator.EQ,
+                MetadataOperator.NE,
+                MetadataOperator.GT,
+                MetadataOperator.GTE,
+                MetadataOperator.LT,
+                MetadataOperator.LTE,
+            )
+            and v is None
+        ):
+            raise ValueError(f'Operator {operator} requires a non-null scalar value')
 
         # ARRAY_CONTAINS requires a single scalar value (not a list)
         if operator == MetadataOperator.ARRAY_CONTAINS:

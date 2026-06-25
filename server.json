@@ -1097,7 +1097,7 @@
           "name": "COMPRESSION_VARIANT"
         },
         {
-          "description": "Rotation matrix seed. Default 0. Pick any stable non-negative integer; the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
+          "description": "Rotation matrix seed. Default 0. Pick any stable integer in [0, 4294967295] (the seed is packed into the compressed payload as an unsigned 32-bit field); the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -2202,7 +2202,7 @@
           "name": "COMPRESSION_VARIANT"
         },
         {
-          "description": "Rotation matrix seed. Default 0. Pick any stable non-negative integer; the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
+          "description": "Rotation matrix seed. Default 0. Pick any stable integer in [0, 4294967295] (the seed is packed into the compressed payload as an unsigned 32-bit field); the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,

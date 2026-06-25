@@ -204,6 +204,102 @@ class TestUuidMappingDeterminism:
             assert _decode_unix_ts_ms(first[row_id]) == _decode_unix_ts_ms(second[row_id])
 
 
+# ---------------------------------------------------------------------------
+# NULL created_at tolerance and dry-run target isolation
+# ---------------------------------------------------------------------------
+
+
+class TestNullCreatedAtTolerance:
+    """A schema-legal NULL created_at must not abort the migration."""
+
+    def test_build_id_mapping_anchors_null_created_at(self) -> None:
+        """build_id_mapping anchors a NULL created_at row instead of raising."""
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.execute('CREATE TABLE r (id INTEGER, created_at TIMESTAMP)')
+        conn.execute('INSERT INTO r VALUES (?, ?)', (1, '2025-06-24T12:00:00+00:00'))
+        conn.execute('INSERT INTO r VALUES (?, ?)', (2, None))
+        rows = list(conn.execute('SELECT * FROM r ORDER BY id'))
+        mapping = build_id_mapping(rows)
+        assert set(mapping) == {1, 2}
+        assert all(HEX_32_RE.match(value) for value in mapping.values())
+
+    def test_build_id_mapping_anchors_pre_epoch_created_at(self) -> None:
+        """A pre-1970 created_at is anchored (no uuid7 OverflowError on negative epoch)."""
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.execute('CREATE TABLE r (id INTEGER, created_at TIMESTAMP)')
+        conn.execute('INSERT INTO r VALUES (?, ?)', (1, '1969-06-15T12:00:00+00:00'))
+        rows = list(conn.execute('SELECT * FROM r ORDER BY id'))
+        mapping = build_id_mapping(rows)
+        assert set(mapping) == {1}
+        assert HEX_32_RE.match(mapping[1])
+
+    def test_build_id_mapping_handles_numeric_epoch_created_at(self) -> None:
+        """A numeric Unix-epoch created_at (some non-app sources store it) is coerced via
+        epoch+timedelta, not aborted; a negative (pre-1970) epoch is anchored like NULL."""
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.execute('CREATE TABLE r (id INTEGER, created_at)')  # typeless: keep the raw int
+        conn.execute('INSERT INTO r VALUES (?, ?)', (1, 1700000000))  # 2023 epoch seconds
+        conn.execute('INSERT INTO r VALUES (?, ?)', (2, -100))  # pre-1970 epoch -> anchored
+        conn.execute('INSERT INTO r VALUES (?, ?)', (3, 1700000000.5))  # float epoch
+        rows = list(conn.execute('SELECT * FROM r ORDER BY id'))
+        mapping = build_id_mapping(rows)
+        assert set(mapping) == {1, 2, 3}
+        assert all(HEX_32_RE.match(value) for value in mapping.values())
+
+    def test_migration_succeeds_with_null_created_at_row(
+        self,
+        tmp_path: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        """A source row with NULL created_at migrates without aborting the run."""
+        source = tmp_path / 'null_created_at_source.db'
+        _seed_source_db(source, [
+            {
+                'id': 1, 'thread_id': 't', 'source': 'user', 'content_type': 'text',
+                'text_content': 'has timestamp', 'metadata': None,
+                'created_at': '2025-06-24 12:00:00',
+            },
+            {
+                'id': 2, 'thread_id': 't', 'source': 'agent', 'content_type': 'text',
+                'text_content': 'null timestamp', 'metadata': None,
+                'created_at': None,
+            },
+        ])
+        stats = run_migration_sqlite_to_sqlite(_build_options(source, new_target_db_path))
+        assert not stats.errors
+        assert stats.rows_migrated == 2
+        conn = sqlite3.connect(str(new_target_db_path))
+        try:
+            total = conn.execute('SELECT COUNT(*) FROM context_entries').fetchone()[0]
+            null_ts = conn.execute(
+                'SELECT COUNT(*) FROM context_entries WHERE created_at IS NULL',
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert total == 2
+        assert null_ts == 1
+
+
+class TestDryRunNoTargetWrites:
+    """A dry run must not create or write the SQLite target on disk."""
+
+    def test_dry_run_does_not_create_target_file(
+        self,
+        legacy_source_db: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        """--dry-run leaves no file at a non-existent SQLite target path."""
+        assert not new_target_db_path.exists()
+        stats = run_migration_sqlite_to_sqlite(
+            _build_options(legacy_source_db, new_target_db_path, dry_run=True),
+        )
+        assert not stats.errors
+        assert not new_target_db_path.exists()
+
+
 class TestUuidMappingFormat:
     """Format invariants for produced UUIDv7 hex strings."""
 

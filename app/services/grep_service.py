@@ -274,6 +274,17 @@ def _match_entry_literal_sync(
     Returns:
         The entry's match result.
     """
+    # A literal pattern containing a line terminator can never match WITHIN a single
+    # logical line. Honor grep's line-oriented contract (and stay consistent with the
+    # regex path, which matches per logical line) by reporting no matches rather than
+    # letting the whole-text finditer span a line break. ``compiled.pattern`` is the
+    # ``re.escape``-d source, which preserves an embedded newline. The guard keys on '\n'
+    # ONLY: the line splitter (``_NEWLINE_RE = r'\r\n|\n'``) treats a LONE '\r' (one not
+    # immediately followed by '\n') as ordinary line CONTENT, so a literal pattern with a
+    # bare '\r' must still match in-line; a CRLF literal contains '\n' and is correctly dropped.
+    if '\n' in compiled.pattern:
+        return GrepEntryResult(context_id=context_id, matches=(), match_count=0, capped=False)
+
     matches: list[GrepMatch] = []
     capped = False
     line_data: tuple[list[str], list[int]] | None = None
@@ -286,6 +297,12 @@ def _match_entry_literal_sync(
             line_data = split_lines_with_offsets(text)
         lines, line_starts = line_data
         idx = line_index_for_offset(line_starts, match.start())
+        # Reject a match that extends past the line's CONTENT into a line terminator: a
+        # literal pattern containing a lone '\r' can otherwise match the '\r' that forms the
+        # first half of a source CRLF ('\r\n') terminator, which is NOT line content and
+        # diverges from the per-line regex path (whose match can never include a terminator).
+        if match.end() > line_starts[idx] + len(lines[idx]):
+            continue
         before_start = max(0, idx - context_lines)
         after_end = min(len(lines), idx + 1 + context_lines)
         matches.append(

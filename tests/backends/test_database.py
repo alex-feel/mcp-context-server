@@ -138,6 +138,50 @@ class TestDatabaseConnection:
             assert cursor.fetchone()[0] == 1  # Only the first valid insert
 
     @pytest.mark.asyncio
+    async def test_execute_write_queue_rolls_back_partial_write_on_failure(
+        self,
+        async_db_initialized: StorageBackend,
+    ) -> None:
+        """A failed execute_write must not leak partial rows onto the next commit.
+
+        The write-queue path shares one persistent DEFERRED writer connection, so a
+        mid-operation failure must roll back; otherwise the partial write stays in the
+        open transaction and the next, unrelated execute_write commits it too.
+        """
+        manager = async_db_initialized
+        leaked_id = generate_id()
+        survivor_id = generate_id()
+
+        def op_fail(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                (leaked_id, 'test', 'user', 'text'),
+            )
+            raise ValueError('boom after partial write, before commit')
+
+        def op_ok(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type) VALUES (?, ?, ?, ?)',
+                (survivor_id, 'test', 'user', 'text'),
+            )
+
+        # The failed operation surfaces its error to the caller.
+        with pytest.raises(ValueError, match='boom'):
+            await manager.execute_write(op_fail)
+
+        # A subsequent unrelated write commits normally.
+        await manager.execute_write(op_ok)
+
+        # The partial row from the failed operation must be absent; only the
+        # survivor row committed.
+        async with manager.get_connection(readonly=True) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM context_entries')
+            ids = [row['id'] for row in cursor.fetchall()]
+        assert survivor_id in ids
+        assert leaked_id not in ids
+
+    @pytest.mark.asyncio
     async def test_async_context_manager(self, async_db_initialized: StorageBackend) -> None:
         """Test async database context manager."""
         manager = async_db_initialized

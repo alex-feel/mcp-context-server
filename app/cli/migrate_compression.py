@@ -301,6 +301,18 @@ def run_compress(source_url: str, *, dry_run: bool) -> int:
         )
         return 1
 
+    # Guard the DESTRUCTIVE fp32->compressed conversion the same way the server
+    # guards startup: a misaligned (dim, bits, variant) would let the per-row
+    # encode + DROP TABLE succeed, then make every compressed search raise and
+    # the server refuse to start. Fail BEFORE any DROP so fp32 data is never lost.
+    from app.startup.compression_validator import compression_byte_alignment_error
+    align_error = compression_byte_alignment_error(
+        settings.embedding.dim, comp.bits, comp.variant,
+    )
+    if align_error is not None:
+        print(f'[ERROR] {align_error}', file=sys.stderr)
+        return 1
+
     try:
         return asyncio.run(_compress_async(source_url, dry_run=dry_run))
     except Exception as exc:
@@ -745,6 +757,11 @@ async def _execute_compress_sqlite(
 
     Bounded peak memory: ``O(_MIGRATION_BATCH_SIZE * dim * 4)`` bytes
     (~40 MB at ``dim == 1024``).
+
+    Raises:
+        ValueError: If the streamed read did not cover every fp32 row in
+            ``vec_context_embeddings`` (an orphan lacking an embedding_chunks
+            bridge), so the transaction aborts rather than dropping unread data.
     """
     settings = get_settings()
     dim = settings.embedding.dim
@@ -840,6 +857,20 @@ async def _execute_compress_sqlite(
             rows_processed += len(batch)
             offset += len(batch)
 
+        # Integrity guard: the streamed read joins embedding_chunks to
+        # vec_context_embeddings, so a vec row with no embedding_chunks bridge
+        # (an orphan from a corrupted source) would be silently skipped and then
+        # destroyed by the DROP below. Abort the transaction rather than drop
+        # unread fp32 data, mirroring the decompress rebuild's mismatch guard.
+        if rows_processed != row_count:
+            raise ValueError(
+                f'compress read {rows_processed} fp32 row(s) but '
+                f'vec_context_embeddings holds {row_count} '
+                f'(mismatch of {abs(row_count - rows_processed)} row(s); fewer reads '
+                'mean orphaned vec rows lack an embedding_chunks bridge, more mean '
+                'duplicate bridges). Aborting so no fp32 vector is dropped.',
+            )
+
         # Provenance INSERT + source DROP last inside the same
         # transaction. The CHECK (id = 1) constraint guarantees this
         # INSERT is the only one ever applied.
@@ -860,7 +891,7 @@ async def _execute_compress_sqlite(
     logger.info(
         'Compressed %d fp32 row(s) into vec_context_embeddings_compressed; '
         'dropped legacy table.',
-        rows_processed or row_count,
+        rows_processed,
     )
 
 
@@ -884,6 +915,11 @@ async def _execute_compress_postgresql(
 
     Bounded peak memory: ``O(_MIGRATION_BATCH_SIZE * dim * 4)`` bytes
     (~40 MB at ``dim == 1024``).
+
+    Raises:
+        ValueError: If the streamed read did not cover every fp32 row in
+            ``vec_context_embeddings`` (an orphan lacking an embedding_chunks
+            bridge), so the transaction aborts rather than dropping unread data.
     """
     batch_size = _MIGRATION_BATCH_SIZE
 
@@ -982,6 +1018,17 @@ async def _execute_compress_postgresql(
             rows_processed += len(batch)
             offset += len(batch)
 
+        # Integrity guard: abort rather than drop vec_context_embeddings if the
+        # streamed read did not cover every fp32 row. The PG read is taken
+        # directly from the table being dropped, so a mismatch signals a
+        # concurrent modification or anomaly; abort so no fp32 vector is lost.
+        if rows_processed != row_count:
+            raise ValueError(
+                f'compress read {rows_processed} fp32 row(s) but '
+                f'vec_context_embeddings holds {row_count}; aborting so no '
+                'fp32 vector is dropped.',
+            )
+
         # Provenance INSERT + HNSW index DROP + source DROP last inside
         # the same transaction.
         await conn.execute(
@@ -1002,7 +1049,7 @@ async def _execute_compress_postgresql(
     logger.info(
         'Compressed %d fp32 row(s) into vec_context_embeddings_compressed; '
         'dropped legacy table and HNSW index.',
-        rows_processed or row_count,
+        rows_processed,
     )
 
 

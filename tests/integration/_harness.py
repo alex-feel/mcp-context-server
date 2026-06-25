@@ -723,6 +723,234 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_metadata_filter_numeric_type_parity(self) -> bool:
+        """Numeric operators match JSON-number-typed values only -- identically on
+        both backends.
+
+        Regression for the SQLite<->PostgreSQL numeric-coercion divergence: SQLite's
+        ``CAST(text AS NUMERIC)`` accidentally coerces a JSON boolean to 1/0 and a
+        numeric-prefix string like ``'12abc'`` to 12, while a bare PostgreSQL
+        ``::NUMERIC`` either aborts or (after earlier guard attempts) diverged on those
+        same values. The fix makes numeric EQ/NE/GT/GTE/LT/LTE number-typed-only on BOTH
+        backends (SQLite ``json_type(...) IN ('integer','real')`` / PostgreSQL
+        ``jsonb_typeof(...) = 'number'``), so a non-number value -- text, boolean,
+        json-null, or an absent key -- never matches any numeric operator. Running the
+        SAME expected counts on both backends proves parity by construction.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter Numeric Type Parity'
+        print('Testing numeric-type metadata-filter parity...')
+        thread = f'{self.test_thread_id}_num_parity'
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'num seven', 'metadata': {'score': 7}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'num five', 'metadata': {'score': 5}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'num three-five', 'metadata': {'score': 3.5}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'str prefix', 'metadata': {'score': '12abc'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'str plain', 'metadata': {'score': 'abc'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'bool true', 'metadata': {'score': True}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'missing key', 'metadata': {'other': 1}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store numeric-parity entries'))
+                    return False
+
+            # Only the three JSON numbers (7, 5, 3.5) ever participate; the
+            # numeric-prefix string '12abc', the plain string 'abc', the boolean,
+            # and the missing-key row never match any numeric operator on either backend.
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('eq 5', [{'key': 'score', 'operator': 'eq', 'value': 5}], 1),       # {5}
+                ('ne 5', [{'key': 'score', 'operator': 'ne', 'value': 5}], 2),       # {7, 3.5}
+                ('gt 5', [{'key': 'score', 'operator': 'gt', 'value': 5}], 1),       # {7}
+                ('gte 5', [{'key': 'score', 'operator': 'gte', 'value': 5}], 2),     # {7, 5}
+                ('lt 5', [{'key': 'score', 'operator': 'lt', 'value': 5}], 1),       # {3.5}
+                ('lte 5', [{'key': 'score', 'operator': 'lte', 'value': 5}], 2),     # {5, 3.5}
+                ('gt 0', [{'key': 'score', 'operator': 'gt', 'value': 0}], 3),       # {7, 5, 3.5}; NOT bool/'12abc'
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'numeric-parity {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All numeric-type metadata-filter parity tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_filter_float_precision_parity(self) -> bool:
+        """Numeric EQ/NE/comparison on non-dyadic floats agree across backends.
+
+        Regression for the asyncpg float-encoding divergence: a Python float bound in a
+        PostgreSQL ``::NUMERIC`` context is encoded as its FULL Decimal expansion (0.3 ->
+        0.2999999999999999888...), so ``'0.3'::NUMERIC = $1`` was False (and ``> 0.3`` on a
+        stored 0.3 wrongly True) while SQLite -- comparing the bit-identical IEEE double on
+        both sides -- matched. The fix casts a float param through ``DOUBLE PRECISION`` on
+        PostgreSQL so both backends compare the same IEEE double. Uses non-dyadic fractions
+        (0.1, 0.3) that are NOT exactly representable, which the integer/3.5 dataset misses.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter Float Precision Parity'
+        print('Testing non-dyadic float metadata-filter parity...')
+        thread = f'{self.test_thread_id}_float_parity'
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'f 0.3', 'metadata': {'score': 0.3}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'f 0.1', 'metadata': {'score': 0.1}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'f 0.5', 'metadata': {'score': 0.5}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'f 7', 'metadata': {'score': 7}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store float-parity entries'))
+                    return False
+
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('eq 0.3', [{'key': 'score', 'operator': 'eq', 'value': 0.3}], 1),    # {0.3}
+                ('eq 0.1', [{'key': 'score', 'operator': 'eq', 'value': 0.1}], 1),    # {0.1}
+                ('ne 0.3', [{'key': 'score', 'operator': 'ne', 'value': 0.3}], 3),    # {0.1, 0.5, 7}
+                ('gt 0.3', [{'key': 'score', 'operator': 'gt', 'value': 0.3}], 2),    # {0.5, 7}; 0.3 excluded
+                ('gte 0.3', [{'key': 'score', 'operator': 'gte', 'value': 0.3}], 3),  # {0.3, 0.5, 7}
+                ('lt 0.5', [{'key': 'score', 'operator': 'lt', 'value': 0.5}], 2),    # {0.3, 0.1}
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'float-parity {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All non-dyadic float metadata-filter parity tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_filter_boolean_type_parity(self) -> bool:
+        """Boolean EQ/NE match JSON-boolean-typed values only -- identically on both backends.
+
+        Regression for the boolean-coercion divergence: SQLite bound a boolean as 0/1 and
+        compared the typed ``json_extract`` (so a stored numeric 0/1 matched), while
+        PostgreSQL compared ``->>`` text 'true'/'false' (so a stored string 'true'/'false'
+        matched). The fix guards both backends -- SQLite ``json_type(...) IN ('true','false')``
+        and PostgreSQL ``jsonb_typeof(...) = 'boolean'`` -- so a numeric 0/1 or a string
+        'true'/'false' never matches a boolean operator on either backend, mirroring the
+        number-only contract.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter Boolean Type Parity'
+        print('Testing boolean-type metadata-filter parity...')
+        thread = f'{self.test_thread_id}_bool_parity'
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'b true', 'metadata': {'flag': True}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b false', 'metadata': {'flag': False}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b num1', 'metadata': {'flag': 1}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b num0', 'metadata': {'flag': 0}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b strtrue', 'metadata': {'flag': 'true'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b missing', 'metadata': {'other': 1}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b arr bool', 'metadata': {'tags': [True, 2]}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b arr int', 'metadata': {'tags': [1, 2]}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store boolean-parity entries'))
+                    return False
+
+            # Only the two JSON booleans participate; numeric 0/1, string 'true', and the
+            # missing-key row never match a boolean operator (eq/ne/in/not_in/array_contains)
+            # on either backend -- this is the cross-backend type-collision regression guard.
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('eq true', [{'key': 'flag', 'operator': 'eq', 'value': True}], 1),    # {true}
+                ('eq false', [{'key': 'flag', 'operator': 'eq', 'value': False}], 1),  # {false}
+                ('ne true', [{'key': 'flag', 'operator': 'ne', 'value': True}], 1),    # {false}
+                ('ne false', [{'key': 'flag', 'operator': 'ne', 'value': False}], 1),  # {true}
+                ('in [true]', [{'key': 'flag', 'operator': 'in', 'value': [True]}], 1),  # {true}; not num1/str'true'
+                # present non-(JSON true): {false, num1, num0, strtrue}; missing/array rows excluded
+                ('not_in [true]', [{'key': 'flag', 'operator': 'not_in', 'value': [True]}], 4),
+                # SYMMETRIC direction: a numeric/string member must NOT match the stored JSON
+                # boolean (SQLite renders bool true as '1', PostgreSQL renders it as 'true').
+                ('in [1] (not bool)', [{'key': 'flag', 'operator': 'in', 'value': [1]}], 1),       # {num1} only
+                ('in ["true"] (not bool)', [{'key': 'flag', 'operator': 'in', 'value': ['true']}], 1),  # {strtrue} only
+                ('array_contains true', [{'key': 'tags', 'operator': 'array_contains', 'value': True}], 1),  # {[true,2]}
+                ('array_contains 2', [{'key': 'tags', 'operator': 'array_contains', 'value': 2}], 2),        # {[true,2],[1,2]}
+                ('array_contains 1 (not bool)', [{'key': 'tags', 'operator': 'array_contains', 'value': 1}], 1),  # {[1,2]}
+                # case-insensitive string member: bool renders as 'true', so "1" matches the
+                # int 1 element only, not the boolean element -- identical on both backends.
+                ('array_contains "1" (ci, not bool)', [{'key': 'tags', 'operator': 'array_contains', 'value': '1'}], 1),
+                # STRING eq/ne must not match a stored JSON boolean (PG ->> renders it as
+                # 'true'/'false' text). eq 'true' -> only the string 'true' row {strtrue}.
+                ('eq "true" (str, not bool)', [{'key': 'flag', 'operator': 'eq', 'value': 'true'}], 1),
+                # ne 'true' (str): booleans excluded; present non-'true' non-bool -> {num1, num0}.
+                ('ne "true" (str, not bool)', [{'key': 'flag', 'operator': 'ne', 'value': 'true'}], 2),
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'boolean-parity {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All boolean-type metadata-filter parity tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_metadata_filter_glob_special_literal(self) -> bool:
         """Case-sensitive starts_with/ends_with treat GLOB specials (* ? [) literally.
 
@@ -11167,6 +11395,9 @@ class MCPServerIntegrationTest:
             ('Metadata Filtering', self.test_metadata_filtering),
             ('Metadata Filter Nested Path', self.test_metadata_filter_nested_path),
             ('Metadata Filter LIKE Wildcard Literal', self.test_metadata_filter_like_wildcard_literal),
+            ('Metadata Filter Numeric Type Parity', self.test_metadata_filter_numeric_type_parity),
+            ('Metadata Filter Float Precision Parity', self.test_metadata_filter_float_precision_parity),
+            ('Metadata Filter Boolean Type Parity', self.test_metadata_filter_boolean_type_parity),
             ('Metadata Filter GLOB Special Literal', self.test_metadata_filter_glob_special_literal),
             ('Semantic Hybrid Metadata Dict', self.test_semantic_hybrid_metadata_is_dict),
             ('Array Contains Operator', self.test_array_contains_operator),

@@ -230,6 +230,27 @@ class CircuitBreaker:
                     self.half_open_calls = 0
             return self.state
 
+    def peek_state(self) -> ConnectionState:
+        """Recovery-aware circuit state for synchronous, advisory reads.
+
+        Mirrors the FAILED -> DEGRADED recovery transition that get_state() and
+        is_open() apply once recovery_timeout elapses, WITHOUT acquiring the async
+        lock or mutating state (a single-attribute read is safe for an advisory
+        metric). Used by get_metrics() so the reported state matches live recovery
+        behavior and stays consistent with the SQLite backend's reported state.
+
+        Returns:
+            DEGRADED when a FAILED breaker's recovery window has elapsed, else the
+            current state.
+        """
+        if (
+            self.state == ConnectionState.FAILED
+            and self.last_failure_time
+            and (time.time() - self.last_failure_time) > self.recovery_timeout
+        ):
+            return ConnectionState.DEGRADED
+        return self.state
+
 
 class PostgreSQLBackend:
     """Production-grade PostgreSQL storage backend implementing the StorageBackend protocol.
@@ -457,49 +478,55 @@ class PostgreSQLBackend:
                         logger.warning('Failed to configure TCP keepalive: %s', e)
 
                 # === pgvector Type Registration ===
-                try:
-                    from pgvector.asyncpg import register_vector
+                # Only when embedding generation is enabled: vector storage is provisioned
+                # from ENABLE_EMBEDDING_GENERATION (no vec tables exist when it is off), so
+                # the vector type codec is never needed and a missing pgvector extension must
+                # NOT fail connection setup -- mirroring the gated _ensure_pgvector_extension
+                # call in initialize() and the SQLite _load_sqlite_vec_extension gate.
+                if settings.embedding.generation_enabled:
+                    try:
+                        from pgvector.asyncpg import register_vector
 
-                    # AUTO-DETECT: Query where pgvector extension is installed
-                    # Works for ALL PostgreSQL variants (local, Supabase, AWS RDS, etc.)
-                    result = await conn.fetchrow('''
-                        SELECT n.nspname
-                        FROM pg_extension e
-                        JOIN pg_namespace n ON e.extnamespace = n.oid
-                        WHERE e.extname = 'vector'
-                    ''')
+                        # AUTO-DETECT: Query where pgvector extension is installed
+                        # Works for ALL PostgreSQL variants (local, Supabase, AWS RDS, etc.)
+                        result = await conn.fetchrow('''
+                            SELECT n.nspname
+                            FROM pg_extension e
+                            JOIN pg_namespace n ON e.extnamespace = n.oid
+                            WHERE e.extname = 'vector'
+                        ''')
 
-                    if not result:
-                        # Extension not installed - fail fast with clear instructions
-                        raise ConfigurationError(
-                            'pgvector extension is not installed. '
-                            'Enable it via: CREATE EXTENSION vector; (PostgreSQL) '
-                            'or Dashboard → Extensions → vector (Supabase)',
-                        )
+                        if not result:
+                            # Extension not installed - fail fast with clear instructions
+                            raise ConfigurationError(
+                                'pgvector extension is not installed. '
+                                'Enable it via: CREATE EXTENSION vector; (PostgreSQL) '
+                                'or Dashboard → Extensions → vector (Supabase)',
+                            )
 
-                    schema = result['nspname']
+                        schema = result['nspname']
 
-                    # Register vector types using detected schema
-                    # Note: Type stubs for register_vector are incomplete (missing schema parameter)
-                    # Actual function signature: async def register_vector(conn, schema='public')
-                    # Using cast to work around incomplete type stubs
-                    register_func = cast(Callable[..., Awaitable[None]], register_vector)
-                    await register_func(conn, schema)
-                    logger.debug(f'Registered pgvector types from schema: {schema}')
+                        # Register vector types using detected schema
+                        # Note: Type stubs for register_vector are incomplete (missing schema parameter)
+                        # Actual function signature: async def register_vector(conn, schema='public')
+                        # Using cast to work around incomplete type stubs
+                        register_func = cast(Callable[..., Awaitable[None]], register_vector)
+                        await register_func(conn, schema)
+                        logger.debug(f'Registered pgvector types from schema: {schema}')
 
-                except ImportError:
-                    # ImportError is OK - semantic search is optional
-                    logger.debug('pgvector not installed, skipping vector type registration')
+                    except ImportError:
+                        # ImportError is OK - semantic search is optional
+                        logger.debug('pgvector not installed, skipping vector type registration')
 
-                except ConfigurationError:
-                    # Re-raise ConfigurationError as-is (from "extension not installed" check above)
-                    raise
+                    except ConfigurationError:
+                        # Re-raise ConfigurationError as-is (from "extension not installed" check above)
+                        raise
 
-                except Exception as e:
-                    # STRICT: All other errors are FATAL
-                    logger.error(f'Failed to register pgvector type codec: {e}')
-                    logger.error('Ensure pgvector extension is enabled and accessible')
-                    raise ConfigurationError(f'pgvector codec registration failed: {e}') from e
+                    except Exception as e:
+                        # STRICT: All other errors are FATAL
+                        logger.error(f'Failed to register pgvector type codec: {e}')
+                        logger.error('Ensure pgvector extension is enabled and accessible')
+                        raise ConfigurationError(f'pgvector codec registration failed: {e}') from e
 
                 # === UUID Type Codec Registration ===
                 # asyncpg's default codec maps the PostgreSQL ``uuid`` type to
@@ -786,12 +813,18 @@ class PostgreSQLBackend:
         self,
         readonly: bool = False,
         allow_write: bool = False,
+        record_breaker: bool = True,
     ) -> AsyncGenerator[Any, None]:
         """Get a database connection from the pool.
 
         Args:
             readonly: Advisory flag (PostgreSQL handles via transactions)
             allow_write: Advisory flag (PostgreSQL handles via transactions)
+            record_breaker: When True (default), record a circuit-breaker success
+                on a clean exit and a failure on an exception. execute_write sets
+                this False so its retry loop records at most ONE breaker outcome
+                per logical write (matching the SQLite backend) instead of one per
+                retry attempt.
 
         Yields:
             asyncpg.Connection from the pool
@@ -819,9 +852,11 @@ class PostgreSQLBackend:
         async with self._pool.acquire() as conn:
             try:
                 yield conn
-                await self.circuit_breaker.record_success()
+                if record_breaker:
+                    await self.circuit_breaker.record_success()
             except Exception:
-                await self.circuit_breaker.record_failure()
+                if record_breaker:
+                    await self.circuit_breaker.record_failure()
                 raise
 
     async def _validate_connection_state(self, conn: asyncpg.Connection) -> bool:
@@ -842,8 +877,10 @@ class PostgreSQLBackend:
             await conn.fetchval('SELECT 1')
             return True
         except Exception as e:
+            # Do not record a breaker failure here: execute_write (the only caller)
+            # records exactly one breaker outcome per logical write on its final
+            # result, so per-attempt accounting would over-count under retries.
             logger.warning(f'Connection validation failed: {e}')
-            await self.circuit_breaker.record_failure()
             return False
 
     @overload
@@ -895,11 +932,20 @@ class PostgreSQLBackend:
         if self._shutdown:
             raise RuntimeError('PostgreSQL backend is shutting down')
 
+        # Reject up-front when the breaker is already open (mirrors begin_transaction).
+        # Doing this BEFORE the retry loop means a rejection is never seen by the loop's
+        # generic handler, so it cannot record a spurious breaker failure that would
+        # reset last_failure_time and perpetuate the open state (self-lockout).
+        if await self.circuit_breaker.is_open():
+            raise RuntimeError(
+                f'Database circuit breaker is open after {self.circuit_breaker.failures} failures',
+            )
+
         last_error: Exception | None = None
 
         for attempt in range(self.retry_config.max_retries):
             try:
-                async with self.get_connection(readonly=False) as conn:
+                async with self.get_connection(readonly=False, record_breaker=False) as conn:
                     # Validate connection state before critical operations
                     if validate_connection and not await self._validate_connection_state(conn):
                         raise asyncpg.exceptions.ConnectionDoesNotExistError(
@@ -911,7 +957,11 @@ class PostgreSQLBackend:
                         async_operation = cast(Callable[..., Awaitable[T]], operation)
                         result = await async_operation(conn, *args, **kwargs)
                         self.metrics.total_queries += 1
-                        return result
+                    # Record exactly ONE breaker success per logical write, AFTER the
+                    # transaction commits (record_breaker=False above suppresses the
+                    # per-attempt accounting so a retried write is not counted N times).
+                    await self.circuit_breaker.record_success()
+                    return result
 
             except asyncpg.exceptions.SerializationError as e:
                 # Transient error - retry with backoff
@@ -992,16 +1042,34 @@ class PostgreSQLBackend:
                 await asyncio.sleep(delay)
 
             except Exception as e:
-                # Non-retryable error
+                # A circuit-breaker rejection raised by get_connection mid-loop (e.g.
+                # a concurrent writer opened the breaker after the up-front check) is
+                # NOT a write attempt. Recording a breaker failure for it would reset
+                # last_failure_time and perpetuate the open state (self-lockout), so
+                # re-raise that control-flow RuntimeError WITHOUT recording -- is_open()
+                # matches get_connection's own recovery-aware gate.
+                if isinstance(e, RuntimeError) and await self.circuit_breaker.is_open():
+                    raise
+                # Control-flow signals (optimistic-concurrency VersionConflictError,
+                # post-dedup EmbeddingsReconcileRequiredError) are normal write contention,
+                # NOT a database fault: roll back and propagate WITHOUT tripping the breaker,
+                # mirroring begin_transaction's exemption (else routine contention could open
+                # the breaker and lock out writes).
+                if isinstance(e, ControlFlowError):
+                    raise
+                # Non-retryable write failure -- record the single breaker failure for
+                # this logical write (get_connection's per-attempt accounting is off).
                 self.metrics.failed_queries += 1
                 self.metrics.last_error = str(e)
                 self.metrics.last_error_time = time.time()
+                await self.circuit_breaker.record_failure()
                 raise
 
-        # Max retries exceeded
+        # Max retries exceeded -- record exactly one breaker failure for the write.
         self.metrics.failed_queries += 1
         self.metrics.last_error = str(last_error)
         self.metrics.last_error_time = time.time()
+        await self.circuit_breaker.record_failure()
         raise last_error or Exception('Max retries exceeded for write operation')
 
     @overload
@@ -1144,10 +1212,11 @@ class PostgreSQLBackend:
                 'pool_max_size': self._pool.get_max_size(),
             })
 
-        # Add circuit breaker state
-        # Note: get_state() is async but we need sync here
-        # We'll use the last known state from metrics
-        pool_metrics['circuit_state'] = self.metrics.circuit_state.value
+        # Add circuit breaker state. peek_state() is a sync, recovery-aware read
+        # (applies the FAILED->DEGRADED transition once recovery_timeout elapses,
+        # like get_state/is_open) so the reported state matches live behavior and
+        # the SQLite backend; self.metrics.circuit_state is never updated here.
+        pool_metrics['circuit_state'] = self.circuit_breaker.peek_state().value
         pool_metrics['consecutive_failures'] = self.circuit_breaker.failures
 
         # Add Pgpool-II detection info (only if detection has run)

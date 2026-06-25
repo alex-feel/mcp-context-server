@@ -31,12 +31,13 @@ class TestFtsRepositoryQueryTransform:
     def test_transform_query_match_mode(self, repo: FtsRepository) -> None:
         """Test match mode query transformation - words joined with implicit AND."""
         result = repo._transform_query_sqlite('hello world', 'match')
-        assert result == 'hello world'
+        # Each term is wrapped as an FTS5 string literal (AND logic preserved, crash-safe).
+        assert result == '"hello" "world"'
 
     def test_transform_query_match_mode_single_word(self, repo: FtsRepository) -> None:
         """Test match mode with a single word."""
         result = repo._transform_query_sqlite('python', 'match')
-        assert result == 'python'
+        assert result == '"python"'
 
     def test_transform_query_phrase_mode(self, repo: FtsRepository) -> None:
         """Test phrase mode query transformation - wrapped in double quotes."""
@@ -51,12 +52,12 @@ class TestFtsRepositoryQueryTransform:
     def test_transform_query_prefix_mode(self, repo: FtsRepository) -> None:
         """Test prefix mode query transformation - adds * to each word."""
         result = repo._transform_query_sqlite('hello world', 'prefix')
-        assert result == 'hello* world*'
+        assert result == '"hello"* "world"*'
 
     def test_transform_query_prefix_mode_single_word(self, repo: FtsRepository) -> None:
         """Test prefix mode with a single word."""
         result = repo._transform_query_sqlite('python', 'prefix')
-        assert result == 'python*'
+        assert result == '"python"*'
 
     def test_transform_query_boolean_mode(self, repo: FtsRepository) -> None:
         """Test boolean mode query transformation - passthrough as-is."""
@@ -72,27 +73,49 @@ class TestFtsRepositoryQueryTransform:
     def test_transform_query_strips_whitespace(self, repo: FtsRepository) -> None:
         """Test that queries are stripped of leading/trailing whitespace."""
         result = repo._transform_query_sqlite('  hello world  ', 'match')
-        assert result == 'hello world'
+        assert result == '"hello" "world"'
 
     def test_transform_query_prefix_with_existing_wildcard(self, repo: FtsRepository) -> None:
         """Test prefix mode with existing wildcard does not double it."""
         result = repo._transform_query_sqlite('implement*', 'prefix')
-        assert result == 'implement*'
+        assert result == '"implement"*'
 
     def test_transform_query_prefix_with_double_wildcard(self, repo: FtsRepository) -> None:
         """Test prefix mode with double wildcard normalizes to single."""
         result = repo._transform_query_sqlite('test**', 'prefix')
-        assert result == 'test*'
+        assert result == '"test"*'
 
     def test_transform_query_prefix_mixed_wildcards(self, repo: FtsRepository) -> None:
         """Test prefix mode with mixed wildcards in multiple words."""
         result = repo._transform_query_sqlite('hello* world', 'prefix')
-        assert result == 'hello* world*'
+        assert result == '"hello"* "world"*'
 
     def test_transform_query_prefix_all_wildcards(self, repo: FtsRepository) -> None:
         """Test prefix mode with all words already having wildcards."""
         result = repo._transform_query_sqlite('hello* world*', 'prefix')
-        assert result == 'hello* world*'
+        assert result == '"hello"* "world"*'
+
+    def test_match_and_prefix_operator_input_runs_on_real_fts5(self, repo: FtsRepository) -> None:
+        """The transformed match/prefix query for operator/special-char input must EXECUTE on a
+        real SQLite FTS5 table without 'fts5: syntax error' (the standalone-tool crash class the
+        shared sanitizer closes), while a normal query still matches."""
+        import sqlite3
+
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE d USING fts5(b, tokenize='porter unicode61')")
+        db.execute("INSERT INTO d(b) VALUES('python async running cat')")
+        for mode in ('match', 'prefix'):
+            # Includes STANDALONE double-quote tokens ('"', 'cat " dog', 'python "'): a lone '"'
+            # satisfies both startswith+endswith (same char), so an un-length-checked phrase guard
+            # would emit an unterminated FTS5 string literal. It must run, not raise.
+            for query in ['NOT cat', 'python (async)', 'foo:bar', 'cat OR', 'OR cat', 'a "x',
+                          'AND OR NOT', '"', 'cat " dog', 'python "']:
+                fts = repo._transform_query_sqlite(query, mode)
+                # Must not raise OperationalError (fts5 syntax error).
+                db.execute('SELECT rowid FROM d WHERE d MATCH ?', (fts,)).fetchall()
+        # A normal match query still finds the row (AND recall preserved).
+        normal = repo._transform_query_sqlite('python async', 'match')
+        assert db.execute('SELECT rowid FROM d WHERE d MATCH ?', (normal,)).fetchall() == [(1,)]
 
 
 class TestFtsRepositoryPostgreSQLQueryTransform:
@@ -524,43 +547,44 @@ class TestFtsHyphenHandlingSQLite:
     def test_transform_match_simple(self, repo: FtsRepository) -> None:
         """Test match mode with simple query."""
         result = repo._transform_query_sqlite('hello world', 'match')
-        assert result == 'hello world'
+        # Match mode now quotes each term as an FTS5 literal (AND logic, crash-safe).
+        assert result == '"hello" "world"'
 
     def test_transform_match_hyphenated(self, repo: FtsRepository) -> None:
         """Test match mode with hyphenated word."""
         result = repo._transform_query_sqlite('full-text search', 'match')
-        assert result == '"full-text" search'
+        assert result == '"full text" "search"'
 
     def test_transform_match_multiple_hyphens(self, repo: FtsRepository) -> None:
         """Test match mode with multi-hyphen word."""
         result = repo._transform_query_sqlite('pre-commit-hook', 'match')
-        assert result == '"pre-commit-hook"'
+        assert result == '"pre commit hook"'
 
     def test_transform_match_multiple_hyphenated_words(self, repo: FtsRepository) -> None:
         """Test match mode with multiple hyphenated words."""
         result = repo._transform_query_sqlite('full-text real-time search', 'match')
-        assert result == '"full-text" "real-time" search'
+        assert result == '"full text" "real time" "search"'
 
     # Transform query tests - prefix mode
     def test_transform_prefix_simple(self, repo: FtsRepository) -> None:
         """Test prefix mode with simple query."""
         result = repo._transform_query_sqlite('hello world', 'prefix')
-        assert result == 'hello* world*'
+        assert result == '"hello"* "world"*'
 
     def test_transform_prefix_hyphenated(self, repo: FtsRepository) -> None:
         """Test prefix mode with hyphenated word."""
         result = repo._transform_query_sqlite('full-text', 'prefix')
-        assert result == '"full-text"*'
+        assert result == '"full text"*'
 
     def test_transform_prefix_mixed(self, repo: FtsRepository) -> None:
         """Test prefix mode with mixed words."""
         result = repo._transform_query_sqlite('real-time data', 'prefix')
-        assert result == '"real-time"* data*'
+        assert result == '"real time"* "data"*'
 
     def test_transform_prefix_multiple_hyphenated(self, repo: FtsRepository) -> None:
         """Test prefix mode with multiple hyphenated words."""
         result = repo._transform_query_sqlite('full-text real-time', 'prefix')
-        assert result == '"full-text"* "real-time"*'
+        assert result == '"full text"* "real time"*'
 
     # Transform query tests - phrase mode (should remain unchanged)
     def test_transform_phrase_hyphenated(self, repo: FtsRepository) -> None:

@@ -154,7 +154,7 @@ There is a narrow window after the main data transaction commits but before the 
 
 PostgreSQL does not have a State 2 equivalent. Its `text_search_vector` column is a generated column maintained by the row INSERT, so a successful main transaction also produces a complete tsvector index.
 
-**Preflight tip.** If you want to verify a migration will succeed before committing to a real run, pass `--dry-run` on a first invocation. The dry run reads the source, builds the integer-to-UUIDv7 mapping, and computes target rows in memory; it does NOT INSERT into the target. On SQLite, the target schema is still persisted by the dry-run path (because schema creation runs outside the data transaction), so a subsequent real run against the same target path will be rejected by the empty-target gate -- delete or rename the target before the real run. PostgreSQL dry runs leave the target database empty.
+**Preflight tip.** If you want to verify a migration will succeed before committing to a real run, pass `--dry-run` on a first invocation. The dry run reads the source, builds the integer-to-UUIDv7 mapping, and computes target rows in memory; it does NOT INSERT into the target and writes nothing to the target path. On SQLite the dry run operates against an ephemeral in-memory database, so it leaves no file (and no schema) at the target path; on PostgreSQL the target database is left empty. A subsequent real run against the same target proceeds normally -- no delete or rename is needed.
 
 ### Cross-Backend Vector Embedding Warning
 

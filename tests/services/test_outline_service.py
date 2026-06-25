@@ -55,6 +55,22 @@ class TestParseOutlineStructure:
         assert one.char_end == two.char_start
         assert text[two.char_start:two.char_start + 5] == '# Two'
 
+    def test_list_item_then_thematic_break_is_not_setext_heading(self) -> None:
+        # Per CommonMark a '- item' line followed by '---' is a thematic break,
+        # not a setext H2 underline; the list item must not become a heading node.
+        text = '- item one\n- item two\n---\n\nbody\n'
+        root = parse_outline(text)
+        assert count_nodes(root) == 0  # no real heading nodes
+        assert root.children == ()
+
+    def test_indented_content_line_is_not_setext_heading(self) -> None:
+        # A line indented 4+ spaces is an indented code block per CommonMark and
+        # cannot be a setext heading content line, even when underlined by '==='.
+        text = '    code text\n===\n\nbody\n'
+        root = parse_outline(text)
+        assert count_nodes(root) == 0  # no spurious heading from the indented line
+        assert root.children == ()
+
     def test_no_headings_yields_childless_root(self) -> None:
         text = 'just a paragraph\nwith two lines'
         root = parse_outline(text)
@@ -67,6 +83,40 @@ class TestParseOutlineStructure:
         root = parse_outline(text)
         assert count_nodes(root) == 1
         assert root.children[0].node_id == 'only'
+
+    def test_adjacent_setext_headings_are_distinct(self) -> None:
+        # Two back-to-back setext headings: the second heading's multi-line paragraph
+        # walk-back must STOP at the first heading's underline ('===') and not swallow
+        # the first heading's content line (which corrupted titles / duplicated node_ids).
+        text = 'First Heading\n=============\nSecond Heading\n--------------\nbody\n'
+        root = parse_outline(text)
+        first = root.children[0]
+        assert first.title == 'First Heading'
+        assert first.node_id == 'first-heading'
+        second = first.children[0]  # H2 nests under the H1
+        assert second.title == 'Second Heading'
+        assert second.node_id == 'first-heading/second-heading'
+
+    def test_multiline_setext_uses_whole_paragraph(self) -> None:
+        # A setext underline applies to the WHOLE preceding paragraph (CommonMark): the
+        # title joins every paragraph line, not just the line above the underline.
+        text = 'line one of title\nline two of title\n=================\nbody\n'
+        root = parse_outline(text)
+        assert root.children[0].title == 'line one of title line two of title'
+
+    def test_thematic_break_not_swallowed_by_setext_walkback(self) -> None:
+        # A '***' / '___' thematic break is a block boundary: the setext walk-back must stop
+        # at it and NOT absorb the paragraph above it into the heading title.
+        for brk in ('***', '___', '* * *'):
+            text = f'para above\n{brk}\nThe Real Title\n=============\nbody\n'
+            root = parse_outline(text)
+            assert root.children[0].title == 'The Real Title', f'break {brk!r} was swallowed'
+
+    def test_thematic_break_is_not_a_setext_content_line(self) -> None:
+        # A '***' line underlined by '===' is NOT a heading (a thematic break cannot be a
+        # setext content line); the document yields no heading node.
+        root = parse_outline('***\n===\nbody\n')
+        assert root.children == ()
 
 
 class TestDuplicateHeadings:

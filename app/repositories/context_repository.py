@@ -312,7 +312,10 @@ class ContextRepository(BaseRepository):
                         existing_id, thread_id,
                     )
                 logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                return existing_id, True
+                # Normalize the asyncpg pgproto.UUID to the canonical 32-char hex
+                # the MCP API contract requires (the SQLite branch's TEXT id is
+                # already hex); returning the raw UUID diverges and breaks callers.
+                return normalize_id(str(existing_id)), True
 
             # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
             new_id = generate_id()
@@ -599,7 +602,16 @@ class ContextRepository(BaseRepository):
 
         if metadata:
             for key, value in metadata.items():
-                metadata_builder.add_simple_filter(key, value)
+                # An invalid simple-metadata KEY (e.g. one with a space or ';' --
+                # reachable because the MCP `metadata` param accepts arbitrary string keys)
+                # is reported as a structured validation error and short-circuits the
+                # search, exactly like an invalid advanced filter below. It must NOT raise
+                # an unhandled ValueError, nor be silently dropped (which would widen the
+                # result set) -- this keeps search_context, semantic, and fts consistent.
+                try:
+                    metadata_builder.add_simple_filter(key, value)
+                except ValueError as e:
+                    validation_errors.append(f'Invalid metadata key {key!r}: {e}')
 
         if metadata_filters:
             for filter_dict in metadata_filters:

@@ -1158,14 +1158,17 @@ class CompressionSettings(CommonSettings):
     seed: int = Field(
         default=0,
         ge=0,
+        le=4294967295,
         alias='COMPRESSION_SEED',
         description='Rotation matrix seed. Load-bearing invariant: rotations are '
                     'deterministic given the seed; changing the seed AFTER any '
                     'compressed data has been stored will corrupt all decode/search '
-                    'operations. Default 0. Pick any stable non-negative integer '
-                    'and keep it constant for the lifetime of the database; the '
-                    'value is persisted in compression_metadata at first startup '
-                    'and validated on each subsequent start (exit 78 on mismatch).',
+                    'operations. Default 0. Pick any stable integer in the range '
+                    '[0, 4294967295] (the seed is packed into the compressed payload '
+                    'as an unsigned 32-bit field) and keep it constant for the '
+                    'lifetime of the database; the value is persisted in '
+                    'compression_metadata at first startup and validated on each '
+                    'subsequent start (exit 78 on mismatch).',
     )
 
     max_concurrent: int = Field(

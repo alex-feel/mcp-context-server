@@ -105,6 +105,40 @@ def _set_compression_env(
     monkeypatch.setattr(compression_module, 'settings', get_settings())
 
 
+@pytest.mark.parametrize(
+    ('variant', 'bits', 'dim'),
+    [
+        ('ip', '4', '1020'),   # ip effective_bits=3: 1020*3=3060, not a multiple of 8
+        ('mse', '3', '1020'),  # mse effective_bits=3: 1020*3=3060, not a multiple of 8
+    ],
+)
+@pytest.mark.asyncio
+async def test_raises_on_byte_alignment_violation(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    variant: str,
+    bits: str,
+    dim: str,
+) -> None:
+    """A (dim, variant, bits) that breaks the compressed read's byte-alignment
+    invariant raises ConfigurationError at startup, before any provenance I/O."""
+    _set_compression_env(monkeypatch, variant=variant, bits=bits, dim=dim)
+    with pytest.raises(ConfigurationError, match='byte-alignment'):
+        await validate_compression_provenance(backend=backend)
+
+
+@pytest.mark.asyncio
+async def test_byte_aligned_dim_passes_alignment_check(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default dim=1024 (multiple of 64) satisfies byte-alignment, so the
+    validator proceeds to bootstrap without raising the alignment error."""
+    _set_compression_env(monkeypatch, variant='ip', bits='4', dim='1024')
+    await apply_compression_migration(backend=backend)
+    await validate_compression_provenance(backend=backend)
+
+
 @pytest.mark.asyncio
 async def test_returns_early_when_disabled(
     backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,

@@ -342,6 +342,72 @@ def test_streaming_compress_atomic_rollback_sqlite(
 
 
 # ---------------------------------------------------------------------------
+# Orphaned fp32 row integrity guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_streaming_compress_aborts_on_orphan_fp32_row_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An fp32 row with no embedding_chunks bridge aborts compress (no data dropped).
+
+    The streamed read joins embedding_chunks to vec_context_embeddings, so an
+    orphan vec row would be skipped and then destroyed by the source DROP. The
+    integrity guard must abort the transaction instead, leaving the source intact.
+    """
+    db = tmp_path / 'orphan.db'
+    _seed_fp32_database(db, monkeypatch, n_docs=3)
+
+    # Inject an ORPHAN vec row: present in vec_context_embeddings but with NO
+    # embedding_chunks bridge pointing at it (the streamed inner join skips it).
+    orphan_blob = struct.pack(f'<{DIM}f', *([0.1] * DIM))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute('INSERT INTO vec_context_embeddings (embedding) VALUES (?)', (orphan_blob,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    _enable_compression(monkeypatch)
+
+    rc = run_compress(f'sqlite:///{db}', dry_run=False)
+    # The guard aborts (non-zero) rather than silently dropping the orphan.
+    assert rc != 0
+    # Source preserved intact: all four fp32 rows still present, no provenance.
+    assert _table_exists(db, 'vec_context_embeddings')
+    assert _count_fp32(db) == 4
+    assert _count_provenance(db) == 0
+
+
+@pytest.mark.integration
+def test_compress_aborts_on_byte_alignment_violation_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A misaligned EMBEDDING_DIM aborts --compress BEFORE any destructive DROP.
+
+    The per-row encode would succeed and DROP the fp32 table, but every compressed
+    search (and server startup) would then fail. The CLI must reject the config up
+    front and leave the fp32 source intact.
+    """
+    db = tmp_path / 'misaligned.db'
+    _seed_fp32_database(db, monkeypatch, n_docs=3)
+    _enable_compression(monkeypatch)
+    # 1020 * (4 - 1) = 3060, not a multiple of 8 -> compressed read would crash.
+    monkeypatch.setenv('EMBEDDING_DIM', '1020')
+    get_settings.cache_clear()
+
+    rc = run_compress(f'sqlite:///{db}', dry_run=False)
+    assert rc == 1
+    # The fp32 source is preserved (never dropped); no compressed table created.
+    assert _table_exists(db, 'vec_context_embeddings')
+    assert _count_fp32(db) == 3
+    assert not _table_exists(db, 'vec_context_embeddings_compressed')
+
+
+# ---------------------------------------------------------------------------
 # Bounded peak memory
 # ---------------------------------------------------------------------------
 

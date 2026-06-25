@@ -213,7 +213,7 @@ async def store_context(
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
-        metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata is not None else None
 
         max_retries = 2
         context_id = ''
@@ -239,6 +239,7 @@ async def store_context(
                         embedding_model=settings.embedding.model,
                         embedding_generation_enabled=get_embedding_provider() is not None,
                         index_nodes=index_nodes,
+                        nodes_pending=node_layer_active() and likely_duplicate_id is not None,
                     )
 
                 # Transaction committed successfully -- break retry loop
@@ -260,13 +261,23 @@ async def store_context(
                     'regenerating skipped embeddings before retry',
                     thread_id,
                 )
-                chunk_embeddings = await embed_then_compress(text)
-                embedding_generated = chunk_embeddings is not None
+                # Only regenerate embeddings if they were actually skipped. A
+                # node-only reconcile (embeddings already present, nodes pending)
+                # must NOT re-run the provider: that would discard valid
+                # embeddings and let a transient provider failure abort the store.
+                if chunk_embeddings is None:
+                    chunk_embeddings = await embed_then_compress(text)
+                    embedding_generated = chunk_embeddings is not None
                 # The divergence INSERTed a new entry, so its node summaries were
                 # never computed (gated off above as a likely duplicate). Regenerate
                 # for the diverged text so the new entry gets its index_tree nodes.
                 if index_nodes is None:
-                    index_nodes = await generate_index_nodes_with_timeout(text)
+                    # Total node-summary degradation returns None; coerce to []
+                    # so the reconcile gate clears on retry. The node layer is
+                    # never-raise: degradation must NOT abort the store, and a
+                    # divergence INSERT has no stale node rows to preserve, so []
+                    # (write no node rows now) is the correct value.
+                    index_nodes = await generate_index_nodes_with_timeout(text) or []
                 continue
 
             except ToolError:
@@ -648,6 +659,12 @@ async def update_context(
             )
             embedding_generated = chunk_embeddings is not None
             summary_generated = bool(summary_text)
+            # If summary regeneration ran but produced nothing (empty/whitespace
+            # provider output normalized to None), the OLD summary describes the
+            # REPLACED text, so CLEAR it -- mirroring the too-short branch above and
+            # the node-layer clear below -- instead of preserving a stale summary.
+            if run_summary and summary_text is None:
+                clear_summary = True
             # On a text change, a None node result from an ACTIVE per-node layer means
             # TOTAL degradation (every section summary failed): the stored rows
             # describe the OLD text, so CLEAR them ([] replaces) instead of preserving
@@ -700,7 +717,23 @@ async def update_context(
                         f'changing during the update. Retry the request.',
                     ) from None
                 version_conflicts += 1
-                exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                try:
+                    exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                except Exception as reread_error:
+                    # A transient connection error during the conflict re-read must
+                    # get the same bounded backoff/retry as the rest of the loop,
+                    # not abort the whole update.
+                    if is_connection_error(reread_error) and attempt < max_retries:
+                        delay = 0.5 * (2 ** attempt)
+                        attempt += 1
+                        logger.warning(
+                            'Connection error during version-conflict re-read of %s; '
+                            'retrying in %.1fs (attempt %d/%d): %s',
+                            context_id, delay, attempt, max_retries, reread_error,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
                 if not exists:
                     raise ToolError(f'Context entry with ID {context_id} not found') from None
                 expected_version = current_version

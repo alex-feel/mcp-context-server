@@ -30,6 +30,39 @@ from app.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+def compression_byte_alignment_error(dim: int, bits: int, variant: str) -> str | None:
+    """Return a guidance message if the compression config breaks byte-alignment.
+
+    The compressed READ path combines per-row payloads via {MSE,IP}Payload.concat,
+    which slice on byte boundaries and raise when (dim * effective_bits) is not a
+    multiple of 8. effective_bits is COMPRESSION_BITS-1 for variant 'ip' (one bit
+    reserved for the QJL sign) and COMPRESSION_BITS for 'mse'. The store/encode
+    path writes single rows and never hits concat, so a misaligned dim lets stores
+    (and the destructive CLI --compress) succeed yet makes every compressed search
+    raise an opaque ValueError. Callers fail loudly up front instead.
+
+    Args:
+        dim: Embedding dimension (EMBEDDING_DIM).
+        bits: Bits per coordinate (COMPRESSION_BITS).
+        variant: Compression variant ('ip' or 'mse').
+
+    Returns:
+        A guidance message when the constraint is violated, else None.
+    """
+    effective_bits = bits - 1 if variant == 'ip' else bits
+    if (dim * effective_bits) % 8 == 0:
+        return None
+    return (
+        'Embedding compression byte-alignment violation: the compressed read '
+        'path requires (EMBEDDING_DIM * effective_bits) to be a multiple of 8, '
+        "where effective_bits is COMPRESSION_BITS - 1 for variant 'ip' (one bit "
+        "reserved for the QJL sign) and COMPRESSION_BITS for 'mse'. Got "
+        f'EMBEDDING_DIM={dim}, COMPRESSION_BITS={bits}, COMPRESSION_VARIANT={variant} '
+        f'(effective_bits={effective_bits}, product={dim * effective_bits}). Pick '
+        'an EMBEDDING_DIM (or COMPRESSION_BITS) that satisfies the constraint.'
+    )
+
+
 async def validate_compression_provenance(backend: StorageBackend) -> None:
     """Bootstrap-or-validate compression provenance.
 
@@ -37,16 +70,27 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
         backend: Storage backend instance.
 
     Raises:
-        ConfigurationError: When the env-derived compression configuration
-            disagrees with the stored provenance row (exit 78). On the first
-            start (no provenance row yet) the current configuration is recorded
-            as the singleton row instead of raising; ``COMPRESSION_SEED`` always
-            resolves (it defaults to 0) so it is never "missing" at bootstrap.
+        ConfigurationError: When the active compression configuration violates
+            the compressed read path's byte-alignment invariant
+            ((EMBEDDING_DIM * effective_bits) not a multiple of 8), or when the
+            env-derived compression configuration disagrees with the stored
+            provenance row (exit 78). On the first start (no provenance row yet)
+            the current configuration is recorded as the singleton row instead of
+            raising; ``COMPRESSION_SEED`` always resolves (it defaults to 0) so it
+            is never "missing" at bootstrap.
     """
     settings = get_settings()
     comp = settings.compression
     if not comp.enabled:
         return
+
+    # Byte-alignment invariant for the compressed READ path (see helper docstring):
+    # a misaligned dim lets stores succeed but makes every compressed search raise.
+    align_error = compression_byte_alignment_error(
+        settings.embedding.dim, comp.bits, comp.variant,
+    )
+    if align_error is not None:
+        raise ConfigurationError(align_error)
 
     db_meta = await read_compression_metadata(backend)
 
@@ -180,4 +224,4 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
     )
 
 
-__all__ = ['validate_compression_provenance']
+__all__ = ['compression_byte_alignment_error', 'validate_compression_provenance']

@@ -235,6 +235,26 @@ class CircuitBreaker:
                     self.half_open_calls = 0
             return self.state
 
+    def peek_state(self) -> ConnectionState:
+        """Recovery-aware circuit state for synchronous, advisory reads.
+
+        Mirrors the FAILED -> DEGRADED recovery transition that get_state() and
+        is_open() apply once recovery_timeout elapses, WITHOUT mutating state, so
+        get_metrics() reports live recovery behavior instead of a value that only
+        refreshes on the periodic health check.
+
+        Returns:
+            DEGRADED when a FAILED breaker's recovery window has elapsed, else the
+            current state.
+        """
+        if (
+            self.state == ConnectionState.FAILED
+            and self.last_failure_time
+            and (time.time() - self.last_failure_time) > self.recovery_timeout
+        ):
+            return ConnectionState.DEGRADED
+        return self.state
+
 
 class WriteRequest:
     """Encapsulates a write request for the queue."""
@@ -807,8 +827,19 @@ class SQLiteBackend:
                     def _execute(conn: sqlite3.Connection) -> object:
                         # Cast to sync callable since SQLiteBackend only uses sync operations
                         sync_operation = cast(Callable[..., object], request.operation)
-                        result = sync_operation(conn, *request.args, **request.kwargs)
-                        conn.commit()
+                        try:
+                            result = sync_operation(conn, *request.args, **request.kwargs)
+                            conn.commit()
+                        except BaseException:
+                            # The writer connection is shared and persistent (DEFERRED
+                            # isolation), so a failure after a partial multi-statement
+                            # write would otherwise leave those rows in an open
+                            # transaction that the NEXT execute_write commits. Roll back
+                            # so a failed write leaves no state behind, mirroring the
+                            # rollback contract begin_transaction already upholds.
+                            with suppress(Exception):
+                                conn.rollback()
+                            raise
                         self.metrics.total_queries += 1
                         return result
 
@@ -1200,8 +1231,8 @@ class SQLiteBackend:
             'total_queries': self.metrics.total_queries,
             'failed_queries': self.metrics.failed_queries,
             'write_queue_size': self.metrics.write_queue_size,
-            'circuit_state': self.metrics.circuit_state.value,
-            'consecutive_failures': self.metrics.consecutive_failures,
+            'circuit_state': self.circuit_breaker.peek_state().value,
+            'consecutive_failures': self.circuit_breaker.failures,
             'last_error': self.metrics.last_error,
             'last_error_time': self.metrics.last_error_time,
         }

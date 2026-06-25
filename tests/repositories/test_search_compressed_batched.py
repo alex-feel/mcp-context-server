@@ -258,6 +258,33 @@ async def test_search_compressed_invokes_provider_once_for_mse(
     assert len(results) == 10
 
 
+@pytest.mark.asyncio
+async def test_search_compressed_reads_all_candidates_across_batches(
+    compressed_backend_factory: BackendFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All matches are returned even when candidate ids span multiple IN batches.
+
+    Regression for the unbounded SQLite IN-clause: the compressed read now binds
+    candidate ids in bounded batches (under SQLITE_MAX_VARIABLE_NUMBER) instead of
+    one IN (...) with every id. Shrinking the batch size forces several batches
+    over a tiny corpus, so a row dropped at a batch boundary would be observable.
+    """
+    import app.repositories.embedding_repository as er
+
+    monkeypatch.setattr(er, '_SQLITE_IN_CLAUSE_BATCH', 2)
+    backend, repos = await compressed_backend_factory('ip', 4)
+    repo = EmbeddingRepository(backend)
+    cids, query = await _seed_random_corpus(repos, repo, n=5, variant='ip', bits=4)
+
+    results, stats = await repo.search_compressed(query_embedding=query.tolist(), limit=10)
+
+    # Batch size 2 forces three IN-clause batches over the five candidate ids;
+    # every compressed row must still be read and scored.
+    assert stats['rows_returned'] == len(cids) == 5
+    assert len(results) == 5
+
+
 # ---------------------------------------------------------------------------
 # Result equivalence vs a per-row reference loop.
 # ---------------------------------------------------------------------------

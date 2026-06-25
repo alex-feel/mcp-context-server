@@ -48,7 +48,9 @@ class CompressionMetadata(BaseModel):
     seed: int = Field(
         ...,
         ge=0,
-        description='Rotation matrix seed (load-bearing invariant).',
+        le=4294967295,
+        description='Rotation matrix seed (load-bearing invariant). Bounded to the '
+                    'unsigned 32-bit range the wire format packs it into.',
     )
     dim: int = Field(
         ...,

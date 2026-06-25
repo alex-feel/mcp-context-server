@@ -52,6 +52,13 @@ _compression_metadata_init_lock: asyncio.Lock = asyncio.Lock()
 # (estimate_inner_product / decode) is already offloaded inside the provider.
 _COMPRESSED_OFFLOAD_MIN_ROWS = 2048
 
+# SQLite caps host parameters per statement at SQLITE_MAX_VARIABLE_NUMBER (as low
+# as 999 on older builds), so an unbounded candidate id list cannot be bound as a
+# single IN (...) clause without risking 'too many SQL variables'. The compressed
+# read batches the candidate ids in chunks below the most conservative limit;
+# PostgreSQL is unaffected (it binds the whole set as one = ANY($1::uuid[]) array).
+_SQLITE_IN_CLAUSE_BATCH = 900
+
 
 async def _get_cached_compression_metadata(
     backend: StorageBackend,
@@ -819,19 +826,22 @@ class EmbeddingRepository(BaseRepository):
                     from app.query_builder import MetadataQueryBuilder
 
                     metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+                    validation_errors: list[str] = []
 
-                    # Simple metadata filters (key=value equality)
+                    # Simple metadata filters (key=value equality). An invalid KEY is
+                    # reported as a structured validation error (NOT silently dropped, which
+                    # would widen the result set), consistent with search_context and the
+                    # advanced filters below.
                     if metadata:
                         for key, value in metadata.items():
                             try:
                                 metadata_builder.add_simple_filter(key, value)
                                 metadata_filter_count += 1
                             except ValueError as e:
-                                logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+                                validation_errors.append(f'Invalid metadata key {key!r}: {e}')
 
                     # Advanced metadata filters with operators
                     if metadata_filters:
-                        validation_errors: list[str] = []
                         for filter_dict in metadata_filters:
                             try:
                                 filter_spec = MetadataFilter(**filter_dict)
@@ -848,12 +858,13 @@ class EmbeddingRepository(BaseRepository):
                                 validation_errors.append(error_msg)
                                 logger.error(f'Unexpected error processing metadata filter: {e}')
 
-                        # Raise exception if validation fails (unified with search_context behavior)
-                        if validation_errors:
-                            raise MetadataFilterValidationError(
-                                'Metadata filter validation failed',
-                                validation_errors,
-                            )
+                    # Raise if ANY (simple key or advanced filter) validation failed,
+                    # unified with search_context's structured short-circuit behavior.
+                    if validation_errors:
+                        raise MetadataFilterValidationError(
+                            'Metadata filter validation failed',
+                            validation_errors,
+                        )
 
                     # Add metadata conditions to filter
                     metadata_clause, metadata_params = metadata_builder.build_where_clause()
@@ -1036,18 +1047,21 @@ class EmbeddingRepository(BaseRepository):
                     table_alias='ce',
                 )
 
-                # Simple metadata filters (key=value equality)
+                validation_errors: list[str] = []
+
+                # Simple metadata filters (key=value equality). An invalid KEY is reported
+                # as a structured validation error (NOT silently dropped, which would widen
+                # the result set), consistent with search_context and the advanced filters.
                 if metadata:
                     for key, value in metadata.items():
                         try:
                             metadata_builder.add_simple_filter(key, value)
                             metadata_filter_count += 1
                         except ValueError as e:
-                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+                            validation_errors.append(f'Invalid metadata key {key!r}: {e}')
 
                 # Advanced metadata filters with operators
                 if metadata_filters:
-                    validation_errors: list[str] = []
                     for filter_dict in metadata_filters:
                         try:
                             filter_spec = MetadataFilter(**filter_dict)
@@ -1064,12 +1078,13 @@ class EmbeddingRepository(BaseRepository):
                             validation_errors.append(error_msg)
                             logger.error(f'Unexpected error processing metadata filter: {e}')
 
-                    # Raise exception if validation fails (unified with search_context behavior)
-                    if validation_errors:
-                        raise MetadataFilterValidationError(
-                            'Metadata filter validation failed',
-                            validation_errors,
-                        )
+                # Raise if ANY (simple key or advanced filter) validation failed, unified
+                # with search_context's structured short-circuit behavior.
+                if validation_errors:
+                    raise MetadataFilterValidationError(
+                        'Metadata filter validation failed',
+                        validation_errors,
+                    )
 
                 # The builder emits the metadata conditions already qualified with the
                 # 'ce.' table alias (table_alias='ce'), matching the context_entries
@@ -1291,18 +1306,18 @@ class EmbeddingRepository(BaseRepository):
                     from app.query_builder import MetadataQueryBuilder
 
                     builder = MetadataQueryBuilder(backend_type='sqlite')
+                    errs: list[str] = []
+                    # An invalid simple-metadata KEY is reported as a structured validation
+                    # error (NOT silently dropped, which would widen the result set),
+                    # consistent with search_context and the advanced filters below.
                     if metadata:
                         for key, value in metadata.items():
                             try:
                                 builder.add_simple_filter(key, value)
                                 metadata_filter_count += 1
                             except ValueError as e:
-                                logger.warning(
-                                    'Invalid simple metadata filter key=%s: %s',
-                                    key, e,
-                                )
+                                errs.append(f'Invalid metadata key {key!r}: {e}')
                     if metadata_filters:
-                        errs: list[str] = []
                         for filter_dict in metadata_filters:
                             try:
                                 spec = MetadataFilter(**filter_dict)
@@ -1321,10 +1336,10 @@ class EmbeddingRepository(BaseRepository):
                                     'Unexpected error processing metadata filter: %s',
                                     e,
                                 )
-                        if errs:
-                            raise MetadataFilterValidationError(
-                                'Metadata filter validation failed', errs,
-                            )
+                    if errs:
+                        raise MetadataFilterValidationError(
+                            'Metadata filter validation failed', errs,
+                        )
 
                     clause, mparams = builder.build_where_clause()
                     if clause:
@@ -1410,18 +1425,18 @@ class EmbeddingRepository(BaseRepository):
                         param_offset=len(params),
                         table_alias='ce',
                     )
+                    errs: list[str] = []
+                    # An invalid simple-metadata KEY is reported as a structured validation
+                    # error (NOT silently dropped, which would widen the result set),
+                    # consistent with search_context and the advanced filters below.
                     if metadata:
                         for key, value in metadata.items():
                             try:
                                 builder.add_simple_filter(key, value)
                                 metadata_filter_count += 1
                             except ValueError as e:
-                                logger.warning(
-                                    'Invalid simple metadata filter key=%s: %s',
-                                    key, e,
-                                )
+                                errs.append(f'Invalid metadata key {key!r}: {e}')
                     if metadata_filters:
-                        errs: list[str] = []
                         for filter_dict in metadata_filters:
                             try:
                                 spec = MetadataFilter(**filter_dict)
@@ -1440,10 +1455,10 @@ class EmbeddingRepository(BaseRepository):
                                     'Unexpected error processing metadata filter: %s',
                                     e,
                                 )
-                        if errs:
-                            raise MetadataFilterValidationError(
-                                'Metadata filter validation failed', errs,
-                            )
+                    if errs:
+                        raise MetadataFilterValidationError(
+                            'Metadata filter validation failed', errs,
+                        )
                     clause, mparams = builder.build_where_clause()
                     if clause:
                         # The builder emits the clause already qualified with the 'ce.'
@@ -1501,17 +1516,21 @@ class EmbeddingRepository(BaseRepository):
             def _read_compressed_sqlite(
                 conn: sqlite3.Connection,
             ) -> list[tuple[str, int, int, int, bytes]]:
-                placeholders = ','.join('?' for _ in candidate_ids)
-                cursor = conn.execute(
-                    'SELECT context_id, chunk_index, start_index, end_index, '
-                    f'payload FROM vec_context_embeddings_compressed '
-                    f'WHERE context_id IN ({placeholders})',
-                    candidate_ids,
-                )
-                return [
-                    (str(r[0]), int(r[1]), int(r[2]), int(r[3]), bytes(r[4]))
-                    for r in cursor.fetchall()
-                ]
+                rows: list[tuple[str, int, int, int, bytes]] = []
+                for start in range(0, len(candidate_ids), _SQLITE_IN_CLAUSE_BATCH):
+                    batch = candidate_ids[start:start + _SQLITE_IN_CLAUSE_BATCH]
+                    placeholders = ','.join('?' for _ in batch)
+                    cursor = conn.execute(
+                        'SELECT context_id, chunk_index, start_index, end_index, '
+                        f'payload FROM vec_context_embeddings_compressed '
+                        f'WHERE context_id IN ({placeholders})',
+                        batch,
+                    )
+                    rows.extend(
+                        (str(r[0]), int(r[1]), int(r[2]), int(r[3]), bytes(r[4]))
+                        for r in cursor.fetchall()
+                    )
+                return rows
 
             payload_rows = await self.backend.execute_read(_read_compressed_sqlite)
         else:
@@ -1659,14 +1678,21 @@ class EmbeddingRepository(BaseRepository):
             def _hydrate_sqlite(
                 conn: sqlite3.Connection,
             ) -> dict[str, dict[str, Any]]:
-                placeholders = ','.join('?' for _ in page_ids)
-                cursor = conn.execute(
-                    'SELECT id, thread_id, source, content_type, text_content, '
-                    'metadata, summary, created_at, updated_at FROM context_entries '
-                    f'WHERE id IN ({placeholders})',
-                    page_ids,
-                )
-                return {str(dict(r)['id']): dict(r) for r in cursor.fetchall()}
+                # page_ids is bounded by the overfetch limit, not by the final
+                # page size, so it can exceed SQLITE_MAX_VARIABLE_NUMBER; bind it
+                # in bounded batches like the compressed candidate read.
+                out: dict[str, dict[str, Any]] = {}
+                for start in range(0, len(page_ids), _SQLITE_IN_CLAUSE_BATCH):
+                    batch = page_ids[start:start + _SQLITE_IN_CLAUSE_BATCH]
+                    placeholders = ','.join('?' for _ in batch)
+                    cursor = conn.execute(
+                        'SELECT id, thread_id, source, content_type, text_content, '
+                        'metadata, summary, created_at, updated_at FROM context_entries '
+                        f'WHERE id IN ({placeholders})',
+                        batch,
+                    )
+                    out.update({str(dict(r)['id']): dict(r) for r in cursor.fetchall()})
+                return out
 
             hydrated = await self.backend.execute_read(_hydrate_sqlite)
         else:

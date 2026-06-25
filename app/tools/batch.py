@@ -159,14 +159,29 @@ async def store_context_batch(
             else:
                 content_type = 'text'
 
-            # Prepare validated entry
+            # Validate metadata is a JSON object and tags is a list of strings.
+            # The single-entry store_context is Pydantic-typed and rejects these;
+            # the batch path takes untyped dicts, so check here for parity: a
+            # non-dict metadata breaks search/metadata_filters, and a bare-string
+            # tags would be stored one character per tag.
             metadata = entry.get('metadata')
+            if metadata is not None and not isinstance(metadata, dict):
+                validation_errors.append((idx, 'metadata must be a JSON object'))
+                continue
+            tags = entry.get('tags')
+            if tags is not None and (
+                not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
+            ):
+                validation_errors.append((idx, 'tags must be a list of strings'))
+                continue
+
+            # Prepare validated entry
             validated_entries.append({
                 'index': idx,
                 'thread_id': thread_id,
                 'source': entry['source'],
                 'text_content': text,
-                'metadata': json.dumps(metadata, ensure_ascii=False) if metadata else None,
+                'metadata': json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
                 'content_type': content_type,
                 'tags': entry.get('tags', []),
                 'images': images,
@@ -221,6 +236,11 @@ async def store_context_batch(
         embeddings_stored_count = 0
         summaries_generated_count = 0
         summaries_preserved_count = 0
+        # ve_idx values whose summary was reused from a likely duplicate (pre-check),
+        # so a non-atomic compression failure that discards the entry can decrement the
+        # preserved count it provisionally bumped -- mirroring the generated counts,
+        # which are now bumped only after compression succeeds.
+        preserved_summary_indices: set[int] = set()
 
         for ve_idx, entry in enumerate(validated_entries):
             original_idx = entry['index']
@@ -270,6 +290,7 @@ async def store_context_batch(
                     if existing_summary is not None:
                         entry_summaries[ve_idx] = existing_summary
                         summaries_preserved_count += 1
+                        preserved_summary_indices.add(ve_idx)
                         logger.debug(
                             'Pre-check: reusing existing summary for likely duplicate '
                             'of context %s at index %d',
@@ -302,21 +323,6 @@ async def store_context_batch(
                     entry_embeddings[ve_idx] = cast(list[ChunkEmbedding] | None, result)
                 elif name == 'summary':
                     entry_summaries[ve_idx] = cast(str | None, result)
-
-            if not errors:
-                if entry_embeddings.get(ve_idx) is not None:
-                    embeddings_generated_count += 1
-                # Only count a summary as GENERATED when a summary model call
-                # actually ran for this entry; a reused/preserved summary (no
-                # 'summary' task queued, accounted by summaries_preserved_count)
-                # must not be double-counted here, mirroring the single-store
-                # generated-vs-preserved split.
-                if (
-                    'summary' in task_names
-                    and entry_summaries.get(ve_idx)
-                    and isinstance(entry_summaries[ve_idx], str)
-                ):
-                    summaries_generated_count += 1
 
             if errors:
                 error_details = '; '.join(
@@ -355,6 +361,28 @@ async def store_context_batch(
                     )
                     entry_embeddings[ve_idx] = None
                     entry_summaries[ve_idx] = None
+                    # This entry is discarded below; undo the preserved-summary count it
+                    # provisionally bumped in the pre-check, mirroring the generated counts
+                    # which are bumped only on compression success.
+                    if ve_idx in preserved_summary_indices:
+                        summaries_preserved_count -= 1
+                else:
+                    # Count generated artifacts only AFTER compression succeeds, so a
+                    # non-atomic compression failure (which discards this entry below)
+                    # cannot inflate the generated counts in the response diagnostic.
+                    if entry_embeddings.get(ve_idx) is not None:
+                        embeddings_generated_count += 1
+                    # Only count a summary as GENERATED when a summary model call
+                    # actually ran for this entry; a reused/preserved summary (no
+                    # 'summary' task queued, accounted by summaries_preserved_count)
+                    # must not be double-counted here, mirroring the single-store
+                    # generated-vs-preserved split.
+                    if (
+                        'summary' in task_names
+                        and entry_summaries.get(ve_idx)
+                        and isinstance(entry_summaries[ve_idx], str)
+                    ):
+                        summaries_generated_count += 1
 
         # In non-atomic mode, add generation errors to results and filter
         if not atomic and generation_errors:
@@ -445,6 +473,10 @@ async def store_context_batch(
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
                                     index_nodes=entry_index_nodes.get(ve_idx),
+                                    nodes_pending=(
+                                        node_layer_active()
+                                        and entry_likely_duplicate.get(ve_idx) is not None
+                                    ),
                                 )
                             )
 
@@ -478,16 +510,36 @@ async def store_context_batch(
                             'divergence (atomic batch store)',
                         ) from None
                     reconcile_passes += 1
-                    regenerated = await generate_compression_with_timeout(
-                        await generate_embeddings_with_timeout(reconcile.text_content),
+                    # Only re-run the embedding provider when at least one diverged
+                    # entry actually lacks embeddings. A node-only reconcile (the
+                    # nodes_pending gate fired while embeddings are present) must not
+                    # re-invoke the provider: that wastes a call and a transient
+                    # failure would spuriously abort the whole atomic batch.
+                    needs_embeddings = embedding_provider is not None and any(
+                        entry_embeddings.get(r_ve_idx) is None
+                        and r_entry['text_content'] == reconcile.text_content
+                        for r_ve_idx, r_entry in validated_entries_filtered
                     )
-                    for r_ve_idx, r_entry in validated_entries_filtered:
-                        if (entry_embeddings.get(r_ve_idx) is None
-                                and r_entry['text_content'] == reconcile.text_content):
-                            entry_embeddings[r_ve_idx] = regenerated
+                    if needs_embeddings:
+                        regenerated = await generate_compression_with_timeout(
+                            await generate_embeddings_with_timeout(reconcile.text_content),
+                        )
+                        for r_ve_idx, r_entry in validated_entries_filtered:
+                            if (entry_embeddings.get(r_ve_idx) is None
+                                    and r_entry['text_content'] == reconcile.text_content):
+                                entry_embeddings[r_ve_idx] = regenerated
+                                # Count only embeddings actually produced. With
+                                # generation disabled the no-op provider returns
+                                # None, so a node-only reconcile must not inflate
+                                # the generated count (parity with the single store).
+                                if regenerated is not None:
+                                    embeddings_generated_count += 1
                     # Node summaries for the diverged text were gated off as a
                     # likely duplicate; this divergence INSERTs, so regenerate them.
-                    regenerated_nodes = await generate_index_nodes_with_timeout(reconcile.text_content)
+                    # Coerce total degradation (None) to [] so the reconcile gate
+                    # clears on retry: the node layer is never-raise and must not
+                    # abort the store; a fresh INSERT has no stale node rows.
+                    regenerated_nodes = await generate_index_nodes_with_timeout(reconcile.text_content) or []
                     for r_ve_idx, r_entry in validated_entries_filtered:
                         if (entry_index_nodes.get(r_ve_idx) is None
                                 and r_entry['text_content'] == reconcile.text_content):
@@ -534,6 +586,10 @@ async def store_context_batch(
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
                                     index_nodes=entry_index_nodes.get(ve_idx),
+                                    nodes_pending=(
+                                        node_layer_active()
+                                        and entry_likely_duplicate.get(ve_idx) is not None
+                                    ),
                                 )
                             )
 
@@ -567,15 +623,27 @@ async def store_context_batch(
                             ))
                             break
                         reconciled = True
-                        entry_embeddings[ve_idx] = await generate_compression_with_timeout(
-                            await generate_embeddings_with_timeout(reconcile.text_content),
-                        )
+                        # Only re-run the embedding provider when this entry's
+                        # embeddings were actually skipped; a node-only reconcile
+                        # must not re-invoke the provider (wasted call + a transient
+                        # failure would spuriously fail an otherwise-good entry).
+                        if embedding_provider is not None and entry_embeddings.get(ve_idx) is None:
+                            entry_embeddings[ve_idx] = await generate_compression_with_timeout(
+                                await generate_embeddings_with_timeout(reconcile.text_content),
+                            )
+                            # Count only embeddings actually produced (the no-op
+                            # provider returns None when generation is disabled).
+                            if entry_embeddings[ve_idx] is not None:
+                                embeddings_generated_count += 1
                         # Node summaries were gated off as a likely duplicate; this
                         # entry actually INSERTs, so regenerate its index_tree nodes.
+                        # Coerce total degradation (None) to [] so the reconcile gate
+                        # clears on retry: the node layer is never-raise and must not
+                        # abort this entry's store; a fresh INSERT has no stale rows.
                         if entry_index_nodes.get(ve_idx) is None:
                             entry_index_nodes[ve_idx] = await generate_index_nodes_with_timeout(
                                 reconcile.text_content,
-                            )
+                            ) or []
                         continue
 
                     except ToolError as e:
@@ -745,6 +813,24 @@ async def update_context_batch(
             )
             if not has_update:
                 validation_errors.append((idx, context_id, 'At least one field must be provided for update'))
+                continue
+
+            # Validate metadata / metadata_patch are JSON objects and tags is a
+            # list of strings (parity with the single-entry, Pydantic-typed
+            # update_context, which rejects these).
+            metadata_field = update.get('metadata')
+            if metadata_field is not None and not isinstance(metadata_field, dict):
+                validation_errors.append((idx, context_id, 'metadata must be a JSON object'))
+                continue
+            metadata_patch_field = update.get('metadata_patch')
+            if metadata_patch_field is not None and not isinstance(metadata_patch_field, dict):
+                validation_errors.append((idx, context_id, 'metadata_patch must be a JSON object'))
+                continue
+            tags_field = update.get('tags')
+            if tags_field is not None and (
+                not isinstance(tags_field, list) or not all(isinstance(t, str) for t in tags_field)
+            ):
+                validation_errors.append((idx, context_id, 'tags must be a list of strings'))
                 continue
 
             # Validate images if provided
@@ -929,11 +1015,13 @@ async def update_context_batch(
                 elif name == 'summary':
                     update_summaries[vu_idx] = cast(str | None, result)
 
-            if not errors:
-                if update_embeddings.get(vu_idx) is not None:
-                    embeddings_generated_count += 1
-                if update_summaries.get(vu_idx) and isinstance(update_summaries[vu_idx], str):
-                    summaries_generated_count += 1
+            # Summary regeneration that ran but produced nothing (empty -> None)
+            # on a text change must CLEAR the now-stale summary (it describes the
+            # OLD text), mirroring the too-short branch above and the single-update
+            # path. Only when the summary task itself did not error.
+            summary_errored = any(name == 'summary' for name, _ in errors)
+            if 'summary' in task_names and not summary_errored and update_summaries.get(vu_idx) is None:
+                update_clear_summaries.add(vu_idx)
 
             if errors:
                 error_details = '; '.join(
@@ -973,6 +1061,14 @@ async def update_context_batch(
                     )
                     update_embeddings[vu_idx] = None
                     update_summaries[vu_idx] = None
+                else:
+                    # Count generated artifacts only AFTER compression succeeds, so a
+                    # non-atomic compression failure (which discards this entry below)
+                    # cannot inflate the generated counts in the response diagnostic.
+                    if update_embeddings.get(vu_idx) is not None:
+                        embeddings_generated_count += 1
+                    if update_summaries.get(vu_idx) and isinstance(update_summaries[vu_idx], str):
+                        summaries_generated_count += 1
 
         # In non-atomic mode, add generation errors to results and filter
         if not atomic and generation_errors:
@@ -1031,6 +1127,7 @@ async def update_context_batch(
             for attempt in range(max_retries + 1):
                 try:
                     results_attempt: list[BulkUpdateResultItemDict] = []
+                    cleared_attempt = 0
                     # Running version per id within THIS attempt: a same-id update
                     # later in the batch must present the version the earlier same-id
                     # update bumped to (the CAS is against the in-transaction row).
@@ -1065,6 +1162,8 @@ async def update_context_batch(
                                     expected_version=live_versions.get(context_id),
                                 )
                             )
+                            if summary_cleared:
+                                cleared_attempt += 1
                             bumps_version = update.get('text') is not None or update.get('metadata') is not None
                             if bumps_version and context_id in live_versions:
                                 # update_context_entry bumped version by 1; a later
@@ -1083,6 +1182,9 @@ async def update_context_batch(
 
                     # Transaction committed successfully
                     results.extend(results_attempt)
+                    # Accumulate the authoritative per-entry cleared count from this
+                    # committed attempt (a rolled-back/retried attempt contributes nothing).
+                    summaries_cleared_count += cleared_attempt
                     break
 
                 except VersionConflictError as e:
@@ -1174,7 +1276,31 @@ async def update_context_batch(
                             ))
                             break
                         version_conflicts += 1
-                        exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                        try:
+                            exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                        except Exception as reread_error:
+                            # A transient connection error during the conflict re-read
+                            # gets the same bounded backoff/retry as the rest of the
+                            # loop, then records a per-entry failure if exhausted.
+                            if is_connection_error(reread_error) and attempt < max_retries:
+                                delay = 0.5 * (2 ** attempt)
+                                attempt += 1
+                                logger.warning(
+                                    'Connection error during version-conflict re-read of entry %d; '
+                                    'retrying in %.1fs (attempt %d/%d): %s',
+                                    original_idx, delay, attempt, max_retries, reread_error,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            logger.error(f'Failed to update entry at index {original_idx}: {reread_error}')
+                            results.append(BulkUpdateResultItemDict(
+                                index=original_idx,
+                                context_id=context_id,
+                                success=False,
+                                updated_fields=None,
+                                error=format_exception_message(reread_error),
+                            ))
+                            break
                         if not exists:
                             results.append(BulkUpdateResultItemDict(
                                 index=original_idx,
@@ -1229,14 +1355,11 @@ async def update_context_batch(
 
         logger.info(f'Batch update completed: {succeeded}/{len(updates)} succeeded')
 
-        # Count summaries cleared for atomic mode (non-atomic tracks inline)
-        if atomic:
-            for r in results:
-                if r['success'] and r.get('context_id'):
-                    for vu_idx, update in validated_updates_final:
-                        if update['context_id'] == r['context_id'] and vu_idx in update_clear_summaries:
-                            summaries_cleared_count += 1
-                            break
+        # Both modes now accumulate summaries_cleared_count inline from the authoritative
+        # per-entry summary_cleared returned by execute_update_in_transaction (atomic in the
+        # committed-attempt loop, non-atomic per entry). The earlier post-hoc cross-product
+        # over results x validated_updates_final matched by context_id only and miscounted
+        # when two updates targeted the same context_id.
 
         message = build_batch_update_response_message(
             succeeded=succeeded,

@@ -1068,6 +1068,7 @@ async def execute_store_in_transaction(
     embedding_model: str,
     embedding_generation_enabled: bool = False,
     index_nodes: list[IndexNodeRow] | None = None,
+    nodes_pending: bool = False,
 ) -> tuple[str, bool, bool]:
     """Execute all store operations within an existing transaction.
 
@@ -1099,6 +1100,13 @@ async def execute_store_in_transaction(
             EmbeddingsReconcileRequiredError so the caller can regenerate
             embeddings outside the transaction and retry. Defaults to False so
             callers unaware of the pre-check optimization keep prior behavior.
+        nodes_pending: True when the index_tree node layer is active and the
+            caller's pre-check skipped node generation for a likely duplicate.
+            When True and this store INSERTs a new entry (was_updated False)
+            while index_nodes is None, the transaction aborts via
+            EmbeddingsReconcileRequiredError so the caller regenerates node
+            summaries outside the transaction and retries -- even when embedding
+            generation is disabled. Defaults to False.
 
     Returns:
         Tuple of (context_id, was_updated, embedding_stored):
@@ -1109,8 +1117,9 @@ async def execute_store_in_transaction(
     Raises:
         ToolError: If store_with_deduplication fails (returns falsy context_id).
         EmbeddingsReconcileRequiredError: If the store inserted a new entry while
-            the caller's pre-check had skipped embedding generation; signals the
-            caller to regenerate embeddings outside the transaction and retry.
+            the caller's pre-check had skipped embedding generation, or (when
+            nodes_pending) node-summary generation; signals the caller to
+            regenerate the skipped legs outside the transaction and retry.
     """
     # Store context entry with deduplication
     context_id, was_updated = await repos.context.store_with_deduplication(
@@ -1127,14 +1136,18 @@ async def execute_store_in_transaction(
         raise ToolError('Failed to store context')
 
     # Generation-first reconciliation: the caller's read-only pre-check skips
-    # embedding generation when a likely duplicate already has embeddings,
-    # expecting this store to deduplicate into an UPDATE. If a concurrent
+    # embedding AND node-summary generation when a likely duplicate already has
+    # them, expecting this store to deduplicate into an UPDATE. If a concurrent
     # same-thread write committed in the meantime, store_with_deduplication can
     # instead INSERT a brand-new entry (was_updated False). Committing now would
-    # persist a row with no embeddings while generation is enabled, violating the
-    # generation-first guarantee. Abort so the caller regenerates embeddings
-    # OUTSIDE the transaction and retries.
-    if embedding_generation_enabled and chunk_embeddings is None and not was_updated:
+    # persist a row missing its embeddings (when generation is enabled) or its
+    # per-node summaries (when the node layer is active), violating the
+    # generation-first guarantee. Abort so the caller regenerates the skipped
+    # legs OUTSIDE the transaction and retries. The node reconcile is decoupled
+    # from embeddings so the node layer is repaired even when embeddings are off.
+    needs_embedding_reconcile = embedding_generation_enabled and chunk_embeddings is None
+    needs_node_reconcile = nodes_pending and index_nodes is None
+    if not was_updated and (needs_embedding_reconcile or needs_node_reconcile):
         raise EmbeddingsReconcileRequiredError(text_content)
 
     # Heartbeat: keep connection alive between sequential operations
@@ -1187,9 +1200,12 @@ async def execute_store_in_transaction(
             embedding_stored = True
 
     # Replace index_tree node summaries atomically. None means the per-node
-    # summary feature is off, so the node table is left untouched; an empty list
-    # clears any stale rows for this entry.
-    if index_nodes is not None:
+    # summary feature is off, so the node table is left untouched. An empty list
+    # clears stale rows, but only on a fresh INSERT: on a dedup UPDATE a
+    # post-reconcile [] (coerced from total node-summary degradation) must NOT
+    # wipe an existing entry's node rows, so an empty list is suppressed when
+    # was_updated is True.
+    if index_nodes is not None and (not was_updated or index_nodes):
         await repos.index_nodes.replace_nodes_for_context(context_id, index_nodes, txn=txn)
 
     return context_id, was_updated, embedding_stored
