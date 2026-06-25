@@ -64,6 +64,10 @@ services:
     # For AMD ROCm GPU (Linux host only), use the ROCm-tagged image instead:
     # image: ollama/ollama:rocm
     pull_policy: always
+    # Publish Ollama on the host loopback so host-side tools (e.g. Code Review
+    # Graph) can reach it at http://127.0.0.1:11434; not exposed to the LAN.
+    ports:
+      - "127.0.0.1:11434:11434"
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_KEEP_ALIVE=-1
@@ -145,6 +149,11 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg18-trixie
+    # Publish PostgreSQL on the host loopback so host tools (e.g. pgAdmin) can
+    # connect at 127.0.0.1:5432; not exposed to the LAN. Credentials default to
+    # postgres/postgres -- keep this loopback-only unless you change them.
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRESQL_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD:-postgres}
