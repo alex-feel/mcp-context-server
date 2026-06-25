@@ -1,0 +1,34 @@
+# Subagent Context Protocol Injection Hook Configuration (Universal)
+# Controls the context-server work protocol injected into every spawned
+# subagent at SubagentStart via additionalContext.
+
+# Whether the hook is enabled (optional, default: true)
+enabled: true
+
+# Whether to actually emit the additionalContext to stdout (optional, default: true).
+# Kept as an emergency knob; under normal operation should remain true.
+inject_context: true
+
+# The protocol injected as additionalContext. The header is followed by a
+# bullet list (one bullet per entry in `lines`). Keep all text ASCII-only:
+# em-dashes and other non-ASCII characters break hook stdout capture.
+protocol:
+  header: "CONTEXT-SERVER WORK PROTOCOL (applies to you, this subagent):"
+  lines:
+    - >-
+      Retrieve relevant context BEFORE you start work. Retrieve user messages
+      first (source='user') -- they are the authoritative source of truth for
+      the original requirements -- then relevant agent reports (source='agent').
+    - >-
+      Store a concise context-server report BEFORE you stop, if you have
+      context-server store tools (for example store_context) AND you produced
+      any work artifact or finding. If you have no store tools, just stop.
+    - >-
+      The StructuredOutput value you return to your caller is ephemeral and is
+      lost on compaction. It does NOT substitute for the durable context-server
+      record. Store the report in addition to returning your result.
+    - >-
+      An instruction telling you not to write report, summary, or findings files
+      to disk does NOT mean "skip the context-server entry". Storing a
+      context-server entry is not writing a file to disk; do it anyway if you are
+      capable.

@@ -33,6 +33,12 @@ os-env-variables:
   MAX_MCP_OUTPUT_TOKENS: "100000"
   ENABLE_TOOL_SEARCH: "1"
 
+  # Enable the context-saver hooks' diagnostic logging so a failed store
+  # (for example, the context server still starting while Ollama pulls its
+  # embedding and summary models) is recorded in the hook log instead of
+  # failing silently. Log location: ~/.claude/hook_logs/user_prompt_context_saver.log
+  CLAUDE_HOOK_DEBUG_ENABLED: "1"
+
 # Skills for context management
 skills:
   - name: context-retrieval-protocol
@@ -62,7 +68,6 @@ hooks:
     # Context persistence hooks and configs
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/user_prompt_context_saver.py
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/user_prompt_context_saver_config.yaml
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/subagent_report_context_saver.py
 
     # Project identity
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/worktree_context.py
@@ -75,11 +80,12 @@ hooks:
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/context_awareness_guidance.py
     - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/context_awareness_guidance_config.yaml
 
-    # Server health
-    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/mcp_preflight_checks_context.py
+    # Subagent context protocol injection and its config - SubagentStart store/retrieve protocol
+    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/subagent_context_protocol_injection.py
+    - https://raw.githubusercontent.com/alex-feel/mcp-context-server/main/agents/claude-code/hooks/configs/subagent_context_protocol_injection_config.yaml
 
   events:
-    # SessionStart events (ORDER MATTERS: worktree BEFORE thread_id)
+    # SessionStart context hooks (ORDER MATTERS: worktree BEFORE thread_id)
     - event: SessionStart
       matcher: '*'
       type: command
@@ -94,6 +100,20 @@ hooks:
       matcher: '*'
       type: command
       command: timezone_date_context.py
+
+    # Post-compaction recovery guidance for the main agent
+    - event: SessionStart
+      matcher: '*'
+      type: command
+      command: context_awareness_guidance.py
+      config: context_awareness_guidance_config.yaml
+
+    # Subagent context protocol injection - retrieve-first / store-before-stop protocol at spawn
+    - event: SubagentStart
+      matcher: '*'
+      type: command
+      command: subagent_context_protocol_injection.py
+      config: subagent_context_protocol_injection_config.yaml
 
     # Subagent context injection - mirrors SessionStart context for spawned subagents
     - event: SubagentStart
@@ -111,26 +131,19 @@ hooks:
       type: command
       command: timezone_date_context.py
 
-    - event: SessionStart
-      matcher: '*'
-      type: command
-      command: mcp_preflight_checks_context.py
-
-    - event: SessionStart
-      matcher: '*'
-      type: command
-      command: context_awareness_guidance.py
-      config: context_awareness_guidance_config.yaml
-
     # Context preservation during workflow
     - event: UserPromptSubmit
       type: command
       command: user_prompt_context_saver.py
       config: user_prompt_context_saver_config.yaml
 
-    - event: SubagentStop
-      type: command
-      command: subagent_report_context_saver.py
+    # A blocking SubagentStop report-saver is intentionally NOT registered here.
+    # A blocking stop-time hook forces an extra turn after a subagent finishes and
+    # can overwrite the subagent's returned result with a one-line confirmation --
+    # wrong for this lightweight, general-purpose integration where callers expect
+    # the subagent's actual output. Store-before-stop is instead encouraged
+    # non-blockingly via the SubagentStart context protocol injection above, plus
+    # the context-management skills and rules bundled with this environment.
 
 # Permissions configuration
 permissions:
