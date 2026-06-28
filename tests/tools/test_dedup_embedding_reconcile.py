@@ -207,6 +207,77 @@ class TestStoreBatchReconcile:
         assert mock_exec.call_count == 2
         assert mock_gen_emb.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_nonatomic_reconcile_failure_isolates_to_entry(self) -> None:
+        """A reconcile-time embedding failure fails only that entry, not the batch.
+
+        Non-atomic mode promises per-entry isolation. When the dedup pre-check
+        skipped embeddings for a likely duplicate and the store then INSERTs
+        (EmbeddingsReconcileRequiredError), a ToolError from the reconcile-time
+        regeneration must be recorded as THAT entry's failure while a sibling
+        entry that already succeeded is preserved -- never re-raised batch-wide.
+        """
+        from app.tools.batch import store_context_batch
+
+        _, mock_begin_transaction = _make_mock_txn()
+
+        with (
+            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.batch.execute_store_in_transaction') as mock_exec,
+            patch(
+                'app.tools.batch.generate_embeddings_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=ToolError('embedding provider unavailable'),
+            ) as mock_gen_emb,
+            patch(
+                'app.tools.batch.generate_compression_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=lambda emb: emb,
+            ),
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+
+            # Both entries look like duplicates with embeddings -> upfront
+            # generation is skipped for both.
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value='dup-id')
+            mock_repos.embeddings.exists = AsyncMock(return_value=True)
+
+            # Entry 0 stores cleanly; entry 1 diverges (INSERT) so its skipped
+            # embeddings must be regenerated -- and that regeneration raises.
+            mock_exec.side_effect = [
+                ('ctx-good', False, True),
+                EmbeddingsReconcileRequiredError('diverged entry'),
+            ]
+
+            result = await store_context_batch(
+                entries=[
+                    {'thread_id': 't', 'source': 'user', 'text': 'good entry'},
+                    {'thread_id': 't', 'source': 'user', 'text': 'diverged entry'},
+                ],
+                atomic=False,
+            )
+
+        # No batch-wide ToolError was raised: the sibling result survives.
+        assert result['succeeded'] == 1
+        assert result['failed'] == 1
+        assert result['success'] is False
+        by_index = {r['index']: r for r in result['results']}
+        assert by_index[0]['success'] is True
+        assert by_index[0]['context_id'] == 'ctx-good'
+        assert by_index[1]['success'] is False
+        assert by_index[1]['context_id'] is None
+        assert by_index[1]['error']
+        # The reconcile-time regeneration was attempted exactly once (entry 1).
+        assert mock_gen_emb.await_count == 1
+
 
 class TestSemanticDistanceContractWording:
     """Guards the variant-aware semantic_distance contract (Bug 2 regression)."""

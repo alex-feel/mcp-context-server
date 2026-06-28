@@ -640,14 +640,37 @@ async def store_context_batch(
                         # embeddings were actually skipped; a node-only reconcile
                         # must not re-invoke the provider (wasted call + a transient
                         # failure would spuriously fail an otherwise-good entry).
-                        if embedding_provider is not None and entry_embeddings.get(ve_idx) is None:
-                            entry_embeddings[ve_idx] = await generate_compression_with_timeout(
-                                await generate_embeddings_with_timeout(reconcile.text_content),
+                        #
+                        # This regeneration is abort-mandatory and raises ToolError on
+                        # provider failure/timeout. In non-atomic mode that ToolError
+                        # must fail ONLY this entry: without a local guard it would
+                        # escape the per-entry loop to the function-level handler and
+                        # abort the whole batch, discarding sibling results already
+                        # collected -- breaking the documented per-entry isolation of
+                        # atomic=false. Record a per-entry failure and stop this entry,
+                        # mirroring the per-entry ToolError branch below. (The atomic
+                        # branch deliberately lets it abort: all-or-nothing.)
+                        try:
+                            if embedding_provider is not None and entry_embeddings.get(ve_idx) is None:
+                                entry_embeddings[ve_idx] = await generate_compression_with_timeout(
+                                    await generate_embeddings_with_timeout(reconcile.text_content),
+                                )
+                                # Count only embeddings actually produced (the no-op
+                                # provider returns None when generation is disabled).
+                                if entry_embeddings[ve_idx] is not None:
+                                    embeddings_generated_count += 1
+                        except ToolError as e:
+                            logger.error(
+                                'Failed to regenerate embeddings for entry at index %d '
+                                'after deduplication divergence: %s', original_idx, e,
                             )
-                            # Count only embeddings actually produced (the no-op
-                            # provider returns None when generation is disabled).
-                            if entry_embeddings[ve_idx] is not None:
-                                embeddings_generated_count += 1
+                            results.append(BulkStoreResultItemDict(
+                                index=original_idx,
+                                success=False,
+                                context_id=None,
+                                error=format_exception_message(e),
+                            ))
+                            break
                         # Node summaries were gated off as a likely duplicate; this
                         # entry actually INSERTs, so regenerate its index_tree nodes.
                         # Coerce total degradation (None) to [] so the reconcile gate
