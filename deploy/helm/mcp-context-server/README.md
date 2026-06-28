@@ -171,12 +171,12 @@ search:
 
 ### Summary Generation
 
-LLM-based summary generation creates concise summaries of stored context entries. Enabled by default with Ollama.
+LLM-based summary generation creates concise summaries of stored context entries. Opt-in in the Helm chart (default `search.summary.enabled: false`): enable it together with a summary provider -- set `ollama.enabled: true` for `provider: ollama`, or configure an API key under `summarySecrets` for openai/anthropic. Enabling it without a reachable provider fails startup, mirroring `search.semantic.enabled`.
 
 ```yaml
 search:
   summary:
-    enabled: true
+    enabled: false           # opt-in; set true together with a provider (and ollama.enabled)
     provider: ollama         # ollama, openai, or anthropic
     model: "qwen3:0.6b"     # Summary model
     maxTokens: 4000          # Max output tokens (50-16384)
