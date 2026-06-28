@@ -86,6 +86,42 @@ def test_dual_openai_existing_secret_precedence() -> None:
     assert _data_key_count(out, 'openai-api-key') == 0
 
 
+def test_dual_openai_embedding_existingsecret_summary_inline_no_orphan() -> None:
+    """Mixed split (emb existingSecret + summary inline) refs the existingSecret, no orphan key.
+
+    Both openai providers read the single OPENAI_API_KEY, so when the embedding
+    side supplies an existingSecret the Deployment points OPENAI_API_KEY at it.
+    The chart-managed Secret must NOT also render an orphaned, never-referenced
+    ``openai-api-key`` from the summary inline value -- the Deployment's name
+    selection and the Secret's key population must stay aligned.
+    """
+    out = _render(
+        *_DUAL_OPENAI,
+        '--set', 'embeddingSecrets.existingSecret=embsec',
+        '--set', 'summarySecrets.openaiApiKey=SUMKEY',
+    )
+    assert _env_count(out, 'OPENAI_API_KEY') == 1
+    assert 'name: embsec' in out
+    assert _data_key_count(out, 'openai-api-key') == 0
+
+
+def test_dual_openai_summary_existingsecret_embedding_inline_no_orphan() -> None:
+    """Mixed split (summary existingSecret + embedding inline) refs the existingSecret, no orphan key.
+
+    Symmetric counterpart: the summary side supplies an existingSecret while the
+    embedding side supplies an inline key. The Deployment references the summary
+    existingSecret and the chart Secret renders no orphaned ``openai-api-key``.
+    """
+    out = _render(
+        *_DUAL_OPENAI,
+        '--set', 'summarySecrets.existingSecret=sumsec',
+        '--set', 'embeddingSecrets.openaiApiKey=EMBKEY',
+    )
+    assert _env_count(out, 'OPENAI_API_KEY') == 1
+    assert 'name: sumsec' in out
+    assert _data_key_count(out, 'openai-api-key') == 0
+
+
 def test_openai_embedding_anthropic_summary_not_over_suppressed() -> None:
     """Mixed openai-embedding + anthropic-summary keeps both distinct keys (one each)."""
     out = _render(
