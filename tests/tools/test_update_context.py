@@ -6,6 +6,7 @@ error handling, and transaction safety.
 """
 
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -17,11 +18,31 @@ from fastmcp.exceptions import ToolError
 import app.server
 from app.types import MetadataDict
 
+if TYPE_CHECKING:
+    from app.settings import AppSettings
+
 # Get the actual async function - no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
 update_context = app.server.update_context
 get_context_by_ids = app.server.get_context_by_ids
 delete_context = app.server.delete_context
+
+
+def _settings_with_node_summaries(enabled: bool) -> 'AppSettings':
+    """Return an AppSettings copy with ``index_tree.node_summaries_enabled`` overridden.
+
+    CommonSettings is frozen, so the per-node toggle is flipped via ``model_copy`` and the
+    whole module-level ``settings`` binding is patched (the nested attribute cannot be set).
+
+    Returns:
+        An AppSettings copy identical to the cached settings except the per-node toggle.
+    """
+    from app.settings import get_settings
+
+    base = get_settings()
+    return base.model_copy(
+        update={'index_tree': base.index_tree.model_copy(update={'node_summaries_enabled': enabled})},
+    )
 
 
 @pytest.fixture
@@ -82,6 +103,14 @@ def mock_repositories():
     repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
+    repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
+
+    # Mock index_tree node-summary repository. With the per-node feature enabled (default),
+    # a text-change update clears stale node rows via replace_nodes_for_context([]) -- gated
+    # on node_summaries_enabled, NOT on a provider being present.
+    repos.index_nodes = Mock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock(return_value=None)
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
 
     return repos
 
@@ -91,7 +120,11 @@ class TestUpdateContext:
 
     @pytest.mark.asyncio
     async def test_update_text_content_only(self, mock_context, mock_repositories):
-        """Test updating only text content."""
+        """Test updating only text content.
+
+        With no summary provider configured at update time, a text change clears the
+        (now-stale) summary instead of leaving one that describes the replaced text.
+        """
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
             result = await update_context(
                 context_id='0190abcdef1234567890abcd0000007b',
@@ -105,7 +138,7 @@ class TestUpdateContext:
             assert result['success'] is True
             assert result['context_id'] == '0190abcdef1234567890abcd0000007b'
             assert 'text_content' in result['updated_fields']
-            assert result['message'] == 'Successfully updated 1 field(s)'
+            assert result['message'] == 'Successfully updated 1 field(s) (summary cleared)'
 
             # Verify repository calls
             mock_repositories.context.check_entry_exists.assert_called_once_with(
@@ -117,7 +150,7 @@ class TestUpdateContext:
                 text_content='Updated text content',
                 metadata=None,
                 summary=None,
-                clear_summary=False,
+                clear_summary=True,
                 expected_version=0,
                 txn=ANY,
             )
@@ -730,12 +763,13 @@ class TestUpdateContext:
 
     @pytest.mark.asyncio
     async def test_text_change_total_node_degradation_clears_stale_nodes(self, mock_context, mock_repositories):
-        """Fix 5: a text-change update whose per-node summaries TOTALLY degrade (None)
-        from an ACTIVE node layer remaps index_nodes to [] so the transaction CLEARS
-        the stale rows, rather than preserving summaries describing the OLD text.
+        """A text-change update whose per-node summaries return None while the per-node layer
+        is ENABLED remaps index_nodes to [] so the transaction CLEARS the stale rows (which
+        describe the OLD text) rather than preserving them.
 
-        A regression dropping the node_layer_active() clear remap would pass None
-        through and leave the stale rows -- this asserts the [] is threaded in.
+        The clear is gated on settings.index_tree.node_summaries_enabled -- the SAME gate
+        navigate_context reads -- NOT on a provider being present. A regression dropping the
+        clear remap would pass None through and leave the stale rows.
         """
         captured: dict[str, object] = {}
 
@@ -744,11 +778,11 @@ class TestUpdateContext:
             return (['text_content'], 1)
 
         with (
+            patch('app.tools.context.settings', _settings_with_node_summaries(True)),
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
-            patch('app.tools.context.node_layer_active', return_value=True),
             patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
         ):
             result = await update_context(
@@ -758,13 +792,18 @@ class TestUpdateContext:
             )
 
         assert result['success'] is True
-        assert captured['index_nodes'] == []  # total degradation on text change -> cleared
+        assert captured['index_nodes'] == []  # node layer enabled + None on text change -> cleared
 
     @pytest.mark.asyncio
-    async def test_text_change_inert_node_layer_preserves_nodes(self, mock_context, mock_repositories):
-        """Fix 5 (negative): when the node layer is INERT (feature off / no provider),
-        a None node result is LEFT UNTOUCHED (stays None), so the transaction skips
-        replace_nodes_for_context and existing rows are preserved.
+    async def test_text_change_no_provider_feature_on_clears_stale_nodes(self, mock_context, mock_repositories):
+        """Provider-removed-but-feature-on is a DISTINCT clear case.
+
+        With ENABLE_INDEX_TREE_NODE_SUMMARIES on but NO summary provider, node generation
+        returns None for lack of a provider (not total degradation). navigate_context still
+        surfaces stored node rows (it gates only on node_summaries_enabled, no provider), so a
+        text-change update MUST clear the stale rows. A prior version gated the clear on
+        node_layer_active() (which additionally required a provider) and wrongly PRESERVED
+        them, letting navigate_context mis-attach an old summary to a new same-slug section.
         """
         captured: dict[str, object] = {}
 
@@ -773,11 +812,11 @@ class TestUpdateContext:
             return (['text_content'], 1)
 
         with (
+            patch('app.tools.context.settings', _settings_with_node_summaries(True)),
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
-            patch('app.tools.context.node_layer_active', return_value=False),
             patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
         ):
             result = await update_context(
@@ -787,7 +826,38 @@ class TestUpdateContext:
             )
 
         assert result['success'] is True
-        assert captured['index_nodes'] is None  # inert layer -> untouched
+        assert captured['index_nodes'] == []  # feature on, provider gone -> stale rows cleared
+
+    @pytest.mark.asyncio
+    async def test_text_change_feature_off_preserves_nodes(self, mock_context, mock_repositories):
+        """When the per-node layer is DISABLED (ENABLE_INDEX_TREE_NODE_SUMMARIES off), a None
+        node result is LEFT UNTOUCHED (stays None), so the transaction skips
+        replace_nodes_for_context and existing rows are preserved. navigate_context is also
+        gated off in this state, so dormant rows are never surfaced -- preserving them is
+        harmless and avoids a needless write.
+        """
+        captured: dict[str, object] = {}
+
+        async def capture_update(_repos, _txn, **kwargs):
+            captured['index_nodes'] = kwargs.get('index_nodes')
+            return (['text_content'], 1)
+
+        with (
+            patch('app.tools.context.settings', _settings_with_node_summaries(False)),
+            patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools.context.run_generation', new_callable=AsyncMock, return_value=(None, None, None)),
+            patch('app.tools.context.execute_update_in_transaction', side_effect=capture_update),
+        ):
+            result = await update_context(
+                context_id='0190abcdef1234567890abcd0000007b',
+                text='brand new body',
+                ctx=mock_context,
+            )
+
+        assert result['success'] is True
+        assert captured['index_nodes'] is None  # feature off -> untouched
 
 
 class TestMetadataPatchIntegration:

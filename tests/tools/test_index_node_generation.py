@@ -117,12 +117,15 @@ class TestGenerateIndexNodes:
 
 
 class TestNodeLayerActive:
-    """node_layer_active() gates the text-change None->[] (clear-stale) remap.
+    """node_layer_active() reports whether the per-node layer would ATTEMPT work
+    (feature enabled AND a summary provider configured).
 
-    On a text-change update, a None node-generation result is ambiguous: it means
-    TOTAL degradation when the layer is active (clear the stale rows) but "leave
-    untouched" when the layer is inert. node_layer_active() resolves that, so the
-    update paths only clear when the layer is genuinely active.
+    It gates the store-path node attempt and the dedup ``nodes_pending`` pre-check. NOTE:
+    it no longer gates the text-change clear-stale remap -- that remap is gated on
+    settings.index_tree.node_summaries_enabled (the SAME gate navigate_context reads), so a
+    text-change update clears stale rows even when the feature is on but the provider was
+    removed (see test_update_context / test_batch_summary). The tests below pin
+    node_layer_active()'s own definition.
     """
 
     def test_active_when_enabled_with_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:

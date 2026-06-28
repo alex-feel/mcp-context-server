@@ -728,12 +728,14 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos.embeddings.delete.assert_any_call(20)
             mock_repos.embeddings.delete.assert_any_call(30)
 
-            # Verify get_ids_matching_batch_criteria was called with correct args
+            # Verify get_ids_matching_batch_criteria was called with correct args. No
+            # older_than_days, so older_than_cutoff is None (only resolved for an age filter).
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
                 context_ids=None,
                 thread_ids=['thread-abc'],
                 source=None,
                 older_than_days=None,
+                older_than_cutoff=None,
             )
 
     @pytest.mark.asyncio
@@ -774,13 +776,18 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos.embeddings.delete.assert_any_call(5)
             mock_repos.embeddings.delete.assert_any_call(15)
 
-            # Verify get_ids_matching_batch_criteria was called with correct args
-            mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
-                context_ids=None,
-                thread_ids=None,
-                source=None,
-                older_than_days=30,
-            )
+            # The age filter is resolved to ONE absolute older_than_cutoff that is SHARED by
+            # the embedding-cleanup pre-query AND the row delete, so SQLite cannot orphan vec0
+            # rows via a moving datetime('now'). Verify the same resolved cutoff reaches both.
+            select_kwargs = mock_repos.context.get_ids_matching_batch_criteria.call_args.kwargs
+            assert select_kwargs['context_ids'] is None
+            assert select_kwargs['thread_ids'] is None
+            assert select_kwargs['source'] is None
+            assert select_kwargs['older_than_days'] == 30
+            cutoff = select_kwargs['older_than_cutoff']
+            assert isinstance(cutoff, str)
+            assert cutoff
+            assert mock_repos.context.delete_contexts_batch.call_args.kwargs['older_than_cutoff'] == cutoff
 
 
 # Non-atomic update sibling-drop fix (filter by index, not by context_id)

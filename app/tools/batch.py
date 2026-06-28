@@ -25,6 +25,9 @@ import json
 import logging
 import operator
 from collections.abc import Awaitable
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from typing import Annotated
 from typing import Any
 from typing import Literal
@@ -148,9 +151,19 @@ async def store_context_batch(
 
             # Validate images if present
             images = entry.get('images', [])
+            if images is not None and (
+                not isinstance(images, list) or not all(isinstance(i, dict) for i in images)
+            ):
+                # Parity with the single-entry, Pydantic-typed store_context (which rejects a
+                # non-list / non-object images). Without this, a dict-as-images or a list with a
+                # non-dict element would reach validate_and_normalize_images and raise a raw
+                # AttributeError/TypeError that aborts the whole non-atomic batch instead of
+                # recording a per-entry error.
+                validation_errors.append((idx, 'images must be a list of objects'))
+                continue
             if images:
                 _, content_type_from_images, img_errors = validate_and_normalize_images(
-                    images, error_mode='collect',
+                    cast(list[dict[str, str]], images), error_mode='collect',
                 )
                 if img_errors:
                     validation_errors.append((idx, img_errors[0]))
@@ -835,8 +848,20 @@ async def update_context_batch(
 
             # Validate images if provided
             images = update.get('images')
-            if images is not None and len(images) > 0:
-                _, _, img_errors = validate_and_normalize_images(images, error_mode='collect')
+            if images is not None and (
+                not isinstance(images, list) or not all(isinstance(i, dict) for i in images)
+            ):
+                # Parity with the single-entry, Pydantic-typed update_context (which rejects a
+                # non-list / non-object images). Without this, a dict-as-images or a list with a
+                # non-dict element would reach validate_and_normalize_images and raise a raw
+                # AttributeError/TypeError that aborts the whole non-atomic batch instead of
+                # recording a per-entry error.
+                validation_errors.append((idx, context_id, 'images must be a list of objects'))
+                continue
+            if images:
+                _, _, img_errors = validate_and_normalize_images(
+                    cast(list[dict[str, str]], images), error_mode='collect',
+                )
                 if img_errors:
                     validation_errors.append((idx, context_id, img_errors[0]))
                     continue
@@ -1112,10 +1137,17 @@ async def update_context_batch(
             new_text = update.get('text')
             if new_text is not None:
                 rebuilt = await generate_index_nodes_with_timeout(new_text)
-                # Text changed: a None from an ACTIVE layer is TOTAL degradation, so
-                # CLEAR the rows describing the old text ([]) rather than preserve
-                # stale summaries; a None from an inert layer leaves them untouched.
-                update_index_nodes[vu_idx] = [] if rebuilt is None and node_layer_active() else rebuilt
+                # Text changed: a None result must CLEAR the rows describing the old text
+                # ([]) whenever the per-node layer is ENABLED, because navigate_context
+                # surfaces those rows gated only on settings.index_tree.node_summaries_enabled
+                # (no provider required). Gating the clear on node_summaries_enabled rather
+                # than node_layer_active() covers the provider-removed-but-feature-on case
+                # (None for lack of a provider) as well as total degradation, mirroring the
+                # single-update path and the provider-independent embedding/summary clears.
+                # When the feature is OFF the reader is also off, so None leaves them alone.
+                update_index_nodes[vu_idx] = (
+                    [] if rebuilt is None and settings.index_tree.node_summaries_enabled else rebuilt
+                )
 
         # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
@@ -1472,30 +1504,45 @@ async def delete_context_batch(
         # entry). Gate on embedding generation OR compression -- ``settings.
         # semantic_search.enabled`` only controls tool registration, not whether
         # embedding rows exist on disk.
-        if settings.embedding.generation_enabled or settings.compression.enabled:
-            backend = repos.context.backend
-            if backend.backend_type == 'sqlite':
-                try:
-                    affected_ids = await repos.context.get_ids_matching_batch_criteria(
-                        context_ids=context_ids,
-                        thread_ids=thread_ids,
-                        source=source,
-                        older_than_days=older_than_days,
-                    )
-                    for cid in affected_ids:
-                        try:
-                            await repos.embeddings.delete(cid)
-                        except Exception as e:
-                            logger.warning(f'Failed to delete embedding for context {cid}: {e}')
-                except Exception as e:
-                    logger.warning(f'Failed to pre-query context IDs for embedding cleanup: {e}')
+        backend = repos.context.backend
+        # Resolve older_than_days to ONE absolute UTC cutoff for SQLite so the
+        # embedding-cleanup pre-query and the row DELETE below share an identical age
+        # boundary. SQLite's datetime('now') re-evaluates per statement, so without a
+        # shared cutoff a row crossing the boundary between the pre-query and the delete
+        # would be deleted while its vec0 embeddings (no CASCADE on the virtual table)
+        # are left behind -- an orphan. created_at is stored as canonical UTC
+        # "YYYY-MM-DD HH:MM:SS"; matching that format keeps the TEXT comparison correct.
+        older_than_cutoff: str | None = None
+        if older_than_days is not None and backend.backend_type == 'sqlite':
+            older_than_cutoff = (
+                datetime.now(UTC) - timedelta(days=older_than_days)
+            ).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Execute batch delete through repository
+        if (settings.embedding.generation_enabled or settings.compression.enabled) and backend.backend_type == 'sqlite':
+            try:
+                affected_ids = await repos.context.get_ids_matching_batch_criteria(
+                    context_ids=context_ids,
+                    thread_ids=thread_ids,
+                    source=source,
+                    older_than_days=older_than_days,
+                    older_than_cutoff=older_than_cutoff,
+                )
+                for cid in affected_ids:
+                    try:
+                        await repos.embeddings.delete(cid)
+                    except Exception as e:
+                        logger.warning(f'Failed to delete embedding for context {cid}: {e}')
+            except Exception as e:
+                logger.warning(f'Failed to pre-query context IDs for embedding cleanup: {e}')
+
+        # Execute batch delete through repository (shares older_than_cutoff with the
+        # cleanup pre-query above so SQLite cannot orphan vec0 rows).
         deleted_count, criteria_used = await repos.context.delete_contexts_batch(
             context_ids=context_ids,
             thread_ids=thread_ids,
             source=source,
             older_than_days=older_than_days,
+            older_than_cutoff=older_than_cutoff,
         )
 
         logger.info(f'Batch delete completed: {deleted_count} entries removed')

@@ -886,6 +886,7 @@ class MCPServerIntegrationTest:
             {'thread_id': thread, 'source': 'agent', 'text': 'b num1', 'metadata': {'flag': 1}},
             {'thread_id': thread, 'source': 'agent', 'text': 'b num0', 'metadata': {'flag': 0}},
             {'thread_id': thread, 'source': 'agent', 'text': 'b strtrue', 'metadata': {'flag': 'true'}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'b strfalse', 'metadata': {'flag': 'false'}},
             {'thread_id': thread, 'source': 'agent', 'text': 'b missing', 'metadata': {'other': 1}},
             {'thread_id': thread, 'source': 'agent', 'text': 'b arr bool', 'metadata': {'tags': [True, 2]}},
             {'thread_id': thread, 'source': 'agent', 'text': 'b arr int', 'metadata': {'tags': [1, 2]}},
@@ -916,8 +917,8 @@ class MCPServerIntegrationTest:
                 ('ne true', [{'key': 'flag', 'operator': 'ne', 'value': True}], 1),    # {false}
                 ('ne false', [{'key': 'flag', 'operator': 'ne', 'value': False}], 1),  # {true}
                 ('in [true]', [{'key': 'flag', 'operator': 'in', 'value': [True]}], 1),  # {true}; not num1/str'true'
-                # present non-(JSON true): {false, num1, num0, strtrue}; missing/array rows excluded
-                ('not_in [true]', [{'key': 'flag', 'operator': 'not_in', 'value': [True]}], 4),
+                # present non-(JSON true): {false(bool), num1, num0, strtrue, strfalse}; missing/array excluded
+                ('not_in [true]', [{'key': 'flag', 'operator': 'not_in', 'value': [True]}], 5),
                 # SYMMETRIC direction: a numeric/string member must NOT match the stored JSON
                 # boolean (SQLite renders bool true as '1', PostgreSQL renders it as 'true').
                 ('in [1] (not bool)', [{'key': 'flag', 'operator': 'in', 'value': [1]}], 1),       # {num1} only
@@ -925,14 +926,24 @@ class MCPServerIntegrationTest:
                 ('array_contains true', [{'key': 'tags', 'operator': 'array_contains', 'value': True}], 1),  # {[true,2]}
                 ('array_contains 2', [{'key': 'tags', 'operator': 'array_contains', 'value': 2}], 2),        # {[true,2],[1,2]}
                 ('array_contains 1 (not bool)', [{'key': 'tags', 'operator': 'array_contains', 'value': 1}], 1),  # {[1,2]}
-                # case-insensitive string member: bool renders as 'true', so "1" matches the
-                # int 1 element only, not the boolean element -- identical on both backends.
-                ('array_contains "1" (ci, not bool)', [{'key': 'tags', 'operator': 'array_contains', 'value': '1'}], 1),
-                # STRING eq/ne must not match a stored JSON boolean (PG ->> renders it as
-                # 'true'/'false' text). eq 'true' -> only the string 'true' row {strtrue}.
-                ('eq "true" (str, not bool)', [{'key': 'flag', 'operator': 'eq', 'value': 'true'}], 1),
-                # ne 'true' (str): booleans excluded; present non-'true' non-bool -> {num1, num0}.
-                ('ne "true" (str, not bool)', [{'key': 'flag', 'operator': 'ne', 'value': 'true'}], 2),
+                # case-insensitive STRING member matches ONLY JSON-string array elements
+                # (the type-aware string-only contract): the numeric int 1 element
+                # is NOT text-matched and there is no string "1" element, so the result is 0 on
+                # BOTH backends -- eliminating the prior divergence where a string member matched
+                # a numeric element via SQLite's double-render of out-of-int64 / high-precision ints.
+                ('array_contains "1" (ci string-only, no string elem)',
+                 [{'key': 'tags', 'operator': 'array_contains', 'value': '1'}], 0),
+                # STRING eq/ne match a JSON-STRING-typed stored value ONLY (type-aware string-only
+                # contract): a stored JSON boolean (PG ->> renders it 'true'/'false') AND a stored
+                # NUMBER (whose text form diverges across backends for out-of-int64 values) are
+                # both excluded. eq 'true' -> only the string 'true' row {strtrue}.
+                ('eq "true" (str)', [{'key': 'flag', 'operator': 'eq', 'value': 'true'}], 1),
+                # eq 'false' (str) -> only the string 'false' row {strfalse}, NOT the JSON bool false.
+                ('eq "false" (str)', [{'key': 'flag', 'operator': 'eq', 'value': 'false'}], 1),
+                # ne 'true' (str): the JSON booleans and the numeric 1/0 are EXCLUDED by type; the
+                # only string flag != 'true' is {strfalse} -> 1 on both backends. (Previously the
+                # numeric rows text-matched here = 2, the cross-backend-divergent behavior #2 removed.)
+                ('ne "true" (str)', [{'key': 'flag', 'operator': 'ne', 'value': 'true'}], 1),
             ]
             for label, filters, expected in checks:
                 got = await _count(filters)
@@ -3988,6 +3999,142 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, True, 'Invalid filter returns error (unified with search_context)'))
             return True
 
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_search_simple_metadata_out_of_int64_rejected(self) -> bool:
+        """search_context with a simple metadata={} integer beyond the signed 64-bit
+        range returns a structured validation error on BOTH backends, never aborting
+        the search (SQLite would otherwise raise OverflowError while PostgreSQL matches).
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_simple_metadata_out_of_int64'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            result = await self.client.call_tool(
+                'search_context',
+                {'metadata': {'huge': 10**20}},
+            )
+            result_data = self._extract_content(result)
+
+            if 'error' not in result_data:
+                self.test_results.append(
+                    (test_name, False, f'Expected validation error, got: {result_data}'),
+                )
+                return False
+            if result_data.get('count') != 0 or result_data.get('results') != []:
+                self.test_results.append(
+                    (test_name, False, f'Expected count=0 / empty results on error, got: {result_data}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Out-of-int64 simple metadata filter rejected uniformly'),
+            )
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_fts_all_stopword_query_with_invalid_filter_returns_error(self) -> bool:
+        """An all-operator FTS query (transforms to an empty FTS query) combined with an
+        invalid metadata filter must STILL raise the validation error on BOTH backends:
+        metadata validation runs before the empty-query short-circuit, so the invalid
+        filter is never silently swallowed into an empty result.
+
+        Returns:
+            bool: True if test passed or skipped gracefully.
+        """
+        test_name = 'fts_all_operator_query_invalid_filter'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+            fts_info = stats_data.get('fts', {})
+            if not fts_info.get('enabled', False) or not fts_info.get('available', False):
+                self.test_results.append(
+                    (test_name, True, f"Skipped (enabled={fts_info.get('enabled')}, available={fts_info.get('available')})"),
+                )
+                return True
+
+            result = await self.client.call_tool(
+                'fts_search_context',
+                {
+                    'query': 'AND OR NOT',  # transforms to an empty FTS query
+                    'metadata_filters': [{'key': 'status', 'operator': 'invalid_operator', 'value': 'x'}],
+                },
+            )
+            result_data = self._extract_content(result)
+
+            if 'error' not in result_data:
+                self.test_results.append(
+                    (test_name, False, f'Expected validation error, got: {result_data}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Empty-FTS-query + invalid filter raises (validation precedes short-circuit)'),
+            )
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_store_context_dedup_preserves_content_type_and_image(self) -> bool:
+        """A dedup retransmit WITHOUT images preserves the stored multimodal content_type
+        and the existing image attachment on BOTH backends (content_type resolves via
+        COALESCE(NULL, existing) when no images are provided on the duplicate).
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'store_context_dedup_preserves_content_type_and_image'
+        assert self.client is not None  # Type guard for Pyright
+        try:
+            dedup_ct_thread = f'{self.test_thread_id}_dedup_content_type'
+            text = 'Multimodal entry preserved across an image-less dedup retransmit'
+
+            store1 = await self.client.call_tool('store_context', {
+                'thread_id': dedup_ct_thread, 'source': 'agent', 'text': text,
+                'images': [{'data': self._create_test_image(), 'mime_type': 'image/png'}],
+            })
+            data1 = self._extract_content(store1)
+            if not data1.get('success'):
+                self.test_results.append((test_name, False, f'First store failed: {data1}'))
+                return False
+            context_id = data1.get('context_id')
+
+            # Retransmit the identical text with NO images (network-retry shape).
+            store2 = await self.client.call_tool('store_context', {
+                'thread_id': dedup_ct_thread, 'source': 'agent', 'text': text,
+            })
+            data2 = self._extract_content(store2)
+            if not data2.get('success'):
+                self.test_results.append((test_name, False, f'Dedup store failed: {data2}'))
+                return False
+
+            get_result = await self.client.call_tool('get_context_by_ids', {
+                'context_ids': [context_id], 'include_images': True,
+            })
+            get_data = self._extract_content(get_result)
+            entry = get_data.get('results', [{}])[0]
+
+            if entry.get('content_type') != 'multimodal':
+                self.test_results.append(
+                    (test_name, False, f"content_type not preserved across dedup: {entry.get('content_type')}"),
+                )
+                return False
+            if not entry.get('images'):
+                self.test_results.append((test_name, False, 'Image attachment lost across dedup'))
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Dedup preserved multimodal content_type and image'),
+            )
+            return True
         except Exception as e:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
@@ -10570,6 +10717,68 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_metadata_not_in_numeric_over_nonnumber_row_parity(self) -> bool:
+        """NOT_IN with numeric members keeps a present non-number row identically on both backends.
+
+        A row storing a JSON STRING or boolean at the key, filtered by NOT_IN with
+        numeric members, must be INCLUDED on BOTH SQLite and PostgreSQL. The PostgreSQL
+        numeric disjunct guards on jsonb_typeof = 'number' (mirroring SQLite's json_type
+        guard) so a present non-number yields a deterministic FALSE match -> NOT FALSE ->
+        the row is kept, instead of a NULL match PostgreSQL would silently drop under
+        NOT_IN's three-valued logic (the pre-fix divergence).
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'metadata_not_in_numeric_over_nonnumber_row_parity'
+        assert self.client is not None
+        try:
+            thread = f'{self.test_thread_id}_not_in_numeric'
+            entries = [
+                ('not_in numeric string row', {'k': 'abc'}),       # present string -> kept
+                ('not_in numeric boolean row', {'k': True}),       # present boolean -> kept
+                ('not_in numeric matching number row', {'k': 1}),  # in [1, 2] -> excluded
+                ('not_in numeric other number row', {'k': 99}),    # number not in list -> kept
+            ]
+            for text, metadata in entries:
+                store = await self.client.call_tool('store_context', {
+                    'thread_id': thread, 'source': 'agent', 'text': text, 'metadata': metadata,
+                })
+                if not self._extract_content(store).get('success'):
+                    self.test_results.append((test_name, False, f'Store failed for {text!r}'))
+                    return False
+
+            result = await self.client.call_tool('search_context', {
+                'thread_id': thread,
+                'metadata_filters': [{'key': 'k', 'operator': 'not_in', 'value': [1, 2]}],
+                'limit': 30,
+            })
+            data = self._extract_content(result)
+            results = data.get('results', [])
+            texts = {r.get('text_content', '') for r in results}
+            # Identical on BOTH backends: the string, boolean, and 99 rows are kept; only the
+            # matching-number row (k=1) is excluded. The pre-fix PostgreSQL path dropped the
+            # string and boolean rows, so a count of 2 here would mark the parity regression.
+            if len(results) != 3:
+                self.test_results.append((test_name, False,
+                    (f'NOT_IN [1,2] over key k returned {len(results)} rows, expected 3 '
+                     '(string + boolean + non-matching number kept; matching number excluded)')))
+                return False
+            if any('matching number row' in t for t in texts):
+                self.test_results.append((test_name, False,
+                    'NOT_IN [1,2] wrongly kept the matching-number row'))
+                return False
+            if not (any('string row' in t for t in texts) and any('boolean row' in t for t in texts)):
+                self.test_results.append((test_name, False,
+                    'NOT_IN [1,2] dropped a present non-number row (cross-backend parity regression)'))
+                return False
+            self.test_results.append((test_name, True,
+                'NOT_IN with numeric members keeps present non-number rows identically on both backends'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_image_attachment_cascade_delete(self) -> bool:
         """Verify deleting a multimodal entry removes it and its image attachments.
 
@@ -11510,6 +11719,8 @@ class MCPServerIntegrationTest:
             ('Delete Batch Conformance', self.test_delete_batch_single_matches_delete_nonbatch),
             # Blast-radius coverage (run on both backends)
             ('Metadata Filter Operators Comprehensive', self.test_metadata_filter_operators_comprehensive),
+            ('Metadata NOT_IN Numeric Over Non-Number Row Parity',
+             self.test_metadata_not_in_numeric_over_nonnumber_row_parity),
             ('Image Attachment Cascade Delete', self.test_image_attachment_cascade_delete),
             ('Tags Lowercase Normalization', self.test_tags_lowercase_normalization),
             ('Tool Annotations Exposed To Client', self.test_tool_annotations_exposed_to_client),
@@ -11522,6 +11733,12 @@ class MCPServerIntegrationTest:
             ('Grep Keyset Scan Exhaustive Beyond Limit', self.test_grep_keyset_scan_exhaustive_beyond_limit),
             ('Grep Scan Cap Boundary Truncation', self.test_grep_scan_cap_boundary_truncation),
             ('Force-Off Removes Search Tool', self.test_force_off_removes_search_tool),
+            # Cross-backend parity regressions: out-of-int64 simple metadata filter,
+            # FTS validation-before-empty-query-short-circuit, and dedup content_type
+            # plus image preservation on an image-less retransmit.
+            ('Simple Metadata Out-Of-Int64 Rejected', self.test_search_simple_metadata_out_of_int64_rejected),
+            ('FTS Empty-Query Invalid Filter Raises', self.test_fts_all_stopword_query_with_invalid_filter_returns_error),
+            ('Dedup Preserves Content Type And Image', self.test_store_context_dedup_preserves_content_type_and_image),
         ]
 
         print('\nRunning tests...\n')

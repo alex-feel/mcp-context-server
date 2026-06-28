@@ -602,15 +602,20 @@ class SQLiteBackend:
         try:
             conn.row_factory = sqlite3.Row
 
-            # Apply optimized PRAGMAs for production
+            # Apply optimized PRAGMAs for production.
+            # page_size MUST precede journal_mode. Switching to WAL (like any write)
+            # finalizes the database header's page size; a later `PRAGMA page_size` is
+            # then silently ignored on the existing file (it would need a VACUUM).
+            # Applying it first lets a FRESH database honor SQLITE_PAGE_SIZE; on an
+            # already-initialized database the pragma is a harmless no-op.
             pragmas = [
                 ('foreign_keys', 'ON' if settings.storage.sqlite_foreign_keys else 'OFF'),
+                ('page_size', str(settings.storage.sqlite_page_size)),
                 ('journal_mode', settings.storage.sqlite_journal_mode),
                 ('synchronous', settings.storage.sqlite_synchronous),
                 ('temp_store', settings.storage.sqlite_temp_store),
                 ('mmap_size', str(settings.storage.sqlite_mmap_size)),
                 ('cache_size', str(settings.storage.sqlite_cache_size)),
-                ('page_size', str(settings.storage.sqlite_page_size)),
                 ('wal_autocheckpoint', str(settings.storage.sqlite_wal_autocheckpoint)),
                 ('busy_timeout', str(settings.storage.resolved_busy_timeout_ms)),
             ]
@@ -779,6 +784,17 @@ class SQLiteBackend:
                                 if not request.future.done():
                                     request.future.set_result(result)
                                 self.circuit_breaker.record_success()
+                            except ControlFlowError as e:
+                                # Control-flow signals (optimistic-concurrency
+                                # VersionConflictError, post-dedup
+                                # EmbeddingsReconcileRequiredError) escaping execute_write are
+                                # normal write contention, NOT a database fault: propagate to
+                                # the caller WITHOUT recording a breaker failure, mirroring
+                                # begin_transaction's exemption on this backend and the
+                                # PostgreSQL execute_write path. Recording them could open the
+                                # breaker on routine contention and lock out writes.
+                                if not request.future.done():
+                                    request.future.set_exception(e)
                             except Exception as e:
                                 if not request.future.done():
                                     request.future.set_exception(e)

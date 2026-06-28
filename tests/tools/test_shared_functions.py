@@ -649,6 +649,7 @@ class TestExecuteUpdateInTransaction:
         repos.images.replace_images_for_context = AsyncMock()
         repos.images.count_images_for_context = AsyncMock(return_value=0)
         repos.embeddings.delete_all_chunks = AsyncMock()
+        repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
         repos.embeddings.store_chunked = AsyncMock()
         return repos
 
@@ -779,6 +780,73 @@ class TestExecuteUpdateInTransaction:
             '0190abcdef1234567890abcd00000001', txn=mock_txn,
         )
         mock_repos.embeddings.store_chunked.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_text_change_without_provider_clears_stale_embeddings(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """Text changed, no new embeddings, tables exist -> stale chunks deleted.
+
+        When an update changes text but no embedding provider regenerates vectors,
+        the stored chunks describe the REPLACED text and must be DELETEd so semantic
+        search cannot match the old content. Guarded by embedding_tables_exist.
+        """
+        mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
+        mock_repos.context.get_content_type = AsyncMock(return_value='text')
+        mock_repos.context.update_content_type = AsyncMock()
+        mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=True)
+        mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=True)
+
+        updated_fields, _ = await execute_update_in_transaction(
+            mock_repos, mock_txn,
+            context_id='0190abcdef1234567890abcd00000001',
+            text='Replaced text',
+            metadata=None,
+            metadata_patch=None,
+            summary=None,
+            clear_summary=False,
+            tags=None,
+            images=None,
+            validated_images=[],
+            chunk_embeddings=None,
+            embedding_model='m',
+        )
+
+        assert 'embedding' in updated_fields
+        mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', txn=mock_txn,
+        )
+        mock_repos.embeddings.store_chunked.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_text_change_without_provider_tables_absent_is_noop(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """Same text-change-without-provider path but embeddings were never
+        provisioned -> safe no-op (no delete, 'embedding' not in updated_fields)."""
+        mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
+        mock_repos.context.get_content_type = AsyncMock(return_value='text')
+        mock_repos.context.update_content_type = AsyncMock()
+        mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
+        mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=True)
+
+        updated_fields, _ = await execute_update_in_transaction(
+            mock_repos, mock_txn,
+            context_id='0190abcdef1234567890abcd00000001',
+            text='Replaced text',
+            metadata=None,
+            metadata_patch=None,
+            summary=None,
+            clear_summary=False,
+            tags=None,
+            images=None,
+            validated_images=[],
+            chunk_embeddings=None,
+            embedding_model='m',
+        )
+
+        assert 'embedding' not in updated_fields
+        mock_repos.embeddings.delete_all_chunks.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_update_raises_on_failed_entry_update(

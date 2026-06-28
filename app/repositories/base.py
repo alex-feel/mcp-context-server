@@ -10,6 +10,43 @@ import datetime
 from app.backends.base import StorageBackend
 
 
+def canonical_timestamp(value: object) -> str | None:
+    """Render a created_at/updated_at value as a canonical UTC ISO-8601 string.
+
+    Entry-returning tools MUST emit the SAME wire format for timestamps on both
+    backends. SQLite stores them as TEXT ("YYYY-MM-DD HH:MM:SS", UTC, from
+    CURRENT_TIMESTAMP) and returns the raw string; PostgreSQL returns datetime
+    objects (asyncpg), which otherwise serialize as "YYYY-MM-DDTHH:MM:SS+00:00".
+    Normalize both to "YYYY-MM-DDTHH:MM:SSZ" -- the exact form get_statistics
+    already emits -- so every backend and tool is byte-for-byte consistent.
+
+    ``None`` is preserved (schema-legal NULL); an unparseable string is returned
+    unchanged. Idempotent: re-applying to an already-canonical value is a no-op.
+
+    Returns:
+        The canonical "YYYY-MM-DDTHH:MM:SSZ" UTC string, or ``None`` when the input
+        is ``None``, or the original string when it cannot be parsed as a timestamp.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return text
+        # SQLite stores a space separator; accept that and any ISO-8601 variant.
+        candidate = text.replace(' ', 'T', 1) if 'T' not in text else text
+        candidate = candidate.replace('Z', '+00:00')
+        try:
+            dt = datetime.datetime.fromisoformat(candidate)
+        except ValueError:
+            return text
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(datetime.UTC)
+    return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
 class BaseRepository:
     """Base repository class for all database repositories.
 

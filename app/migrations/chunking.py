@@ -145,7 +145,17 @@ async def apply_chunking_migration(backend: StorageBackend, *, force: bool = Fal
 
     try:
         migration_sql_template = migration_path.read_text(encoding='utf-8')
-        await _apply_chunking_migration_with_backend(backend, migration_sql_template)
+        # When compression is enabled the compressed table replaces the fp32
+        # vec_context_embeddings table; on PostgreSQL the chunking migration must NOT
+        # restructure the now-absent fp32 table (ALTER on a missing table errors). Skip
+        # those statements while still adding chunk_count to embedding_metadata. The CLI
+        # (force=True) builds the full fp32 layout and never runs the compression
+        # migration, so it keeps the restructure. (SQLite chunking only creates
+        # embedding_chunks, which compression preserves, so it needs no skip.)
+        skip_fp32_vec = settings.compression.enabled and not force
+        await _apply_chunking_migration_with_backend(
+            backend, migration_sql_template, skip_fp32_vec=skip_fp32_vec,
+        )
     except Exception as e:
         logger.error(f'Failed to apply chunking migration: {e}')
         raise RuntimeError(f'Chunking migration failed: {format_exception_message(e)}') from e
@@ -154,6 +164,7 @@ async def apply_chunking_migration(backend: StorageBackend, *, force: bool = Fal
 async def _apply_chunking_migration_with_backend(
     manager: StorageBackend,
     migration_sql_template: str,
+    skip_fp32_vec: bool = False,
 ) -> None:
     """Apply chunking migration with a given backend.
 
@@ -164,6 +175,12 @@ async def _apply_chunking_migration_with_backend(
             filters; the loader does not substitute {SCHEMA} for this
             migration. Operators with a non-default POSTGRESQL_SCHEMA
             configure search_path on their connection pool.
+        skip_fp32_vec: When True (server path with compression enabled), omit the
+            PostgreSQL statements that restructure the fp32 ``vec_context_embeddings``
+            table -- it does not exist under compression -- while still adding the
+            ``chunk_count`` column to ``embedding_metadata``. Has no effect on SQLite,
+            whose chunking migration only creates ``embedding_chunks`` (preserved
+            under compression) and never references the fp32 vec table in executable DDL.
     """
     if manager.backend_type == 'postgresql':
         # Check if already applied
@@ -222,8 +239,15 @@ async def _apply_chunking_migration_with_backend(
                 # Execute each statement
                 for stmt in statements:
                     stmt = stmt.strip()
-                    if stmt and not stmt.startswith('--'):
-                        await conn.execute(stmt)
+                    if not stmt or stmt.startswith('--'):
+                        continue
+                    # Under compression the fp32 vec_context_embeddings table is absent
+                    # (replaced by the compressed table), so skip the DO blocks that
+                    # ALTER / index it; the chunk_count ALTER on embedding_metadata,
+                    # which carries no such reference, still runs.
+                    if skip_fp32_vec and 'vec_context_embeddings' in stmt:
+                        continue
+                    await conn.execute(stmt)
             finally:
                 # Restore default statement timeout after migration
                 default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)

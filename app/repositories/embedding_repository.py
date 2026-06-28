@@ -1801,6 +1801,44 @@ class EmbeddingRepository(BaseRepository):
             return await _exists_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_exists_postgresql)
 
+    async def embedding_tables_exist(self, txn: 'TransactionContext | None' = None) -> bool:
+        """Check whether the embedding_metadata table exists (table-safe).
+
+        Unlike :meth:`exists`, this never raises when embedding storage was never
+        provisioned (ENABLE_EMBEDDING_GENERATION has always been false, so the
+        semantic/chunking migrations never created the embedding tables). Used to guard
+        stale-embedding cleanup on a text update when embedding generation is disabled at
+        update time (the entry may still carry chunks from when it WAS enabled).
+
+        Args:
+            txn: Optional transaction context. When provided the check runs on the
+                transaction's own connection.
+
+        Returns:
+            True if the embedding_metadata table is present, False otherwise.
+        """
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if backend_type == 'sqlite':
+
+            def _tables_exist_sqlite(conn: sqlite3.Connection) -> bool:
+                cursor = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='embedding_metadata' LIMIT 1",
+                )
+                return cursor.fetchone() is not None
+
+            if txn is not None:
+                return _tables_exist_sqlite(cast(sqlite3.Connection, txn.connection))
+            return await self.backend.execute_read(_tables_exist_sqlite)
+
+        # postgresql: to_regclass resolves via the connection's search_path and returns
+        # NULL for a missing relation (no UndefinedTableError).
+        async def _tables_exist_postgresql(conn: 'asyncpg.Connection') -> bool:
+            return await conn.fetchval("SELECT to_regclass('embedding_metadata')") is not None
+
+        if txn is not None:
+            return await _tables_exist_postgresql(cast('asyncpg.Connection', txn.connection))
+        return await self.backend.execute_read(cast(Any, _tables_exist_postgresql))
+
     async def get_statistics(self, thread_id: str | None = None) -> dict[str, Any]:
         """Get embedding statistics including chunk information.
 

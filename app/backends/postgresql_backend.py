@@ -40,6 +40,24 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T')
 
 
+def quote_pg_identifier(name: str) -> str:
+    """Return ``name`` as a PostgreSQL quoted identifier, doubling embedded quotes.
+
+    The single source of truth for quoting a configured PostgreSQL identifier
+    (currently the schema name) so the connection ``search_path`` and any
+    schema-qualified DDL (e.g. the migration CLI's ``CREATE SCHEMA``) escape it
+    IDENTICALLY and cannot drift: a name containing a double quote yields a valid
+    quoted identifier rather than a malformed / identifier-injecting string.
+
+    Args:
+        name: The raw identifier (e.g. ``POSTGRESQL_SCHEMA``).
+
+    Returns:
+        The identifier wrapped in double quotes with embedded quotes doubled.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
 def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dict[str, Any]:
     """Build the asyncpg connection kwargs shared by the pool and the migration CLI.
 
@@ -76,12 +94,12 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
     """
     resolved = app_settings if app_settings is not None else get_settings()
     storage = resolved.storage
-    # Escape embedded double quotes by doubling them (PostgreSQL quoted-identifier
-    # rule) so a schema name that itself contains a double quote produces a valid
-    # quoted identifier rather than a malformed startup search_path parameter.
-    escaped_schema = storage.postgresql_schema.replace('"', '""')
+    # Quote the schema via the shared quote_pg_identifier helper so the connection
+    # search_path and any schema-qualified DDL (the migration CLI's CREATE SCHEMA)
+    # escape it identically and cannot drift -- a schema name containing a double
+    # quote yields a valid quoted identifier rather than a malformed search_path.
     server_settings: dict[str, str] = {
-        'search_path': f'"{escaped_schema}", public',
+        'search_path': f'{quote_pg_identifier(storage.postgresql_schema)}, public',
     }
     tcp_idle_guc = storage.postgresql_tcp_keepalives_idle_s
     tcp_interval_guc = storage.postgresql_tcp_keepalives_interval_s
@@ -1166,26 +1184,36 @@ class PostgreSQLBackend:
 
         assert self._pool is not None, 'Backend not initialized, call initialize() first'
 
-        # Acquire connection from pool and begin transaction
-        async with self._pool.acquire() as conn, conn.transaction():
+        # Acquire the connection, then begin the transaction in an INNER context so we
+        # observe the COMMIT result. asyncpg issues the COMMIT when the
+        # `conn.transaction()` context EXITS; recording success before that exit (the old
+        # `async with ..., conn.transaction():` form) credited a circuit-breaker SUCCESS
+        # to a transaction whose COMMIT could still fail -- and that COMMIT failure,
+        # raised on the context exit, landed OUTSIDE the try and was never recorded as a
+        # failure (it could even leave the breaker mislearning health). Record success
+        # only AFTER the inner context exits cleanly (COMMIT succeeded); a COMMIT failure
+        # now flows through the same except as a body failure.
+        async with self._pool.acquire() as conn:
             # Create transaction context
             txn_context = PostgreSQLTransactionContext(_connection=conn)
 
             try:
-                yield txn_context
-                # Transaction commits automatically on successful exit
+                async with conn.transaction():
+                    yield txn_context
+                    # Body succeeded; asyncpg COMMITs on exiting this inner context.
+                # Reaching here means the COMMIT itself also succeeded.
                 await self.circuit_breaker.record_success()
                 logger.debug('Transaction committed successfully')
 
             except Exception as e:
-                # Transaction rolls back automatically on exception.
+                # Rolled back automatically on a body error, OR the COMMIT failed on exit.
                 if isinstance(e, ControlFlowError):
                     # Normal control flow (optimistic-concurrency conflict / post-dedup
                     # embedding reconciliation), NOT a database fault: rolled back
                     # automatically, but do NOT record a circuit-breaker failure, so
                     # normal write contention cannot open the breaker.
                     raise
-                logger.warning(f'Transaction failed, rolling back: {e}')
+                logger.warning(f'Transaction failed or commit failed, rolling back: {e}')
                 await self.circuit_breaker.record_failure()
                 raise
 

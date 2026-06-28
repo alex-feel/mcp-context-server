@@ -145,6 +145,45 @@ class TestBuildAsyncpgConnectKwargs:
         assert 'tcp_keepalives_count' not in server_settings
 
 
+class TestQuotePgIdentifier:
+    """Unit tests for the shared PostgreSQL quoted-identifier helper.
+
+    The same helper quotes the schema for BOTH the connection search_path and the
+    migration CLI's CREATE SCHEMA DDL, so they cannot drift on an embedded double
+    quote. These tests are DB-free.
+    """
+
+    def test_plain_identifier_quoted(self) -> None:
+        """A plain identifier is wrapped in double quotes."""
+        from app.backends.postgresql_backend import quote_pg_identifier
+
+        assert quote_pg_identifier('public') == '"public"'
+
+    def test_mixed_case_and_dot_preserved(self) -> None:
+        """Mixed case and dots are preserved verbatim inside the quotes."""
+        from app.backends.postgresql_backend import quote_pg_identifier
+
+        assert quote_pg_identifier('My.Schema') == '"My.Schema"'
+
+    def test_embedded_double_quote_doubled(self) -> None:
+        """An embedded double quote is escaped by doubling it (a valid quoted identifier)."""
+        from app.backends.postgresql_backend import quote_pg_identifier
+
+        assert quote_pg_identifier('we"ird') == '"we""ird"'
+
+    def test_search_path_uses_the_same_quoting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """build_asyncpg_connect_kwargs quotes the schema via quote_pg_identifier, so the
+        connection search_path and any schema-qualified DDL escape it identically."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.backends.postgresql_backend import quote_pg_identifier
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_SCHEMA', 'we"ird')
+        search_path = build_asyncpg_connect_kwargs(AppSettings())['server_settings']['search_path']
+        assert search_path == f'{quote_pg_identifier("we\"ird")}, public'
+        assert search_path == '"we""ird", public'
+
+
 class TestPoolHardeningSettings:
     """Test pool hardening settings."""
 

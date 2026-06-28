@@ -111,6 +111,7 @@ class ContextRepository(BaseRepository):
         text_content: str,
         metadata: str | None = None,
         summary: str | None = None,
+        preserve_content_type_on_dedup: bool = False,
         txn: 'TransactionContext | None' = None,
     ) -> tuple[str, bool]:
         """Store context entry with deduplication logic.
@@ -126,6 +127,12 @@ class ContextRepository(BaseRepository):
             text_content: The actual text content
             metadata: JSON metadata string or None
             summary: LLM-generated summary text or None
+            preserve_content_type_on_dedup: When True, a deduplication UPDATE keeps the
+                existing content_type instead of overwriting it. The store path sets this
+                when images are PRESERVED (none provided this call) so a multimodal entry
+                does not flip to 'text' while its image rows remain (which would make the
+                images unretrievable). The INSERT path always uses the concrete
+                content_type. Defaults to False (overwrite, prior behavior).
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
@@ -140,6 +147,14 @@ class ContextRepository(BaseRepository):
         # COALESCE(NULL, existing_value) preserves existing; COALESCE("", existing_value) overwrites.
         if summary is not None and not summary.strip():
             summary = None
+
+        # On a dedup UPDATE, content_type must reflect the entry's FINAL image state.
+        # When the store is preserving images (none provided this call), preserve the
+        # existing content_type via COALESCE(NULL, content_type) -- overwriting it would
+        # flip a multimodal entry to 'text' while its image rows remain, making those
+        # images permanently unretrievable. The INSERT path still uses the concrete
+        # content_type (a fresh row carries only the images supplied in this request).
+        dedup_content_type = None if preserve_content_type_on_dedup else content_type
 
         # Compute content hash for deduplication optimization.
         # Avoids transferring full text_content over the network for duplicate checks.
@@ -203,14 +218,14 @@ class ContextRepository(BaseRepository):
                         f'''
                         UPDATE context_entries
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
-                            content_type = {self._placeholder(2)},
+                            content_type = COALESCE({self._placeholder(2)}, content_type),
                             summary = COALESCE({self._placeholder(3)}, summary),
                             content_hash = {self._placeholder(4)},
                             version = version + 1,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {self._placeholder(5)}
                         ''',
-                        (metadata, content_type, summary, content_hash, existing_id),
+                        (metadata, dedup_content_type, summary, content_hash, existing_id),
                     )
                     rows_affected = cursor.rowcount
                     if rows_affected == 0:
@@ -292,7 +307,7 @@ class ContextRepository(BaseRepository):
                     f'''
                         UPDATE context_entries
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
-                            content_type = {self._placeholder(2)},
+                            content_type = COALESCE({self._placeholder(2)}, content_type),
                             summary = COALESCE({self._placeholder(3)}, summary),
                             content_hash = {self._placeholder(4)},
                             version = version + 1,
@@ -300,7 +315,7 @@ class ContextRepository(BaseRepository):
                         WHERE id = {self._placeholder(5)}
                         ''',
                     metadata,
-                    content_type,
+                    dedup_content_type,
                     summary,
                     content_hash,
                     existing_id,
@@ -1028,7 +1043,7 @@ class ContextRepository(BaseRepository):
                 query = f'''
                     SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
                     WHERE id IN ({placeholders})
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                 '''
                 cursor.execute(query, tuple(context_ids))
                 return list(cursor.fetchall())
@@ -1042,7 +1057,7 @@ class ContextRepository(BaseRepository):
             query = f'''
                 SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
                 WHERE id IN ({placeholders})
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
             '''
             rows = await conn.fetch(query, *context_ids)
             return list(rows)
@@ -1607,6 +1622,7 @@ class ContextRepository(BaseRepository):
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
+        older_than_cutoff: str | None = None,
     ) -> list[str]:
         """Return context entry IDs matching batch deletion criteria.
 
@@ -1650,7 +1666,15 @@ class ContextRepository(BaseRepository):
                     conditions.append(f'source = {self._placeholder(len(params) + 1)}')
                     params.append(source)
 
-                if older_than_days is not None:
+                if older_than_cutoff is not None:
+                    # Use a caller-resolved ABSOLUTE cutoff so this embedding-cleanup
+                    # pre-query and the subsequent DELETE share ONE age boundary.
+                    # datetime('now') re-evaluates per statement, so a row crossing the
+                    # boundary between the two would be deleted without its vec0
+                    # embeddings cleaned -- an orphan.
+                    conditions.append(f'created_at < {self._placeholder(len(params) + 1)}')
+                    params.append(older_than_cutoff)
+                elif older_than_days is not None:
                     conditions.append(
                         f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
                     )
@@ -1676,6 +1700,7 @@ class ContextRepository(BaseRepository):
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
+        older_than_cutoff: str | None = None,
     ) -> tuple[int, list[str]]:
         """Delete multiple context entries by various criteria.
 
@@ -1729,7 +1754,14 @@ class ContextRepository(BaseRepository):
                     params.append(source)
                     criteria_used.append(f'source: {source}')
 
-                if older_than_days is not None:
+                if older_than_cutoff is not None:
+                    # Shared absolute cutoff (see get_ids_matching_batch_criteria) so this
+                    # DELETE's age boundary is identical to the embedding-cleanup
+                    # pre-query, preventing a moving datetime('now') from orphaning vec0 rows.
+                    conditions.append(f'created_at < {self._placeholder(len(params) + 1)}')
+                    params.append(older_than_cutoff)
+                    criteria_used.append(f'older_than_days: {older_than_days}')
+                elif older_than_days is not None:
                     conditions.append(
                         f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
                     )

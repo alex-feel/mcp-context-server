@@ -7,6 +7,7 @@ in both atomic and non-atomic modes.
 import asyncio
 from collections.abc import Generator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -17,8 +18,28 @@ from fastmcp.exceptions import ToolError
 import app.server
 import app.startup
 
+if TYPE_CHECKING:
+    from app.settings import AppSettings
+
 store_context_batch = app.server.store_context_batch
 update_context_batch = app.server.update_context_batch
+
+
+def _settings_with_node_summaries(enabled: bool) -> 'AppSettings':
+    """Return an AppSettings copy with ``index_tree.node_summaries_enabled`` overridden.
+
+    CommonSettings is frozen, so the per-node toggle is flipped via ``model_copy`` and the
+    whole module-level ``settings`` binding is patched (the nested attribute cannot be set).
+
+    Returns:
+        An AppSettings copy identical to the cached settings except the per-node toggle.
+    """
+    from app.settings import get_settings
+
+    base = get_settings()
+    return base.model_copy(
+        update={'index_tree': base.index_tree.model_copy(update={'node_summaries_enabled': enabled})},
+    )
 
 
 def _create_mock_repositories() -> MagicMock:
@@ -61,6 +82,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.embeddings.exists = AsyncMock(return_value=False)
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.delete_all_chunks = AsyncMock()
+    repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
 
     repos.index_nodes = MagicMock()
     repos.index_nodes.replace_nodes_for_context = AsyncMock()
@@ -420,9 +442,11 @@ class TestUpdateContextBatchWithSummary:
 
     @pytest.mark.asyncio
     async def test_update_batch_text_change_total_node_degradation_clears_stale_nodes(self) -> None:
-        """Fix 5 (batch): a text-change batch update whose per-node summaries TOTALLY
-        degrade (None) from an ACTIVE node layer clears the stale rows ([] -> replace),
-        rather than preserving summaries describing the OLD text.
+        """A text-change batch update whose per-node summaries return None while the per-node
+        layer is ENABLED clears the stale rows ([] -> replace), rather than preserving
+        summaries describing the OLD text. The clear is gated on
+        settings.index_tree.node_summaries_enabled (the gate navigate_context reads), NOT on
+        a provider being present.
         """
         repos = _create_mock_repositories()
         mock_summary = MagicMock()
@@ -439,7 +463,7 @@ class TestUpdateContextBatchWithSummary:
             patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
             patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
             patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
-            patch('app.tools.batch.node_layer_active', return_value=True),
+            patch('app.tools.batch.settings', _settings_with_node_summaries(True)),
         ):
             result = await update_context_batch(updates=updates, atomic=True)
 
@@ -449,10 +473,11 @@ class TestUpdateContextBatchWithSummary:
         assert repos.index_nodes.replace_nodes_for_context.call_args.args[1] == []
 
     @pytest.mark.asyncio
-    async def test_update_batch_text_change_inert_node_layer_preserves_nodes(self) -> None:
-        """Fix 5 (batch, negative): when the node layer is INERT, a None node result is
-        left untouched (stays None), so replace_nodes_for_context is never called and
-        existing rows are preserved.
+    async def test_update_batch_text_change_feature_off_preserves_nodes(self) -> None:
+        """When the per-node layer is DISABLED (ENABLE_INDEX_TREE_NODE_SUMMARIES off), a None
+        node result is left untouched (stays None), so replace_nodes_for_context is never
+        called and existing rows are preserved. navigate_context is also gated off in this
+        state, so dormant rows are never surfaced.
         """
         repos = _create_mock_repositories()
         mock_summary = MagicMock()
@@ -469,7 +494,7 @@ class TestUpdateContextBatchWithSummary:
             patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
             patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
             patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
-            patch('app.tools.batch.node_layer_active', return_value=False),
+            patch('app.tools.batch.settings', _settings_with_node_summaries(False)),
         ):
             result = await update_context_batch(updates=updates, atomic=True)
 

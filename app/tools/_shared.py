@@ -545,12 +545,19 @@ def node_layer_active() -> bool:
 
     Mirrors the activation gate at the top of
     :func:`generate_index_nodes_with_timeout`: the feature toggle is on AND a
-    summary provider is configured. Used on the TEXT-CHANGE update paths to
-    disambiguate a ``None`` node-generation result: when the layer is active,
-    ``None`` means TOTAL degradation (every eligible section's summary
-    failed/timed out), so the stored rows -- which describe the OLD text -- must
-    be CLEARED rather than preserved; when the layer is inert (feature off or no
-    provider) a ``None`` legitimately means "leave the node table untouched".
+    summary provider is configured. Used on the STORE / DEDUPLICATION pre-check
+    paths to set the ``nodes_pending`` reconcile flag: the read-only pre-check
+    skips generation, so ``nodes_pending`` must record whether node work WOULD
+    have been attempted -- which requires both the feature toggle on AND a
+    provider present (no provider means no node call was made, hence nothing to
+    reconcile).
+
+    NOTE: the TEXT-CHANGE update stale-node clear does NOT use this helper. It
+    gates on ``settings.index_tree.node_summaries_enabled`` directly (the
+    provider-independent reader's gate that ``navigate_context`` consults), so a
+    provider-removed-but-feature-on update still CLEARS stale rows that would
+    otherwise let ``navigate_context`` mis-attach an old section summary to a new
+    section sharing a reused heading slug.
 
     Returns:
         True when per-node summaries are enabled and a summary provider exists.
@@ -1129,6 +1136,11 @@ async def execute_store_in_transaction(
         text_content=text_content,
         metadata=metadata_str,
         summary=summary,
+        # Preserve the existing content_type on a dedup UPDATE when no images are provided
+        # this call (images are preserved, not replaced). Overwriting it would flip a
+        # multimodal entry to 'text' while its image rows remain, making them
+        # unretrievable. When images ARE provided, content_type is overwritten to match.
+        preserve_content_type_on_dedup=not validated_images,
         txn=txn,
     )
 
@@ -1332,8 +1344,9 @@ async def execute_update_in_transaction(
             )
             updated_fields.append('content_type')
 
-    # Store embeddings if text changed and new embeddings were generated
+    # Embeddings describe text_content, so a text change invalidates the stored vectors.
     if chunk_embeddings is not None:
+        # New embeddings were generated -> replace the old chunks.
         await transaction_heartbeat(txn)
         await repos.embeddings.delete_all_chunks(context_id, txn=txn)
         await repos.embeddings.store_chunked(
@@ -1343,6 +1356,16 @@ async def execute_update_in_transaction(
             txn=txn,
         )
         updated_fields.append('embedding')
+    elif text is not None and await repos.embeddings.embedding_tables_exist(txn=txn):
+        # Text changed but embeddings were NOT regenerated (no embedding provider at
+        # update time -- generation disabled/absent). The stored chunks describe the
+        # REPLACED text, so DELETE them rather than leave stale vectors that semantic
+        # search would match against the old content. Guarded by embedding_tables_exist
+        # so a database that never provisioned embeddings is a safe no-op. (Mirrors the
+        # stale-summary clear on this same text-change path.)
+        await transaction_heartbeat(txn)
+        if await repos.embeddings.delete_all_chunks(context_id, txn=txn):
+            updated_fields.append('embedding')
 
     # Replace index_tree node summaries atomically. None means leave the node
     # table untouched (feature off, or text unchanged so the caller did not

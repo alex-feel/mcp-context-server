@@ -9,13 +9,18 @@ This module contains the core context management tools:
 
 Generation-First Transactional Integrity:
 This module implements atomic generation + data storage. When embedding or summary
-generation is enabled:
-1. Embeddings and summaries are generated in PARALLEL via asyncio.gather(return_exceptions=True)
-   OUTSIDE any database transaction
-2. Each result is independently inspected -- if ANY generation fails, NO data is saved
-3. Retry budgets are fully managed by app/embeddings/retry.py and app/summary/retry.py;
-   no re-invocation occurs at the gather level
-4. If all generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+generation is enabled, all generation runs OUTSIDE any database transaction via
+run_generation() (app.tools._shared), which drives three concurrent legs:
+1. embed_then_compress -- embedding followed by TurboQuant compression (abort-mandatory)
+2. the flat document summary (abort-mandatory)
+3. the index_tree per-node summaries (never-raise), started after the flat summary
+   completes and overlapped with the embedding leg
+If either abort-mandatory leg fails after exhausting its retries (managed by
+app/embeddings/retry.py and app/summary/retry.py), the failures are collected into a
+single deterministic ToolError and NO data is saved; the never-raise node leg is then
+cancelled and awaited before the transaction opens. A node-summary failure or timeout
+never aborts the store. Only when both abort-mandatory legs succeed do ALL database
+operations occur in a SINGLE atomic transaction.
 
 Infrastructure functions (embedding/summary generation, transaction heartbeat,
 connection error classification, image validation, response message builders) are
@@ -36,6 +41,7 @@ from pydantic import Field
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
+from app.repositories.base import canonical_timestamp
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -375,6 +381,16 @@ async def get_context_by_ids(
             # Create entry dict with proper typing for dynamic fields
             entry = cast(ContextEntryDict, dict(row))
 
+            # Canonical timestamp wire format: identical across SQLite and PostgreSQL
+            # and to the search tools (text_content stays FULL here -- get_context_by_ids
+            # is never truncated). See app.repositories.base.canonical_timestamp.
+            created_at_val = entry.get('created_at')
+            if created_at_val is not None:
+                entry['created_at'] = cast(str, canonical_timestamp(created_at_val))
+            updated_at_val = entry.get('updated_at')
+            if updated_at_val is not None:
+                entry['updated_at'] = cast(str, canonical_timestamp(updated_at_val))
+
             if include_summary:
                 # Mirror search-tool normalization (app/tools/search.py:140-145):
                 # surface an empty string for the "feature ON but no data yet" state.
@@ -650,6 +666,12 @@ async def update_context(
                     )
                 else:
                     run_summary = True
+            else:
+                # No summary provider at update time (summary generation disabled/absent).
+                # The stored summary describes the REPLACED text, so CLEAR it instead of
+                # leaving a stale summary (mirrors the too-short / empty-output branches
+                # and the stale-embedding cleanup on the same text-change path).
+                clear_summary = True
 
             chunk_embeddings, summary_text, index_nodes = await run_generation(
                 text, entry_source,
@@ -665,12 +687,20 @@ async def update_context(
             # the node-layer clear below -- instead of preserving a stale summary.
             if run_summary and summary_text is None:
                 clear_summary = True
-            # On a text change, a None node result from an ACTIVE per-node layer means
-            # TOTAL degradation (every section summary failed): the stored rows
-            # describe the OLD text, so CLEAR them ([] replaces) instead of preserving
-            # stale section summaries that navigate_context would surface. A None from
-            # an inert layer (feature off / no provider) still leaves the table alone.
-            if index_nodes is None and node_layer_active():
+            # On a text change, a None node result must CLEAR the stored rows ([] replaces)
+            # whenever the per-node layer is ENABLED, because those rows describe the OLD
+            # text and navigate_context surfaces them gated ONLY on
+            # settings.index_tree.node_summaries_enabled (it does NOT require a provider).
+            # This covers BOTH total degradation (every section summary failed) AND the
+            # provider-removed-but-feature-on case (generation returns None for lack of a
+            # provider): in either case preserving the stale rows would let
+            # navigate_context mis-attach an old section summary to a new section by reused
+            # heading slug. Gating on node_summaries_enabled (the reader's gate) rather than
+            # node_layer_active() (which also requires a provider) mirrors the
+            # provider-independent stale-clear the embedding and flat-summary legs already
+            # perform on this same text-change path. When the feature is OFF the reader is
+            # also off, so a None legitimately leaves the table untouched.
+            if index_nodes is None and settings.index_tree.node_summaries_enabled:
                 index_nodes = []
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===

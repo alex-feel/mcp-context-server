@@ -85,6 +85,11 @@ def mock_repos():
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
 
+    # Mock index_tree node-summary repository (text-change updates clear stale node rows).
+    repos.index_nodes = AsyncMock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock(return_value=None)
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+
     return repos
 
 

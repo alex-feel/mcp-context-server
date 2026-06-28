@@ -23,6 +23,41 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _strip_fp32_vec_statements(sql: str) -> str:
+    """Remove statements that CREATE or INDEX the fp32 ``vec_context_embeddings`` table.
+
+    Used on the SERVER startup path when ``ENABLE_EMBEDDING_COMPRESSION=true``: the
+    compressed table (``vec_context_embeddings_compressed``) REPLACES the fp32 vec
+    table, so the fp32 table must never be created. Creating it here only to have the
+    compression migration drop it churns the schema on SQLite (create-then-drop every
+    restart) and, because the PostgreSQL compression migration early-returns once
+    ``compression_metadata`` exists, leaves a permanent stray empty fp32 table + HNSW
+    index on PostgreSQL.
+
+    The test inspects only the executable (non-comment) text of each statement so an
+    ``embedding_metadata`` statement whose leading comment merely MENTIONS the fp32 vec
+    table is preserved. It is safe for BOTH backends: the function splits on ``;`` and
+    only DROPS fragments whose non-comment code references ``vec_context_embeddings``,
+    rejoining the rest with ``;`` (an identity for every kept fragment). The only dropped
+    fragments are the clean single-statement fp32 ``CREATE TABLE`` / ``CREATE INDEX``
+    DDL; the PostgreSQL ``$$``-quoted ``embedding_metadata`` trigger function never
+    references ``vec_context_embeddings`` in any of its ``;``-fragments, so it is
+    reproduced verbatim.
+
+    Returns:
+        The SQL with every ``vec_context_embeddings``-targeting statement removed.
+    """
+    kept: list[str] = []
+    for statement in sql.split(';'):
+        code = '\n'.join(
+            line for line in statement.splitlines() if not line.strip().startswith('--')
+        )
+        if code.strip() and 'vec_context_embeddings' in code:
+            continue
+        kept.append(statement)
+    return ';'.join(kept)
+
+
 async def apply_semantic_search_migration(
     backend: StorageBackend,
     *,
@@ -71,7 +106,18 @@ async def apply_semantic_search_migration(
     try:
         # Read migration SQL template
         migration_sql_template = migration_path.read_text(encoding='utf-8')
-        await _apply_migration_with_backend(backend, migration_sql_template, embedding_dim=embedding_dim)
+        # When compression is enabled the compressed table REPLACES the fp32
+        # vec_context_embeddings table, so the SERVER startup path must NOT create
+        # the fp32 table. The CLI (force=True) still builds the full fp32 layout:
+        # it never runs the compression migration and provisions compression
+        # separately via --compress.
+        skip_fp32_vec = settings.compression.enabled and not force
+        await _apply_migration_with_backend(
+            backend,
+            migration_sql_template,
+            embedding_dim=embedding_dim,
+            skip_fp32_vec=skip_fp32_vec,
+        )
     except Exception as e:
         logger.error(f'Failed to apply semantic search migration: {e}')
         raise RuntimeError(f'Semantic search migration failed: {e}') from e
@@ -81,6 +127,7 @@ async def _apply_migration_with_backend(
     manager: StorageBackend,
     migration_sql_template: str,
     embedding_dim: int | None = None,
+    skip_fp32_vec: bool = False,
 ) -> None:
     """Helper function to apply migration with a given backend.
 
@@ -94,6 +141,11 @@ async def _apply_migration_with_backend(
         embedding_dim: Explicit vector dimension to template and to compare
             against the existing table's dimension. When ``None``, falls back to
             ``settings.embedding.dim``.
+        skip_fp32_vec: When True, omit every statement that creates or indexes the
+            fp32 ``vec_context_embeddings`` table, provisioning only
+            ``embedding_metadata`` (which the compressed write path still requires).
+            Set by the server startup path when compression is enabled; the compressed
+            table replaces the fp32 table wholesale.
 
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
@@ -168,6 +220,14 @@ async def _apply_migration_with_backend(
         '{SCHEMA}',
         settings.storage.postgresql_schema,
     )
+
+    # When compression is enabled the compressed table replaces the fp32
+    # vec_context_embeddings table, so omit every statement that creates or indexes
+    # it -- provisioning only embedding_metadata, which the compressed write path
+    # still requires. Applied uniformly to both backends (the filter preserves the
+    # PostgreSQL $$-quoted trigger verbatim).
+    if skip_fp32_vec:
+        migration_sql = _strip_fp32_vec_statements(migration_sql)
 
     # Apply migration - backend-specific
     if manager.backend_type == 'sqlite':
