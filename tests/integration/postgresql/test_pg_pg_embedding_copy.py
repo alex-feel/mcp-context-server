@@ -191,8 +191,14 @@ async def isolated_pg_v3_target_db(pg_test_url: str) -> AsyncIterator[str]:
     await backend.initialize()
     try:
         await init_database(backend=backend)
-        await apply_semantic_search_migration(backend=backend)
-        await apply_chunking_migration(backend=backend)
+        # Build the fp32 migration-target layout exactly as the CLI's
+        # initialize_target_postgresql does: force=True so the fp32
+        # vec_context_embeddings table is created regardless of the ambient
+        # ENABLE_EMBEDDING_COMPRESSION (which defaults on and would otherwise make
+        # the server-style migration skip the fp32 table). A migration target is
+        # always the fp32 layout; compression is a separate --compress step.
+        await apply_semantic_search_migration(backend=backend, force=True, embedding_dim=DIM)
+        await apply_chunking_migration(backend=backend, force=True)
     finally:
         await backend.shutdown()
 

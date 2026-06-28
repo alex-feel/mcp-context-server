@@ -359,6 +359,7 @@ def _seed_compression_metadata(path: Path, dim: int) -> None:
                 variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
                 seed INTEGER NOT NULL CHECK (seed >= 0),
                 dim INTEGER NOT NULL CHECK (dim > 0),
+                codebook_fingerprint TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             ''',

@@ -431,29 +431,87 @@ def _coerce_datetime(value: object) -> datetime:
 _NULL_CREATED_AT_ANCHOR = datetime(1970, 1, 1, tzinfo=UTC)
 
 
+def _sqlite_timestamp(value: datetime | None) -> str | None:
+    """Render a source datetime as SQLite's canonical TEXT timestamp.
+
+    SQLite stores created_at/updated_at as "YYYY-MM-DD HH:MM:SS" (UTC, the
+    CURRENT_TIMESTAMP form the server writes) and orders/filters them as TEXT.
+    Writing ``datetime.isoformat()`` ("YYYY-MM-DDTHH:MM:SS+00:00") instead stores a
+    'T'/offset form that mis-sorts under SQLite's TEXT comparison and ``ORDER BY
+    created_at`` (and skews date-range filters), so normalize to the space form in
+    UTC. ``None`` is preserved (schema-legal NULL).
+
+    Returns:
+        The canonical "YYYY-MM-DD HH:MM:SS" UTC string, or ``None`` for ``None``.
+    """
+    if value is None:
+        return None
+    dt = value.astimezone(UTC) if value.tzinfo is not None else value
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
 def _created_at_for_id(value: object) -> datetime:
     """Coerce a source ``created_at`` to a datetime for UUIDv7 id derivation.
 
-    Unlike :func:`_coerce_datetime`, a missing (NULL) ``created_at`` is tolerated:
-    it falls back to :data:`_NULL_CREATED_AT_ANCHOR` so one NULL row in an
-    arbitrary non-app source database cannot abort the entire migration.
+    Unlike :func:`_coerce_datetime`, a missing (NULL) ``created_at`` -- and any
+    other value that cannot be parsed (a malformed non-ISO / non-epoch string, an
+    out-of-range epoch) -- is tolerated: it falls back to
+    :data:`_NULL_CREATED_AT_ANCHOR` so one bad row in an arbitrary non-app source
+    database cannot abort the entire migration. The stored ``created_at`` value is
+    preserved verbatim by the callers that bind it (see
+    :func:`_stored_datetime_or_none`); only the derived id timestamp is anchored.
 
     Args:
-        value: A source ``created_at`` value (datetime, ISO text, or None).
+        value: A source ``created_at`` value (datetime, ISO/epoch text, numeric
+            epoch, None, or an unparseable value).
 
     Returns:
         A timezone-aware :class:`datetime.datetime`, or the epoch anchor when
-        ``value`` is None.
+        ``value`` is None or cannot be parsed.
     """
     if value is None:
         return _NULL_CREATED_AT_ANCHOR
-    coerced = _coerce_datetime(value)
+    try:
+        coerced = _coerce_datetime(value)
+    except (ValueError, OverflowError):
+        # A malformed non-NULL created_at (e.g. a non-ISO string like '2024/01/01'
+        # or '15-06-2024', for which both datetime.fromisoformat and the
+        # '%Y-%m-%d %H:%M:%S' fallback raise) must NOT abort the whole migration:
+        # anchor its derived id like the NULL / pre-1970 / out-of-range-epoch cases
+        # while the binding callers preserve the stored value verbatim (or NULL).
+        return _NULL_CREATED_AT_ANCHOR
     # A pre-1970 (negative-epoch) timestamp makes uuid_utils.uuid7 raise
     # OverflowError on the negative seconds; anchor it like NULL for id
     # derivation while the stored created_at value is preserved verbatim.
     if coerced < _NULL_CREATED_AT_ANCHOR:
         return _NULL_CREATED_AT_ANCHOR
     return coerced
+
+
+def _stored_datetime_or_none(value: object) -> datetime | None:
+    """Coerce a stored ``created_at`` / ``updated_at`` for a verbatim target bind.
+
+    Mirrors :func:`_created_at_for_id`'s tolerance for the value bound INTO the
+    target timestamp column (not the derived id): a NULL or otherwise unparseable
+    value yields ``None`` (stored as SQL NULL on the target, exactly as a NULL
+    source already does) rather than aborting the whole migration on one bad row
+    in an arbitrary non-app source database. A well-formed value is coerced to a
+    timezone-aware datetime.
+
+    Args:
+        value: A stored timestamp value (datetime, ISO/epoch text, numeric epoch,
+            None, or an unparseable value).
+
+    Returns:
+        A timezone-aware :class:`datetime.datetime`, or ``None`` when the value is
+        NULL or cannot be parsed.
+    """
+    if value is None:
+        return None
+    try:
+        return _coerce_datetime(value)
+    except (ValueError, OverflowError):
+        return None
 
 
 def build_id_mapping(source_rows: Iterable[sqlite3.Row]) -> dict[int, str]:
@@ -1026,6 +1084,16 @@ def initialize_target_sqlite(
         chunking_sql = _read_schema_file('add_chunking_sqlite.sql')
         try:
             target.executescript(chunking_sql)
+            # add_chunking_sqlite.sql does NOT add embedding_metadata.chunk_count -- the
+            # server's chunking migration adds it in Python (SQLite has no ADD COLUMN IF
+            # NOT EXISTS). Mirror that here so a CLI-migrated SQLite target matches a
+            # server-initialized DB AND the PostgreSQL CLI target (whose
+            # add_chunking_postgresql.sql includes chunk_count); otherwise
+            # copy_embedding_metadata silently drops per-context chunk counts because the
+            # target lacks the column.
+            meta_cols = [r[1] for r in target.execute('PRAGMA table_info(embedding_metadata)').fetchall()]
+            if meta_cols and 'chunk_count' not in meta_cols:
+                target.execute('ALTER TABLE embedding_metadata ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1')
         except sqlite3.OperationalError as exc:
             stats.warnings.append(f'chunking target migration partial failure: {exc}')
 
@@ -1166,12 +1234,18 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
 
         id_mapping = build_id_mapping(source_rows)
 
+        from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
+        from app.settings import get_settings
+
         target = _open_sqlite_target(target_address, options.dry_run)
         initialize_target_sqlite(
             target,
             optional_tables,
             embedding_dim,
-            fts_tokenizer='porter unicode61',
+            # Derive the FTS tokenizer from FTS_LANGUAGE via the shared source of truth so a
+            # CLI-migrated target matches what the server would build (a non-English language
+            # gets plain unicode61, not the English Porter stemmer).
+            fts_tokenizer=desired_sqlite_fts_tokenizer(get_settings().fts.language),
             stats=stats,
         )
 
@@ -1234,23 +1308,42 @@ def run_migration_sqlite_to_sqlite(options: MigrationOptions) -> MigrationStats:
 # ---------------------------------------------------------------------------
 
 
-async def _target_pg_has_data(conn: 'asyncpg.Connection[asyncpg.Record]') -> bool:
+async def _target_pg_has_data(
+    conn: 'asyncpg.Connection[asyncpg.Record]',
+    schema: str | None = None,
+) -> bool:
     """Return True if the PostgreSQL target ``context_entries`` table
     has any rows. Returns False when the table does not exist.
 
-    The existence probe reuses the schema-aware :func:`_pg_table_exists` (gated on
-    ``current_schema()``) so it resolves against the SAME schema as the unqualified
-    ``COUNT(*)`` below -- both honor the ``search_path`` applied by
-    :func:`_pg_connect_kwargs`. A schema-blind probe could otherwise see a
-    ``context_entries`` in another schema (e.g. ``public``) while the count reads the
-    configured one, mis-classifying an empty target as populated (or vice versa).
+    ``schema`` MUST be the configured ``POSTGRESQL_SCHEMA`` for a TARGET probe so both
+    the existence check and the ``COUNT(*)`` resolve EXPLICITLY against the schema the
+    migration will WRITE to -- not via ``current_schema()``. ``current_schema()`` returns
+    the first EXISTING schema in the ``search_path``, so before a non-default target schema
+    is created it falls back to ``public``: the empty-target check would then read
+    ``public.context_entries`` and either (a) falsely abort a legitimate migration when
+    ``public`` already holds rows, or (b) when ``public`` is empty, let the caller's
+    ``target_initialized`` probe also resolve to ``public`` and skip schema creation so the
+    data copy silently writes to the wrong schema. Binding the configured schema explicitly
+    fixes both. ``schema=None`` keeps the ``current_schema()`` form, correct for a SOURCE
+    probe whose configured schema already exists.
 
     Returns:
         True iff the target already has rows.
     """
-    if not await _pg_table_exists(conn, 'context_entries'):
+    if not await _pg_table_exists(conn, 'context_entries', schema=schema):
         return False
-    count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+    if schema is None:
+        count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+    else:
+        # The schema is a SQL identifier (a table qualifier) that cannot be bound as a
+        # parameter, so it must be quoted as an identifier. Route it through the shared
+        # quote_pg_identifier helper -- the same one CREATE SCHEMA uses -- so an embedded
+        # double-quote in POSTGRESQL_SCHEMA is doubled correctly and the two sites cannot
+        # disagree on the same name (lazy import mirrors initialize_target_postgresql so
+        # SQLite-only migration paths never import the PostgreSQL backend).
+        from app.backends.postgresql_backend import quote_pg_identifier
+
+        count = await conn.fetchval(f'SELECT COUNT(*) FROM {quote_pg_identifier(schema)}.context_entries')
     return int(count or 0) > 0
 
 
@@ -1273,20 +1366,75 @@ def _pg_connect_kwargs() -> dict[str, Any]:
     return build_asyncpg_connect_kwargs(get_settings())
 
 
-async def _pg_table_exists(conn: 'asyncpg.Connection[asyncpg.Record]', table_name: str) -> bool:
-    """Return True if ``table_name`` exists in the connection's current schema.
+async def _pg_table_exists(
+    conn: 'asyncpg.Connection[asyncpg.Record]',
+    table_name: str,
+    schema: str | None = None,
+) -> bool:
+    """Return True if ``table_name`` exists in the resolved schema.
 
-    Uses ``current_schema()`` so the probe honors the ``search_path`` applied by
-    :func:`_pg_connect_kwargs` (correct for non-default ``POSTGRESQL_SCHEMA``).
+    When ``schema`` is None the probe uses ``current_schema()`` (correct for a SOURCE
+    connection, whose configured ``POSTGRESQL_SCHEMA`` already exists). When ``schema`` is
+    given the probe binds that name EXPLICITLY -- required for a TARGET probe, because
+    ``current_schema()`` returns the first EXISTING schema in the ``search_path`` and a
+    not-yet-created non-default ``POSTGRESQL_SCHEMA`` would silently fall back to ``public``,
+    making the probe inspect the wrong schema (see :func:`_target_pg_has_data`).
 
     Returns:
         True iff the table exists in the resolved schema.
     """
-    result = await conn.fetchval(
-        'SELECT EXISTS (SELECT 1 FROM information_schema.tables '
-        'WHERE table_schema = current_schema() AND table_name = $1)',
-        table_name,
-    )
+    if schema is None:
+        result = await conn.fetchval(
+            'SELECT EXISTS (SELECT 1 FROM information_schema.tables '
+            'WHERE table_schema = current_schema() AND table_name = $1)',
+            table_name,
+        )
+    else:
+        result = await conn.fetchval(
+            'SELECT EXISTS (SELECT 1 FROM information_schema.tables '
+            'WHERE table_schema = $1 AND table_name = $2)',
+            schema,
+            table_name,
+        )
+    return bool(result)
+
+
+async def _pg_column_exists(
+    conn: 'asyncpg.Connection[asyncpg.Record]',
+    table_name: str,
+    column_name: str,
+    schema: str | None = None,
+) -> bool:
+    """Return True if ``column_name`` exists on ``table_name`` in the resolved schema.
+
+    Mirrors :func:`_pg_table_exists`'s schema-resolution contract: ``None`` uses
+    ``current_schema()`` (correct for a SOURCE connection whose configured
+    ``POSTGRESQL_SCHEMA`` already exists); an explicit ``schema`` binds that name
+    directly. Used to guard the source SELECT against a v2 PostgreSQL source that
+    predates the ``summary`` / ``content_hash`` ALTER-TABLE columns, mirroring the
+    SQLite :func:`_table_has_column` guard so every migration direction tolerates
+    their absence identically (the source is opened read-only and is never
+    auto-migrated, so a missing column would otherwise raise UndefinedColumnError
+    and abort the whole migration).
+
+    Returns:
+        True iff the column exists on the table in the resolved schema.
+    """
+    if schema is None:
+        result = await conn.fetchval(
+            'SELECT EXISTS (SELECT 1 FROM information_schema.columns '
+            'WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2)',
+            table_name,
+            column_name,
+        )
+    else:
+        result = await conn.fetchval(
+            'SELECT EXISTS (SELECT 1 FROM information_schema.columns '
+            'WHERE table_schema = $1 AND table_name = $2 AND column_name = $3)',
+            schema,
+            table_name,
+            column_name,
+        )
     return bool(result)
 
 
@@ -1543,6 +1691,7 @@ async def initialize_target_postgresql(
 
     from app.backends import create_backend
     from app.migrations.chunking import apply_chunking_migration
+    from app.migrations.fts import apply_fts_migration
     from app.migrations.index_tree import apply_index_tree_migration
     from app.migrations.semantic import apply_function_search_path_migration
     from app.migrations.semantic import apply_jsonb_merge_patch_migration
@@ -1551,6 +1700,7 @@ async def initialize_target_postgresql(
 
     pg_kwargs = _pg_connect_kwargs()
 
+    from app.backends.postgresql_backend import quote_pg_identifier
     from app.settings import get_settings
 
     schema = get_settings().storage.postgresql_schema
@@ -1566,7 +1716,7 @@ async def initialize_target_postgresql(
     ext_conn = await asyncpg.connect(target_url, **pg_kwargs)
     try:
         await ext_conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
-        await ext_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        await ext_conn.execute(f'CREATE SCHEMA IF NOT EXISTS {quote_pg_identifier(schema)}')
     except asyncpg.InsufficientPrivilegeError as exc:
         raise RuntimeError(
             'Cannot initialize the target database (insufficient privileges to '
@@ -1586,6 +1736,13 @@ async def initialize_target_postgresql(
             await apply_semantic_search_migration(backend, force=True, embedding_dim=embedding_dim)
         await apply_jsonb_merge_patch_migration(backend)
         await apply_function_search_path_migration(backend)
+        # FTS: create the tsvector GENERATED column + GIN index so a migrated target
+        # matches a server-initialized DB (the server applies FTS at startup when
+        # ENABLE_FTS is on; apply_fts_migration gates internally on settings.fts.enabled).
+        # It MUST run BEFORE the data copy so the STORED generated column auto-populates
+        # as rows are INSERTed. Without it the migrated PostgreSQL DB has no full-text
+        # search, diverging from both the server and the SQLite CLI target.
+        await apply_fts_migration(backend)
         if with_semantic:
             await apply_chunking_migration(backend, force=True)
         # index_tree node-summary table: provisioned regardless of with_semantic
@@ -1636,7 +1793,14 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         target_conn = await asyncpg.connect(options.target_url, **pg_kwargs)
         await source_conn.execute('BEGIN TRANSACTION READ ONLY')
 
-        if await _target_pg_has_data(target_conn):
+        # Bind the configured POSTGRESQL_SCHEMA EXPLICITLY for every TARGET probe so they
+        # inspect the schema the migration will WRITE to even before it is created --
+        # current_schema() would fall back to public and mis-resolve a non-default schema
+        # (false abort, or silent wrong-schema copy). See _target_pg_has_data.
+        from app.settings import get_settings
+        target_schema = get_settings().storage.postgresql_schema
+
+        if await _target_pg_has_data(target_conn, schema=target_schema):
             stats.errors.append(
                 'target PostgreSQL database already contains context_entries rows. '
                 'Recovery: if a prior run was interrupted, drop and recreate the target database '
@@ -1693,7 +1857,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         # compression migration is never run here), so copy_vec_embeddings_pg has
         # an fp32 vec_context_embeddings table to write into. Compression is a
         # separate, explicit --compress step afterward.
-        target_initialized = await _pg_table_exists(target_conn, 'context_entries')
+        target_initialized = await _pg_table_exists(target_conn, 'context_entries', schema=target_schema)
         if not target_initialized:
             if options.dry_run:
                 stats.warnings.append(
@@ -1737,10 +1901,26 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         if not options.dry_run:
             await target_conn.execute('BEGIN')
         try:
+            # Guard summary / content_hash: a v2 PostgreSQL source predating those
+            # ALTER-TABLE columns (and never re-run against the server, so the
+            # auto-migrations never fired) lacks them. The source is read-only and is
+            # never auto-migrated here, so naming the columns unconditionally would
+            # raise UndefinedColumnError and abort the whole migration -- whereas the
+            # SQLite source path (copy_context_entries) already guards via
+            # _table_has_column. Substitute NULL when absent to keep the row keys and
+            # the INSERT below unchanged, giving every direction identical tolerance.
+            summary_col_src = (
+                'summary' if await _pg_column_exists(source_conn, 'context_entries', 'summary')
+                else 'NULL AS summary'
+            )
+            content_hash_col_src = (
+                'content_hash' if await _pg_column_exists(source_conn, 'context_entries', 'content_hash')
+                else 'NULL AS content_hash'
+            )
             entry_rows = await source_conn.fetch(
-                'SELECT id, thread_id, source, content_type, text_content, '
-                'metadata::text AS metadata, summary, content_hash, created_at, updated_at '
-                'FROM context_entries ORDER BY created_at ASC, id ASC',
+                f'SELECT id, thread_id, source, content_type, text_content, '
+                f'metadata::text AS metadata, {summary_col_src}, {content_hash_col_src}, created_at, updated_at '
+                f'FROM context_entries ORDER BY created_at ASC, id ASC',
             )
             for entry in entry_rows:
                 source_id = int(entry['id'])
@@ -1915,7 +2095,13 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
 
         optional_tables = detect_optional_tables(source)
 
-        if await _target_pg_has_data(target_conn):
+        # Bind the configured POSTGRESQL_SCHEMA EXPLICITLY for every TARGET probe (see
+        # _target_pg_has_data and run_migration_postgresql): current_schema() would fall
+        # back to public before a non-default target schema exists.
+        from app.settings import get_settings
+        target_schema = get_settings().storage.postgresql_schema
+
+        if await _target_pg_has_data(target_conn, schema=target_schema):
             stats.errors.append(
                 'target PostgreSQL database already contains context_entries rows. '
                 'Recovery: if a prior run was interrupted, drop and recreate the target database '
@@ -1935,7 +2121,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
         # embeddings, so the target is initialized WITHOUT the semantic/chunking
         # layout (with_semantic=False); the server creates the vector tables at
         # the operator's configured dimension when re-embedding later.
-        target_initialized = await _pg_table_exists(target_conn, 'context_entries')
+        target_initialized = await _pg_table_exists(target_conn, 'context_entries', schema=target_schema)
         if not target_initialized:
             if options.dry_run:
                 stats.warnings.append(
@@ -1953,10 +2139,21 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
         if not options.dry_run:
             await target_conn.execute('BEGIN')
         try:
+            # Guard summary / content_hash on the SQLite source (a v2 DB predating
+            # those ALTER-TABLE columns lacks them), mirroring copy_context_entries
+            # and the PostgreSQL source paths so all four directions tolerate their
+            # absence identically. NULL substitution keeps the row keys and INSERT below.
+            summary_col_src = (
+                'summary' if _table_has_column(source, 'context_entries', 'summary') else 'NULL AS summary'
+            )
+            content_hash_col_src = (
+                'content_hash' if _table_has_column(source, 'context_entries', 'content_hash')
+                else 'NULL AS content_hash'
+            )
             entry_cursor = source.execute(
-                'SELECT id, thread_id, source, content_type, text_content, metadata, '
-                'summary, content_hash, created_at, updated_at FROM context_entries '
-                'ORDER BY created_at ASC, id ASC',
+                f'SELECT id, thread_id, source, content_type, text_content, metadata, '
+                f'{summary_col_src}, {content_hash_col_src}, created_at, updated_at FROM context_entries '
+                f'ORDER BY created_at ASC, id ASC',
             )
             for row in entry_cursor:
                 source_id = int(row['id'])
@@ -1981,8 +2178,8 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         rewritten_metadata,
                         row['summary'],
                         row['content_hash'],
-                        _coerce_datetime(row['created_at']) if row['created_at'] is not None else None,
-                        _coerce_datetime(row['updated_at']) if row['updated_at'] is not None else None,
+                        _stored_datetime_or_none(row['created_at']),
+                        _stored_datetime_or_none(row['updated_at']),
                     )
                 stats.rows_migrated += 1
 
@@ -2021,14 +2218,10 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                             f'image_attachments row references missing context_entry_id={sid}; skipped',
                         )
                         continue
-                    # A schema-legal NULL created_at is preserved as NULL rather
-                    # than crashing _coerce_datetime (the migration must not
-                    # invent data for arbitrary non-app source databases).
-                    img_created_at = (
-                        _coerce_datetime(img['created_at'])
-                        if img['created_at'] is not None
-                        else None
-                    )
+                    # A NULL or malformed created_at is preserved as NULL rather
+                    # than crashing _coerce_datetime (the migration must not invent
+                    # data for, nor abort on, arbitrary non-app source databases).
+                    img_created_at = _stored_datetime_or_none(img['created_at'])
                     if not options.dry_run:
                         await target_conn.execute(
                             'INSERT INTO image_attachments '
@@ -2129,6 +2322,9 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
         # the index is rebuilt locally from the copied rows below).
         source_has_tags = await _pg_table_exists(source_conn, 'tags')
         source_has_images = await _pg_table_exists(source_conn, 'image_attachments')
+        from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
+        from app.settings import get_settings
+
         target = _open_sqlite_target(target_address, options.dry_run)
         initialize_target_sqlite(
             target,
@@ -2138,14 +2334,29 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                 'context_entries_fts': True,
             },
             embedding_dim=None,
-            fts_tokenizer='porter unicode61',
+            # Derive the FTS tokenizer from FTS_LANGUAGE via the shared source of truth so the
+            # PostgreSQL->SQLite target's rebuilt FTS index matches what the server would build
+            # for the configured language, instead of a hardcoded English tokenizer.
+            fts_tokenizer=desired_sqlite_fts_tokenizer(get_settings().fts.language),
             stats=stats,
         )
 
+        # Guard summary / content_hash on the PostgreSQL source (a v2 DB predating
+        # those ALTER-TABLE columns lacks them), mirroring copy_context_entries so
+        # all four migration directions tolerate their absence identically. NULL
+        # substitution keeps the row keys and the INSERT below unchanged.
+        summary_col_src = (
+            'summary' if await _pg_column_exists(source_conn, 'context_entries', 'summary')
+            else 'NULL AS summary'
+        )
+        content_hash_col_src = (
+            'content_hash' if await _pg_column_exists(source_conn, 'context_entries', 'content_hash')
+            else 'NULL AS content_hash'
+        )
         entry_rows = await source_conn.fetch(
-            'SELECT id, thread_id, source, content_type, text_content, '
-            'metadata::text AS metadata, summary, content_hash, created_at, updated_at '
-            'FROM context_entries ORDER BY created_at ASC, id ASC',
+            f'SELECT id, thread_id, source, content_type, text_content, '
+            f'metadata::text AS metadata, {summary_col_src}, {content_hash_col_src}, created_at, updated_at '
+            f'FROM context_entries ORDER BY created_at ASC, id ASC',
         )
         target.execute('BEGIN')
         try:
@@ -2173,8 +2384,8 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                             rewritten_metadata,
                             row['summary'],
                             row['content_hash'],
-                            row['created_at'].isoformat() if row['created_at'] is not None else None,
-                            row['updated_at'].isoformat() if row['updated_at'] is not None else None,
+                            _sqlite_timestamp(row['created_at']),
+                            _sqlite_timestamp(row['updated_at']),
                         ),
                     )
                 stats.rows_migrated += 1
@@ -2217,12 +2428,10 @@ async def run_migration_mixed_postgresql_to_sqlite(options: MigrationOptions) ->
                             f'image_attachments row references missing context_entry_id={sid}; skipped',
                         )
                         continue
-                    # Preserve a schema-legal NULL created_at as NULL instead of
-                    # crashing on None.isoformat() (the source may be an
-                    # arbitrary non-app v2 database).
-                    img_created_at = (
-                        img['created_at'].isoformat() if img['created_at'] is not None else None
-                    )
+                    # Preserve a schema-legal NULL created_at as NULL, and render a
+                    # present timestamp in SQLite's canonical space form (NOT isoformat's
+                    # 'T'/offset, which mis-sorts under SQLite TEXT date comparison).
+                    img_created_at = _sqlite_timestamp(img['created_at'])
                     if not options.dry_run:
                         target.execute(
                             'INSERT INTO image_attachments '

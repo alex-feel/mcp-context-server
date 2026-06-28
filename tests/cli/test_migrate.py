@@ -282,6 +282,127 @@ class TestNullCreatedAtTolerance:
         assert total == 2
         assert null_ts == 1
 
+    def test_build_id_mapping_anchors_malformed_string_created_at(self) -> None:
+        """A malformed non-ISO string created_at is anchored (not aborted) for id derivation.
+
+        Mirrors the NULL / pre-epoch / numeric-epoch tolerance: an arbitrary non-app source
+        database may store created_at as a non-ISO string, and one such row must not abort the
+        whole migration via an uncaught _coerce_datetime ValueError.
+        """
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.execute('CREATE TABLE r (id INTEGER, created_at)')  # typeless: keep the raw text
+        conn.execute('INSERT INTO r VALUES (?, ?)', (1, '2024/01/01 12:00:00'))  # non-ISO slashes
+        conn.execute('INSERT INTO r VALUES (?, ?)', (2, '15-06-2024 10:00:00'))  # day-first
+        conn.execute('INSERT INTO r VALUES (?, ?)', (3, 'not-a-date'))
+        rows = list(conn.execute('SELECT * FROM r ORDER BY id'))
+        mapping = build_id_mapping(rows)
+        assert set(mapping) == {1, 2, 3}
+        assert all(HEX_32_RE.match(value) for value in mapping.values())
+
+    def test_stored_datetime_or_none_tolerates_malformed_and_null(self) -> None:
+        """The verbatim-bind helper yields None for NULL/malformed input and a datetime for valid."""
+        from app.cli.migrate import _stored_datetime_or_none
+
+        assert _stored_datetime_or_none(None) is None
+        assert _stored_datetime_or_none('2024/01/01 12:00:00') is None  # non-ISO -> None, not raise
+        assert _stored_datetime_or_none('not-a-date') is None
+        valid = _stored_datetime_or_none('2025-06-24T12:00:00+00:00')
+        assert valid is not None
+        assert valid.year == 2025
+
+    def test_migration_succeeds_with_malformed_string_created_at_row(
+        self,
+        tmp_path: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        """A source row with a malformed string created_at migrates without aborting the run."""
+        source = tmp_path / 'malformed_created_at_source.db'
+        _seed_source_db(source, [
+            {
+                'id': 1, 'thread_id': 't', 'source': 'user', 'content_type': 'text',
+                'text_content': 'well-formed timestamp', 'metadata': None,
+                'created_at': '2025-06-24 12:00:00',
+            },
+            {
+                'id': 2, 'thread_id': 't', 'source': 'agent', 'content_type': 'text',
+                'text_content': 'malformed timestamp', 'metadata': None,
+                'created_at': '2024/01/01 12:00:00',  # non-ISO -> id anchored, value preserved
+            },
+        ])
+        stats = run_migration_sqlite_to_sqlite(_build_options(source, new_target_db_path))
+        assert not stats.errors
+        assert stats.rows_migrated == 2
+        conn = sqlite3.connect(str(new_target_db_path))
+        try:
+            total = conn.execute('SELECT COUNT(*) FROM context_entries').fetchone()[0]
+        finally:
+            conn.close()
+        assert total == 2
+
+
+class TestTargetPgHasDataSchemaQuoting:
+    """The empty-target COUNT(*) probe quotes POSTGRESQL_SCHEMA via the shared helper.
+
+    A schema name containing a double-quote is a valid quoted PostgreSQL identifier and is
+    reachable operator config (POSTGRESQL_SCHEMA has no charset validation). The COUNT(*)
+    target-emptiness probe must double the embedded quote exactly as CREATE SCHEMA and the
+    search_path builder do -- all three route through quote_pg_identifier -- so the sites
+    cannot drift and a pathological schema name does not abort the migration with a raw
+    PostgresSyntaxError.
+    """
+
+    @pytest.mark.asyncio
+    async def test_count_probe_doubles_embedded_quote_in_schema(self) -> None:
+        """A schema with an embedded double-quote yields the doubled-quote COUNT(*),
+        not the malformed single-quote-wrapped form."""
+        from typing import Any
+        from typing import cast
+
+        from app.backends.postgresql_backend import quote_pg_identifier
+        from app.cli.migrate import _target_pg_has_data
+
+        captured: list[str] = []
+
+        class _RecordingConn:
+            async def fetchval(self, query: str, *_args: object) -> object:
+                captured.append(query)
+                if 'information_schema.tables' in query:
+                    return True  # the table exists in the probed schema
+                return 5  # non-zero row count
+
+        has_data = await _target_pg_has_data(cast(Any, _RecordingConn()), schema='weird"schema')
+
+        assert has_data is True
+        count_query = next(q for q in captured if 'COUNT(*)' in q)
+        assert quote_pg_identifier('weird"schema') == '"weird""schema"'
+        assert '"weird""schema".context_entries' in count_query
+        # The malformed single-quote-wrapped form (pre-fix) must NOT appear.
+        assert '"weird"schema".context_entries' not in count_query
+
+    @pytest.mark.asyncio
+    async def test_count_probe_with_none_schema_is_unqualified(self) -> None:
+        """schema=None keeps the unqualified current_schema() COUNT(*), unchanged."""
+        from typing import Any
+        from typing import cast
+
+        from app.cli.migrate import _target_pg_has_data
+
+        captured: list[str] = []
+
+        class _RecordingConn:
+            async def fetchval(self, query: str, *_args: object) -> object:
+                captured.append(query)
+                if 'information_schema.tables' in query:
+                    return True
+                return 0
+
+        has_data = await _target_pg_has_data(cast(Any, _RecordingConn()), schema=None)
+
+        assert has_data is False
+        count_query = next(q for q in captured if 'COUNT(*)' in q)
+        assert count_query == 'SELECT COUNT(*) FROM context_entries'
+
 
 class TestDryRunNoTargetWrites:
     """A dry run must not create or write the SQLite target on disk."""
@@ -916,6 +1037,55 @@ class TestFtsRebuild:
                 assert HEX_32_RE.match(row['public_id'])
         finally:
             conn.close()
+
+    @staticmethod
+    def _read_target_fts_ddl(target_path: Path) -> str:
+        """Return the stored CREATE statement for the target's FTS5 table."""
+        conn = sqlite3.connect(str(target_path))
+        try:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'context_entries_fts'",
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row[0]
+        return str(row[0])
+
+    def test_fts_tokenizer_defaults_to_porter_for_english(
+        self,
+        source_with_fts: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        """With the default English language, the target FTS5 table uses the Porter stemmer."""
+        options = _build_options(source_with_fts, new_target_db_path)
+        stats = run_migration_sqlite_to_sqlite(options)
+        assert stats.fts_rebuilt
+        ddl = self._read_target_fts_ddl(new_target_db_path)
+        assert "tokenize='porter unicode61'" in ddl
+
+    def test_fts_tokenizer_drops_porter_for_non_english_language(
+        self,
+        source_with_fts: Path,
+        new_target_db_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-English FTS_LANGUAGE migrates to plain unicode61, not the English Porter stemmer."""
+        from app.settings import get_settings
+
+        monkeypatch.setenv('FTS_LANGUAGE', 'russian')
+        get_settings.cache_clear()
+        try:
+            options = _build_options(source_with_fts, new_target_db_path)
+            stats = run_migration_sqlite_to_sqlite(options)
+            assert stats.fts_rebuilt
+            ddl = self._read_target_fts_ddl(new_target_db_path)
+            assert "tokenize='unicode61'" in ddl
+            assert "tokenize='porter unicode61'" not in ddl
+        finally:
+            # Restore the cached singleton so the override does not leak into later tests.
+            get_settings.cache_clear()
 
 
 # ---------------------------------------------------------------------------
