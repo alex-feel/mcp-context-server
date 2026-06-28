@@ -34,7 +34,7 @@ class OllamaSummaryProvider:
         SUMMARY_PROVIDER: Must be 'ollama' (default)
         OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
         SUMMARY_MODEL: Model name (default: qwen3:0.6b)
-        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
+        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 4000)
         SUMMARY_OLLAMA_NUM_CTX: Context length in tokens (default: 32768)
         SUMMARY_OLLAMA_TRUNCATE: Control truncation behavior (default: false = error on exceed)
     """

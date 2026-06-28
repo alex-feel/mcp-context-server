@@ -395,6 +395,103 @@ class TestIsClientError:
 
         assert is_client_error(FakeHttpError('service unavailable', status_code=503)) is False
 
+    def test_ignores_transient_408_request_timeout_direct_status_code(self) -> None:
+        """is_client_error() returns False for status_code 408 (Request Timeout).
+
+        Request Timeout is transient and recoverable, so it must classify as a
+        retryable DependencyError (exit 69) rather than a never-retry
+        ConfigurationError (exit 78), even though 408 is in the 4xx range.
+        """
+        from app.errors import is_client_error
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        assert is_client_error(FakeClientError('request timeout', status_code=408)) is False
+
+    def test_ignores_transient_429_too_many_requests_direct_status_code(self) -> None:
+        """is_client_error() returns False for status_code 429 (Too Many Requests).
+
+        Too Many Requests (rate limiting) is transient and recoverable, so it must
+        classify as a retryable DependencyError (exit 69) rather than a never-retry
+        ConfigurationError (exit 78), consistent with the embedding retry layer
+        treating rate-limit errors as retryable.
+        """
+        from app.errors import is_client_error
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        assert is_client_error(FakeClientError('too many requests', status_code=429)) is False
+
+    def test_ignores_transient_408_and_429_nested_response_status_code(self) -> None:
+        """is_client_error() returns False for 408/429 on a nested .response object.
+
+        The transient-status exclusion must also apply when the status is exposed
+        only at e.response.status_code (requests / huggingface_hub / httpx style),
+        with no top-level status_code attribute.
+        """
+        from types import SimpleNamespace
+
+        from app.errors import is_client_error
+
+        class FakeHttpError(Exception):
+            """Exception exposing the status only via a nested response object."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.response = SimpleNamespace(status_code=status_code)
+
+        assert is_client_error(FakeHttpError('request timeout', status_code=408)) is False
+        assert is_client_error(FakeHttpError('too many requests', status_code=429)) is False
+
+    def test_still_detects_permanent_4xx_client_errors(self) -> None:
+        """is_client_error() still returns True for permanent 4xx client errors.
+
+        Excluding the transient 408 and 429 must not weaken detection of the
+        permanent configuration errors 400/401/403/404, which still classify as
+        a never-retry ConfigurationError (exit 78).
+        """
+        from app.errors import is_client_error
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        assert is_client_error(FakeClientError('bad request', status_code=400)) is True
+        assert is_client_error(FakeClientError('unauthorized', status_code=401)) is True
+        assert is_client_error(FakeClientError('forbidden', status_code=403)) is True
+        assert is_client_error(FakeClientError('not found', status_code=404)) is True
+
+    def test_still_ignores_5xx_server_errors(self) -> None:
+        """is_client_error() still returns False for 5xx server errors.
+
+        Excluding the transient 4xx codes 408 and 429 must not change the
+        existing behavior that 5xx server errors (500/503) are not client errors.
+        """
+        from app.errors import is_client_error
+
+        class FakeServerError(Exception):
+            """Exception with 5xx status_code."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        assert is_client_error(FakeServerError('internal server error', status_code=500)) is False
+        assert is_client_error(FakeServerError('service unavailable', status_code=503)) is False
+
 
 class TestFormatExceptionMessage:
     """Tests for format_exception_message()."""

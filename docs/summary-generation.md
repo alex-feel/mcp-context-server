@@ -337,8 +337,8 @@ When truncation is disabled, text length is estimated before calling the Ollama 
 Example error:
 ```text
 ValueError: Text length (15000 chars, ~5000 estimated tokens) may exceed available input budget
-(30538 tokens from model spec (32768) capped by SUMMARY_OLLAMA_NUM_CTX (32768),
-after reserving 2000 output + ~230 prompt tokens) for model qwen3:0.6b.
+(28538 tokens from model spec (32768) capped by SUMMARY_OLLAMA_NUM_CTX (32768),
+after reserving 4000 output + ~230 prompt tokens) for model qwen3:0.6b.
 Options: 1) Increase SUMMARY_OLLAMA_NUM_CTX,
          2) Set SUMMARY_OLLAMA_TRUNCATE=true to allow silent truncation,
          3) Use a larger-context model.

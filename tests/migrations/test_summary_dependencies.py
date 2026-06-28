@@ -323,7 +323,7 @@ class TestCheckSummaryUnknownProvider:
         )
 
         assert result['available'] is False
-        assert 'Unknown summary provider' in (result['reason'] or '')
+        assert 'Unknown provider' in (result['reason'] or '')
 
 
 class TestClassifyProviderErrorForSummary:
@@ -362,13 +362,14 @@ class TestClassifyProviderErrorForSummary:
         )
         assert error_class is DependencyError
 
-    def test_unknown_provider_returns_dependency_error(self) -> None:
-        """Unknown summary provider doesn't match config indicators -> DependencyError.
+    def test_unknown_provider_returns_configuration_error(self) -> None:
+        """Unknown provider is a permanent configuration error -> ConfigurationError.
 
-        Note: 'unknown provider' is a config indicator but 'unknown summary provider'
-        does not contain that exact substring, so it falls through to DependencyError.
-        In practice, the check_summary_provider_dependencies() function catches unknown
-        providers before classify_provider_error() is ever called.
+        An unknown provider can never be fixed by retrying, so the summary path
+        classifies it identically to the embedding path. Both paths emit the same
+        "Unknown provider: '<name>'" reason, which matches the 'unknown provider'
+        configuration indicator in classify_provider_error() and maps to
+        ConfigurationError (exit 78, no retry).
         """
-        error_class = classify_provider_error("Unknown summary provider: 'nonexistent'")
-        assert error_class is DependencyError
+        error_class = classify_provider_error("Unknown provider: 'nonexistent'")
+        assert error_class is ConfigurationError

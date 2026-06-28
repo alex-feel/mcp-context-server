@@ -27,7 +27,7 @@ class OpenAISummaryProvider:
         SUMMARY_PROVIDER: Must be 'openai'
         OPENAI_API_KEY: OpenAI API key (read from SummarySettings, passed explicitly)
         SUMMARY_MODEL: Model name (e.g., 'gpt-5.4-nano', 'gpt-5.4')
-        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
+        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 4000)
     """
 
     def __init__(self) -> None:

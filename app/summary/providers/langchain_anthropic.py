@@ -27,7 +27,7 @@ class AnthropicSummaryProvider:
         SUMMARY_PROVIDER: Must be 'anthropic'
         ANTHROPIC_API_KEY: Anthropic API key (read from SummarySettings, passed explicitly)
         SUMMARY_MODEL: Model name (e.g., 'claude-haiku-4-5-20251001')
-        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
+        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 4000)
     """
 
     def __init__(self) -> None:

@@ -68,6 +68,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.embeddings.exists = AsyncMock(return_value=False)
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.delete_all_chunks = AsyncMock()
+    repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
 
     repos.index_nodes = MagicMock()
     repos.index_nodes.replace_nodes_for_context = AsyncMock()
@@ -189,6 +190,8 @@ class TestSummaryStoreWithMocks:
         assert result['success'] is True
         assert 'embedding generated' in result['message']
         assert 'summary generated' in result['message']
+        # No images provided -> content_type is preserved on a dedup UPDATE (so a multimodal
+        # entry can't flip to 'text' while its image rows remain). See store_with_deduplication.
         repos.context.store_with_deduplication.assert_awaited_once_with(
             thread_id='parallel-summary-thread',
             source='agent',
@@ -196,6 +199,7 @@ class TestSummaryStoreWithMocks:
             text_content=long_text,
             metadata=None,
             summary='Generated summary',
+            preserve_content_type_on_dedup=True,
             txn=ANY,
         )
         repos.embeddings.store_chunked.assert_awaited_once()
