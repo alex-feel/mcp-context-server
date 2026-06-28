@@ -124,10 +124,10 @@ spec:
                 secretKeyRef:
                   {{- if and $semOpenai .Values.embeddingSecrets.existingSecret }}
                   name: {{ .Values.embeddingSecrets.existingSecret }}
-                  key: openai-api-key
+                  key: {{ .Values.embeddingSecrets.existingSecretKey | default "openai-api-key" }}
                   {{- else if and $sumOpenai .Values.summarySecrets.existingSecret }}
                   name: {{ .Values.summarySecrets.existingSecret }}
-                  key: openai-api-key
+                  key: {{ .Values.summarySecrets.existingSecretKey | default "openai-api-key" }}
                   {{- else }}
                   name: {{ include "mcp-context-server.fullname" . }}
                   key: openai-api-key
@@ -141,7 +141,7 @@ spec:
                 secretKeyRef:
                   {{- if .Values.embeddingSecrets.existingSecret }}
                   name: {{ .Values.embeddingSecrets.existingSecret }}
-                  key: azure-openai-api-key
+                  key: {{ .Values.embeddingSecrets.existingSecretKey | default "azure-openai-api-key" }}
                   {{- else }}
                   name: {{ include "mcp-context-server.fullname" . }}
                   key: azure-openai-api-key
@@ -152,7 +152,7 @@ spec:
                 secretKeyRef:
                   {{- if .Values.embeddingSecrets.existingSecret }}
                   name: {{ .Values.embeddingSecrets.existingSecret }}
-                  key: huggingface-api-token
+                  key: {{ .Values.embeddingSecrets.existingSecretKey | default "huggingface-api-token" }}
                   {{- else }}
                   name: {{ include "mcp-context-server.fullname" . }}
                   key: huggingface-api-token
@@ -163,7 +163,7 @@ spec:
                 secretKeyRef:
                   {{- if .Values.embeddingSecrets.existingSecret }}
                   name: {{ .Values.embeddingSecrets.existingSecret }}
-                  key: voyage-api-key
+                  key: {{ .Values.embeddingSecrets.existingSecretKey | default "voyage-api-key" }}
                   {{- else }}
                   name: {{ include "mcp-context-server.fullname" . }}
                   key: voyage-api-key
@@ -178,7 +178,7 @@ spec:
                 secretKeyRef:
                   {{- if .Values.summarySecrets.existingSecret }}
                   name: {{ .Values.summarySecrets.existingSecret }}
-                  key: anthropic-api-key
+                  key: {{ .Values.summarySecrets.existingSecretKey | default "anthropic-api-key" }}
                   {{- else }}
                   name: {{ include "mcp-context-server.fullname" . }}
                   key: summary-anthropic-api-key

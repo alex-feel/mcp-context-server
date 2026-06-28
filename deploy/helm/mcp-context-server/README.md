@@ -190,7 +190,10 @@ summarySecrets:
   openaiApiKey: "sk-..."       # For provider=openai
   anthropicApiKey: "sk-ant-..."  # For provider=anthropic
   existingSecret: ""           # Use pre-existing secret
+  existingSecretKey: ""        # Override the key name inside existingSecret
 ```
+
+When `existingSecret` is set, the chart reads the API key from a fixed data key inside that secret unless you override it with `existingSecretKey`. The default key name matches the active provider: `openai-api-key`, `azure-openai-api-key`, `huggingface-api-token`, or `voyage-api-key` for `embeddingSecrets`, and `openai-api-key` or `anthropic-api-key` for `summarySecrets`. Set `existingSecretKey` when your secret stores the key under a different name (otherwise the pod fails to start with `CreateContainerConfigError`). The same `existingSecret` / `existingSecretKey` pair is available under `embeddingSecrets` for the semantic-search provider keys.
 
 ### Ingress
 

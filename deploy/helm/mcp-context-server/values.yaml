@@ -238,6 +238,10 @@ embeddingSecrets:
   voyageApiKey: ""
   # Use existing secret for all provider keys
   existingSecret: ""
+  # Override the data key name inside existingSecret. Empty uses the active
+  # embedding provider's default key name: openai-api-key / azure-openai-api-key
+  # / huggingface-api-token / voyage-api-key.
+  existingSecretKey: ""
 
 # Summary provider API keys (for openai/anthropic providers)
 summarySecrets:
@@ -247,6 +251,10 @@ summarySecrets:
   anthropicApiKey: ""
   # Use existing secret for summary provider keys
   existingSecret: ""
+  # Override the data key name inside existingSecret. Empty uses the active
+  # summary provider's default key name: openai-api-key (summary.provider=openai)
+  # / anthropic-api-key (summary.provider=anthropic).
+  existingSecretKey: ""
 
 # Pod security context
 podSecurityContext:
