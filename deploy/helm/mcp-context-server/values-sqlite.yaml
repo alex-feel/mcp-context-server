@@ -21,6 +21,10 @@ search:
     enabled: false
   hybrid:
     enabled: true
+  # summary.enabled is opt-in like semantic: enable it together with a summary provider
+  # (set ollama.enabled=true, or configure an API key in values.yaml for openai/anthropic).
+  summary:
+    enabled: false
 
 ollama:
   enabled: false

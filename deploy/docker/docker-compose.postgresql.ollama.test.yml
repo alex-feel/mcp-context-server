@@ -1,10 +1,12 @@
 # Docker Compose for MCP Context Server with PostgreSQL + Ollama Embeddings
 # Usage: docker compose -f deploy/docker/docker-compose.postgresql.ollama.test.yml up -d
 #
-# Optional: For additional configuration (LangSmith tracing, pool settings):
-#   1. Copy .env-postgresql.ollama.example to .env
-#   2. Configure desired settings in .env
-#   3. Run normally - the .env file will be loaded automatically
+# This test stack is SELF-CONTAINED: the embedding/summary provider and model, every feature
+# toggle, and the PostgreSQL credentials are hardcoded inline (not ${VAR:-default}), so a
+# developer's deploy/docker/.env cannot redirect providers/models or inject credentials.
+# env_file: is intentionally absent. Docker Compose still auto-loads deploy/docker/.env from
+# this directory for the few remaining ${VAR:-default} knobs (e.g. LOG_LEVEL), which do not
+# affect test behavior.
 
 name: context-server-postgresql-test
 
@@ -28,22 +30,29 @@ services:
       - STORAGE_BACKEND=postgresql
       - POSTGRESQL_HOST=postgres
       - POSTGRESQL_PORT=5432
-      - POSTGRESQL_USER=${POSTGRESQL_USER:-postgres}
-      - POSTGRESQL_PASSWORD=${POSTGRESQL_PASSWORD:-postgres}
-      - POSTGRESQL_DATABASE=${POSTGRESQL_DATABASE:-mcp_context}
+      # Credentials HARDCODED (not ${VAR:-default}) so deploy/docker/.env cannot inject
+      # production secrets into this self-contained test stack; the local sidecar below uses
+      # the same fixed values.
+      - POSTGRESQL_USER=postgres
+      - POSTGRESQL_PASSWORD=postgres
+      - POSTGRESQL_DATABASE=mcp_context
       # Semantic search configuration
       - ENABLE_SEMANTIC_SEARCH=true
-      # Embedding provider selection (default: ollama)
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
+      # Embedding + summary provider/model are HARDCODED (not ${VAR:-default}) so this
+      # self-contained Ollama test stack stays immune to deploy/docker/.env, which Docker
+      # Compose auto-loads from the compose file's directory for interpolation even though
+      # env_file: was removed. A developer's .env (e.g. SUMMARY_PROVIDER=openai,
+      # SUMMARY_MODEL=gpt-5.4-nano) MUST NOT redirect the Ollama sidecar's model pull.
+      - EMBEDDING_PROVIDER=ollama
       - OLLAMA_HOST=http://ollama:11434
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
-      - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
+      - EMBEDDING_MODEL=qwen3-embedding:0.6b
+      - EMBEDDING_DIM=1024
       # Full-text and hybrid search
       - ENABLE_FTS=true
       - ENABLE_HYBRID_SEARCH=true
       # Summary generation
-      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
-      - SUMMARY_PROVIDER=${SUMMARY_PROVIDER:-ollama}
+      - SUMMARY_MODEL=qwen3:0.6b
+      - SUMMARY_PROVIDER=ollama
       # FlashRank reranking model cache (persistent across restarts)
       - RERANKING_CACHE_DIR=/cache/flashrank
       # LangSmith tracing (optional, disabled by default)
@@ -67,8 +76,10 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_KEEP_ALIVE=-1
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
-      - SUMMARY_MODEL=${SUMMARY_MODEL:-qwen3:0.6b}
+      # Hardcoded (see mcp-context-server service note) so the sidecar always pulls the
+      # Ollama models regardless of any deploy/docker/.env Compose auto-loads.
+      - EMBEDDING_MODEL=qwen3-embedding:0.6b
+      - SUMMARY_MODEL=qwen3:0.6b
       # Uncomment for Intel/Vulkan GPU (EXPERIMENTAL - may produce degraded output).
       # Linux host only -- NOT available on Docker Desktop for Windows (WSL2).
       # For Windows, run Ollama natively with OLLAMA_VULKAN=1 instead.
@@ -146,9 +157,10 @@ services:
   postgres:
     image: pgvector/pgvector:pg18-trixie
     environment:
-      POSTGRES_USER: ${POSTGRESQL_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRESQL_DATABASE:-mcp_context}
+      # Hardcoded to match the app service (self-contained; no deploy/docker/.env injection).
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mcp_context
     volumes:
       - postgres-data:/var/lib/postgresql
     healthcheck:

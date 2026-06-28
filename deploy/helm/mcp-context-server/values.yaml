@@ -143,20 +143,24 @@ search:
     maxLength: 512   # Maximum input length in tokens
     overfetch: 4     # Multiplier for over-fetching before reranking
     cacheDir: ""     # Custom cache directory for model files (empty = system default)
-  # LLM-based summary generation
+  # LLM-based summary generation. Opt-in like semantic search: it requires a summary
+  # provider (set ollama.enabled=true for provider "ollama", or configure an API key
+  # under summarySecrets for openai/anthropic). Keep false when no provider is available
+  # -- enabling it without a reachable provider fails startup, mirroring
+  # search.semantic.enabled.
   summary:
-    enabled: true
+    enabled: false
     provider: "ollama"       # ollama (default), openai, or anthropic
     model: "qwen3:0.6b"     # Summary model
-    maxTokens: 2000          # Max output tokens (50-5000)
+    maxTokens: 4000          # Max output tokens (50-16384)
     minContentLength: 500    # Min chars to trigger summary (0=always)
     prompt: ""               # Custom prompt (empty = built-in default)
     # Timeout and retry settings
     timeout: 240.0
     retryMaxAttempts: 5
-    retryBaseDelay: 1.0
+    retryBaseDelay: 3.0
     # Concurrency control
-    maxConcurrent: 3         # Maximum parallel summary requests (1-20)
+    maxConcurrent: 2         # Shared summary-model budget: flat + per-node summaries (1-20)
   # Default sort order for search results
   defaultSortBy: relevance  # Only 'relevance' supported in current version
 
