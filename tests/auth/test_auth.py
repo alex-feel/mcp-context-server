@@ -280,15 +280,35 @@ class TestAuthFactory:
             provider = create_auth_provider()
             assert isinstance(provider, SimpleTokenVerifier)
 
-    def test_factory_raises_when_simple_token_without_token(self) -> None:
-        """Factory should raise ValueError when simple_token provider but no MCP_AUTH_TOKEN."""
+    def test_factory_raises_configuration_error_when_simple_token_without_token(self) -> None:
+        """Factory raises ConfigurationError (exit 78) when token is missing.
+
+        A missing required env var is a startup misconfiguration: the factory
+        translates SimpleTokenVerifier's ValueError into a ConfigurationError so
+        ``main()`` exits 78 (EX_CONFIG, supervisor does NOT restart) rather than
+        the generic exit 1 a bare ValueError would cause.
+        """
         env = {k: v for k, v in os.environ.items() if k != 'MCP_AUTH_TOKEN'}
         env['MCP_AUTH_PROVIDER'] = 'simple_token'
         with patch.dict(os.environ, env, clear=True):
             get_settings.cache_clear()
             from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
 
-            with pytest.raises(ValueError, match='MCP_AUTH_TOKEN is required'):
+            with pytest.raises(ConfigurationError, match='MCP_AUTH_TOKEN is required'):
+                create_auth_provider()
+
+    def test_factory_raises_configuration_error_when_simple_token_empty(self) -> None:
+        """Factory raises ConfigurationError when MCP_AUTH_TOKEN is empty/whitespace."""
+        env = {k: v for k, v in os.environ.items() if k != 'MCP_AUTH_TOKEN'}
+        env['MCP_AUTH_PROVIDER'] = 'simple_token'
+        env['MCP_AUTH_TOKEN'] = '   '
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='cannot be empty'):
                 create_auth_provider()
 
 
