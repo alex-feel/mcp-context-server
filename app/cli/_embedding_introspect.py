@@ -94,18 +94,40 @@ async def dimension_conflict_error(
 
     from app.settings import get_settings
 
-    if get_settings().compression.enabled:
+    comp = get_settings().compression
+    if comp.enabled:
         from app.compression.provenance import read_compression_metadata
 
         meta = await read_compression_metadata(backend)
-        if meta is not None and meta.dim != configured_dim:
-            return (
-                f'the compressed database was sealed at dimension {meta.dim} '
-                f'(seed-locked compression_metadata) but EMBEDDING_DIM='
-                f'{configured_dim}. Embedding at a different dimension would '
-                f'corrupt the compressed codebook; set EMBEDDING_DIM={meta.dim}, '
-                f'or decompress and rebuild to change it.'
-            )
+        if meta is not None:
+            # The encode path (--embed-missing / --re-embed) builds the codebook
+            # purely from the process COMPRESSION_* settings, never the sealed
+            # row. A dim/seed/bits/variant/provider that disagrees with the
+            # seed-locked compression_metadata would encode payloads against an
+            # INCOMPATIBLE codebook (the read path concat then raises, or a later
+            # server boot refuses to start). Guard the full sealed tuple, not
+            # just dim -- the read path and the startup validator both compare
+            # all of it.
+            mismatches: list[str] = []
+            if meta.dim != configured_dim:
+                mismatches.append(f'EMBEDDING_DIM={configured_dim} but sealed dim={meta.dim}')
+            if meta.seed != comp.seed:
+                mismatches.append(f'COMPRESSION_SEED={comp.seed} but sealed seed={meta.seed}')
+            if meta.bits != comp.bits:
+                mismatches.append(f'COMPRESSION_BITS={comp.bits} but sealed bits={meta.bits}')
+            if str(meta.variant) != str(comp.variant):
+                mismatches.append(f'COMPRESSION_VARIANT={comp.variant} but sealed variant={meta.variant}')
+            if str(meta.provider) != str(comp.provider):
+                mismatches.append(f'COMPRESSION_PROVIDER={comp.provider} but sealed provider={meta.provider}')
+            if mismatches:
+                return (
+                    'the compressed database was sealed with a different compression '
+                    'configuration (seed-locked compression_metadata) than this process '
+                    'is configured for. Embedding now would encode payloads against an '
+                    'incompatible codebook; restore the COMPRESSION_* / EMBEDDING_DIM '
+                    'env vars to the sealed values, or decompress and rebuild to change '
+                    'them. Mismatches: ' + '; '.join(mismatches) + '.'
+                )
     return None
 
 

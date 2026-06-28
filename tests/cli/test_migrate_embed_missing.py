@@ -405,3 +405,36 @@ def test_embed_missing_refuses_compression_dim_mismatch(
     err = capsys.readouterr().err
     assert 'EMBEDDING_DIM=512' in err
     assert 'compression_metadata' in err
+
+
+def test_embed_missing_refuses_compression_seed_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A COMPRESSION_SEED differing from the sealed seed is refused.
+
+    Regression: the guard consulted only the sealed DIM, not the full sealed
+    compression tuple. Backfilling with a different seed/bits/variant/provider
+    encodes payloads against an incompatible codebook (seed is load-bearing for
+    the TurboQuant rotation), so the guard MUST block it -- not just a dim change.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('COMPRESSION_SEED', '7')  # sealed row has seed=0
+    monkeypatch.setenv('COMPRESSION_BITS', '4')
+    monkeypatch.setenv('COMPRESSION_VARIANT', 'ip')
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')  # matches the sealed dim
+    monkeypatch.setenv('DB_PATH', str(tmp_path / 'test.db'))
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    _bootstrap_schema(db)
+    # Sealed at seed=0/bits=4/variant=ip/dim=1024; only the seed disagrees.
+    _seed_compression_metadata(db, 1024)
+
+    rc = cli_main(['--source-url', f'sqlite:///{db}', '--embed-missing'])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert 'COMPRESSION_SEED=7' in err
+    assert 'compression_metadata' in err
