@@ -30,6 +30,7 @@ from typing import cast
 import asyncpg
 import pytest
 
+import app.backends.postgresql_backend as postgresql_backend_module
 import app.migrations.chunking as chunking_module
 import app.migrations.compression as compression_module
 import app.migrations.semantic as semantic_module
@@ -69,13 +70,19 @@ def _install_search_path_patch(
 ) -> None:
     """Wrap ``asyncpg.create_pool`` so every backend connection sets search_path.
 
-    The production ``PostgreSQLBackend`` does not configure an
-    ``init=`` callback when creating its connection pool, so a bare
-    ``SET search_path`` issued via a single connection would be lost
-    when the pool releases that connection. This helper installs a
-    process-wide wrapper that sets ``search_path =
-    <schema>, public`` on every fresh asyncpg connection used by
-    ``PostgreSQLBackend.initialize`` for the duration of the test.
+    Production ``PostgreSQLBackend`` carries the operator's
+    ``search_path`` via the asyncpg ``server_settings`` startup packet
+    (see ``build_asyncpg_connect_kwargs``); that startup-packet value
+    becomes the connection's reset value, so it SURVIVES the
+    ``RESET ALL`` the pool issues on every release (proven by
+    ``test_production_pool_search_path_survives_reset_all``). This helper
+    instead drives search_path with a runtime ``SET search_path``, which
+    ``RESET ALL`` DOES clear, so it re-applies the ``SET`` on every
+    acquire (via both an ``init=`` and a ``setup=`` callback). It exists
+    so the test's own ad-hoc bookkeeping resolves to the configured
+    schema regardless of that mechanism difference, NOT because the
+    production server_settings path needs it; production DOES configure
+    ``init=``/``setup=`` callbacks, but neither sets search_path.
 
     Args:
         monkeypatch: The pytest monkeypatch fixture.
@@ -152,6 +159,12 @@ def _refresh_module_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(chunking_module, 'settings', fresh)
     monkeypatch.setattr(compression_module, 'settings', fresh)
     monkeypatch.setattr(startup_module, 'settings', fresh)
+    # The backend reads POSTGRESQL_SCHEMA (via build_asyncpg_connect_kwargs) off
+    # its own module-level ``settings`` binding; without this rebind it would
+    # send the import-time default schema in server_settings, so the production
+    # pool's search_path test would resolve to ``public`` instead of the
+    # configured schema.
+    monkeypatch.setattr(postgresql_backend_module, 'settings', fresh)
 
 
 def _configure_non_default_env(
@@ -622,3 +635,86 @@ def test_no_project_tables_in_public_when_non_default_schema_used(
             f"'{NON_DEFAULT_SCHEMA}' when POSTGRESQL_SCHEMA="
             f"{NON_DEFAULT_SCHEMA}"
         )
+
+
+def test_production_pool_search_path_survives_reset_all(
+    pg_non_default_schema_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production server_settings search_path survives RESET ALL on re-acquire.
+
+    Unlike every other test in this module, this one does NOT install the
+    ``SET``-based per-acquire search_path patch: it exercises the REAL
+    production pool, whose search_path is carried solely by the asyncpg
+    ``server_settings`` startup packet. The pool issues ``RESET ALL`` on
+    every connection release; this test acquires, releases, then RE-acquires
+    the SAME physical connection (matched by ``pg_backend_pid()``) and
+    asserts the configured schema still governs bare-name resolution. That
+    proves the startup-packet search_path is the connection's reset value
+    (NOT reverted to the role/database default), which is the behavior the
+    production code deliberately relies on -- and which the SET-based helper
+    above would otherwise mask.
+    """
+    _configure_non_default_env(monkeypatch, pg_non_default_schema_db)
+
+    async def _scenario() -> tuple[str, str, str, str, bool]:
+        backend = create_backend(
+            backend_type='postgresql',
+            connection_string=pg_non_default_schema_db,
+        )
+        await backend.initialize()
+        try:
+            # First transaction: capture the physical connection identity and
+            # confirm the configured schema governs bare-name resolution. Each
+            # begin_transaction acquires a pooled connection and releases it on
+            # exit, which runs the pool's RESET ALL.
+            async with backend.begin_transaction() as txn:
+                conn = cast('asyncpg.Connection', txn.connection)
+                pid = await conn.fetchval('SELECT pg_backend_pid()')
+                sp1 = await conn.fetchval('SHOW search_path')
+                await conn.execute('CREATE TABLE sp_probe_first (id int)')
+                landed1 = await conn.fetchval(
+                    "SELECT schemaname FROM pg_tables "
+                    "WHERE tablename = 'sp_probe_first'",
+                )
+            # Re-enter transactions until the pool hands back the SAME backend
+            # pid (a reused connection past one RESET ALL) and re-check that the
+            # configured schema STILL governs -- proving the server_settings
+            # search_path is the connection's reset value, not reverted to the
+            # role/database default.
+            sp2 = ''
+            landed2 = ''
+            reused = False
+            for _ in range(50):
+                async with backend.begin_transaction() as txn:
+                    conn = cast('asyncpg.Connection', txn.connection)
+                    if await conn.fetchval('SELECT pg_backend_pid()') != pid:
+                        continue
+                    sp2 = await conn.fetchval('SHOW search_path')
+                    await conn.execute('CREATE TABLE sp_probe_second (id int)')
+                    landed2 = await conn.fetchval(
+                        "SELECT schemaname FROM pg_tables "
+                        "WHERE tablename = 'sp_probe_second'",
+                    )
+                    reused = True
+                    break
+            return sp1, landed1, sp2, landed2, reused
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    sp1, landed1, sp2, landed2, reused = asyncio.run(_scenario())
+
+    assert NON_DEFAULT_SCHEMA in sp1, f'first-acquire search_path was {sp1!r}'
+    assert landed1 == NON_DEFAULT_SCHEMA, f'first bare table landed in {landed1!r}'
+    assert reused, 'pool never handed back the same physical connection to re-test'
+    # Load-bearing assertion: after a RESET ALL on release, the reused
+    # connection STILL resolves bare names to the configured schema.
+    assert NON_DEFAULT_SCHEMA in sp2, (
+        f're-acquire search_path was {sp2!r} -- RESET ALL wiped the '
+        f'server_settings search_path (production bug)'
+    )
+    assert landed2 == NON_DEFAULT_SCHEMA, (
+        f'post-RESET-ALL bare table landed in {landed2!r}, not '
+        f'{NON_DEFAULT_SCHEMA!r}'
+    )
