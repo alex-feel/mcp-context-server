@@ -742,6 +742,28 @@ class SummarySettings(CommonSettings):
                     'When set, passed directly as effort= to ChatAnthropic constructor.',
     )
 
+    @field_validator('openai_reasoning_effort', 'anthropic_effort', mode='before')
+    @classmethod
+    def _empty_effort_to_none(cls, value: object) -> object:
+        """Fold an empty/whitespace-only effort string to None.
+
+        Environment variables cannot express Python ``None``, so the documented
+        way to omit the effort parameter is an empty value (e.g.
+        ``SUMMARY_OPENAI_REASONING_EFFORT=``). Without this coercion the empty
+        string reaches the provider verbatim: ``ChatOpenAI`` would be handed
+        ``reasoning_effort=''`` (rejected by the OpenAI API), and the Anthropic
+        ``Literal`` would reject ``''`` at startup. Folding the empty string to
+        ``None`` makes the documented "set to empty to omit" idiom work for both
+        fields while leaving every non-empty value to its own validation.
+
+        Returns:
+            ``None`` when ``value`` is an empty or whitespace-only string,
+            otherwise ``value`` unchanged.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
 
 class FtsSettings(FeatureToggleSettings):
     """Full-text search feature configuration.
