@@ -141,6 +141,35 @@ class TestSimpleTokenVerifier:
             assert result is None
 
     @pytest.mark.asyncio
+    async def test_verify_token_non_ascii_returns_none_not_raises(self) -> None:
+        """A non-ASCII bearer token rejects cleanly instead of crashing.
+
+        hmac.compare_digest raises TypeError on str operands containing non-ASCII
+        characters; verify_token compares UTF-8 bytes so a non-ASCII client token is
+        an ordinary mismatch (None -> 401) rather than an uncaught error (500).
+        """
+        with patch.dict(os.environ, {'MCP_AUTH_TOKEN': 'valid-token'}, clear=False):
+            from app.auth.simple_token import SimpleTokenVerifier
+
+            verifier = SimpleTokenVerifier()
+            result = await verifier.verify_token('töken-with-accent')
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_verify_token_non_ascii_exact_match_succeeds(self) -> None:
+        """A configured non-ASCII token still matches its exact value (byte compare)."""
+        secret = 'töken-Ünïcode'
+        with patch.dict(os.environ, {'MCP_AUTH_TOKEN': secret}, clear=False):
+            from app.auth.simple_token import SimpleTokenVerifier
+
+            verifier = SimpleTokenVerifier()
+            result = await verifier.verify_token(secret)
+
+            assert result is not None
+            assert result.token == secret
+
+    @pytest.mark.asyncio
     async def test_verify_token_with_custom_client_id(self) -> None:
         """verify_token should use custom client_id from settings."""
         with patch.dict(
