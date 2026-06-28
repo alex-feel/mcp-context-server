@@ -412,6 +412,12 @@ reportAttributeAccessIssue = false
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# Default per-test timeout (pytest-timeout). A generous ceiling that no legitimate
+# unit or integration test approaches; it converts an accidental un-mocked network
+# call (e.g. to a real Ollama host) from an indefinite hang into a fast, stack-traced
+# failure. timeout_method="thread" is required on Windows (the signal method is POSIX-only).
+timeout = 600
+timeout_method = "thread"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow tests (deselect with '-m \"not slow\"')",

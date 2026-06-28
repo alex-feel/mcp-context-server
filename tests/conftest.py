@@ -87,7 +87,6 @@ import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.settings import AppSettings
-from tests.helpers import is_ollama_model_available
 
 # ============================================================================
 # Conditional Skip Helpers for Optional Dependencies
@@ -143,11 +142,6 @@ requires_numpy = pytest.mark.skipif(
 requires_semantic_search = pytest.mark.skipif(
     not are_semantic_search_deps_available(),
     reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
-)
-
-requires_ollama_model = pytest.mark.skipif(
-    not is_ollama_model_available(),
-    reason='Ollama model not available (service not running or no model installed)',
 )
 
 requires_chunking = pytest.mark.skipif(
