@@ -527,21 +527,26 @@ class SQLiteBackend:
             self._shutdown_complete.set()
 
     def _load_sqlite_vec_extension(self, conn: sqlite3.Connection) -> None:
-        """Load sqlite-vec extension on connection when embedding generation is enabled.
+        """Load the sqlite-vec extension on a connection whenever it is installed.
 
         Args:
             conn: SQLite connection
 
         Note:
-            This method is safe to call even if sqlite_vec is not installed.
-            It will gracefully skip loading if the package is not available.
+            This method is safe to call even if sqlite_vec is not installed; it
+            gracefully skips loading when the package is unavailable. The load is
+            NOT gated on embedding generation: the fp32 vec0 virtual table can
+            physically persist from an earlier session that had generation
+            enabled, and the delete/update stale-embedding cleanup paths gate on
+            the durable ``embedding_tables_exist()`` table-presence signal rather
+            than the runtime generation toggle. The vec0 module must therefore be
+            available on every connection whenever that table could exist; if it
+            is absent, any access to the table raises ``no such module: vec0`` --
+            silently orphaning the FK-less vec0 rows on delete and rolling back
+            text updates. Loading is ImportError-guarded and idempotent, so
+            attempting it unconditionally is harmless when no vec table exists or
+            when compression replaced it with the BLOB layout.
         """
-        # The fp32 vec0 virtual table needs this extension; the compressed BLOB
-        # table does not, but loading it under generation_enabled is harmless and
-        # covers both layouts.
-        if not settings.embedding.generation_enabled:
-            return
-
         # Check if already loaded to avoid duplicate loading
         if hasattr(conn, '_vec_loaded') and getattr(conn, '_vec_loaded', False):
             return
