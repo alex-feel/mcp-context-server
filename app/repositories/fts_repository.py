@@ -69,6 +69,7 @@ _FTS5_GRAMMAR_ERROR_FRAGMENTS = (
     'unterminated',
     'no such column',
     'malformed match expression',
+    'unknown special query',
 )
 
 
@@ -77,10 +78,11 @@ def _is_fts5_grammar_error(exc: sqlite3.OperationalError) -> bool:
 
     Boolean mode forwards the user's raw query to FTS5 MATCH to expose native FTS5 boolean
     syntax. Malformed input (unbalanced parentheses, a leading/trailing/bare operator, a stray
-    ':' column filter, an unterminated string) makes FTS5 raise one of a small set of grammar
-    errors; those are the only cases the boolean search path degrades to a safe term match. Any
-    other OperationalError (locked database, disk I/O, missing table) is an operational fault
-    and MUST propagate unchanged.
+    ':' column filter, an unterminated string, or a leading '*' that FTS5 reads as an unknown
+    special-query token) makes FTS5 raise one of a small set of grammar errors; those are the
+    only cases the boolean search path degrades to a safe term match. Any other OperationalError
+    (locked database, disk I/O, missing table) is an operational fault and MUST propagate
+    unchanged.
 
     Args:
         exc: The OperationalError raised while executing a MATCH query.

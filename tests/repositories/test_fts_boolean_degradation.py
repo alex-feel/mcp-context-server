@@ -72,6 +72,8 @@ _MALFORMED_BOOLEAN = [
     'error : handling',  # stray colon -> "no such column"
     'c++ error',  # bare special characters
     'error OR (',  # dangling operator + unbalanced parenthesis
+    '*error',  # leading '*' -> FTS5 "unknown special query"
+    '* error handling',  # leading bare '*' special-query token
 ]
 
 # The subset whose surviving terms still match the seeded document after degradation.
@@ -92,6 +94,7 @@ class TestFtsGrammarErrorClassification:
         assert _is_fts5_grammar_error(sqlite3.OperationalError('no such column: error')) is True
         assert _is_fts5_grammar_error(sqlite3.OperationalError('unterminated string')) is True
         assert _is_fts5_grammar_error(sqlite3.OperationalError('malformed MATCH expression')) is True
+        assert _is_fts5_grammar_error(sqlite3.OperationalError('unknown special query: error')) is True
 
     def test_operational_faults_are_not_grammar_errors(self) -> None:
         """A locked database or disk fault is NOT a grammar error and must propagate."""
