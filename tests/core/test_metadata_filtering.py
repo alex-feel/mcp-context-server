@@ -83,8 +83,8 @@ class TestMetadataQueryBuilder:
         ],
     )
     def test_pg_numeric_guards_number_type(self, operator: MetadataOperator) -> None:
-        """Numeric operators are number-typed-only on PostgreSQL: the cast is guarded
-        by ``jsonb_typeof(...) = 'number'`` yielding NULL for every non-number value
+        """Numeric operators are number-typed-only on PostgreSQL: an explicit
+        ``jsonb_typeof(...) = 'number'`` AND-guard excludes every non-number value
         (text/bool/json-null/absent), so the query never aborts and a non-number never
         matches. There is no ``ELSE 0`` coercion (that diverged from SQLite for booleans
         and numeric-prefix strings); both backends use the same number-only contract."""
@@ -94,9 +94,9 @@ class TestMetadataQueryBuilder:
         )
         clause, _params = builder.build_where_clause()
         assert "jsonb_typeof(metadata->'priority') = 'number'" in clause
-        assert 'ELSE NULL' in clause
-        assert 'ELSE 0' not in clause
         assert '::NUMERIC' in clause
+        assert 'ELSE 0' not in clause
+        assert '::DOUBLE PRECISION' not in clause
 
     @pytest.mark.parametrize(
         'operator',
@@ -124,22 +124,68 @@ class TestMetadataQueryBuilder:
             MetadataOperator.GT, MetadataOperator.GTE, MetadataOperator.LT, MetadataOperator.LTE,
         ],
     )
-    def test_pg_float_param_casts_double_precision(self, operator: MetadataOperator) -> None:
-        """A FLOAT numeric param casts the stored value through DOUBLE PRECISION on
-        PostgreSQL so the bound IEEE double matches SQLite (asyncpg would otherwise encode
-        a float in a NUMERIC context as its full Decimal expansion, diverging for non-dyadic
-        fractions like 0.3); an INTEGER param keeps NUMERIC for exact equality past 2**53."""
+    def test_pg_float_param_matches_sqlite_exact_semantics(self, operator: MetadataOperator) -> None:
+        """On PostgreSQL a FLOAT param branches on the stored value's integrality to match
+        SQLite's exact integer/double comparison: an integral stored value compares exact NUMERIC
+        against the param's exact double value, a fractional stored value compares double-vs-double
+        (both snapped to float8). The stored side is never down-cast through DOUBLE PRECISION (which
+        truncated a stored integer > 2**53) and the param is never run through float8::numeric
+        (which rounds to ~15 significant digits); an INTEGER param compares exact NUMERIC for every
+        stored value."""
         fbuilder = MetadataQueryBuilder(backend_type='postgresql')
         fbuilder.add_advanced_filter(MetadataFilter(key='score', operator=operator, value=0.3))
         fclause, _ = fbuilder.build_where_clause()
-        assert '::DOUBLE PRECISION' in fclause
-        assert '::NUMERIC' not in fclause
+        # Float param: integrality CASE (trunc), double-vs-double fractional branch (::float8),
+        # exact NUMERIC stored side; never DOUBLE PRECISION, never float8::numeric on the param.
+        assert 'trunc(' in fclause
+        assert '::float8' in fclause
+        assert ')::NUMERIC' in fclause
+        assert '::DOUBLE PRECISION' not in fclause
+        assert '::float8::numeric' not in fclause
 
         ibuilder = MetadataQueryBuilder(backend_type='postgresql')
         ibuilder.add_advanced_filter(MetadataFilter(key='score', operator=operator, value=5))
         iclause, _ = ibuilder.build_where_clause()
-        assert '::NUMERIC' in iclause
+        # Integer param: exact NUMERIC, no integrality CASE, no float8, no DOUBLE PRECISION.
+        assert ')::NUMERIC' in iclause
+        assert 'trunc(' not in iclause
+        assert '::float8' not in iclause
         assert '::DOUBLE PRECISION' not in iclause
+
+    def test_pg_high_magnitude_int_not_truncated_by_float_param(self) -> None:
+        """A float param must not truncate a stored high-magnitude integer on PostgreSQL.
+
+        Regression for the cross-backend divergence where a stored integer > 2**53 was down-cast
+        through DOUBLE PRECISION (losing its low bits) -- and where folding the param via
+        float8::numeric rounds to ~15 significant digits -- so the same metadata_filter returned
+        different rows than SQLite. The fix reads the stored value as exact NUMERIC and branches on
+        its integrality, across the advanced EQ path, the IN per-member path, and the
+        simple-equality path."""
+        # Advanced EQ with a float param: integrality CASE, exact NUMERIC stored, no truncation.
+        eq = MetadataQueryBuilder(backend_type='postgresql')
+        eq.add_advanced_filter(MetadataFilter(key='n', operator=MetadataOperator.EQ, value=9007199254740992.0))
+        eq_clause, _ = eq.build_where_clause()
+        assert '::DOUBLE PRECISION' not in eq_clause
+        assert '::float8::numeric' not in eq_clause
+        assert 'trunc(' in eq_clause
+        assert ')::NUMERIC' in eq_clause
+
+        # IN with a float member: same per-member integrality CASE, no stored-side truncation.
+        in_b = MetadataQueryBuilder(backend_type='postgresql')
+        in_b.add_advanced_filter(MetadataFilter(key='n', operator=MetadataOperator.IN, value=[9007199254740992.0]))
+        in_clause, _ = in_b.build_where_clause()
+        assert '::DOUBLE PRECISION' not in in_clause
+        assert '::float8::numeric' not in in_clause
+        assert 'trunc(' in in_clause
+
+        # Simple metadata={} equality with a float value uses the same guard + body.
+        simple = MetadataQueryBuilder(backend_type='postgresql')
+        simple.add_simple_filter('n', 9007199254740992.0)
+        simple_clause, _ = simple.build_where_clause()
+        assert '::DOUBLE PRECISION' not in simple_clause
+        assert '::float8::numeric' not in simple_clause
+        assert 'trunc(' in simple_clause
+        assert ')::NUMERIC' in simple_clause
 
     @pytest.mark.parametrize('operator', [MetadataOperator.EQ, MetadataOperator.NE])
     def test_boolean_guards_boolean_type(self, operator: MetadataOperator) -> None:

@@ -805,9 +805,10 @@ class MCPServerIntegrationTest:
         PostgreSQL ``::NUMERIC`` context is encoded as its FULL Decimal expansion (0.3 ->
         0.2999999999999999888...), so ``'0.3'::NUMERIC = $1`` was False (and ``> 0.3`` on a
         stored 0.3 wrongly True) while SQLite -- comparing the bit-identical IEEE double on
-        both sides -- matched. The fix casts a float param through ``DOUBLE PRECISION`` on
-        PostgreSQL so both backends compare the same IEEE double. Uses non-dyadic fractions
-        (0.1, 0.3) that are NOT exactly representable, which the integer/3.5 dataset misses.
+        both sides -- matched. The fix folds a float param via ``(<ph>)::float8::numeric`` on
+        PostgreSQL so both backends compare the same IEEE double against the exact stored
+        NUMERIC. Uses non-dyadic fractions (0.1, 0.3) that are NOT exactly representable, which
+        the integer/3.5 dataset misses.
 
         Returns:
             bool: True if all tests pass.
@@ -855,6 +856,79 @@ class MCPServerIntegrationTest:
                     return False
 
             print('[OK] All non-dyadic float metadata-filter parity tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_metadata_filter_high_magnitude_int_float_param_parity(self) -> bool:
+        """A high-magnitude stored integer (> 2**53) filtered by a FLOAT param agrees across backends.
+
+        Regression for the cross-backend divergence introduced by an earlier parity fix that cast
+        the STORED value through ``DOUBLE PRECISION`` for a float param: a stored integer like
+        2**53+1 lost its low bits on PostgreSQL (folding to 2**53) so ``eq 2**53.0`` matched on
+        PostgreSQL but NOT on SQLite (which compares the exact integer), and ``gt`` was the mirror
+        image. The fix reads the stored value as exact NUMERIC and folds only the float param, so a
+        stored integer is never truncated. Running the SAME expected counts on both backends proves
+        parity by construction; the buggy PostgreSQL path produced different counts than SQLite for
+        eq/gt/in here.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter High-Magnitude Int Float-Param Parity'
+        print('Testing high-magnitude-int vs float-param metadata-filter parity...')
+        thread = f'{self.test_thread_id}_bigint_parity'
+        # BIG = 2**53 + 1 (NOT representable as a double -> would fold to 2**53 under a stored-side
+        # DOUBLE PRECISION cast); SMALL = 2**53 - 1 (exactly representable); float param = 2**53.
+        big = 9007199254740993
+        small = 9007199254740991
+        fparam = 9007199254740992.0
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'big 2**53+1', 'metadata': {'n': big}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'small 2**53-1', 'metadata': {'n': small}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store high-magnitude-int entries'))
+                    return False
+
+            # SQLite (exact int-vs-real) defines the expected counts; the fix makes PostgreSQL match.
+            # Under the old DOUBLE-PRECISION-stored bug, PG 'eq fparam' wrongly matched BIG (1) and
+            # 'gt fparam' wrongly missed it (0) -- the opposite of SQLite.
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('eq float 2**53', [{'key': 'n', 'operator': 'eq', 'value': fparam}], 0),    # neither equals 2**53
+                ('gt float 2**53', [{'key': 'n', 'operator': 'gt', 'value': fparam}], 1),    # {BIG}
+                ('gte float 2**53', [{'key': 'n', 'operator': 'gte', 'value': fparam}], 1),  # {BIG}
+                ('lt float 2**53', [{'key': 'n', 'operator': 'lt', 'value': fparam}], 1),    # {SMALL}
+                ('lte float 2**53', [{'key': 'n', 'operator': 'lte', 'value': fparam}], 1),  # {SMALL}
+                ('in float 2**53', [{'key': 'n', 'operator': 'in', 'value': [fparam]}], 0),  # neither equals 2**53
+                ('eq int BIG', [{'key': 'n', 'operator': 'eq', 'value': big}], 1),           # int param stays exact
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'bigint-parity {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All high-magnitude-int float-param metadata-filter parity tests passed')
             self.test_results.append((test_name, True, 'All tests passed'))
             return True
 
@@ -11606,6 +11680,10 @@ class MCPServerIntegrationTest:
             ('Metadata Filter LIKE Wildcard Literal', self.test_metadata_filter_like_wildcard_literal),
             ('Metadata Filter Numeric Type Parity', self.test_metadata_filter_numeric_type_parity),
             ('Metadata Filter Float Precision Parity', self.test_metadata_filter_float_precision_parity),
+            (
+                'Metadata Filter High-Magnitude Int Float-Param Parity',
+                self.test_metadata_filter_high_magnitude_int_float_param_parity,
+            ),
             ('Metadata Filter Boolean Type Parity', self.test_metadata_filter_boolean_type_parity),
             ('Metadata Filter GLOB Special Literal', self.test_metadata_filter_glob_special_literal),
             ('Semantic Hybrid Metadata Dict', self.test_semantic_hybrid_metadata_is_dict),
