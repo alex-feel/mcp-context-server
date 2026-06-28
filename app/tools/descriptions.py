@@ -184,7 +184,8 @@ boolean: Boolean operators for precise control.
   Syntax: AND, OR, NOT (UPPERCASE required)
   Example: "python AND (async OR await) NOT blocking"
   Grouping: Full parentheses support
-  Note: Use double quotes for phrases within boolean: '"error handling" AND python\''''
+  Note: Use double quotes for phrases within boolean: '"error handling" AND python'
+  Note: Malformed syntax (e.g. unbalanced parentheses) degrades to a best-effort term match rather than raising an error.'''
 
 
 # PostgreSQL-specific mode descriptions

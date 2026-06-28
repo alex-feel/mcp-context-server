@@ -10096,6 +10096,73 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_fts_search_malformed_boolean_parity(self) -> bool:
+        """Verify malformed boolean FTS queries degrade gracefully on BOTH backends.
+
+        A malformed boolean query (an unbalanced parenthesis) used to raise an
+        'fts5: syntax error' ToolError on SQLite while PostgreSQL's tolerant
+        websearch_to_tsquery returned results -- a cross-backend MCP-contract
+        divergence for byte-identical arguments. SQLite now degrades a malformed
+        boolean query to the crash-safe sanitized term match, so both backends
+        return a result set (no hard ToolError). A well-formed boolean query keeps
+        working natively on both, exercising each backend's documented boolean syntax.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'fts_search_malformed_boolean_parity'
+        assert self.client is not None
+        try:
+            stats = await self.client.call_tool('get_statistics', {})
+            stats_data = self._extract_content(stats)
+            fts_info = stats_data.get('fts', {})
+            if not (fts_info.get('enabled') and fts_info.get('available')):
+                self.test_results.append((test_name, True, 'Skipped (FTS unavailable)'))
+                return True
+
+            mb_thread = f'{self.test_thread_id}_fts_malformed_boolean'
+            await self.client.call_tool('store_context', {
+                'thread_id': mb_thread, 'source': 'agent',
+                'text': 'Structured error handling guidance for resilient services',
+            })
+
+            # Malformed boolean (unbalanced parenthesis): raised 'fts5: syntax error' on
+            # SQLite while PostgreSQL returned results. Both must now return a result set
+            # (no hard ToolError) and still find the entry via best-effort term recall.
+            malformed_result = await self.client.call_tool('fts_search_context', {
+                'query': 'error AND (handling', 'mode': 'boolean',
+                'thread_id': mb_thread, 'limit': 10,
+            })
+            malformed_data = self._extract_content(malformed_result)
+            if 'results' not in malformed_data:
+                self.test_results.append((test_name, False,
+                    f'Malformed boolean did not return a result set: {malformed_data}'))
+                return False
+            if len(malformed_data.get('results', [])) < 1:
+                self.test_results.append((test_name, False,
+                    'Malformed boolean degraded to zero results (expected best-effort recall)'))
+                return False
+
+            # Well-formed boolean still works (each backend's native syntax: 'AND' is an FTS5
+            # operator on SQLite and an ignored stop word on PostgreSQL websearch -- both AND
+            # the surviving lexemes, so the entry matches on both).
+            valid_result = await self.client.call_tool('fts_search_context', {
+                'query': 'error AND handling', 'mode': 'boolean',
+                'thread_id': mb_thread, 'limit': 10,
+            })
+            valid_data = self._extract_content(valid_result)
+            if len(valid_data.get('results', [])) < 1:
+                self.test_results.append((test_name, False,
+                    f'Well-formed boolean returned no results: {valid_data}'))
+                return False
+
+            self.test_results.append((test_name, True,
+                'Malformed boolean degrades gracefully on both backends; valid boolean unaffected'))
+            return True
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_hybrid_search_rrf_scores_ordering(self) -> bool:
         """Verify hybrid search results are ordered by RRF score (highest first).
 
@@ -11785,6 +11852,7 @@ class MCPServerIntegrationTest:
             ('Content Type Filter Multimodal', self.test_search_context_content_type_filter_multimodal),
             ('FTS Match Stemming', self.test_fts_search_match_mode_stemming),
             ('FTS NOT Operator', self.test_fts_search_not_operator_exclusion),
+            ('FTS Malformed Boolean Parity', self.test_fts_search_malformed_boolean_parity),
             ('Hybrid RRF Score Ordering', self.test_hybrid_search_rrf_scores_ordering),
             ('Explain Query False No Stats', self.test_search_context_explain_query_false_no_stats),
             ('Dedup Preserves Tags', self.test_store_context_dedup_preserves_tags_when_none),

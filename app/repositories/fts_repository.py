@@ -64,6 +64,34 @@ def sanitize_sqlite_fts_terms(tokens: list[str]) -> list[str]:
     return terms
 
 
+_FTS5_GRAMMAR_ERROR_FRAGMENTS = (
+    'fts5: syntax error',
+    'unterminated',
+    'no such column',
+    'malformed match expression',
+)
+
+
+def _is_fts5_grammar_error(exc: sqlite3.OperationalError) -> bool:
+    """Return True if exc is an FTS5 MATCH query-grammar error (not an operational fault).
+
+    Boolean mode forwards the user's raw query to FTS5 MATCH to expose native FTS5 boolean
+    syntax. Malformed input (unbalanced parentheses, a leading/trailing/bare operator, a stray
+    ':' column filter, an unterminated string) makes FTS5 raise one of a small set of grammar
+    errors; those are the only cases the boolean search path degrades to a safe term match. Any
+    other OperationalError (locked database, disk I/O, missing table) is an operational fault
+    and MUST propagate unchanged.
+
+    Args:
+        exc: The OperationalError raised while executing a MATCH query.
+
+    Returns:
+        True if the error message identifies an FTS5 query-grammar error.
+    """
+    message = str(exc).lower()
+    return any(fragment in message for fragment in _FTS5_GRAMMAR_ERROR_FRAGMENTS)
+
+
 def desired_sqlite_fts_tokenizer(language: str) -> str:
     """Map an FTS_LANGUAGE setting to the SQLite FTS5 tokenizer.
 
@@ -362,7 +390,7 @@ class FtsRepository(BaseRepository):
             # short-circuit. The empty stats also carry the same `filters_applied` count and,
             # under explain_query, a `query_plan` key the PostgreSQL path emits, so the stats
             # shape stays backend-consistent for the all-stopword case.
-            if not fts_query.strip():
+            def _empty_result(plan_note: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
                 empty_filter_count = sum([
                     1 if thread_id else 0,
                     1 if source else 0,
@@ -378,11 +406,14 @@ class FtsRepository(BaseRepository):
                     'backend': 'sqlite',
                 }
                 if explain_query:
-                    empty_stats['query_plan'] = (
-                        'Query short-circuited: empty FTS query (all tokens were '
-                        'operators/stopwords); 0 rows, no SQL executed.'
-                    )
+                    empty_stats['query_plan'] = plan_note
                 return [], empty_stats
+
+            if not fts_query.strip():
+                return _empty_result(
+                    'Query short-circuited: empty FTS query (all tokens were '
+                    'operators/stopwords); 0 rows, no SQL executed.',
+                )
 
             where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
@@ -419,8 +450,33 @@ class FtsRepository(BaseRepository):
             # Combine params: filter_params + fts_query + limit + offset
             params = [*filter_params, fts_query, limit, offset]
 
-            cursor = conn.execute(sql_query, params)
-            rows = cursor.fetchall()
+            try:
+                cursor = conn.execute(sql_query, params)
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError as exc:
+                # Boolean mode forwards the raw query to FTS5 MATCH so native FTS5 boolean syntax
+                # (AND/OR/NOT, parentheses, quoted phrases) reaches the engine intact -- it is the
+                # one SQLite mode not pre-sanitized. A MALFORMED boolean query (unbalanced parens,
+                # a dangling operator, a stray ':' column filter) makes FTS5 raise a grammar error;
+                # PostgreSQL's websearch_to_tsquery never raises for the same input, so without
+                # this guard the identical fts_search_context(mode='boolean') call hard-errors on
+                # SQLite but succeeds on PostgreSQL and leaks the raw engine message to the client.
+                # Degrade a malformed boolean query to the crash-safe sanitized term match (the
+                # shared 'match' transform): a VALID boolean query executed above and never reaches
+                # here, while a malformed one returns best-effort results instead of erroring --
+                # matching PostgreSQL's tolerant contract without altering the documented native
+                # syntax. Any non-grammar OperationalError (locked DB, disk I/O) propagates.
+                if mode != 'boolean' or not _is_fts5_grammar_error(exc):
+                    raise
+                safe_query = self._transform_query_sqlite(query, 'match')
+                if not safe_query.strip():
+                    return _empty_result(
+                        'Query short-circuited: malformed boolean query reduced to no '
+                        'searchable terms; 0 rows.',
+                    )
+                params = [*filter_params, safe_query, limit, offset]
+                cursor = conn.execute(sql_query, params)
+                rows = cursor.fetchall()
 
             results = [dict(row) for row in rows]
 
@@ -813,8 +869,14 @@ class FtsRepository(BaseRepository):
             return ' '.join(prefix_terms)
 
         if mode == 'boolean':
-            # Boolean mode - pass through as-is (user provides AND/OR/NOT)
-            # User is responsible for quoting hyphenated words
+            # Boolean mode passes the query through UNCHANGED so the user's native FTS5 boolean
+            # syntax (AND/OR/NOT uppercase, parentheses, quoted phrases) reaches MATCH intact --
+            # the one SQLite mode that is NOT pre-sanitized here. A malformed boolean query would
+            # make FTS5 raise a grammar error; _search_sqlite catches that at execution and
+            # degrades to the safe sanitized term match, so a valid query is unaffected while a
+            # malformed one returns best-effort results instead of erroring (parity with
+            # PostgreSQL's tolerant websearch_to_tsquery). The user is responsible for quoting
+            # hyphenated words.
             return query
 
         # 'match' - default (AND logic). Sanitize each token to a safe FTS5 string literal so a
