@@ -607,11 +607,14 @@ class TestAdaptiveFtsMode:
             # No raw operator bareword survives outside quotes (it is wrapped as a string).
             db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (transformed,)).fetchall()
 
-    def test_sqlite_all_operator_query_does_not_crash(self) -> None:
+    def test_sqlite_all_operator_query_returns_empty_sentinel(self) -> None:
         """A query whose significant terms are ALL operator stopwords (and/or/not) empties
-        the OR list; the SQLite empty-fallback must NOT return the raw query (an uppercase
-        FTS5 operator would raise a MATCH syntax error) but a harmless literal phrase that
-        runs with zero results -- matching PostgreSQL's tolerance for the same input."""
+        the term list; the SQLite transform must return the '' match-nothing sentinel -- NOT
+        a literal phrase (FTS5 porter/unicode61 keeps the dropped word as a token, so the
+        phrase would MATCH every document containing it, diverging from PostgreSQL's empty
+        tsquery) and NOT a raw uppercase operator (which would raise an FTS5 MATCH syntax
+        error). _search_sqlite short-circuits '' to an empty result set, so MATCH is never
+        executed with the sentinel."""
         import sqlite3
         from typing import cast
 
@@ -629,8 +632,11 @@ class TestAdaptiveFtsMode:
         for raw in ['AND OR NOT AND', 'NOT NOT NOT NOT', 'OR OR OR OR']:
             adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
             fts = repo._transform_query_sqlite(adaptive, mode)
-            # Must execute without an FTS5 syntax error (and match nothing).
-            rows = db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
+            # All tokens were operator barewords -> the empty match-nothing sentinel.
+            assert fts == ''
+            # _search_sqlite skips MATCH on the empty sentinel; mirror that guard here so
+            # MATCH is never run with '' (which FTS5 rejects), yielding zero results.
+            rows = [] if not fts else db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
             assert rows == []
 
     def test_sqlite_short_query_operators_do_not_crash(self) -> None:
@@ -658,7 +664,9 @@ class TestAdaptiveFtsMode:
             adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
             assert mode == 'match'
             fts = repo._transform_query_sqlite(adaptive, mode)
-            rows = db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
+            # An all-operator query transforms to the '' match-nothing sentinel, which
+            # _search_sqlite short-circuits (FTS5 rejects MATCH ''); mirror that guard here.
+            rows = [] if not fts else db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
             assert (len(rows) > 0) is expect_match, f'{raw!r} -> {fts!r}'
 
     def test_sqlite_boolean_mode_drops_operator_stopwords(self) -> None:
@@ -826,3 +834,43 @@ class TestAdaptiveFtsMode:
         )
         assert mode == 'boolean'
         assert '"error-handling"' in query
+
+    def test_sqlite_short_match_returns_raw_query_for_single_transform(self) -> None:
+        """A short SQLite query is returned RAW (not pre-sanitized) so _transform_query_sqlite
+        sanitizes it exactly once -- identically to standalone fts_search_context."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query('python async', or_threshold=4, backend_type='sqlite')
+        assert mode == 'match'
+        assert query == 'python async'  # raw; the single downstream transform does the escaping
+
+    def test_sqlite_embedded_quote_token_not_double_mangled(self) -> None:
+        """An embedded-double-quote token yields the SAME single-phrase FTS5 form via the hybrid
+        path as via standalone fts_search_context -- no non-idempotent double sanitize.
+
+        Pre-sanitizing in the hybrid builder AND re-sanitizing in _transform_query_sqlite split
+        the escaped phrase ``"ab""cd"`` into two phrases ``"ab" "cd"`` (because _FTS_TOKEN_RE
+        re-tokenizes the escaped run), diverging hybrid recall from standalone for the same
+        input. Deferring all escaping to the one downstream transform keeps them identical.
+        """
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+        from app.repositories.fts_repository import FtsRepository
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        class _FB:
+            backend_type = 'sqlite'
+
+        repo = FtsRepository(cast(StorageBackend, _FB()))
+        raw = 'ab"cd ef'
+        # Hybrid short path returns the raw query; the single downstream transform escapes it.
+        adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+        assert mode == 'match'
+        hybrid_fts = repo._transform_query_sqlite(adaptive, mode)
+        # Standalone fts_search_context passes the raw query straight to the same transform.
+        standalone_fts = repo._transform_query_sqlite(raw, 'match')
+        assert hybrid_fts == standalone_fts
+        # The correct single-phrase escaped form, NOT the split-into-two-phrases mangling.
+        assert hybrid_fts == '"ab""cd" "ef"'
+        assert hybrid_fts != '"ab" "cd" "ef"'

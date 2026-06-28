@@ -22,6 +22,44 @@ from pydantic import Field
 from pydantic import ValidationInfo
 from pydantic import field_validator
 
+_INT64_MAX = (1 << 63) - 1
+_INT64_MIN = -(1 << 63)
+
+
+def reject_out_of_int64(
+    value: str | float | bool | list[str | int | float | bool] | None,
+) -> None:
+    """Reject integer metadata-filter values outside the signed 64-bit range on BOTH backends.
+
+    SQLite binds a Python int as a 64-bit column value and raises OverflowError
+    ('Python int too large to convert to SQLite INTEGER') for anything outside
+    [-2**63, 2**63-1], aborting the whole search, while PostgreSQL binds the same
+    int into an arbitrary-precision NUMERIC (or jsonb) context and matches
+    normally -- a hard cross-backend divergence across every numeric operator
+    (eq/ne/gt/gte/lt/lte/in/not_in/array_contains) and the simple metadata={}
+    equality path. SQLite cannot store or compare a >64-bit integer exactly, so
+    PostgreSQL's arbitrary-precision match has no SQLite counterpart; the only
+    parity-correct contract is to reject such a value uniformly (matching the
+    dotted-integer-segment rejection in validate_key). bool is an int subclass but
+    is always in range and is never coerced numerically here, so it is unaffected.
+
+    Args:
+        value: A scalar metadata-filter value, or a list of them (IN/NOT_IN).
+
+    Raises:
+        ValueError: If any integer member is outside [-2**63, 2**63-1].
+    """
+    candidates: list[object] = list(value) if isinstance(value, list) else [value]
+    for candidate in candidates:
+        if isinstance(candidate, bool):
+            continue
+        if isinstance(candidate, int) and not (_INT64_MIN <= candidate <= _INT64_MAX):
+            raise ValueError(
+                f'Integer metadata-filter value {candidate} is outside the supported signed '
+                f'64-bit range [-2**63, 2**63-1]. SQLite cannot store or compare an integer this '
+                f'large, so it is rejected on both backends for cross-backend parity.',
+            )
+
 
 class MetadataOperator(StrEnum):
     """Comprehensive metadata comparison operators.
@@ -82,6 +120,30 @@ class MetadataFilter(BaseModel):
         if not re.match(r'^[a-zA-Z0-9_.-]+$', v):
             raise ValueError(
                 f'Invalid metadata key: {v}. Only alphanumeric characters, dots, underscores, and hyphens are allowed.',
+            )
+
+        # Reject integer path segments after the first: such a segment (e.g. 'items.0',
+        # 'a.-1') array-indexes on PostgreSQL but resolves to a literal object key on
+        # SQLite, a silent cross-backend divergence. Dotted array indexing was never a
+        # documented capability, so forbid it on both backends (parity by construction).
+        if any(re.fullmatch(r'-?\d+', seg) for seg in v.split('.')[1:]):
+            raise ValueError(
+                f'Invalid metadata key: {v}. Numeric path segments after the first '
+                f'(e.g. "items.0") are not allowed: they array-index on PostgreSQL but '
+                f'resolve to a literal object key on SQLite.',
+            )
+
+        # Reject empty path segments (a leading '.x', trailing 'x.', consecutive 'a..b',
+        # or the degenerate '.'/'..'). On PostgreSQL the metadata #>> accessor builds an
+        # array literal like '{a,,b}' that the array-literal parser rejects (a raw error
+        # surfaced to the client), while SQLite either silently treats a trailing empty
+        # segment as an absent path or raises a different JSON-path error -- a silent
+        # cross-backend divergence. Forbid on both backends (parity by construction),
+        # mirroring the numeric-segment rejection above.
+        if '' in v.split('.'):
+            raise ValueError(
+                f'Invalid metadata key: {v}. Empty path segments (leading, trailing, or '
+                f'consecutive dots) are not allowed.',
             )
 
         return v.strip()
@@ -160,5 +222,12 @@ class MetadataFilter(BaseModel):
                 raise ValueError('Operator array_contains requires a single value, not a list')
             if v is None:
                 raise ValueError('Operator array_contains requires a non-null value')
+
+        # Reject integer values outside the signed 64-bit range on BOTH backends.
+        # The identical guard runs at the simple metadata={} equality builder
+        # (MetadataQueryBuilder.add_simple_filter), so the advanced metadata_filters
+        # path and the simple path reject an out-of-range integer the same way --
+        # see reject_out_of_int64 for the full cross-backend rationale.
+        reject_out_of_int64(v)
 
         return v

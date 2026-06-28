@@ -64,6 +64,26 @@ def sanitize_sqlite_fts_terms(tokens: list[str]) -> list[str]:
     return terms
 
 
+def desired_sqlite_fts_tokenizer(language: str) -> str:
+    """Map an FTS_LANGUAGE setting to the SQLite FTS5 tokenizer.
+
+    The single source of truth for the language->tokenizer rule, shared by the FTS
+    migration (server startup), FtsRepository.get_desired_tokenizer (the rebuild check),
+    and the migration CLI's SQLite target initialization, so they cannot drift:
+    English benefits from the Porter stemmer; other languages use plain unicode61
+    (proper Unicode tokenization, no English stemming).
+
+    Args:
+        language: The FTS_LANGUAGE setting value.
+
+    Returns:
+        The FTS5 tokenizer string ('porter unicode61' for English, else 'unicode61').
+    """
+    if language.lower() == 'english':
+        return 'porter unicode61'
+    return 'unicode61'
+
+
 if TYPE_CHECKING:
     import asyncpg
 
@@ -230,7 +250,9 @@ class FtsRepository(BaseRepository):
         def _search_sqlite_inner(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             nonlocal metadata_filter_count
             start_time = time_module.time()
-            # Transform query based on mode
+            # Transform query based on mode. An empty transformed query (every token
+            # sanitized to an operator/stopword bareword) is short-circuited to an empty
+            # result set BELOW, AFTER metadata validation -- see the note at that guard.
             fts_query = self._transform_query_sqlite(query, mode)
 
             filter_conditions: list[str] = []
@@ -327,6 +349,40 @@ class FtsRepository(BaseRepository):
 
                 # Track metadata filter count for stats
                 metadata_filter_count = metadata_builder.get_filter_count()
+
+            # An empty transformed query means every token sanitized away (operator/stopword
+            # barewords). FTS5 `MATCH ''` is a syntax error and a literal-phrase fallback would
+            # over-match (FTS5 keeps stopwords as tokens), so short-circuit to an empty result
+            # set -- parity with PostgreSQL's empty tsquery, which @@-matches no rows. Only the
+            # all-bareword match/prefix paths yield ''; phrase/boolean modes never do.
+            #
+            # This guard runs AFTER metadata validation on purpose: an invalid metadata key/
+            # filter must raise FtsValidationError on BOTH backends (PostgreSQL has no early
+            # return and always validates first), never be silently dropped by the SQLite
+            # short-circuit. The empty stats also carry the same `filters_applied` count and,
+            # under explain_query, a `query_plan` key the PostgreSQL path emits, so the stats
+            # shape stays backend-consistent for the all-stopword case.
+            if not fts_query.strip():
+                empty_filter_count = sum([
+                    1 if thread_id else 0,
+                    1 if source else 0,
+                    1 if content_type else 0,
+                    1 if tags else 0,
+                    1 if start_date else 0,
+                    1 if end_date else 0,
+                ]) + metadata_filter_count
+                empty_stats: dict[str, Any] = {
+                    'execution_time_ms': round((time_module.time() - start_time) * 1000, 2),
+                    'filters_applied': empty_filter_count,
+                    'rows_returned': 0,
+                    'backend': 'sqlite',
+                }
+                if explain_query:
+                    empty_stats['query_plan'] = (
+                        'Query short-circuited: empty FTS query (all tokens were '
+                        'operators/stopwords); 0 rows, no SQL executed.'
+                    )
+                return [], empty_stats
 
             where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
@@ -695,15 +751,16 @@ class FtsRepository(BaseRepository):
         Returns:
             PostgreSQL prefix query fragment
         """
-        # Strip existing wildcards
-        clean_word = word.rstrip('*').removesuffix(':')
-
-        if '-' in clean_word:
-            # Split and create AND-ed prefix terms
-            parts = clean_word.split('-')
-            return ' & '.join(f'{part}:*' for part in parts if part)
-
-        return f'{clean_word}:*'
+        # to_tsquery() is STRICT: a bare tsquery operator (&, |, !, parens), a stray ':'
+        # or '*', or an unterminated quote raises "syntax error in tsquery" -- unlike
+        # plainto/phraseto/websearch_to_tsquery, which never raise. Extract only word
+        # characters (Unicode-aware) and emit each as an AND-ed prefix lexeme 'sub:*', so
+        # an adversarial token ('cat(', 'foo:bar', '"x') degrades to safe literal
+        # prefixes. A hyphenated/punctuated word splits into AND-ed prefixes
+        # ("full-text" -> "full:* & text:*"); a token with no word characters yields ''
+        # (dropped by the caller). A user trailing '*'/':' is naturally excluded.
+        parts = re.findall(r'\w+', word)
+        return ' & '.join(f'{part}:*' for part in parts)
 
     def _transform_query_sqlite(
         self,
@@ -746,7 +803,13 @@ class FtsRepository(BaseRepository):
                     continue
                 prefix_terms.append('"' + clean.replace('"', '""') + '"*')
             if not prefix_terms:
-                return f'"{self._escape_double_quotes(query)}"'  # all-operator -> literal phrase
+                # Every token was an operator bareword: match NOTHING (empty result), in
+                # parity with PostgreSQL's empty to_tsquery for the same input. '' is the
+                # caller's "match nothing" sentinel (see _search_sqlite). The earlier
+                # literal-phrase fallback ('"and"') was WRONG: FTS5's porter/unicode61
+                # tokenizer keeps stopwords as tokens, so it matched every document containing
+                # the dropped word while PostgreSQL returned zero -- a cross-backend divergence.
+                return ''
             return ' '.join(prefix_terms)
 
         if mode == 'boolean':
@@ -761,8 +824,12 @@ class FtsRepository(BaseRepository):
         # stemmed, so ordinary-word recall is unchanged. Shared with the hybrid query builder.
         terms = sanitize_sqlite_fts_terms(_FTS_TOKEN_RE.findall(query))
         if not terms:
-            # Every token was an operator bareword -> a harmless literal phrase (zero results).
-            return f'"{self._escape_double_quotes(query)}"'
+            # Every token was an operator/stopword bareword: match NOTHING (empty result), in
+            # parity with PostgreSQL's empty plainto_tsquery for the same input. '' is the
+            # caller's "match nothing" sentinel (see _search_sqlite). A literal-phrase fallback
+            # ('"and"') would instead MATCH every document containing the dropped word (FTS5
+            # porter/unicode61 keeps stopwords as tokens), diverging from PostgreSQL.
+            return ''
         return ' '.join(terms)
 
     def _transform_query_postgresql(
@@ -786,9 +853,14 @@ class FtsRepository(BaseRepository):
         query = query.strip()
 
         if mode == 'prefix':
-            # Prefix matching - handle hyphenated words by splitting
+            # Prefix matching: sanitize each whitespace token into safe AND-ed prefix
+            # lexemes for the STRICT to_tsquery (the SQLite prefix path is already
+            # sanitized; this keeps PostgreSQL from RAISING on adversarial input rather
+            # than degrading gracefully). Drop tokens that sanitize to nothing; an
+            # all-punctuation query yields '' -- an empty tsquery that simply matches
+            # nothing, never a syntax error.
             words = query.split()
-            prefix_terms = [self._handle_hyphenated_prefix_postgresql(word) for word in words]
+            prefix_terms = [frag for word in words if (frag := self._handle_hyphenated_prefix_postgresql(word))]
             return ' & '.join(prefix_terms)
 
         # For other modes, return query as-is
@@ -1077,11 +1149,7 @@ class FtsRepository(BaseRepository):
         Returns:
             The tokenizer string to use ('porter unicode61' or 'unicode61')
         """
-        # English (or not set) -> use Porter stemmer for English-language stemming
-        if language.lower() == 'english':
-            return 'porter unicode61'
-        # Other languages -> use unicode61 only (no stemming, but proper Unicode tokenization)
-        return 'unicode61'
+        return desired_sqlite_fts_tokenizer(language)
 
     async def migrate_tokenizer(self, new_tokenizer: str) -> dict[str, Any]:
         """Migrate SQLite FTS5 to a new tokenizer (SQLite only).

@@ -111,8 +111,11 @@ class TestFtsRepositoryQueryTransform:
             for query in ['NOT cat', 'python (async)', 'foo:bar', 'cat OR', 'OR cat', 'a "x',
                           'AND OR NOT', '"', 'cat " dog', 'python "']:
                 fts = repo._transform_query_sqlite(query, mode)
-                # Must not raise OperationalError (fts5 syntax error).
-                db.execute('SELECT rowid FROM d WHERE d MATCH ?', (fts,)).fetchall()
+                # An all-operator/all-special input transforms to the '' match-nothing
+                # sentinel; _search_sqlite short-circuits it (FTS5 rejects MATCH ''), so mirror
+                # that guard. A non-empty transform must still EXECUTE without a syntax error.
+                if fts:
+                    db.execute('SELECT rowid FROM d WHERE d MATCH ?', (fts,)).fetchall()
         # A normal match query still finds the row (AND recall preserved).
         normal = repo._transform_query_sqlite('python async', 'match')
         assert db.execute('SELECT rowid FROM d WHERE d MATCH ?', (normal,)).fetchall() == [(1,)]

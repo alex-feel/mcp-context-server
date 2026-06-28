@@ -8,6 +8,7 @@ from typing import Any
 
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
+from app.metadata_types import reject_out_of_int64
 
 # Match the metadata COLUMN token only, so a table alias can qualify the column
 # WITHOUT ever rewriting a user-supplied JSON key (a global str.replace corrupted
@@ -87,6 +88,13 @@ class MetadataQueryBuilder:
         if not self._is_safe_key(key):
             raise ValueError(f'Invalid metadata key: {key}')
 
+        # The simple metadata={} equality path bypasses MetadataFilter validation,
+        # so reject out-of-int64 integers here too: without this guard an
+        # out-of-range int aborts the search on SQLite (OverflowError) while
+        # PostgreSQL matches it -- the cross-backend divergence the advanced
+        # metadata_filters path already rejects via the same helper.
+        reject_out_of_int64(value)
+
         json_path = self._build_json_path(key)
         placeholder = self._placeholder()
         if self.backend_type == 'sqlite':
@@ -100,10 +108,10 @@ class MetadataQueryBuilder:
                 guard = self._sqlite_number_guard(json_path)
                 self.conditions.append(f"({guard} AND json_extract(metadata, '{json_path}') = {placeholder})")
             else:
-                # String (or None): a string value must not match a stored JSON boolean (guard,
-                # parity with the boolean-guarded PostgreSQL branch below); CAST the stored
-                # value to TEXT so a stored NUMBER text-matches like PostgreSQL's ->>.
-                guard = self._sqlite_nonbool_guard(json_path)
+                # String (or None): the text guard restricts the match to a JSON-string-typed
+                # stored value, so a stored NUMBER/boolean/null is excluded (a number's text form
+                # diverges across backends). The CAST is a harmless text->text identity here.
+                guard = self._sqlite_text_guard(json_path)
                 self.conditions.append(
                     f"({guard} AND CAST(json_extract(metadata, '{json_path}') AS TEXT) = {placeholder})",
                 )
@@ -121,9 +129,9 @@ class MetadataQueryBuilder:
                 acc_num = self._pg_numeric_accessor(json_path[2:], cast=self._pg_numeric_cast(value))
                 self.conditions.append(f'({acc_num}) = {placeholder}')
             else:
-                # Text comparison: a string value must not match a stored JSON boolean
-                # (->> renders it as 'true'/'false'); guard for parity with SQLite.
-                guard = self._pg_nonbool_guard(json_path[2:])
+                # Text comparison: the text guard restricts the match to a JSON-string-typed
+                # stored value, so a stored number/boolean/null is excluded (parity with SQLite).
+                guard = self._pg_text_guard(json_path[2:])
                 self.conditions.append(f'({guard} AND {acc} = {placeholder}::TEXT)')
         self.parameters.append(self._normalize_value(value))
         self._filter_count += 1
@@ -230,7 +238,23 @@ class MetadataQueryBuilder:
             return False
 
         # Only allow alphanumeric, dots, underscores, and hyphens
-        return bool(re.match(r'^[a-zA-Z0-9_.-]+$', key))
+        if not re.match(r'^[a-zA-Z0-9_.-]+$', key):
+            return False
+
+        # Reject empty path segments (leading/trailing/consecutive dots): they build a
+        # malformed array literal like '{a,,b}' on PostgreSQL (a raw parser error) and a
+        # silently-divergent JSON path on SQLite. Forbid on both backends, mirroring the
+        # numeric-segment rejection below and MetadataFilter.validate_key.
+        if '' in key.split('.'):
+            return False
+
+        # Reject integer path segments AFTER the first. A dotted segment that is an
+        # integer (e.g. 'items.0', 'a.-1') array-indexes on PostgreSQL
+        # (metadata#>>'{items,0}') but resolves to a literal object key on SQLite
+        # ($.items.0, which is NOT $.items[0]) -- a silent backend divergence. The
+        # first segment always indexes the metadata object itself (never an array),
+        # so only later segments can land on an array parent.
+        return not any(re.fullmatch(r'-?\d+', seg) for seg in key.split('.')[1:])
 
     @staticmethod
     def _build_json_path(key: str) -> str:
@@ -437,37 +461,45 @@ class MetadataQueryBuilder:
         """
         return f"json_type(metadata, '{json_path}') IN ('true', 'false')"
 
-    def _sqlite_nonbool_guard(self, json_path: str) -> str:
-        """SQLite predicate EXCLUDING a stored JSON boolean from a string operator.
+    def _sqlite_text_guard(self, json_path: str) -> str:
+        """SQLite predicate restricting a STRING operator to JSON-string-typed values.
 
-        A STRING filter value ('true'/'false'/anything) must never match a stored JSON
-        boolean: PostgreSQL ``->>`` renders a boolean as the text 'true'/'false', so a
-        string EQ 'true' would otherwise match a stored ``true`` on PostgreSQL while SQLite
-        (json_extract of a boolean is 1/0, never the text 'true') does not -- a silent
-        cross-backend divergence. This guard makes both backends exclude a stored boolean
-        from a string comparison, mirroring the non-boolean guard the IN/NOT_IN path uses.
+        String operators (eq/ne with a string value, the ordered comparisons with a
+        string value, contains/starts_with/ends_with, and string IN/NOT_IN members) match
+        a stored value ONLY when it is a JSON string. A stored JSON NUMBER is excluded
+        because comparing it as text diverges across backends: SQLite parses a JSON number
+        into a 64-bit int / IEEE double and renders THAT (losing the exact text for an
+        out-of-int64 or high-precision value), while PostgreSQL ``->>`` returns the exact
+        original JSON number text. ``json_type(...) = 'text'`` is the only value SQLite
+        renders identically to PostgreSQL, so restricting string operators to it is the
+        parity-by-construction contract -- symmetric with the number-only numeric
+        operators and the boolean-only boolean operators. A JSON boolean and a JSON null
+        are likewise excluded.
 
         Args:
             json_path: The validated ``$.``-prefixed metadata path.
 
         Returns:
-            A boolean SQL predicate true only when the path does NOT hold a JSON boolean.
+            A boolean SQL predicate true only when the path holds a JSON string.
         """
-        return f"json_type(metadata, '{json_path}') NOT IN ('true', 'false')"
+        return f"json_type(metadata, '{json_path}') = 'text'"
 
-    def _pg_nonbool_guard(self, key_path: str) -> str:
-        """PostgreSQL predicate EXCLUDING a stored JSON boolean from a string operator.
+    def _pg_text_guard(self, key_path: str) -> str:
+        """PostgreSQL predicate restricting a STRING operator to JSON-string-typed values.
 
-        Parity counterpart of :meth:`_sqlite_nonbool_guard`: ``->>`` renders a stored JSON
-        boolean as 'true'/'false', so a string EQ/NE value would match it without this guard.
+        Parity counterpart of :meth:`_sqlite_text_guard`: a string operator matches a
+        stored value only when ``jsonb_typeof`` is 'string'. A stored JSON number is
+        excluded so it is never compared as text -- PostgreSQL ``->>`` renders the exact
+        arbitrary-precision JSON number text that SQLite (double-rendered) cannot
+        reproduce, which would diverge for out-of-int64 / high-precision numbers.
 
         Args:
             key_path: The metadata key path (without the leading ``$.``).
 
         Returns:
-            A boolean SQL predicate true only when the path does NOT hold a JSON boolean.
+            A boolean SQL predicate true only when the path holds a JSON string.
         """
-        return f"jsonb_typeof({self._pg_json_accessor(key_path)}) <> 'boolean'"
+        return f"jsonb_typeof({self._pg_json_accessor(key_path)}) = 'string'"
 
     @staticmethod
     def _pg_ci(expr: str) -> str:
@@ -511,16 +543,16 @@ class MetadataQueryBuilder:
                 guard = self._sqlite_number_guard(json_path)
                 self.conditions.append(f"({guard} AND json_extract(metadata, '{json_path}') = {placeholder})")
             elif isinstance(value, str) and not case_sensitive:
-                guard = self._sqlite_nonbool_guard(json_path)
+                guard = self._sqlite_text_guard(json_path)
                 self.conditions.append(
                     f"({guard} AND LOWER(json_extract(metadata, '{json_path}')) = LOWER({placeholder}))",
                 )
             else:
-                # CAST the stored value to TEXT so a stored NUMBER (json_extract returns a
-                # typed number) text-matches a string value the way PostgreSQL's ->> does;
-                # the case-insensitive branch above already coerces via LOWER. Boolean still
-                # excluded by the guard.
-                guard = self._sqlite_nonbool_guard(json_path)
+                # Case-sensitive string EQ (and value=None). The text guard restricts the match
+                # to a JSON-string-typed stored value, so a stored NUMBER/boolean/null is
+                # excluded (a number's text form diverges across backends). The CAST is a
+                # harmless text->text identity under the guard.
+                guard = self._sqlite_text_guard(json_path)
                 self.conditions.append(
                     f"({guard} AND CAST(json_extract(metadata, '{json_path}') AS TEXT) = {placeholder})",
                 )
@@ -539,16 +571,16 @@ class MetadataQueryBuilder:
                 acc_num = self._pg_numeric_accessor(key_path, cast=self._pg_numeric_cast(value))
                 self.conditions.append(f'({acc_num}) = {placeholder}')
             elif isinstance(value, str) and not case_sensitive:
-                # A string value must not match a stored JSON boolean (->> renders it as
-                # 'true'/'false' text); SQLite already excludes it, so guard PG for parity.
-                # ASCII-only case fold (_pg_ci) matches SQLite's ASCII-only LOWER() on non-ASCII.
-                guard = self._pg_nonbool_guard(key_path)
+                # Case-insensitive string EQ. The text guard restricts the match to a
+                # JSON-string-typed stored value (a stored number/boolean is excluded, parity
+                # with SQLite). ASCII-only case fold (_pg_ci) matches SQLite's ASCII-only LOWER().
+                guard = self._pg_text_guard(key_path)
                 ci_acc = self._pg_ci(acc)
                 ci_val = self._pg_ci(f'{placeholder}::TEXT')
                 self.conditions.append(f'({guard} AND {ci_acc} = {ci_val})')
             else:
-                # String comparison (boolean-guarded for cross-backend parity)
-                guard = self._pg_nonbool_guard(key_path)
+                # Case-sensitive string EQ: text guard restricts to JSON-string stored values.
+                guard = self._pg_text_guard(key_path)
                 self.conditions.append(f'({guard} AND {acc} = {placeholder}::TEXT)')
         self.parameters.append(self._normalize_value(value))
 
@@ -575,15 +607,16 @@ class MetadataQueryBuilder:
                 guard = self._sqlite_number_guard(json_path)
                 self.conditions.append(f"({guard} AND json_extract(metadata, '{json_path}') != {placeholder})")
             elif isinstance(value, str) and not case_sensitive:
-                guard = self._sqlite_nonbool_guard(json_path)
+                guard = self._sqlite_text_guard(json_path)
                 self.conditions.append(
                     f"({guard} AND LOWER(json_extract(metadata, '{json_path}')) != LOWER({placeholder}))",
                 )
             else:
-                # CAST to TEXT so a stored NUMBER text-compares like PostgreSQL's ->> (raw
-                # json_extract is a typed number that SQLite treats as != any string); boolean
-                # still excluded by the guard.
-                guard = self._sqlite_nonbool_guard(json_path)
+                # Case-sensitive string NE (and value=None). The text guard restricts the match
+                # to a JSON-string-typed stored value, so a stored NUMBER/boolean/null never
+                # participates (a number's text form diverges across backends). The CAST is a
+                # harmless text->text identity under the guard.
+                guard = self._sqlite_text_guard(json_path)
                 self.conditions.append(
                     f"({guard} AND CAST(json_extract(metadata, '{json_path}') AS TEXT) != {placeholder})",
                 )
@@ -600,14 +633,15 @@ class MetadataQueryBuilder:
                 acc_num = self._pg_numeric_accessor(key_path, cast=self._pg_numeric_cast(value))
                 self.conditions.append(f'({acc_num}) != {placeholder}')
             elif isinstance(value, str) and not case_sensitive:
-                # A string value must not match a stored JSON boolean (parity with SQLite,
-                # which excludes it); a stored boolean satisfies neither string EQ nor NE.
-                guard = self._pg_nonbool_guard(key_path)
+                # Case-insensitive string NE. The text guard restricts the match to a
+                # JSON-string-typed stored value (a stored number/boolean is excluded, parity
+                # with SQLite).
+                guard = self._pg_text_guard(key_path)
                 ci_acc = self._pg_ci(acc)
                 ci_val = self._pg_ci(f'{placeholder}::TEXT')
                 self.conditions.append(f'({guard} AND {ci_acc} != {ci_val})')
             else:
-                guard = self._pg_nonbool_guard(key_path)
+                guard = self._pg_text_guard(key_path)
                 self.conditions.append(f'({guard} AND {acc} != {placeholder}::TEXT)')
         self.parameters.append(self._normalize_value(value))
 
@@ -643,19 +677,19 @@ class MetadataQueryBuilder:
                 self.conditions.append(f'({acc_num}) {sql_op} {placeholder}')
             self.parameters.append(value)
         else:
-            # String-valued ordered comparison. Three parity requirements: (1) guard so a
-            # stored JSON boolean is never compared; (2) compare the stored value's TEXT form on
-            # SQLite (CAST ... AS TEXT) so a stored NUMBER is ordered as text like PostgreSQL's
-            # ->> (raw json_extract returns a typed number that SQLite sorts BELOW all text,
-            # diverging); (3) force byte-wise collation on PostgreSQL (COLLATE "C") to match
-            # SQLite's default BINARY text ordering (else locale collation reorders case).
+            # String-valued ordered comparison. Two parity requirements: (1) the text guard
+            # restricts ordering to JSON-string-typed stored values, so a stored NUMBER/boolean
+            # is never ordered as text (a number's text form, and SQLite's sort of a typed
+            # number BELOW all text, both diverge from PostgreSQL's ->>); (2) force byte-wise
+            # collation on PostgreSQL (COLLATE "C") to match SQLite's default BINARY text
+            # ordering (else locale collation reorders case).
             if self.backend_type == 'sqlite':
-                guard = self._sqlite_nonbool_guard(json_path)
+                guard = self._sqlite_text_guard(json_path)
                 self.conditions.append(
                     f"({guard} AND CAST(json_extract(metadata, '{json_path}') AS TEXT) {sql_op} {placeholder})",
                 )
             else:  # postgresql
-                guard = self._pg_nonbool_guard(key_path)
+                guard = self._pg_text_guard(key_path)
                 acc = self._pg_text_accessor(key_path)
                 self.conditions.append(f'({guard} AND {acc} COLLATE "C" {sql_op} {placeholder}::TEXT)')
             self.parameters.append(str(value))
@@ -669,63 +703,90 @@ class MetadataQueryBuilder:
     ) -> str:
         """Build a SQL predicate true when the stored value matches any list member.
 
-        Members compare as TEXT (SQLite ``json_extract`` returns typed values its IN
-        clause won't auto-convert; PostgreSQL ``->>`` is TEXT), EXCEPT booleans, which
-        are matched type-aware so they cannot collide with a same-text non-boolean: on
-        SQLite ``CAST(json_extract AS TEXT)`` renders a JSON boolean ``true`` AND a JSON
-        integer ``1`` BOTH as '1', and on PostgreSQL ``->>`` renders a JSON boolean
-        ``true`` AND a JSON string ``"true"`` BOTH as 'true'. Booleans are therefore
-        gated on the JSON type (SQLite ``json_type ... IN ('true','false')`` /
-        PostgreSQL ``jsonb_typeof(...) = 'boolean'``) so a boolean member matches ONLY a
-        JSON boolean -- mirroring the EQ/NE boolean contract and keeping SQLite and
-        PostgreSQL result sets identical. Non-boolean members keep the existing TEXT
-        IN-list (its int/string text-folding is consistent across backends). Bound
-        params are appended in placeholder order; used by IN (the predicate) and NOT_IN
-        (its negation under an IS NOT NULL presence guard).
+        Members are matched TYPE-AWARE so the SQLite and PostgreSQL result sets are
+        identical and no member is compared across JSON types:
+
+        - STRING members match a JSON-STRING-typed stored value only (text guard), with
+          optional ASCII case-fold. A stored JSON NUMBER is NOT compared as text -- its
+          text form diverges across backends for out-of-int64 / high-precision values
+          (SQLite double-rendered vs PostgreSQL exact ``->>``), mirroring the string-only
+          EQ/NE/comparison contract.
+        - NUMERIC members match a JSON-NUMBER-typed stored value NUMERICALLY (number
+          guard / numeric accessor), so ``in [1, 2, 3]`` keeps matching stored numbers
+          identically on both backends without any text comparison.
+        - BOOLEAN members match a JSON-BOOLEAN-typed stored value only (bool guard), so a
+          boolean member never collides with a same-text integer 1/0 or string
+          'true'/'false'.
+
+        Bound params are appended in placeholder order; used by IN (the predicate) and
+        NOT_IN (its negation under an IS NOT NULL presence guard).
 
         Args:
             json_path: The validated ``$.``-prefixed metadata path (SQLite).
             key_path: The same path without the ``$.`` prefix (PostgreSQL accessor).
             values: The IN / NOT_IN member list.
-            case_sensitive: When False, string members fold case (booleans never do).
+            case_sensitive: When False, string members fold case (numbers/booleans never do).
 
         Returns:
             A parenthesized SQL predicate; appends its bound params to ``self.parameters``.
         """
+        # bool is a subclass of int, so partition booleans out FIRST.
         bool_members = [v for v in values if isinstance(v, bool)]
-        other_members = [v for v in values if not isinstance(v, bool)]
-        fold = not case_sensitive and any(isinstance(v, str) for v in other_members)
+        numeric_members = [v for v in values if not isinstance(v, bool) and isinstance(v, (int, float))]
+        string_members = [v for v in values if isinstance(v, str)]
+        fold = not case_sensitive and bool(string_members)
         parts: list[str] = []
         if self.backend_type == 'sqlite':
-            acc = f"CAST(json_extract(metadata, '{json_path}') AS TEXT)"
-            if other_members:
-                ph = ', '.join('?' for _ in other_members)
-                lhs = f'LOWER({acc})' if fold else acc
-                # Exclude a stored JSON boolean (CAST renders true/false as '1'/'0', the
-                # same text as integer 1/0) so a numeric/string member can NEVER match a
-                # stored boolean -- a JSON boolean is matched only by the guarded boolean
-                # part below, mirroring the EQ/NE boolean contract on both backends.
-                nonbool_guard = f"json_type(metadata, '{json_path}') NOT IN ('true', 'false')"
-                parts.append(f'({nonbool_guard} AND {lhs} IN ({ph}))')
-                self.parameters.extend(self._in_list_text(v, lower=fold) for v in other_members)
+            if string_members:
+                text_acc = f"json_extract(metadata, '{json_path}')"
+                lhs = f'LOWER({text_acc})' if fold else text_acc
+                ph = ', '.join('?' for _ in string_members)
+                parts.append(f'({self._sqlite_text_guard(json_path)} AND {lhs} IN ({ph}))')
+                self.parameters.extend(self._in_list_text(v, lower=fold) for v in string_members)
+            if numeric_members:
+                ph = ', '.join('?' for _ in numeric_members)
+                parts.append(
+                    f"({self._sqlite_number_guard(json_path)} AND "
+                    f"json_extract(metadata, '{json_path}') IN ({ph}))",
+                )
+                self.parameters.extend(numeric_members)
             if bool_members:
+                acc = f"CAST(json_extract(metadata, '{json_path}') AS TEXT)"
                 bph = ', '.join('?' for _ in bool_members)
                 parts.append(f'({self._sqlite_bool_guard(json_path)} AND {acc} IN ({bph}))')
                 self.parameters.extend(self._in_list_text(v, lower=False) for v in bool_members)
         else:  # postgresql
             acc = self._pg_text_accessor(key_path)
             json_acc = self._pg_json_accessor(key_path)
-            if other_members:
+            if string_members:
                 start = self.param_offset + len(self.parameters) + 1
-                ph = ', '.join(f'${start + i}::TEXT' for i in range(len(other_members)))
+                ph = ', '.join(f'${start + i}::TEXT' for i in range(len(string_members)))
                 lhs = self._pg_ci(acc) if fold else acc  # ASCII-only fold (parity with SQLite LOWER)
-                # Exclude a stored JSON boolean (->> renders true/false as 'true'/'false',
-                # the same text a 'true'/'false' STRING member would bind) so a
-                # numeric/string member can NEVER match a stored boolean (parity with the
-                # SQLite guard above and with EQ/NE).
-                nonbool_guard = f"jsonb_typeof({json_acc}) <> 'boolean'"
-                parts.append(f'({nonbool_guard} AND {lhs} IN ({ph}))')
-                self.parameters.extend(self._in_list_text(v, lower=fold) for v in other_members)
+                parts.append(f'({self._pg_text_guard(key_path)} AND {lhs} IN ({ph}))')
+                self.parameters.extend(self._in_list_text(v, lower=fold) for v in string_members)
+            if numeric_members:
+                # Per-member numeric equality with a per-member cast (NUMERIC for int,
+                # DOUBLE PRECISION for float) so the bound value matches SQLite and avoids
+                # asyncpg's Decimal coercion of a float in a NUMERIC context.
+                #
+                # Wrap the whole OR-group in an explicit jsonb_typeof = 'number' boolean
+                # guard, mirroring SQLite's _sqlite_number_guard AND-form. Relying on the
+                # numeric accessor's CASE ... ELSE NULL alone self-guards positive IN (NULL
+                # is falsy in a WHERE clause) but DIVERGES from SQLite under NOT_IN, which
+                # is `present AND NOT match`: for a present NON-number stored value the
+                # accessor's NULL makes match NULL, so NOT NULL stays NULL and the row is
+                # dropped on PostgreSQL, while SQLite's explicit FALSE guard yields NOT
+                # FALSE -> TRUE and KEEPS the row. The explicit boolean guard forces match
+                # to a deterministic FALSE for a non-number on BOTH backends, so IN and
+                # NOT_IN agree.
+                num_guard = f"jsonb_typeof({json_acc}) = 'number'"
+                num_parts: list[str] = []
+                for m in numeric_members:
+                    pos = self.param_offset + len(self.parameters) + 1
+                    num_acc = self._pg_numeric_accessor(key_path, cast=self._pg_numeric_cast(m))
+                    num_parts.append(f'({num_acc}) = ${pos}')
+                    self.parameters.append(m)
+                parts.append(f'({num_guard} AND (' + ' OR '.join(num_parts) + '))')
             if bool_members:
                 bguard = f"jsonb_typeof({json_acc}) = 'boolean'"
                 start = self.param_offset + len(self.parameters) + 1
@@ -802,11 +863,11 @@ class MetadataQueryBuilder:
         placeholder = self._placeholder()
         key_path = json_path[2:]
 
-        # A stored JSON boolean must not match a STRING substring operator: PostgreSQL ``->>``
-        # renders it 'true'/'false' (so 'tru' would CONTAINS-match) while SQLite json_extract
-        # of a boolean is 1/0 (so '1' would INSTR-match the other way) -- guard both for parity.
+        # The text guard restricts a STRING substring operator to a JSON-string-typed stored
+        # value: a stored number or boolean must never CONTAINS-match (PostgreSQL ``->>`` renders
+        # them as text, e.g. 'tru'/'1', diverging from SQLite) -- parity by construction.
         if self.backend_type == 'sqlite':
-            guard = self._sqlite_nonbool_guard(json_path)
+            guard = self._sqlite_text_guard(json_path)
             if case_sensitive:
                 # INSTR matches a literal substring; no LIKE wildcards to escape.
                 pred = f"INSTR(json_extract(metadata, '{json_path}'), {placeholder}) > 0"
@@ -819,7 +880,7 @@ class MetadataQueryBuilder:
                 self.parameters.append(self._escape_like_value(value))
             self.conditions.append(f'({guard} AND {pred})')
         else:  # postgresql
-            guard = self._pg_nonbool_guard(key_path)
+            guard = self._pg_text_guard(key_path)
             acc = self._pg_text_accessor(key_path)
             if case_sensitive:
                 pred = f"{acc} LIKE '%' || {placeholder}::TEXT || '%' ESCAPE '\\'"
@@ -836,10 +897,10 @@ class MetadataQueryBuilder:
         placeholder = self._placeholder()
         key_path = json_path[2:]
 
-        # Guard so a stored JSON boolean never matches a STRING starts-with (parity: PostgreSQL
-        # ->> renders it 'true'/'false'; SQLite json_extract of a boolean is 1/0).
+        # The text guard restricts a STRING starts-with to a JSON-string-typed stored value, so
+        # a stored number/boolean is never matched as text (parity by construction).
         if self.backend_type == 'sqlite':
-            guard = self._sqlite_nonbool_guard(json_path)
+            guard = self._sqlite_text_guard(json_path)
             if case_sensitive:
                 pred = f"json_extract(metadata, '{json_path}') GLOB {placeholder} || '*'"
                 self.parameters.append(self._escape_glob_pattern(value))
@@ -851,7 +912,7 @@ class MetadataQueryBuilder:
                 self.parameters.append(self._escape_like_value(value))
             self.conditions.append(f'({guard} AND {pred})')
         else:  # postgresql
-            guard = self._pg_nonbool_guard(key_path)
+            guard = self._pg_text_guard(key_path)
             acc = self._pg_text_accessor(key_path)
             if case_sensitive:
                 pred = f"{acc} LIKE {placeholder}::TEXT || '%' ESCAPE '\\'"
@@ -868,10 +929,10 @@ class MetadataQueryBuilder:
         placeholder = self._placeholder()
         key_path = json_path[2:]
 
-        # Guard so a stored JSON boolean never matches a STRING ends-with (parity: PostgreSQL
-        # ->> renders it 'true'/'false'; SQLite json_extract of a boolean is 1/0).
+        # The text guard restricts a STRING ends-with to a JSON-string-typed stored value, so a
+        # stored number/boolean is never matched as text (parity by construction).
         if self.backend_type == 'sqlite':
-            guard = self._sqlite_nonbool_guard(json_path)
+            guard = self._sqlite_text_guard(json_path)
             if case_sensitive:
                 pred = f"json_extract(metadata, '{json_path}') GLOB '*' || {placeholder}"
                 self.parameters.append(self._escape_glob_pattern(value))
@@ -883,7 +944,7 @@ class MetadataQueryBuilder:
                 self.parameters.append(self._escape_like_value(value))
             self.conditions.append(f'({guard} AND {pred})')
         else:  # postgresql
-            guard = self._pg_nonbool_guard(key_path)
+            guard = self._pg_text_guard(key_path)
             acc = self._pg_text_accessor(key_path)
             if case_sensitive:
                 pred = f"{acc} LIKE '%' || {placeholder}::TEXT ESCAPE '\\'"
@@ -1016,16 +1077,20 @@ class MetadataQueryBuilder:
             # json_type returns 'array' for arrays, other values for scalars/objects.
             # If field is not an array, condition evaluates to FALSE (no match, no error).
             if isinstance(value, str) and not case_sensitive:
-                # Render a boolean element as its 'true'/'false' text (json_each.value is
-                # 1/0 for booleans) so the case-insensitive text compare matches PostgreSQL's
-                # jsonb_array_elements_text, which renders a boolean element as 'true'/'false'
-                # -- without this a string member '1'/'0' would match a boolean array element
-                # on SQLite but not PostgreSQL.
-                elem = "CASE WHEN json_each.type IN ('true', 'false') THEN json_each.type ELSE json_each.value END"
+                # A string member matches ONLY a JSON-string array element, mirroring the
+                # string-only contract _sqlite_text_guard/_pg_text_guard apply to the scalar
+                # string operators. Without the json_each.type='text' guard a NUMERIC element
+                # would be compared via SQLite's double->text rendering (an out-of-int64 /
+                # high-precision / trailing-zero / scientific-notation number renders
+                # differently than PostgreSQL's exact jsonb element text), so a string member
+                # could match a numeric element on SQLite but not PostgreSQL. Restricting to
+                # text elements also excludes boolean elements (json_each.value is 1/0),
+                # consistent with the case-sensitive @> path and PostgreSQL's
+                # jsonb_typeof(elem)='string' filter below.
                 self.conditions.append(
                     f"(json_type(metadata, '{json_path}') = 'array' AND "
                     f"EXISTS (SELECT 1 FROM json_each(metadata, '{json_path}') "
-                    f'WHERE LOWER({elem}) = LOWER({placeholder})))',
+                    f"WHERE json_each.type = 'text' AND LOWER(json_each.value) = LOWER({placeholder})))",
                 )
             elif isinstance(value, bool):
                 # SQLite JSON renders a boolean element's json_each.value as 1/0 -- the
@@ -1071,12 +1136,18 @@ class MetadataQueryBuilder:
                 path_parts = key_path.split('.')
                 array_path = '{' + ','.join(path_parts) + '}'
                 if isinstance(value, str) and not case_sensitive:
-                    # Case-insensitive: use EXISTS with jsonb_array_elements_text
-                    # Wrap in CASE to handle non-array fields gracefully
+                    # A string member matches ONLY a JSON-string array element (parity with
+                    # the SQLite json_each.type='text' branch and the string-only scalar
+                    # operators): iterate elements as jsonb, keep only jsonb_typeof(elem)=
+                    # 'string', and compare the unquoted text (elem #>> '{}'). Comparing a
+                    # NUMERIC element as text would diverge from SQLite's double-rendered
+                    # number text. Wrap in CASE to handle non-array fields gracefully.
+                    elem_text = self._pg_ci("elem #>> '{}'")
                     self.conditions.append(
                         f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
-                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements_text(metadata#>'{array_path}') AS elem "
-                        f'WHERE {self._pg_ci("elem")} = {self._pg_ci(placeholder)}) ELSE FALSE END)',
+                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata#>'{array_path}') AS elem "
+                        f"WHERE jsonb_typeof(elem) = 'string' AND {elem_text} = {self._pg_ci(placeholder)}) "
+                        f'ELSE FALSE END)',
                     )
                     self.parameters.append(value)
                 else:
@@ -1090,12 +1161,16 @@ class MetadataQueryBuilder:
             else:
                 # Single-level path
                 if isinstance(value, str) and not case_sensitive:
-                    # Case-insensitive: use EXISTS with jsonb_array_elements_text
-                    # Wrap in CASE to handle non-array fields gracefully
+                    # A string member matches ONLY a JSON-string array element (see the nested
+                    # branch above and the SQLite json_each.type='text' branch): keep only
+                    # jsonb_typeof(elem)='string' and compare the unquoted text, so a numeric
+                    # element is never text-compared (which would diverge from SQLite).
+                    elem_text = self._pg_ci("elem #>> '{}'")
                     self.conditions.append(
                         f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
-                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements_text(metadata->'{key_path}') AS elem "
-                        f'WHERE {self._pg_ci("elem")} = {self._pg_ci(placeholder)}) ELSE FALSE END)',
+                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata->'{key_path}') AS elem "
+                        f"WHERE jsonb_typeof(elem) = 'string' AND {elem_text} = {self._pg_ci(placeholder)}) "
+                        f'ELSE FALSE END)',
                     )
                     self.parameters.append(value)
                 else:

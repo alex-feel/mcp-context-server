@@ -527,6 +527,8 @@ The comparison operators (`gt`, `gte`, `lt`, `lte`) -- and numeric `eq`/`ne` wit
 
 The same type-restriction applies to booleans: a boolean value in `eq`/`ne`, as an `in`/`not_in` member, or in `array_contains` matches **JSON-boolean-typed values only** on both backends. A stored numeric `0`/`1` or a string `"true"`/`"false"` never matches a boolean filter (and a boolean `array_contains` matches only a JSON-boolean array element, never a numeric `1`/`0`); only a real JSON `true`/`false` does. Use `{"key": "flag", "operator": "eq", "value": true}` to match entries whose `flag` is the JSON boolean `true`.
 
+The string operators complete the same contract: `eq`/`ne` with a string value, the ordered comparisons (`gt`/`gte`/`lt`/`lte`) with a string value, `contains`/`starts_with`/`ends_with`, and string members of `in`/`not_in` match **JSON-string-typed values only** on both backends. A stored JSON number is never compared as text, because SQLite renders a JSON number through a 64-bit integer / IEEE double (losing the exact text for an out-of-int64 or high-precision value) while PostgreSQL `->>` returns the exact original number text -- a text comparison would otherwise diverge across backends. To match a stored number use a numeric value (`{"key": "count", "operator": "eq", "value": 5}`), not its string form (`"5"`); to match a stored string use a string value. Numeric members of `in`/`not_in` still match stored numbers numerically (`{"key": "priority", "operator": "in", "value": [1, 2, 3]}` matches a stored number `2`), so only the text-vs-number cross-type comparison is removed.
+
 #### `gt` - Greater Than
 
 Numeric comparison, exclusive.
@@ -740,6 +742,7 @@ search_context(
 - Returns empty results (not error) if the field is not an array or doesn't exist
 - Supports case-insensitive matching for string values (set `case_sensitive: false`)
 - Works with nested paths using dot notation
+- Type-aware (cross-backend parity): a string member matches only JSON-string array elements, a numeric member only JSON-number elements, and a boolean member only JSON-boolean elements. A string member never matches a numeric or boolean element (and vice versa), so results are identical on SQLite and PostgreSQL. This mirrors the type-aware contract of the scalar operators and avoids divergence from SQLite's numeric-to-text rendering of out-of-int64 / high-precision numbers.
 
 ## Real-World Use Cases
 

@@ -26,6 +26,7 @@ from pydantic import Field
 
 from app.errors import format_exception_message
 from app.migrations import get_fts_migration_status
+from app.repositories.base import canonical_timestamp
 from app.repositories.fts_repository import sanitize_sqlite_fts_terms
 from app.services.passage_extraction_service import extract_rerank_passage
 from app.settings import get_settings
@@ -150,6 +151,13 @@ def _apply_search_display_format(entry: dict[str, Any]) -> None:
     truncated_text, is_truncated = truncate_text(text_content, max_length=settings.search.truncation_length)
     entry['text_content'] = truncated_text
     entry['is_text_content_truncated'] = is_truncated
+
+    # Canonical timestamp wire format -- identical across SQLite and PostgreSQL for
+    # every search tool (search/fts/semantic/hybrid all route through here). See
+    # app.repositories.base.canonical_timestamp.
+    for ts_key in ('created_at', 'updated_at'):
+        if entry.get(ts_key) is not None:
+            entry[ts_key] = canonical_timestamp(entry[ts_key])
 
 
 async def _semantic_search_raw(
@@ -1037,20 +1045,30 @@ def _prepare_hybrid_fts_query(
     use_or = len(significant) >= or_threshold
 
     if backend_type == 'sqlite':
-        # EVERY SQLite path (short 'match' AND long 'OR') runs through the SAME term sanitizer:
-        # a bare FTS5 operator/special char left on ANY path raises 'fts5: syntax error' (the
-        # recurring crash). Short queries AND the surviving terms (space-joined, still stemmed);
-        # long queries OR them for partial-match recall.
-        source = significant if use_or else tokens
-        terms = sanitize_sqlite_fts_terms(source)
+        # Short ('match') queries return the RAW query so the single canonical 'match'
+        # transform in _transform_query_sqlite sanitizes them EXACTLY ONCE -- identically to
+        # standalone fts_search_context. Long ('OR') queries are sanitized HERE because
+        # boolean mode is passed through _transform_query_sqlite unchanged; a bare FTS5
+        # operator/special char left on that path raises 'fts5: syntax error' (the recurring
+        # crash), so the surviving significant terms are OR-joined for partial-match recall.
+        #
+        # The match case must NOT pre-sanitize: _transform_query_sqlite('match') re-runs
+        # sanitize_sqlite_fts_terms, and the two passes are NOT idempotent for a token with an
+        # embedded double-quote -- the first pass escapes `ab"cd` into the single phrase
+        # `"ab""cd"`, which _FTS_TOKEN_RE then re-tokenizes into two phrases `"ab" "cd"`, so a
+        # pre-sanitized match query would make hybrid recall diverge from standalone for the
+        # same input. Returning the raw query defers all escaping to the one downstream pass.
+        if not use_or:
+            return query, 'match'
+        terms = sanitize_sqlite_fts_terms(significant)
         if not terms:
-            # Every term was an operator bareword: return a harmless literal phrase (zero
-            # results, no crash) instead of a raw operator that would crash MATCH -- matching
-            # PostgreSQL's tolerance of the same all-operator input.
-            return '"' + query.replace('"', '""') + '"', 'match'
-        if use_or:
-            return ' OR '.join(terms), 'boolean'  # FTS5 OR is uppercase (case-sensitive)
-        return ' '.join(terms), 'match'
+            # Every term was an operator/stopword bareword: return the '' match-nothing
+            # sentinel (re-transformed by _search_sqlite to an empty result), in parity with
+            # PostgreSQL's empty tsquery. A literal-phrase fallback ('"and"') would instead
+            # MATCH every document containing the dropped word on SQLite (FTS5 keeps stopwords
+            # as tokens) while PostgreSQL returns zero -- a cross-backend divergence.
+            return '', 'match'
+        return ' OR '.join(terms), 'boolean'  # FTS5 OR is uppercase (case-sensitive)
 
     # PostgreSQL: plainto_tsquery / websearch_to_tsquery sanitize operators and stopwords
     # server-side, so a raw query never raises -- only the OR-mode join needs building. Hyphens

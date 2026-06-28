@@ -21,6 +21,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.repositories.fts_repository import FtsRepository
+from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
 from app.settings import get_settings
 
 if TYPE_CHECKING:
@@ -254,7 +255,7 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         # Determine tokenizer based on language setting
         # - 'porter unicode61' for English (enables stemming: "running" matches "run")
         # - 'unicode61' for other languages (multilingual support, no stemming)
-        tokenizer = 'porter unicode61' if settings.fts.language.lower() == 'english' else 'unicode61'
+        tokenizer = desired_sqlite_fts_tokenizer(settings.fts.language)
         migration_sql = migration_sql.replace('{TOKENIZER}', tokenizer)
 
         def _apply_fts_sqlite(conn: sqlite3.Connection) -> None:

@@ -482,7 +482,8 @@ class TestMetadataQueryBuilderPostgresql:
 
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata->'technologies') = 'array'" in where_clause
-        assert "jsonb_array_elements_text(metadata->'technologies')" in where_clause
+        assert "jsonb_array_elements(metadata->'technologies')" in where_clause
+        assert "jsonb_typeof(elem) = 'string'" in where_clause  # string member matches string elements only
         assert 'translate(elem' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
         assert 'CASE WHEN' in where_clause
         assert 'ELSE FALSE END' in where_clause
@@ -520,7 +521,8 @@ class TestMetadataQueryBuilderPostgresql:
 
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata#>'{user,preferences,tags}') = 'array'" in where_clause
-        assert "jsonb_array_elements_text(metadata#>'{user,preferences,tags}')" in where_clause
+        assert "jsonb_array_elements(metadata#>'{user,preferences,tags}')" in where_clause
+        assert "jsonb_typeof(elem) = 'string'" in where_clause  # string member matches string elements only
         assert 'translate(elem' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
         assert params == ['favorite']
 
@@ -814,13 +816,13 @@ class TestMetadataQueryBuilderTableAlias:
         assert "'ce.metadata_version'" not in clause
 
     def test_alias_pg_array_contains_qualifies_arrow_form_column(self) -> None:
-        # PostgreSQL array_contains uses '->' via jsonb_array_elements_text / jsonb_typeof.
+        # PostgreSQL array_contains uses '->' via jsonb_array_elements / jsonb_typeof.
         builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
         builder.add_advanced_filter(
             MetadataFilter(key='metadata_version', operator=MetadataOperator.ARRAY_CONTAINS, value='x'),
         )
         clause, _ = builder.build_where_clause()
-        assert 'jsonb_array_elements_text(ce.metadata->' in clause
+        assert 'jsonb_array_elements(ce.metadata->' in clause
         assert "'ce.metadata_version'" not in clause
 
 

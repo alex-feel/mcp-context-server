@@ -29,8 +29,8 @@ class TestMetadataQueryBuilder:
         builder.add_simple_filter('status', 'active')
 
         where_clause, params = builder.build_where_clause()
-        # A string value is guarded so a stored JSON boolean is excluded (cross-backend parity).
-        assert "json_type(metadata, '$.status') NOT IN ('true', 'false')" in where_clause
+        # A string value matches a JSON-string-typed stored value ONLY (text guard).
+        assert "json_type(metadata, '$.status') = 'text'" in where_clause
         assert "CAST(json_extract(metadata, '$.status') AS TEXT) = ?" in where_clause
         assert params == ['active']
 
@@ -175,19 +175,20 @@ class TestMetadataQueryBuilder:
 
     @pytest.mark.parametrize('operator', [MetadataOperator.EQ, MetadataOperator.NE])
     def test_string_value_excludes_stored_boolean(self, operator: MetadataOperator) -> None:
-        """A STRING EQ/NE value must not match a stored JSON boolean: PostgreSQL ``->>``
-        renders a boolean as 'true'/'false' text, so without a guard a string 'true' would
-        match a stored boolean on PostgreSQL but not SQLite. Both backends now guard the
-        string branch so a stored boolean is excluded -- parity by construction."""
+        """A STRING EQ/NE value matches a JSON-string-typed stored value ONLY, so a stored
+        JSON boolean (and a stored number) is excluded. PostgreSQL ``->>`` renders a boolean as
+        'true'/'false' text, so without the text guard a string 'true' would match a stored
+        boolean on PostgreSQL but not SQLite. The text-typed guard makes both backends exclude
+        a non-string -- parity by construction."""
         sbuilder = MetadataQueryBuilder(backend_type='sqlite')
         sbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='true'))
         sclause, _ = sbuilder.build_where_clause()
-        assert "json_type(metadata, '$.flag') NOT IN ('true', 'false')" in sclause
+        assert "json_type(metadata, '$.flag') = 'text'" in sclause
 
         pbuilder = MetadataQueryBuilder(backend_type='postgresql')
         pbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='true'))
         pclause, _ = pbuilder.build_where_clause()
-        assert "jsonb_typeof(metadata->'flag') <> 'boolean'" in pclause
+        assert "jsonb_typeof(metadata->'flag') = 'string'" in pclause
 
     @pytest.mark.parametrize(
         'operator',
@@ -197,31 +198,32 @@ class TestMetadataQueryBuilder:
         ],
     )
     def test_string_comparing_operators_exclude_stored_boolean(self, operator: MetadataOperator) -> None:
-        """contains/starts_with/ends_with and a STRING-valued gt/gte/lt/lte must not match a
-        stored JSON boolean either (PostgreSQL ``->>`` renders it 'true'/'false'; SQLite
-        json_extract is 1/0). The nonbool guard is applied on both backends for parity."""
+        """contains/starts_with/ends_with and a STRING-valued gt/gte/lt/lte match a
+        JSON-string-typed stored value ONLY, so a stored JSON boolean (and a stored number) is
+        excluded on both backends. The text-typed guard is applied for parity by construction."""
         sbuilder = MetadataQueryBuilder(backend_type='sqlite')
         sbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='tru'))
         sclause, _ = sbuilder.build_where_clause()
-        assert "json_type(metadata, '$.flag') NOT IN ('true', 'false')" in sclause
+        assert "json_type(metadata, '$.flag') = 'text'" in sclause
 
         pbuilder = MetadataQueryBuilder(backend_type='postgresql')
         pbuilder.add_advanced_filter(MetadataFilter(key='flag', operator=operator, value='tru'))
         pclause, _ = pbuilder.build_where_clause()
-        assert "jsonb_typeof(metadata->'flag') <> 'boolean'" in pclause
+        assert "jsonb_typeof(metadata->'flag') = 'string'" in pclause
 
     def test_simple_filter_string_excludes_stored_boolean(self) -> None:
-        """add_simple_filter (the ``metadata`` dict path) guards a string value against a
-        stored JSON boolean too, matching the advanced EQ contract on both backends."""
+        """add_simple_filter (the ``metadata`` dict path) restricts a string value to a
+        JSON-string-typed stored value too (excluding a stored boolean or number), matching the
+        advanced EQ contract on both backends."""
         sbuilder = MetadataQueryBuilder(backend_type='sqlite')
         sbuilder.add_simple_filter('flag', 'true')
         sclause, _ = sbuilder.build_where_clause()
-        assert "json_type(metadata, '$.flag') NOT IN ('true', 'false')" in sclause
+        assert "json_type(metadata, '$.flag') = 'text'" in sclause
 
         pbuilder = MetadataQueryBuilder(backend_type='postgresql')
         pbuilder.add_simple_filter('flag', 'true')
         pclause, _ = pbuilder.build_where_clause()
-        assert "jsonb_typeof(metadata->'flag') <> 'boolean'" in pclause
+        assert "jsonb_typeof(metadata->'flag') = 'string'" in pclause
 
     def test_case_insensitive_fold_is_ascii_only(self) -> None:
         """Case-insensitive matching folds ASCII A-Z ONLY on both backends so they agree on
@@ -263,8 +265,8 @@ class TestMetadataQueryBuilder:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        # String EQ is guarded so a stored JSON boolean is excluded (cross-backend parity).
-        assert "json_type(metadata, '$.status') NOT IN ('true', 'false')" in where_clause
+        # String EQ matches a JSON-string-typed stored value ONLY (text guard).
+        assert "json_type(metadata, '$.status') = 'text'" in where_clause
         assert "CAST(json_extract(metadata, '$.status') AS TEXT) = ?" in where_clause
         assert params == ['active']
 
@@ -317,9 +319,9 @@ class TestMetadataQueryBuilder:
     def test_operator_in_with_integers(self) -> None:
         """Test IN operator with integer array values.
 
-        Regression test: Integer arrays caused silent failures on SQLite
-        (type mismatch with json_extract TEXT result) and explicit errors
-        on PostgreSQL (asyncpg type mismatch with TEXT cast).
+        Numeric IN members are matched NUMERICALLY (type-aware): a number guard restricts
+        the match to JSON-number-typed stored values and the raw ints are bound (no text
+        comparison), so out-of-int64 / high-precision numbers cannot diverge across backends.
         """
         builder = MetadataQueryBuilder()
         filter_spec = MetadataFilter(
@@ -332,10 +334,10 @@ class TestMetadataQueryBuilder:
         where_clause, params = builder.build_where_clause()
         assert 'IN (' in where_clause
         assert len(params) == 2
-        # All values should be converted to strings for TEXT comparison
-        assert all(isinstance(p, str) for p in params)
-        assert '5' in params
-        assert '9' in params
+        # Numeric members bind as raw ints now (not stringified for TEXT comparison).
+        assert all(isinstance(p, int) for p in params)
+        assert 5 in params
+        assert 9 in params
 
     def test_operator_in_with_floats(self) -> None:
         """Test IN operator with float array values."""
@@ -350,8 +352,8 @@ class TestMetadataQueryBuilder:
         where_clause, params = builder.build_where_clause()
         assert 'IN (' in where_clause
         assert len(params) == 3
-        # All values should be converted to strings
-        assert all(isinstance(p, str) for p in params)
+        # Numeric members bind as raw floats now (matched numerically, not as text).
+        assert all(isinstance(p, float) for p in params)
 
     def test_operator_in_with_mixed_types(self) -> None:
         """Test IN operator with mixed string and integer array values."""
@@ -366,8 +368,69 @@ class TestMetadataQueryBuilder:
         where_clause, params = builder.build_where_clause()
         assert 'IN (' in where_clause
         assert len(params) == 4
-        # All values should be converted to strings
-        assert all(isinstance(p, str) for p in params)
+        # Type-aware: string members bind as text (string-typed match), numeric members
+        # bind as raw numbers (number-typed match).
+        assert 'active' in params
+        assert 'pending' in params
+        assert 5 in params
+        assert 10 in params
+
+    def test_numeric_path_segment_rejected(self) -> None:
+        """A numeric path segment AFTER the first (e.g. 'items.0', 'a.-1') is rejected on BOTH
+        backends: it array-indexes on PostgreSQL but resolves to a literal object key on SQLite,
+        a silent divergence. A single numeric key ('0') and non-numeric nested paths stay valid."""
+        builder = MetadataQueryBuilder()
+        for bad in ('items.0', 'a.-1', 'a.0.b', 'items.01'):
+            assert builder._is_safe_key(bad) is False
+            with pytest.raises(ValueError, match='Numeric path segments'):
+                MetadataFilter(key=bad, operator=MetadataOperator.EQ, value='x')
+        # Allowed: a single numeric key (consistent object-key on both backends) and
+        # non-numeric nested paths (a numeric-suffixed segment like 'b0' is not all-digits).
+        for good in ('0', 'a.b', 'items.foo', 'user.preferences.theme', 'a.b0'):
+            assert builder._is_safe_key(good) is True
+            MetadataFilter(key=good, operator=MetadataOperator.EQ, value='x')  # must not raise
+
+    def test_empty_path_segment_rejected(self) -> None:
+        """A dotted key with an empty segment -- leading '.x', trailing 'x.', consecutive
+        'a..b', or the degenerate '.'/'..' -- is rejected on BOTH validators. An empty
+        segment builds a malformed PostgreSQL array literal like '{a,,b}' (a raw parser
+        error) while SQLite silently mismatches, a cross-backend divergence; this mirrors
+        the numeric-segment rejection. Valid keys (single segment, dotted, a numeric key,
+        hyphenated, underscored) still pass unchanged -- no over-restriction. ('a.0' is
+        intentionally absent: it is rejected by the separate numeric-path-segment guard,
+        not the empty-segment guard under test here.)"""
+        builder = MetadataQueryBuilder()
+        for bad in ('.x', 'x.', 'a..b', '.', '..'):
+            assert builder._is_safe_key(bad) is False
+            with pytest.raises(ValueError, match='Empty path segments'):
+                MetadataFilter(key=bad, operator=MetadataOperator.EQ, value=1)
+        # Allowed: keys whose every dot-separated segment is non-empty stay valid.
+        for good in ('a', 'a.b', '0', 'metadata_version', 'a-b', 'user.preferences.theme'):
+            assert builder._is_safe_key(good) is True
+            MetadataFilter(key=good, operator=MetadataOperator.EQ, value=1)  # must not raise
+
+    def test_string_operator_matches_string_typed_only(self) -> None:
+        """String operators match JSON-string-typed stored values ONLY (text guard), so a stored
+        number is never compared as text (which diverges across backends for out-of-int64 /
+        high-precision numbers). Numeric IN members still match stored numbers numerically."""
+        for backend, guard in (
+            ('sqlite', "json_type(metadata, '$.k') = 'text'"),
+            ('postgresql', "jsonb_typeof(metadata->'k') = 'string'"),
+        ):
+            b = MetadataQueryBuilder(backend_type=backend)
+            b.add_advanced_filter(
+                MetadataFilter(key='k', operator=MetadataOperator.EQ, value='5', case_sensitive=True),
+            )
+            clause, _ = b.build_where_clause()
+            assert guard in clause
+
+        # A numeric IN member matches a JSON-number-typed stored value numerically (number
+        # guard + raw numeric bind), NOT as text.
+        bi = MetadataQueryBuilder(backend_type='sqlite')
+        bi.add_advanced_filter(MetadataFilter(key='n', operator=MetadataOperator.IN, value=[5]))
+        clause_i, params_i = bi.build_where_clause()
+        assert "json_type(metadata, '$.n') IN ('integer', 'real')" in clause_i
+        assert params_i == [5]
 
     def test_operator_not_in(self) -> None:
         """Test NOT IN operator."""
@@ -387,9 +450,8 @@ class TestMetadataQueryBuilder:
     def test_operator_not_in_with_integers(self) -> None:
         """Test NOT IN operator with integer array values.
 
-        Regression test: Integer arrays caused silent failures on SQLite
-        (type mismatch with json_extract TEXT result) and explicit errors
-        on PostgreSQL (asyncpg type mismatch with TEXT cast).
+        Numeric members are matched NUMERICALLY (number guard + raw numeric binds), so the
+        backends agree without any text comparison.
         """
         builder = MetadataQueryBuilder()
         filter_spec = MetadataFilter(
@@ -403,11 +465,11 @@ class TestMetadataQueryBuilder:
         assert 'IS NOT NULL AND NOT (' in where_clause  # NOT_IN = presence guard + negated membership
         assert 'IN (' in where_clause
         assert len(params) == 3
-        # All values should be converted to strings for TEXT comparison
-        assert all(isinstance(p, str) for p in params)
-        assert '1' in params
-        assert '2' in params
-        assert '3' in params
+        # Numeric members bind as raw ints now (matched numerically, not stringified).
+        assert all(isinstance(p, int) for p in params)
+        assert 1 in params
+        assert 2 in params
+        assert 3 in params
 
     def test_operator_not_in_with_mixed_types(self) -> None:
         """Test NOT IN operator with mixed string and integer array values."""
@@ -423,8 +485,11 @@ class TestMetadataQueryBuilder:
         assert 'IS NOT NULL AND NOT (' in where_clause  # NOT_IN = presence guard + negated membership
         assert 'IN (' in where_clause
         assert len(params) == 4
-        # All values should be converted to strings
-        assert all(isinstance(p, str) for p in params)
+        # Type-aware: string members bind as text, numeric members bind as raw numbers.
+        assert 'archived' in params
+        assert 'deleted' in params
+        assert 100 in params
+        assert 200 in params
 
     def test_operator_exists(self) -> None:
         """Test EXISTS operator."""
@@ -1711,7 +1776,8 @@ class TestArrayContainsQueryBuilder:
 
         where_clause, params = builder.build_where_clause()
         assert 'EXISTS' in where_clause
-        assert 'jsonb_array_elements_text' in where_clause
+        assert 'jsonb_array_elements(' in where_clause  # iterate as jsonb (string-typed only), not _text
+        assert "jsonb_typeof(elem) = 'string'" in where_clause
         # Case-insensitive fold is ASCII-only via translate() (parity with SQLite LOWER).
         assert 'translate' in where_clause
         assert params == ['PYTHON']
@@ -1787,6 +1853,7 @@ class TestArrayContainsNonArrayHandling:
 
         where_clause, params = builder.build_where_clause()
         assert "json_type(metadata, '$.technologies') = 'array'" in where_clause
+        assert "json_each.type = 'text'" in where_clause  # string member matches string elements only
         assert 'LOWER' in where_clause
         assert 'json_each' in where_clause
         assert params == ['PYTHON']
@@ -1836,7 +1903,8 @@ class TestArrayContainsNonArrayHandling:
 
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata->'technologies') = 'array'" in where_clause
-        assert 'jsonb_array_elements_text' in where_clause
+        assert 'jsonb_array_elements(' in where_clause  # iterate as jsonb (string-typed only), not _text
+        assert "jsonb_typeof(elem) = 'string'" in where_clause
         assert 'CASE WHEN' in where_clause
         assert 'ELSE FALSE END' in where_clause
         assert 'translate' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
@@ -1870,7 +1938,128 @@ class TestArrayContainsNonArrayHandling:
 
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata#>'{references,youtrack}') = 'array'" in where_clause
-        assert 'jsonb_array_elements_text' in where_clause
+        assert 'jsonb_array_elements(' in where_clause  # iterate as jsonb (string-typed only), not _text
+        assert "jsonb_typeof(elem) = 'string'" in where_clause
         assert 'CASE WHEN' in where_clause
         assert 'ELSE FALSE END' in where_clause
         assert 'translate' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
+
+
+class TestOutOfInt64FilterRejection:
+    """Integer filter values outside the signed 64-bit range are rejected
+    uniformly on BOTH backends.
+
+    SQLite binds a Python int as a 64-bit column value and raises OverflowError for
+    anything outside [-2**63, 2**63-1], aborting the whole search, while PostgreSQL
+    binds it into an arbitrary-precision NUMERIC and matches -- a cross-backend
+    divergence (and, for IN/NOT_IN, a v3.0.0 regression from the baseline str()-bind).
+    The validator forbids the divergent case on both backends instead.
+    """
+
+    @pytest.mark.parametrize('value', [10**20, 2**63, -(2**63) - 1, 99999999999999999999999999])
+    def test_scalar_out_of_int64_rejected(self, value: int) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match='64-bit'):
+            MetadataFilter(key='v', operator=MetadataOperator.EQ, value=value)
+        with pytest.raises(ValidationError, match='64-bit'):
+            MetadataFilter(key='v', operator=MetadataOperator.GT, value=value)
+
+    def test_list_member_out_of_int64_rejected(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match='64-bit'):
+            MetadataFilter(key='v', operator=MetadataOperator.IN, value=[7, 10**20])
+        with pytest.raises(ValidationError, match='64-bit'):
+            MetadataFilter(key='v', operator=MetadataOperator.NOT_IN, value=[10**20])
+
+    def test_array_contains_out_of_int64_rejected(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match='64-bit'):
+            MetadataFilter(key='v', operator=MetadataOperator.ARRAY_CONTAINS, value=2**63)
+
+    @pytest.mark.parametrize('value', [2**63 - 1, -(2**63), 0, 9999, True, False])
+    def test_in_range_and_bool_accepted(self, value: int | bool) -> None:
+        # bool is an int subclass but always in range; in-range ints (incl. the
+        # int64 boundaries) are accepted unchanged.
+        MetadataFilter(key='v', operator=MetadataOperator.EQ, value=value)
+
+    @pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+    @pytest.mark.parametrize('value', [10**20, 2**63, -(2**63) - 1])
+    def test_simple_filter_out_of_int64_rejected(self, backend_type: str, value: int) -> None:
+        # The simple metadata={} equality path goes through add_simple_filter, which
+        # bypasses MetadataFilter validation; it must reject an out-of-int64 integer
+        # the same way on BOTH backends (ValueError, before any backend-specific bind)
+        # instead of aborting the search on SQLite (OverflowError) while PostgreSQL
+        # matches. The guard fires before the backend branch, so a single raise covers
+        # both backend_type values.
+        builder = MetadataQueryBuilder(backend_type=backend_type)
+        with pytest.raises(ValueError, match='64-bit'):
+            builder.add_simple_filter('k', value)
+
+    @pytest.mark.parametrize('backend_type', ['sqlite', 'postgresql'])
+    @pytest.mark.parametrize('value', [2**63 - 1, -(2**63), 0, 9999, True, False, 'x'])
+    def test_simple_filter_in_range_and_non_int_accepted(
+        self, backend_type: str, value: str | int | bool,
+    ) -> None:
+        # In-range ints (incl. the int64 boundaries), bools, and strings pass the
+        # guard and build a condition normally on both backends.
+        builder = MetadataQueryBuilder(backend_type=backend_type)
+        builder.add_simple_filter('k', value)
+        assert builder.conditions  # a condition was built, no rejection
+
+
+class TestNotInNumericNonNumberParity:
+    """NOT_IN with numeric members keeps a present non-number row identically on both backends.
+
+    The PostgreSQL numeric disjunct guards on ``jsonb_typeof = 'number'`` (mirroring
+    SQLite's ``json_type`` guard) so a present non-number value yields a deterministic
+    FALSE match. Without the guard the numeric accessor's ``CASE ... ELSE NULL`` made
+    the match NULL, and under NOT_IN's ``present AND NOT match`` the row was silently
+    dropped on PostgreSQL (``NOT NULL`` -> NULL) while SQLite kept it (``NOT FALSE`` ->
+    TRUE) -- a v3.0.0 regression from the baseline str()-bind that compared every member
+    as text. Positive IN never diverged (NULL is falsy in a WHERE clause); only NOT_IN's
+    negation exposed the NULL-vs-FALSE asymmetry.
+    """
+
+    def test_postgresql_not_in_numeric_has_typeof_number_guard(self) -> None:
+        """The PG NOT_IN numeric disjunct is wrapped in an explicit jsonb_typeof='number' guard."""
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_advanced_filter(
+            MetadataFilter(key='k', operator=MetadataOperator.NOT_IN, value=[1, 2]),
+        )
+        where_clause, _ = builder.build_where_clause()
+        assert "jsonb_typeof(metadata->'k') = 'number'" in where_clause
+        # NOT_IN is the negation of the match under an explicit presence guard.
+        assert 'IS NOT NULL AND NOT' in where_clause
+
+    def test_sqlite_not_in_numeric_keeps_present_nonnumber_rows(self) -> None:
+        """End-to-end on in-memory SQLite: NOT_IN [1, 2] over a key keeps present string/boolean
+        rows and the non-matching number row, excludes the matching number and the missing key.
+
+        This is the row-result parity the PostgreSQL ``jsonb_typeof='number'`` guard restores:
+        before the guard, PostgreSQL dropped the string/boolean rows that SQLite (shown here)
+        keeps.
+        """
+        import json
+        import sqlite3
+
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(
+            MetadataFilter(key='k', operator=MetadataOperator.NOT_IN, value=[1, 2]),
+        )
+        where_clause, params = builder.build_where_clause()
+
+        db = sqlite3.connect(':memory:')
+        db.execute('CREATE TABLE context_entries (id INTEGER PRIMARY KEY, metadata TEXT)')
+        db.executemany(
+            'INSERT INTO context_entries (id, metadata) VALUES (?, ?)',
+            [
+                (1, json.dumps({'k': 'abc'})),    # present string  -> kept
+                (2, json.dumps({'k': True})),     # present boolean -> kept
+                (3, json.dumps({'k': 1})),        # number in [1, 2] -> excluded
+                (4, json.dumps({'k': 99})),       # number not in list -> kept
+                (5, json.dumps({'other': 'x'})),  # key missing -> excluded by presence guard
+            ],
+        )
+        sql = f'SELECT id FROM context_entries WHERE {where_clause} ORDER BY id'
+        kept = [row[0] for row in db.execute(sql, params).fetchall()]
+        assert kept == [1, 2, 4]
