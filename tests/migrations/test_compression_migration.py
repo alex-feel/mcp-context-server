@@ -12,6 +12,7 @@ The tests use a dedicated SQLite database per test so the migration's
 
 import asyncio
 import contextlib
+import importlib.util
 import sqlite3
 from collections.abc import AsyncGenerator
 from collections.abc import Generator
@@ -24,6 +25,13 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.migrations.compression import apply_compression_migration
 from app.settings import get_settings
+
+# The full server migration sequence loads the sqlite-vec extension (the semantic
+# migration always loads it before executing), so self-skip where it is absent.
+requires_sqlite_vec = pytest.mark.skipif(
+    importlib.util.find_spec('sqlite_vec') is None,
+    reason='sqlite-vec package not installed',
+)
 
 
 @pytest.fixture(autouse=True)
@@ -233,3 +241,81 @@ async def test_sqlite_migration_drops_legacy_vec_table(
         return cur.fetchone() is not None
 
     assert await backend.execute_read(_exists) is False
+
+
+@pytest.mark.asyncio
+@requires_sqlite_vec
+async def test_compression_skips_fp32_vec_provisioning_across_restart(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With compression enabled, the server migration sequence
+    (semantic -> chunking -> compression) must NOT create the fp32
+    vec_context_embeddings table -- only embedding_metadata (required by the
+    compressed write path), embedding_chunks (the SQLite 1:N bridge, preserved
+    under compression), and the compressed/provenance tables. The invariant must
+    hold across a simulated restart, with NO create-then-drop churn.
+    """
+    _enable_compression(monkeypatch)
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')
+    get_settings.cache_clear()
+    import app.migrations.chunking as chunking_module
+    import app.migrations.compression as compression_module
+    import app.migrations.semantic as semantic_module
+    monkeypatch.setattr(semantic_module, 'settings', get_settings())
+    monkeypatch.setattr(chunking_module, 'settings', get_settings())
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+    from app.migrations.chunking import apply_chunking_migration
+    from app.migrations.semantic import apply_semantic_search_migration
+
+    async def _run_startup_sequence() -> None:
+        # Mirrors the server lifespan migration order.
+        await apply_semantic_search_migration(backend=backend)
+        await apply_chunking_migration(backend=backend)
+        await apply_compression_migration(backend=backend)
+
+    def _tables(conn: sqlite3.Connection) -> set[str]:
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        return {row[0] for row in cur.fetchall()}
+
+    await _run_startup_sequence()
+    tables = await backend.execute_read(_tables)
+    assert 'vec_context_embeddings' not in tables  # fp32 vec0 table NOT created
+    assert 'embedding_metadata' in tables          # required by the compressed write path
+    assert 'embedding_chunks' in tables            # SQLite 1:N bridge, preserved
+    assert 'vec_context_embeddings_compressed' in tables
+    assert 'compression_metadata' in tables
+
+    # Simulated restart: the fp32 table must STILL be absent (no reappearance).
+    await _run_startup_sequence()
+    tables_after = await backend.execute_read(_tables)
+    assert 'vec_context_embeddings' not in tables_after
+
+
+@pytest.mark.asyncio
+@requires_sqlite_vec
+async def test_no_compression_creates_fp32_vec_table(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: with compression DISABLED the semantic migration still creates the
+    fp32 vec_context_embeddings table (the skip is compression-gated, not default)."""
+    _disable_compression(monkeypatch)
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')
+    get_settings.cache_clear()
+    import app.migrations.semantic as semantic_module
+    monkeypatch.setattr(semantic_module, 'settings', get_settings())
+
+    from app.migrations.semantic import apply_semantic_search_migration
+
+    await apply_semantic_search_migration(backend=backend)
+
+    def _exists(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='vec_context_embeddings'",
+        )
+        return cur.fetchone() is not None
+
+    assert await backend.execute_read(_exists) is True

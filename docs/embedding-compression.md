@@ -49,21 +49,24 @@ A single-row provenance table records the configuration that was active when the
 
 ```sql
 CREATE TABLE compression_metadata (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    provider    TEXT NOT NULL,
-    bits        INTEGER NOT NULL,
-    variant     TEXT NOT NULL,
-    seed        INTEGER NOT NULL,
-    dim         INTEGER NOT NULL,
-    created_at  TEXT NOT NULL
+    id                    INTEGER PRIMARY KEY CHECK (id = 1),
+    provider              TEXT NOT NULL,
+    bits                  INTEGER NOT NULL,
+    variant               TEXT NOT NULL,
+    seed                  INTEGER NOT NULL,
+    dim                   INTEGER NOT NULL,
+    codebook_fingerprint  TEXT,
+    created_at            TEXT NOT NULL
 )
 ```
 
 The `CHECK (id = 1)` constraint enforces the singleton property at the SQL layer. The bootstrap-only startup validator reads this row on every start, compares it to the active `CompressionSettings`, and refuses to start when the runtime values diverge from the recorded values. This is the seed-locked invariant: once data has been encoded with a given seed, no other seed can decode it correctly.
 
+`codebook_fingerprint` is a lowercase hex SHA-256 of the REALIZED rotation matrix (`numpy.linalg.qr` output for `(dim, seed)`), recorded at first compression. The seed alone does NOT guarantee a reproducible codebook: `numpy.linalg.qr` is a LAPACK `geqrf`/`orgqr` call whose low-order bits differ across BLAS/LAPACK builds and CPU dispatch, so the same `(dim, seed)` can materialize a different rotation on a different host. The validator re-derives this digest on every start (when the scalar fields match) and raises `ConfigurationError` (exit 78) on divergence, converting an otherwise-silent cross-host corruption of every decode/search into a loud startup failure. The column is nullable so a row written before fingerprinting still reads (the warning notes that cross-host divergence cannot then be detected for that database).
+
 ### Seed-locked invariant
 
-The TurboQuant rotation matrix is deterministic given a seed. Two pods with different seeds will produce incompatible encodings: payloads written by one pod will not decode correctly with the other pod's rotation. To prevent silent corruption, the validator treats the seed as load-bearing and refuses to start when the runtime value disagrees with the recorded value.
+The TurboQuant rotation matrix is deterministic given a seed AND a fixed numerical stack. Two pods with different seeds will produce incompatible encodings: payloads written by one pod will not decode correctly with the other pod's rotation. To prevent silent corruption, the validator treats the seed as load-bearing and refuses to start when the runtime value disagrees with the recorded value. Because the realized rotation also depends on the host's BLAS/LAPACK build and CPU (numpy.linalg.qr is not bit-reproducible across hosts even for a fixed seed), the validator additionally re-derives the `codebook_fingerprint` and refuses to start when the realized codebook diverges from the recorded one.
 
 In multi-pod deployments (Kubernetes, multiple horizontal-scale workers, multiple processes against the same database), every pod MUST inherit the same `COMPRESSION_SEED`. The recommended pattern is a ConfigMap-bound env var; see [Multi-Pod Kubernetes Deployments](#multi-pod-kubernetes-deployments) below.
 
@@ -438,7 +441,7 @@ Non-standard dimensions where `dim * bits` is not divisible by 8 will fail with 
 
 ### ConfigurationError exit 78 at startup
 
-The startup validator detected a mismatch between the runtime `CompressionSettings` and the persisted `compression_metadata` row. The validator compares each of the five fields recorded at first bootstrap -- `provider`, `bits`, `variant`, `seed`, and `dim` -- and the error message lists every field that disagrees. The supervisor will not auto-restart on exit 78.
+The startup validator detected a mismatch between the runtime `CompressionSettings` and the persisted `compression_metadata` row. The validator compares each of the five config fields recorded at first bootstrap -- `provider`, `bits`, `variant`, `seed`, and `dim` -- and the error message lists every field that disagrees. When those five match, it additionally re-derives the realized `codebook_fingerprint` (the `numpy.linalg.qr` rotation digest) and raises here too if it diverges -- the signature of a cross-host BLAS/LAPACK/CPU QR difference that would silently corrupt decode/search. The supervisor will not auto-restart on exit 78.
 
 Resolution:
 

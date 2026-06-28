@@ -43,6 +43,11 @@ CREATE INDEX IF NOT EXISTS idx_vec_compressed_context
 -- Bootstrap INSERT happens at first startup via the compression validator;
 -- subsequent reads validate env-vs-DB consistency for seed/bits/variant/
 -- provider/dim.
+-- codebook_fingerprint: lowercase hex SHA-256 of the REALIZED numpy.linalg.qr
+-- rotation matrix recorded at first compression. The startup validator re-derives
+-- and compares it to catch a cross-host BLAS/LAPACK/CPU QR divergence (the same
+-- (dim, seed) materializing a DIFFERENT rotation) before it silently corrupts
+-- every decode/search. Nullable so a row written before fingerprinting still reads.
 CREATE TABLE IF NOT EXISTS compression_metadata (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     provider TEXT NOT NULL,
@@ -50,5 +55,6 @@ CREATE TABLE IF NOT EXISTS compression_metadata (
     variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
     seed INTEGER NOT NULL CHECK (seed >= 0),
     dim INTEGER NOT NULL CHECK (dim > 0),
+    codebook_fingerprint TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

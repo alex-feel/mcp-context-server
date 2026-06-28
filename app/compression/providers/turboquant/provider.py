@@ -100,7 +100,14 @@ class TurboQuantProvider:
 
     @property
     def metadata(self) -> CompressionMetadata:
-        """Provenance metadata describing the current configuration."""
+        """Provenance metadata describing the current configuration.
+
+        ``codebook_fingerprint`` is left None here: it requires materializing the
+        rotation matrix (a QR factorization), which the cheap, frequently-read
+        metadata property must not force. Callers that persist provenance
+        (the startup validator and the ``--compress`` CLI) compute it explicitly
+        via :meth:`codebook_fingerprint`.
+        """
         return CompressionMetadata(
             provider='turboquant',
             bits=self._bits,
@@ -108,6 +115,27 @@ class TurboQuantProvider:
             seed=self._seed,
             dim=self._dim,
         )
+
+    def codebook_fingerprint(self) -> str:
+        """Return a stable SHA-256 hex digest of the realized rotation matrix.
+
+        The MSE codebook boundaries and the QJL sketch matrix are derived from pure,
+        bit-reproducible PCG64 / closed-form computation, so the only host-dependent
+        component is the ``numpy.linalg.qr`` rotation matrix (LAPACK ``geqrf``/
+        ``orgqr``). Hashing its realized float32 bytes for this ``(dim, seed)`` yields
+        a digest that is identical across runs on the same numerical stack and
+        DIFFERS when a different BLAS/LAPACK build or CPU dispatch produces a divergent
+        rotation -- the exact cross-host corruption the startup validator must catch.
+
+        Returns:
+            Lowercase hex SHA-256 digest of the realized rotation matrix.
+        """
+        import hashlib
+
+        from app.compression.providers.turboquant._rotation import get_cached_rotation
+
+        rotation = get_cached_rotation(dim=self._dim, seed=self._seed)
+        return hashlib.sha256(rotation.matrix.tobytes()).hexdigest()
 
     def encode_sync(self, vectors: NDArray[np.float32]) -> bytes:
         """Encode vectors and return a serialized payload.

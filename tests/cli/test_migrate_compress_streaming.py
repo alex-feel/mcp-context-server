@@ -575,6 +575,7 @@ def _seed_compressed_database(
                     variant TEXT NOT NULL,
                     seed INTEGER NOT NULL,
                     dim INTEGER NOT NULL,
+                    codebook_fingerprint TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 ''',

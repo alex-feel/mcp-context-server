@@ -423,6 +423,11 @@ async def _compress_async(source_url: str, *, dry_run: bool) -> int:
             variant=comp.variant,
             seed=comp.seed,
             dim=settings.embedding.dim,
+            # Record the REALIZED rotation-matrix digest so the server's startup
+            # validator can detect a cross-host BLAS/LAPACK/CPU QR divergence (the
+            # same (dim, seed) materializing a different rotation) and fail loudly
+            # rather than silently corrupting every decode/search of this DB later.
+            codebook_fingerprint=provider.codebook_fingerprint(),
         )
 
         _print_plan(
@@ -795,6 +800,7 @@ async def _execute_compress_sqlite(
                 variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
                 seed INTEGER NOT NULL CHECK (seed >= 0),
                 dim INTEGER NOT NULL CHECK (dim > 0),
+                codebook_fingerprint TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             ''',
@@ -876,14 +882,15 @@ async def _execute_compress_sqlite(
         # INSERT is the only one ever applied.
         conn.execute(
             'INSERT INTO compression_metadata '
-            '(id, provider, bits, variant, seed, dim) '
-            'VALUES (1, ?, ?, ?, ?, ?)',
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            'VALUES (1, ?, ?, ?, ?, ?, ?)',
             (
                 provenance.provider,
                 provenance.bits,
                 provenance.variant,
                 provenance.seed,
                 provenance.dim,
+                provenance.codebook_fingerprint,
             ),
         )
         conn.execute('DROP TABLE IF EXISTS vec_context_embeddings')
@@ -959,6 +966,7 @@ async def _execute_compress_postgresql(
             "  variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),"
             '  seed BIGINT NOT NULL CHECK (seed >= 0),'
             '  dim INTEGER NOT NULL CHECK (dim > 0),'
+            '  codebook_fingerprint TEXT,'
             '  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP'
             ')',
         )
@@ -1007,6 +1015,19 @@ async def _execute_compress_postgresql(
                 else:
                     chunk_seq += 1
                 vec_list = [float(x) for x in r['embedding']]
+                # Validate the stored fp32 dimension against the configured compression
+                # dim BEFORE encoding. SQLite fails safe (_fp32_blob_to_list_sqlite raises
+                # on a size mismatch); PostgreSQL would otherwise feed a wrong-width vector
+                # to the encoder, silently corrupting the payload and then DROPping the
+                # fp32 source in this same transaction. Abort instead so EMBEDDING_DIM can
+                # be set to the stored dimension and the run retried -- no fp32 vector is
+                # corrupted or dropped.
+                if len(vec_list) != provenance.dim:
+                    raise ValueError(
+                        f'fp32 vector for context {ctx_str} has dimension {len(vec_list)} but '
+                        f'compression is configured for dim {provenance.dim} (EMBEDDING_DIM); '
+                        f'aborting so no fp32 vector is corrupted or dropped.',
+                    )
                 payload = provider.encode_sync(_make_2d_array(vec_list))
                 await conn.execute(
                     'INSERT INTO vec_context_embeddings_compressed '
@@ -1033,13 +1054,14 @@ async def _execute_compress_postgresql(
         # the same transaction.
         await conn.execute(
             'INSERT INTO compression_metadata '
-            '(id, provider, bits, variant, seed, dim) '
-            'VALUES (1, $1, $2, $3, $4, $5)',
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            'VALUES (1, $1, $2, $3, $4, $5, $6)',
             provenance.provider,
             provenance.bits,
             provenance.variant,
             provenance.seed,
             provenance.dim,
+            provenance.codebook_fingerprint,
         )
         await conn.execute(
             'DROP INDEX IF EXISTS idx_vec_context_embeddings_hnsw',

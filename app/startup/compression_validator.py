@@ -8,12 +8,17 @@ When ``ENABLE_EMBEDDING_COMPRESSION`` is true the server reads the singleton
   of truth.
 - Validation mode (table populated): the env values MUST match the persisted
   row. ``provider``, ``bits``, ``variant``, ``seed`` and ``dim`` are compared
-  on every start.
+  on every start. When those scalars match, the REALIZED codebook fingerprint
+  (a SHA-256 of the ``numpy.linalg.qr`` rotation matrix) is re-derived and
+  compared too, so a cross-host BLAS/LAPACK/CPU QR divergence -- the same
+  ``(dim, seed)`` materializing a different rotation -- is caught before it can
+  silently corrupt every decode/search.
 
 All mismatches raise :class:`ConfigurationError` (exit 78) so the supervisor
 does not auto-restart.
 """
 
+import asyncio
 import logging
 import sqlite3
 from typing import cast
@@ -63,6 +68,48 @@ def compression_byte_alignment_error(dim: int, bits: int, variant: str) -> str |
     )
 
 
+async def _compute_codebook_fingerprint() -> str:
+    """Compute the realized codebook fingerprint for the active compression config.
+
+    Builds the configured compression provider and materializes its rotation matrix
+    OFF the event loop (a QR factorization). ``get_cached_rotation`` memoizes by
+    ``(dim, seed)``, so this shares the matrix the encode/decode path uses rather than
+    building a second one.
+
+    Returns:
+        Lowercase hex SHA-256 digest of the realized codebook.
+    """
+    from app.compression.factory import create_compression_provider
+
+    provider = create_compression_provider()
+    return await asyncio.to_thread(provider.codebook_fingerprint)
+
+
+def _codebook_fingerprint_mismatch_error(
+    stored_fingerprint: str,
+    realized_fingerprint: str,
+) -> ConfigurationError:
+    """Build the ConfigurationError raised when the realized codebook diverges.
+
+    Args:
+        stored_fingerprint: The fingerprint recorded when the data was first compressed.
+        realized_fingerprint: The fingerprint this host materializes now.
+
+    Returns:
+        A :class:`ConfigurationError` describing the divergence (exit 78).
+    """
+    return ConfigurationError(
+        'Compression codebook fingerprint mismatch. The realized numpy.linalg.qr '
+        'rotation matrix for this (dim, seed) does NOT match the one recorded when the '
+        'compressed data was first written -- typically a different BLAS/LAPACK build '
+        'or CPU (numpy.linalg.qr is not bit-reproducible across hosts even for a fixed '
+        'seed). Reading compressed embeddings with a divergent codebook silently '
+        'corrupts every decode and inner-product estimate. Run on a host whose numerical '
+        'libraries reproduce the original codebook, or restore from backup. '
+        f'Expected fingerprint={stored_fingerprint}, realized={realized_fingerprint}.',
+    )
+
+
 async def validate_compression_provenance(backend: StorageBackend) -> None:
     """Bootstrap-or-validate compression provenance.
 
@@ -72,12 +119,15 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
     Raises:
         ConfigurationError: When the active compression configuration violates
             the compressed read path's byte-alignment invariant
-            ((EMBEDDING_DIM * effective_bits) not a multiple of 8), or when the
+            ((EMBEDDING_DIM * effective_bits) not a multiple of 8), when the
             env-derived compression configuration disagrees with the stored
-            provenance row (exit 78). On the first start (no provenance row yet)
-            the current configuration is recorded as the singleton row instead of
-            raising; ``COMPRESSION_SEED`` always resolves (it defaults to 0) so it
-            is never "missing" at bootstrap.
+            provenance row, or when the realized codebook fingerprint (the
+            ``numpy.linalg.qr`` rotation matrix digest) diverges from the one
+            recorded at first compression -- a cross-host BLAS/LAPACK/CPU QR
+            divergence (exit 78). On the first start (no provenance row yet) the
+            current configuration AND its realized fingerprint are recorded as the
+            singleton row instead of raising; ``COMPRESSION_SEED`` always resolves
+            (it defaults to 0) so it is never "missing" at bootstrap.
     """
     settings = get_settings()
     comp = settings.compression
@@ -101,6 +151,10 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
             variant=comp.variant,
             seed=comp.seed,
             dim=settings.embedding.dim,
+            # Record the REALIZED rotation-matrix digest so later starts can detect a
+            # cross-host BLAS/LAPACK/CPU QR divergence and fail loudly (exit 78) rather
+            # than silently corrupting every decode/search.
+            codebook_fingerprint=await _compute_codebook_fingerprint(),
         )
         try:
             await insert_compression_metadata(backend, meta)
@@ -162,6 +216,19 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
                     'values matching the persisted row. Mismatches: '
                     + '; '.join(race_mismatches),
                 ) from None
+            # The scalar config matches the winner, but if THIS host materializes a
+            # different rotation matrix than the winner recorded, reads would corrupt.
+            # meta.codebook_fingerprint is this instance's realized digest (computed
+            # above for the INSERT we lost); compare it to the winner's persisted digest.
+            if (
+                inherited.codebook_fingerprint is not None
+                and meta.codebook_fingerprint != inherited.codebook_fingerprint
+            ):
+                race_fingerprint_error = _codebook_fingerprint_mismatch_error(
+                    inherited.codebook_fingerprint,
+                    cast(str, meta.codebook_fingerprint),
+                )
+                raise race_fingerprint_error from None
             logger.info(
                 'Compression provenance bootstrap race: another '
                 'startup instance won; proceeding with inherited row: '
@@ -216,6 +283,24 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
             'vars or restore them to the original bootstrap values. '
             'Mismatches: ' + '; '.join(mismatches),
         )
+
+    # Scalars match. Verify the REALIZED codebook (the numpy.linalg.qr rotation matrix)
+    # equals the one recorded at bootstrap: the same (dim, seed) can materialize a
+    # DIFFERENT rotation on a host with a different BLAS/LAPACK build or CPU dispatch,
+    # which would silently corrupt every decode/inner-product estimate. Catch it loudly.
+    if db_meta.codebook_fingerprint is None:
+        logger.warning(
+            'Compression provenance row predates codebook fingerprinting; a cross-host '
+            'rotation-matrix divergence cannot be detected for this database. Re-compress '
+            'from a backup on the target host to record a fingerprint.',
+        )
+    else:
+        realized_fingerprint = await _compute_codebook_fingerprint()
+        if realized_fingerprint != db_meta.codebook_fingerprint:
+            fingerprint_error = _codebook_fingerprint_mismatch_error(
+                db_meta.codebook_fingerprint, realized_fingerprint,
+            )
+            raise fingerprint_error
 
     logger.debug(
         'Compression provenance validated: '

@@ -128,7 +128,21 @@ async def _apply_compression_migration_with_backend(
         )
 
         if already_applied:
-            logger.info('Compression migration: already applied for PostgreSQL, skipping')
+            # The table exists, but it may predate the codebook_fingerprint column
+            # (CREATE TABLE IF NOT EXISTS never adds a column to an existing table).
+            # Add it idempotently so the read path -- which SELECTs the column -- works
+            # after an in-place upgrade, without re-running the destructive table swap.
+            async def _ensure_fingerprint_column(conn: asyncpg.Connection) -> None:
+                await conn.execute(
+                    'ALTER TABLE compression_metadata '
+                    'ADD COLUMN IF NOT EXISTS codebook_fingerprint TEXT',
+                )
+
+            await manager.execute_write(cast(Any, _ensure_fingerprint_column))
+            logger.info(
+                'Compression migration: already applied for PostgreSQL, '
+                'codebook_fingerprint column ensured',
+            )
             return
 
         migration_sql = migration_sql_template
@@ -186,6 +200,17 @@ async def _apply_compression_migration_with_backend(
 
     def _apply_sqlite(conn: sqlite3.Connection) -> None:
         conn.executescript(migration_sql_template)
+        # Add codebook_fingerprint to a pre-existing compression_metadata table that
+        # predates the column (CREATE TABLE IF NOT EXISTS never adds a column to an
+        # existing table). SQLite has no ADD COLUMN IF NOT EXISTS, so probe PRAGMA
+        # first; the ALTER is then idempotent across restarts and in-place upgrades.
+        existing_cols = [
+            row[1] for row in conn.execute('PRAGMA table_info(compression_metadata)').fetchall()
+        ]
+        if 'codebook_fingerprint' not in existing_cols:
+            conn.execute(
+                'ALTER TABLE compression_metadata ADD COLUMN codebook_fingerprint TEXT',
+            )
 
     await manager.execute_write(_apply_sqlite)
 

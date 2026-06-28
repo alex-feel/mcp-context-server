@@ -46,6 +46,24 @@ class CompressionProvider(Protocol):
         """
         ...
 
+    def codebook_fingerprint(self) -> str:
+        """Return a stable hex digest of the REALIZED, host-materialized codebook.
+
+        The digest covers the part of the codebook whose exact bits depend on the
+        host's numerical libraries -- specifically the QR rotation matrix produced by
+        ``numpy.linalg.qr`` (a LAPACK ``geqrf``/``orgqr`` call whose low-order bits
+        differ across BLAS/LAPACK builds and CPU dispatch), which is NOT reproducible
+        across hosts even for a fixed ``(dim, seed)``. The startup validator persists
+        this digest at first compression and re-derives it on every start, raising
+        ``ConfigurationError`` (exit 78) when the reader's realized codebook diverges
+        from the writer's, so a cross-host BLAS/QR divergence fails loudly instead of
+        silently corrupting every decode and inner-product estimate.
+
+        Returns:
+            Lowercase hex SHA-256 digest of the realized codebook.
+        """
+        ...
+
     # Synchronous (hot-path) API ----------------------------------------
     def encode_sync(self, vectors: NDArray[np.float32]) -> bytes:
         """Encode a batch of float32 vectors to a single compressed payload.

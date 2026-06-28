@@ -278,6 +278,7 @@ def test_main_compress_idempotent_when_already_compressed(
                 variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
                 seed INTEGER NOT NULL CHECK (seed >= 0),
                 dim INTEGER NOT NULL CHECK (dim > 0),
+                codebook_fingerprint TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             INSERT INTO compression_metadata
@@ -348,6 +349,7 @@ def test_main_decompress_errors_when_provenance_missing(
                 variant TEXT NOT NULL,
                 seed INTEGER NOT NULL,
                 dim INTEGER NOT NULL,
+                codebook_fingerprint TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             ''',

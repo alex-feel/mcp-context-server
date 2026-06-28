@@ -41,10 +41,10 @@ async def read_compression_metadata(
 
         def _read_sqlite(
             conn: sqlite3.Connection,
-        ) -> tuple[str, int, str, int, int] | None:
+        ) -> tuple[str, int, str, int, int, str | None] | None:
             try:
                 cursor = conn.execute(
-                    'SELECT provider, bits, variant, seed, dim '
+                    'SELECT provider, bits, variant, seed, dim, codebook_fingerprint '
                     'FROM compression_metadata WHERE id = 1',
                 )
             except sqlite3.OperationalError as exc:
@@ -61,17 +61,17 @@ async def read_compression_metadata(
             row = cursor.fetchone()
             if row is None:
                 return None
-            return (row[0], int(row[1]), row[2], int(row[3]), int(row[4]))
+            return (row[0], int(row[1]), row[2], int(row[3]), int(row[4]), row[5])
 
         row = await backend.execute_read(_read_sqlite)
     else:
 
         async def _read_pg(
             conn: asyncpg.Connection,
-        ) -> tuple[str, int, str, int, int] | None:
+        ) -> tuple[str, int, str, int, int, str | None] | None:
             try:
                 record = await conn.fetchrow(
-                    'SELECT provider, bits, variant, seed, dim '
+                    'SELECT provider, bits, variant, seed, dim, codebook_fingerprint '
                     'FROM compression_metadata WHERE id = 1',
                 )
             except asyncpg.UndefinedTableError:
@@ -84,6 +84,7 @@ async def read_compression_metadata(
                 record['variant'],
                 int(record['seed']),
                 int(record['dim']),
+                record['codebook_fingerprint'],
             )
 
         row = await backend.execute_read(cast(Any, _read_pg))
@@ -94,13 +95,14 @@ async def read_compression_metadata(
     # (bits in [2, 4], dim > 0, seed >= 0) and Literal membership for
     # provider and variant. A row that violates them indicates manual SQL
     # tampering or corruption -- model_validate raises loudly.
-    provider, bits, variant, seed, dim = row
+    provider, bits, variant, seed, dim, codebook_fingerprint = row
     return CompressionMetadata.model_validate({
         'provider': provider,
         'bits': bits,
         'variant': variant,
         'seed': seed,
         'dim': dim,
+        'codebook_fingerprint': codebook_fingerprint,
     })
 
 
@@ -119,9 +121,9 @@ async def insert_compression_metadata(
         def _ins_sqlite(conn: sqlite3.Connection) -> None:
             conn.execute(
                 'INSERT INTO compression_metadata '
-                '(id, provider, bits, variant, seed, dim) '
-                'VALUES (1, ?, ?, ?, ?, ?)',
-                (meta.provider, meta.bits, meta.variant, meta.seed, meta.dim),
+                '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+                'VALUES (1, ?, ?, ?, ?, ?, ?)',
+                (meta.provider, meta.bits, meta.variant, meta.seed, meta.dim, meta.codebook_fingerprint),
             )
 
         await backend.execute_write(_ins_sqlite)
@@ -130,13 +132,14 @@ async def insert_compression_metadata(
         async def _ins_pg(conn: asyncpg.Connection) -> None:
             await conn.execute(
                 'INSERT INTO compression_metadata '
-                '(id, provider, bits, variant, seed, dim) '
-                'VALUES (1, $1, $2, $3, $4, $5)',
+                '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+                'VALUES (1, $1, $2, $3, $4, $5, $6)',
                 meta.provider,
                 meta.bits,
                 meta.variant,
                 meta.seed,
                 meta.dim,
+                meta.codebook_fingerprint,
             )
 
         await backend.execute_write(cast(Any, _ins_pg))

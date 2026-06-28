@@ -58,3 +58,15 @@ class CompressionMetadata(BaseModel):
         le=8192,
         description='Vector dimension d.',
     )
+    codebook_fingerprint: str | None = Field(
+        default=None,
+        description='Lowercase hex SHA-256 digest of the REALIZED codebook (the '
+                    'numpy.linalg.qr rotation matrix), recorded at first compression. '
+                    'numpy.linalg.qr is a LAPACK call whose low-order bits differ across '
+                    'BLAS/LAPACK builds and CPU dispatch, so the same (dim, seed) can '
+                    'yield a different rotation on a different host; the startup validator '
+                    're-derives this digest and rejects a divergent codebook (exit 78) '
+                    'before it can silently corrupt every decode/search. None on a row '
+                    'written before fingerprinting existed (cross-host divergence then '
+                    'cannot be detected for that database).',
+    )

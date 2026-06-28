@@ -416,3 +416,71 @@ async def test_bootstrap_race_post_race_read_empty_raises(
     assert 'integrity violation' in msg
     assert 'no provenance row is visible' in msg
     assert ConfigurationError.EXIT_CODE == 78
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_records_codebook_fingerprint(
+    backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bootstrap records a non-null SHA-256 digest of the realized rotation matrix."""
+    _set_compression_env(monkeypatch, seed='42', bits='4', variant='ip', dim='1024')
+    await apply_compression_migration(backend=backend)
+    await validate_compression_provenance(backend=backend)
+
+    from app.compression.provenance import read_compression_metadata
+
+    meta = await read_compression_metadata(backend)
+    assert meta is not None
+    assert meta.codebook_fingerprint is not None
+    assert len(meta.codebook_fingerprint) == 64
+    int(meta.codebook_fingerprint, 16)  # valid lowercase hex, raises if not
+
+
+@pytest.mark.asyncio
+async def test_validation_codebook_fingerprint_mismatch_raises(
+    backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A persisted fingerprint the realized rotation can no longer reproduce
+    (simulating a cross-host BLAS/LAPACK/CPU QR divergence) raises
+    ConfigurationError even though every scalar config field still matches."""
+    _set_compression_env(monkeypatch, seed='42', bits='4', variant='ip', dim='1024')
+    await apply_compression_migration(backend=backend)
+    await validate_compression_provenance(backend=backend)
+
+    def _tamper(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'UPDATE compression_metadata SET codebook_fingerprint = ? WHERE id = 1',
+            ('0' * 64,),
+        )
+
+    await backend.execute_write(_tamper)
+
+    with pytest.raises(ConfigurationError) as exc_info:
+        await validate_compression_provenance(backend=backend)
+    assert 'fingerprint' in str(exc_info.value).lower()
+    assert ConfigurationError.EXIT_CODE == 78
+
+
+@pytest.mark.asyncio
+async def test_validation_null_fingerprint_warns_not_raises(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A pre-fingerprint provenance row (NULL fingerprint) cannot be validated
+    for cross-host divergence: the validator warns and proceeds, never raises."""
+    _set_compression_env(monkeypatch, seed='42', bits='4', variant='ip', dim='1024')
+    await apply_compression_migration(backend=backend)
+    await validate_compression_provenance(backend=backend)
+
+    def _null_fingerprint(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'UPDATE compression_metadata SET codebook_fingerprint = NULL WHERE id = 1',
+        )
+
+    await backend.execute_write(_null_fingerprint)
+
+    import logging as logging_module
+    caplog.set_level(logging_module.WARNING)
+    await validate_compression_provenance(backend=backend)  # must NOT raise
+    assert 'fingerprint' in caplog.text.lower()
