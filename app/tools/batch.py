@@ -1532,9 +1532,10 @@ async def delete_context_batch(
         # lack CASCADE). The cleanup pre-queries the exact to-be-deleted subset, so
         # combining context_ids with source/older_than_days never deletes embeddings
         # for a context_id those filters exclude (which would orphan a surviving
-        # entry). Gate on embedding generation OR compression -- ``settings.
-        # semantic_search.enabled`` only controls tool registration, not whether
-        # embedding rows exist on disk.
+        # entry). Gate on table PRESENCE (embedding_tables_exist), NOT the runtime
+        # generation/compression toggles: a prior session's embeddings must still
+        # be cleaned after the toggles flip off, or the FK-less vec0 rows orphan.
+        # Mirrors the stale-embedding cleanup on the update path.
         backend = repos.context.backend
         # Resolve older_than_days to ONE absolute UTC cutoff for SQLite so the
         # embedding-cleanup pre-query and the row DELETE below share an identical age
@@ -1549,7 +1550,7 @@ async def delete_context_batch(
                 datetime.now(UTC) - timedelta(days=older_than_days)
             ).strftime('%Y-%m-%d %H:%M:%S')
 
-        if (settings.embedding.generation_enabled or settings.compression.enabled) and backend.backend_type == 'sqlite':
+        if backend.backend_type == 'sqlite' and await repos.embeddings.embedding_tables_exist():
             try:
                 affected_ids = await repos.context.get_ids_matching_batch_criteria(
                     context_ids=context_ids,

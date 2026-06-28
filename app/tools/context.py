@@ -490,13 +490,16 @@ async def delete_context(
         deleted = 0
 
         if context_ids:
-            # Delete embeddings first (explicit cleanup).
-            # Gate on embedding generation OR compression: either toggle
-            # being true implies embedding rows MAY exist on disk and the
-            # explicit cleanup SHOULD run. ``settings.semantic_search.enabled``
-            # only controls ``semantic_search_context`` tool registration --
-            # NOT whether embeddings exist -- so it is the wrong gate.
-            if settings.embedding.generation_enabled or settings.compression.enabled:
+            # Delete embeddings first (explicit cleanup). Gate on whether the
+            # embedding tables were ever PROVISIONED (embedding_tables_exist),
+            # NOT on the runtime ENABLE_EMBEDDING_GENERATION/COMPRESSION toggles:
+            # a prior session may have written embeddings that a now-disabled
+            # toggle would skip cleaning. On SQLite the vec0 table has no FK and
+            # is reachable only through the embedding_chunks bridge, so once that
+            # bridge cascades away with the context row the vec0 vectors are
+            # orphaned permanently. Mirrors the stale-embedding cleanup on the
+            # update path (app/tools/_shared.py), which gates on the same signal.
+            if await repos.embeddings.embedding_tables_exist():
                 for context_id in context_ids:
                     try:
                         await repos.embeddings.delete(context_id)
@@ -513,9 +516,11 @@ async def delete_context(
             # SQLite-only (vec0 virtual tables lack CASCADE). Use the UNBOUNDED
             # criteria query rather than a capped search so a thread with more than
             # 10000 entries does not leave orphaned embeddings.
-            # Gate matches the context_ids branch above: see comment there
-            # for why semantic_search.enabled is NOT the correct gate.
-            if settings.embedding.generation_enabled or settings.compression.enabled:
+            # Gate on table PRESENCE (embedding_tables_exist), not the runtime
+            # toggles: a prior session's embeddings must still be cleaned even
+            # after generation/compression are turned off, or the FK-less vec0
+            # rows orphan. Mirrors the context_ids branch above.
+            if await repos.embeddings.embedding_tables_exist():
                 backend = repos.context.backend
                 if backend.backend_type == 'sqlite':
                     try:

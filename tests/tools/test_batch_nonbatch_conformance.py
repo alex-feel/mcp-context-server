@@ -614,7 +614,7 @@ class TestDeleteConformance:
 
     @pytest.mark.asyncio
     async def test_delete_conformance_embedding_cleanup(self) -> None:
-        """C3: Both paths trigger embedding cleanup when semantic search is enabled."""
+        """C3: Both paths trigger embedding cleanup when the embedding tables exist."""
         thread_nb = f'{_THREAD_PREFIX}_del_embed_nb'
         thread_b = f'{_THREAD_PREFIX}_del_embed_b'
 
@@ -630,16 +630,15 @@ class TestDeleteConformance:
         mock_delete = AsyncMock()
         repos = await ensure_repositories()
 
+        # The explicit cleanup is gated on whether the embedding tables were
+        # provisioned (embedding_tables_exist), not on the runtime toggles. Force
+        # that signal True for both paths and assert each calls delete().
         with (
             patch.object(repos.embeddings, 'delete', mock_delete),
-            patch('app.tools.context.settings') as mock_nb_settings,
-            patch('app.tools.batch.settings') as mock_b_settings,
+            patch.object(
+                repos.embeddings, 'embedding_tables_exist', AsyncMock(return_value=True),
+            ),
         ):
-            mock_nb_settings.semantic_search.enabled = True
-            mock_b_settings.semantic_search.enabled = True
-            mock_nb_settings.embedding.model = 'test-model'
-            mock_b_settings.embedding.model = 'test-model'
-
             await delete_context(context_ids=[nb_id])
             await delete_context_batch(context_ids=[b_id])
 

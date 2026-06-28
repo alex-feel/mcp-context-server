@@ -1,21 +1,24 @@
 """Tests for the cleanup-gate predicate on delete_context / delete_context_batch.
 
 ``delete_context`` and ``delete_context_batch`` run the explicit
-``repos.embeddings.delete(...)`` cleanup when
-``settings.embedding.generation_enabled or settings.compression.enabled``
-is true. Either flag being true is sufficient evidence that embedding rows
-may exist on disk and the explicit cleanup should run.
+``repos.embeddings.delete(...)`` cleanup when the embedding tables were ever
+PROVISIONED (``repos.embeddings.embedding_tables_exist()`` is true), NOT when
+the runtime ``ENABLE_EMBEDDING_GENERATION`` / ``ENABLE_EMBEDDING_COMPRESSION``
+toggles are on.
 
-``settings.semantic_search.enabled`` is unrelated to this gate: it
-controls registration of the ``semantic_search_context`` MCP tool ONLY
-(per its docstring at ``app/settings.py``) and does not indicate whether
-embedding rows exist on disk. The default user configuration
-(``ENABLE_EMBEDDING_GENERATION=true, ENABLE_SEMANTIC_SEARCH=false,
-ENABLE_EMBEDDING_COMPRESSION=true``) produces a DB full of embeddings;
-the explicit cleanup must still run as defense-in-depth alongside FK
-CASCADE.
+The durable table-presence signal is the correct gate because a prior session
+may have written embeddings that a now-disabled toggle would skip cleaning: on
+SQLite the vec0 virtual table has no FK CASCADE and is reachable only through
+the ``embedding_chunks`` bridge, so once that bridge cascades away with the
+context row the orphaned vectors can never be found or deleted. Gating on the
+runtime toggles instead left those rows behind permanently when generation and
+compression were both turned off at delete time. The update path already gates
+the structurally identical stale-embedding cleanup on the same
+``embedding_tables_exist()`` signal (see ``app/tools/_shared.py``); the delete
+paths now mirror it.
 """
 
+from collections.abc import Callable
 from collections.abc import Generator
 from unittest.mock import AsyncMock
 
@@ -38,42 +41,25 @@ def clear_settings_cache() -> Generator[None, None, None]:
     get_settings.cache_clear()
 
 
-def _flip_env_and_refresh_bindings(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    embedding_generation_enabled: bool,
-    semantic_search_enabled: bool,
-    compression_enabled: bool,
-) -> None:
-    """Set the three relevant env vars + refresh module-level settings bindings."""
-    monkeypatch.setenv(
-        'ENABLE_EMBEDDING_GENERATION',
-        'true' if embedding_generation_enabled else 'false',
-    )
-    monkeypatch.setenv(
-        'ENABLE_SEMANTIC_SEARCH',
-        'true' if semantic_search_enabled else 'false',
-    )
-    monkeypatch.setenv(
-        'ENABLE_EMBEDDING_COMPRESSION',
-        'true' if compression_enabled else 'false',
-    )
-    get_settings.cache_clear()
-    monkeypatch.setattr(context_module, 'settings', get_settings())
-    monkeypatch.setattr(batch_module, 'settings', get_settings())
+VALID_ID = '0190abcdef1234567890abcdef123456'
 
 
 class _FakeRepos:
     """Minimal repositories stub exposing only the methods exercised by the tests.
 
     Mirrors the RepositoryContainer shape closely enough for delete_context and
-    delete_context_batch to run without a real backend. ``embeddings.delete`` is
-    an AsyncMock so the test can assert the call presence/absence.
+    delete_context_batch to run without a real backend. ``embeddings.delete`` and
+    ``embeddings.embedding_tables_exist`` are AsyncMocks so the test can drive the
+    gate and assert the cleanup call presence/absence.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, tables_exist: bool) -> None:
         self.embeddings = type(
-            '_Embeddings', (), {'delete': AsyncMock(return_value=None)},
+            '_Embeddings', (),
+            {
+                'delete': AsyncMock(return_value=None),
+                'embedding_tables_exist': AsyncMock(return_value=tables_exist),
+            },
         )()
         self.context = type(
             '_Context', (),
@@ -92,107 +78,98 @@ class _FakeRepos:
 
 
 @pytest.fixture
-def fake_repos_factory(monkeypatch: pytest.MonkeyPatch) -> _FakeRepos:
-    """Inject a fake repositories container by patching ``ensure_repositories``.
+def make_fake_repos(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _FakeRepos]:
+    """Return a factory that injects a fake repos container with a chosen gate state.
 
     Returns:
-        The same fake repos instance both modules will see, so the test
-        can assert on its mock interactions.
+        A callable ``(*, tables_exist: bool) -> _FakeRepos`` that patches
+        ``ensure_repositories`` in both tool modules to return the fake and
+        hands the fake back so the test can assert on its mock interactions.
     """
-    fake = _FakeRepos()
 
-    async def _ensure_repositories() -> _FakeRepos:
+    def _factory(*, tables_exist: bool) -> _FakeRepos:
+        fake = _FakeRepos(tables_exist=tables_exist)
+
+        async def _ensure_repositories() -> _FakeRepos:
+            return fake
+
+        monkeypatch.setattr(context_module, 'ensure_repositories', _ensure_repositories)
+        monkeypatch.setattr(batch_module, 'ensure_repositories', _ensure_repositories)
         return fake
 
-    monkeypatch.setattr(context_module, 'ensure_repositories', _ensure_repositories)
-    monkeypatch.setattr(batch_module, 'ensure_repositories', _ensure_repositories)
-    return fake
-
-
-VALID_ID = '0190abcdef1234567890abcdef123456'
+    return _factory
 
 
 @pytest.mark.asyncio
-async def test_delete_context_cleanup_runs_under_default_user_config(
-    monkeypatch: pytest.MonkeyPatch, fake_repos_factory: _FakeRepos,
+async def test_delete_context_cleanup_runs_when_embedding_tables_exist(
+    make_fake_repos: Callable[..., _FakeRepos],
 ) -> None:
-    """Default config (embedding gen ON, semantic search OFF, compression ON)
-    MUST trigger the explicit embedding cleanup.
-
-    The gate predicate is ``generation_enabled OR compression.enabled``;
-    both terms evaluate True in this configuration, so the cleanup runs.
-    """
-    _flip_env_and_refresh_bindings(
-        monkeypatch,
-        embedding_generation_enabled=True,
-        semantic_search_enabled=False,
-        compression_enabled=True,
-    )
+    """When the embedding tables are provisioned, the explicit cleanup MUST run."""
+    fake = make_fake_repos(tables_exist=True)
 
     await context_module.delete_context(context_ids=[VALID_ID])
 
-    fake_repos_factory.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
 
 
 @pytest.mark.asyncio
-async def test_delete_context_batch_cleanup_runs_under_default_user_config(
-    monkeypatch: pytest.MonkeyPatch, fake_repos_factory: _FakeRepos,
+async def test_delete_context_batch_cleanup_runs_when_embedding_tables_exist(
+    make_fake_repos: Callable[..., _FakeRepos],
 ) -> None:
-    """Same as above but for delete_context_batch."""
-    _flip_env_and_refresh_bindings(
-        monkeypatch,
-        embedding_generation_enabled=True,
-        semantic_search_enabled=False,
-        compression_enabled=True,
-    )
+    """Same as above but for delete_context_batch (SQLite-only cleanup branch)."""
+    fake = make_fake_repos(tables_exist=True)
 
     await batch_module.delete_context_batch(context_ids=[VALID_ID])
 
-    fake_repos_factory.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
 
 
 @pytest.mark.asyncio
-async def test_delete_context_cleanup_skipped_only_when_both_disabled(
-    monkeypatch: pytest.MonkeyPatch, fake_repos_factory: _FakeRepos,
+async def test_delete_context_cleanup_skipped_when_embedding_tables_absent(
+    make_fake_repos: Callable[..., _FakeRepos],
 ) -> None:
-    """When BOTH generation and compression are disabled, cleanup is SKIPPED.
+    """When embeddings were never provisioned, the cleanup is a no-op (skipped).
 
-    This is the only case where there are guaranteed no embedding rows on
-    disk, so the explicit cleanup is unnecessary.
+    A database that never created the embedding tables has nothing to clean, so
+    the explicit ``embeddings.delete`` is not called.
     """
-    _flip_env_and_refresh_bindings(
-        monkeypatch,
-        embedding_generation_enabled=False,
-        semantic_search_enabled=False,
-        compression_enabled=False,
-    )
+    fake = make_fake_repos(tables_exist=False)
 
     await context_module.delete_context(context_ids=[VALID_ID])
 
-    fake_repos_factory.embeddings.delete.assert_not_awaited()
+    fake.embeddings.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_delete_context_cleanup_runs_when_only_compression_enabled(
-    monkeypatch: pytest.MonkeyPatch, fake_repos_factory: _FakeRepos,
+async def test_delete_context_cleanup_runs_after_generation_disabled(
+    monkeypatch: pytest.MonkeyPatch, make_fake_repos: Callable[..., _FakeRepos],
 ) -> None:
-    """Even if embedding generation is OFF, if compression is ON there may be
-    compressed payloads on disk -- cleanup MUST run."""
-    _flip_env_and_refresh_bindings(
-        monkeypatch,
-        embedding_generation_enabled=False,
-        semantic_search_enabled=False,
-        compression_enabled=True,
-    )
+    """Regression: a prior session's embeddings are cleaned even with both toggles OFF.
+
+    The orphan bug: when ``ENABLE_EMBEDDING_GENERATION`` and
+    ``ENABLE_EMBEDDING_COMPRESSION`` are BOTH false at delete time but the
+    embedding tables still exist (a prior session wrote fp32 vec0 rows), the old
+    toggle-based gate skipped the cleanup, permanently orphaning the FK-less vec0
+    vectors once the ``embedding_chunks`` bridge cascaded away. The gate now keys
+    on table presence, so the cleanup still runs regardless of the toggles.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    monkeypatch.setattr(context_module, 'settings', get_settings())
+    monkeypatch.setattr(batch_module, 'settings', get_settings())
+
+    # Tables exist (prior session provisioned + wrote embeddings).
+    fake = make_fake_repos(tables_exist=True)
 
     await context_module.delete_context(context_ids=[VALID_ID])
 
-    fake_repos_factory.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
 
 
 @pytest.mark.asyncio
 async def test_delete_context_batch_cleanup_respects_combined_criteria(
-    monkeypatch: pytest.MonkeyPatch, fake_repos_factory: _FakeRepos,
+    make_fake_repos: Callable[..., _FakeRepos],
 ) -> None:
     """Combined context_ids + source deletes embeddings only for the matching subset.
 
@@ -200,22 +177,19 @@ async def test_delete_context_batch_cleanup_respects_combined_criteria(
     AND-combined with source/older_than_days orphaned a surviving entry. The cleanup
     now pre-queries the exact to-be-deleted ids and deletes embeddings only for those.
     """
-    _flip_env_and_refresh_bindings(
-        monkeypatch,
-        embedding_generation_enabled=True,
-        semantic_search_enabled=False,
-        compression_enabled=True,
-    )
+    fake = make_fake_repos(tables_exist=True)
     other_id = '0190abcdef1234567890abcdef654321'
     # Only VALID_ID matches the combined criteria; other_id is excluded by source.
-    fake_repos_factory.context.get_ids_matching_batch_criteria = AsyncMock(return_value=[VALID_ID])
+    fake.context.get_ids_matching_batch_criteria = AsyncMock(return_value=[VALID_ID])
 
     await batch_module.delete_context_batch(context_ids=[VALID_ID, other_id], source='user')
 
     # Embeddings deleted ONLY for the matching id, never the excluded one.
-    fake_repos_factory.embeddings.delete.assert_awaited_once_with(VALID_ID)
+    fake.embeddings.delete.assert_awaited_once_with(VALID_ID)
     # The criteria query received BOTH context_ids and the source filter.
-    fake_repos_factory.context.get_ids_matching_batch_criteria.assert_awaited_once()
-    call_kwargs = fake_repos_factory.context.get_ids_matching_batch_criteria.await_args.kwargs
+    fake.context.get_ids_matching_batch_criteria.assert_awaited_once()
+    await_args = fake.context.get_ids_matching_batch_criteria.await_args
+    assert await_args is not None
+    call_kwargs = await_args.kwargs
     assert call_kwargs.get('context_ids') == [VALID_ID, other_id]
     assert call_kwargs.get('source') == 'user'
