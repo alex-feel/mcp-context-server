@@ -20,6 +20,7 @@ from app.cli.migrate_compression import run_compress
 from app.cli.migrate_compression import run_decompress
 from app.repositories.embedding_repository import _reset_compression_cache
 from app.settings import get_settings
+from tests.conftest import requires_numpy
 
 
 @pytest.fixture(autouse=True)
@@ -362,3 +363,78 @@ def test_main_decompress_errors_when_provenance_missing(
     assert rc == 1
     err = capsys.readouterr().err
     assert 'compression_metadata row missing' in err
+
+
+@requires_numpy
+def test_decompress_aborts_on_codebook_fingerprint_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--decompress`` aborts (rc 1) BEFORE any decode/DROP on a fingerprint mismatch.
+
+    Regression: the CLI rebuilt the provider from the stored (dim, seed, bits,
+    variant) but never re-derived and compared the realized codebook fingerprint.
+    A cross-host numpy.linalg.qr divergence would silently corrupt every
+    reconstructed vector and then DROP the only correctly-decodable copy. The CLI
+    now re-derives the fingerprint and aborts on mismatch, mirroring the startup
+    validator. Here the stored fingerprint is a deliberately wrong value, so the
+    realized digest cannot match and decompress must refuse without dropping.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    _bootstrap_schema(db)
+
+    wrong_fingerprint = 'deadbeef' * 8  # 64 hex chars, never the realized QR digest
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(
+            '''
+            CREATE TABLE IF NOT EXISTS vec_context_embeddings_compressed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                start_index INTEGER NOT NULL DEFAULT 0,
+                end_index INTEGER NOT NULL DEFAULT 0,
+                payload BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS compression_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                bits INTEGER NOT NULL,
+                variant TEXT NOT NULL,
+                seed INTEGER NOT NULL,
+                dim INTEGER NOT NULL,
+                codebook_fingerprint TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ''',
+        )
+        conn.execute(
+            'INSERT INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, 512, ?)",
+            (wrong_fingerprint,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc = run_decompress(f'sqlite:///{db}', dry_run=False)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert 'fingerprint mismatch' in err
+    # The compressed source MUST still exist -- nothing decoded or dropped.
+    conn = sqlite3.connect(str(db))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        conn.close()
+    assert 'vec_context_embeddings_compressed' in tables

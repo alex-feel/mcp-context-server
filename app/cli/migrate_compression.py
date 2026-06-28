@@ -501,6 +501,42 @@ async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
         # Build a provider whose configuration mirrors the stored row so
         # decoding produces the original codebook geometry.
         provider = _provider_for(existing)
+
+        # Guard against a cross-host codebook divergence BEFORE decoding any
+        # payload or dropping the compressed source. The same (dim, seed) can
+        # materialize a DIFFERENT numpy.linalg.qr rotation on a host with a
+        # different BLAS/LAPACK build or CPU dispatch, so decoding here would
+        # silently corrupt every reconstructed fp32 vector -- and decompress
+        # then DROPs the compressed table (the only correctly-decodable copy) in
+        # the same transaction. The server startup validator catches exactly this
+        # divergence with exit 78; the standalone CLI must not bypass it. A row
+        # that predates fingerprinting (None) can only be warned about.
+        if existing.codebook_fingerprint is not None:
+            realized_fingerprint = await asyncio.to_thread(provider.codebook_fingerprint)
+            if realized_fingerprint != existing.codebook_fingerprint:
+                print(
+                    '[ERROR] compression codebook fingerprint mismatch: the realized '
+                    'numpy.linalg.qr rotation for this (dim, seed) does NOT match the '
+                    'one recorded when the data was compressed (typically a different '
+                    'BLAS/LAPACK build or CPU). Decompressing here would silently '
+                    'corrupt every reconstructed vector and then drop the only '
+                    'correctly-decodable copy. Run --decompress on a host whose '
+                    'numerical libraries reproduce the original codebook, or restore '
+                    f'from backup. Expected fingerprint={existing.codebook_fingerprint}, '
+                    f'realized={realized_fingerprint}.',
+                    file=sys.stderr,
+                )
+                return 1
+        else:
+            print(
+                '[WARN] compression_metadata row predates codebook fingerprinting; a '
+                'cross-host rotation-matrix divergence cannot be detected for this '
+                'database. Verify --decompress runs on a host that reproduces the '
+                'original codebook, or restore from backup if the decoded vectors '
+                'look wrong.',
+                file=sys.stderr,
+            )
+
         row_count = await _count_table(
             backend, 'vec_context_embeddings_compressed',
         )
