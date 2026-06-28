@@ -201,6 +201,39 @@ class TestValidateAndNormalizeImages:
         assert len(errors) == 1
         assert 'Image 1' in errors[0]
 
+    def test_raise_mode_non_string_mime_type(self) -> None:
+        """A present non-string mime_type (untyped batch input) is rejected in raise mode."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'mime_type': 123}])
+        with pytest.raises(ToolError, match='Image 0 has a non-string "mime_type" field'):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_raise_mode_null_mime_type(self) -> None:
+        """A present null mime_type is rejected, not bound into the NOT NULL column."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'mime_type': None}])
+        with pytest.raises(ToolError, match='Image 0 has a non-string "mime_type" field'):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_collect_mode_non_string_mime_type(self) -> None:
+        """collect mode records a non-string mime_type error instead of raising."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'mime_type': None}])
+        _, content_type, errors = validate_and_normalize_images(imgs, error_mode='collect')
+        assert content_type == 'text'
+        assert len(errors) == 1
+        assert 'Image 0 has a non-string "mime_type" field' in errors[0]
+
+    def test_raise_mode_non_string_data(self) -> None:
+        """A present non-string data value is rejected before .strip()/base64 decode."""
+        imgs = cast('list[dict[str, str]]', [{'data': 123, 'mime_type': 'image/png'}])
+        with pytest.raises(ToolError, match='Image 0 has a non-string "data" field'):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_collect_mode_non_string_data(self) -> None:
+        """collect mode records a non-string data error instead of crashing with AttributeError."""
+        imgs = cast('list[dict[str, str]]', [{'data': 123, 'mime_type': 'image/png'}])
+        _, _, errors = validate_and_normalize_images(imgs, error_mode='collect')
+        assert len(errors) == 1
+        assert 'Image 0 has a non-string "data" field' in errors[0]
+
 
 # ---------------------------------------------------------------------------
 # New: TestBuildStoreResponseMessage

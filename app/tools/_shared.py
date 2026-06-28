@@ -825,8 +825,9 @@ def validate_and_normalize_images(
 
     Performs all image validation steps:
     - Checks required 'data' field presence
+    - Rejects a non-string 'data' or 'mime_type' value (the batch path is untyped)
     - Rejects empty/whitespace data (prevents silent 0-byte storage)
-    - Defaults mime_type to 'image/png' when not provided
+    - Defaults mime_type to 'image/png' when the key is absent
     - Validates base64 encoding
     - Enforces per-image size limit (MAX_IMAGE_SIZE_MB)
     - Enforces total size limit (MAX_TOTAL_SIZE_MB)
@@ -864,7 +865,19 @@ def validate_and_normalize_images(
             errors.append(msg)
             return images, 'text', errors
 
-        img_data_str = img.get('data', '')
+        # The batch tools accept untyped list[dict[str, Any]] entries, so a value
+        # that would be rejected by the single-entry Pydantic list[dict[str, str]]
+        # schema (a JSON null or number) can reach here. Reject a non-string "data"
+        # before .strip()/base64 decode rather than crashing with an opaque
+        # AttributeError, keeping the two paths consistent.
+        data_val = cast(object, img['data'])
+        if not isinstance(data_val, str):
+            msg = f'Image {idx} has a non-string "data" field'
+            if error_mode == 'raise':
+                raise ToolError(msg)
+            errors.append(msg)
+            return images, 'text', errors
+        img_data_str = data_val
         if not img_data_str or not img_data_str.strip():
             msg = f'Image {idx} has empty "data" field'
             if error_mode == 'raise':
@@ -872,9 +885,24 @@ def validate_and_normalize_images(
             errors.append(msg)
             return images, 'text', errors
 
-        # mime_type is optional - defaults to 'image/png' if not provided
+        # mime_type is optional and defaults to 'image/png' only when the key is
+        # ABSENT. A PRESENT but non-string value (a JSON null/number from the
+        # untyped batch path) must be rejected, not bound into the mime_type
+        # TEXT NOT NULL column: SQLite would silently coerce a number to text
+        # while PostgreSQL raises a DataError, and a null trips the NOT NULL
+        # constraint and aborts an atomic batch. This mirrors the single-entry
+        # Pydantic list[dict[str, str]] contract, which already rejects a
+        # non-string mime_type at the tool boundary.
         if 'mime_type' not in img:
             img['mime_type'] = 'image/png'
+        else:
+            mime_val = cast(object, img['mime_type'])
+            if not isinstance(mime_val, str):
+                msg = f'Image {idx} has a non-string "mime_type" field'
+                if error_mode == 'raise':
+                    raise ToolError(msg)
+                errors.append(msg)
+                return images, 'text', errors
 
         # Validate base64 encoding
         try:
