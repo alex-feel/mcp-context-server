@@ -373,6 +373,40 @@ class TestUpdateContextBatchWithSummary:
         assert call_kwargs.get('summary') is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('atomic', [True, False])
+    async def test_update_batch_text_change_no_provider_clears_stale_summary(self, atomic: bool) -> None:
+        """A text-change batch update with NO summary provider clears the now-stale summary.
+
+        Mirrors the single-update contract (test_update_text_content_only): the stored summary
+        describes the REPLACED text, so update_context_batch must pass clear_summary=True /
+        summary=None to update_context_entry instead of leaving a stale summary that no longer
+        matches the entry's text. Parametrized over atomic to cover both the atomic and
+        non-atomic execute_update_in_transaction call sites, which both read the
+        update_clear_summaries set.
+        """
+        repos = _create_mock_repositories()
+
+        updates = [
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools._shared.get_summary_provider', return_value=None),
+        ):
+            result = await update_context_batch(updates=updates, atomic=atomic)
+
+        assert result['success'] is True
+        # The stale summary is cleared (not preserved, not regenerated).
+        call_kwargs = repos.context.update_context_entry.call_args.kwargs
+        assert call_kwargs.get('clear_summary') is True
+        assert call_kwargs.get('summary') is None
+
+    @pytest.mark.asyncio
     async def test_update_batch_atomic_summary_failure(self) -> None:
         """Fail entire atomic batch when summary generation fails."""
         repos = _create_mock_repositories()

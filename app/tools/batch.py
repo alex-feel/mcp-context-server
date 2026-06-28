@@ -1018,6 +1018,14 @@ async def update_context_batch(
                 else:
                     tasks_to_run.append(generate_summary_with_timeout(text_content, entry_sources[context_id]))
                     task_names.append('summary')
+            else:
+                # No summary provider at update time (summary generation disabled/absent).
+                # The stored summary describes the REPLACED text, so CLEAR it instead of
+                # leaving a stale summary -- mirroring the too-short branch above, the
+                # single-update path (context.py), and the stale-embedding / index_tree
+                # node-row clears that already run on this same text-change path.
+                update_summaries[vu_idx] = None
+                update_clear_summaries.add(vu_idx)
 
             if not tasks_to_run:
                 update_embeddings.setdefault(vu_idx, None)
