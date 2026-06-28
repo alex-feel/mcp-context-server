@@ -30,7 +30,13 @@ class ImageAttachment(BaseModel):
     """Image attachment model for transport"""
 
     data: str = Field(..., description='Base64 encoded image data')
-    mime_type: str = Field(default='image/png', pattern='^image/(png|jpeg|jpg|gif|webp)$')
+    # Advisory, client-supplied label stored verbatim -- intentionally NOT an allowlist. Image
+    # bytes are opaque to the server (base64-validated and size-capped, never decoded or
+    # rendered), so the mime_type is not restricted; escaping/rendering is the consuming
+    # client's responsibility. Strict ingest, if ever needed, belongs in content sniffing on the
+    # store path, not in a model pattern (the store/update tools take raw dicts and never built
+    # this model, so a pattern here only ever constrained tests, never live input).
+    mime_type: str = Field(default='image/png')
     metadata: MetadataDict | None = Field(default=None)
     position: Annotated[int, Field(default=0, ge=0)]
 

@@ -77,15 +77,18 @@ class TestImageAttachment:
             ImageAttachment(data='not-valid-base64!', position=0)
         assert 'Invalid base64 encoded data' in str(exc_info.value)
 
-    def test_invalid_mime_type(self) -> None:
-        """Test invalid mime type raises validation error."""
-        with pytest.raises(ValidationError) as exc_info:
-            ImageAttachment(
-                data=base64.b64encode(b'test').decode('utf-8'),
-                mime_type='text/plain',
-                position=0,
-            )
-        assert 'String should match pattern' in str(exc_info.value)
+    def test_mime_type_is_advisory_free_form(self) -> None:
+        """mime_type is an advisory, client-supplied label -- not an allowlist.
+
+        Image bytes are opaque to the server (base64-validated and size-capped, never
+        decoded or rendered), so a non-image label is stored verbatim rather than rejected.
+        """
+        img = ImageAttachment(
+            data=base64.b64encode(b'test').decode('utf-8'),
+            mime_type='image/svg+xml',
+            position=0,
+        )
+        assert img.mime_type == 'image/svg+xml'
 
     @pytest.mark.parametrize(
         'mime_type',
@@ -98,7 +101,7 @@ class TestImageAttachment:
         ],
     )
     def test_valid_mime_types(self, mime_type: str) -> None:
-        """Test all valid mime types are accepted."""
+        """Common image mime types are accepted and stored verbatim."""
         img = ImageAttachment(
             data=base64.b64encode(b'test').decode('utf-8'),
             mime_type=mime_type,
