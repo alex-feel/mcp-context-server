@@ -579,7 +579,7 @@
           "name": "SUMMARY_OPENAI_REASONING_EFFORT"
         },
         {
-          "description": "Effort level for Anthropic Claude models (default: none). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
+          "description": "Effort level for Anthropic Claude models (default: not sent / omitted). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1684,7 +1684,7 @@
           "name": "SUMMARY_OPENAI_REASONING_EFFORT"
         },
         {
-          "description": "Effort level for Anthropic Claude models (default: none). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
+          "description": "Effort level for Anthropic Claude models (default: not sent / omitted). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
