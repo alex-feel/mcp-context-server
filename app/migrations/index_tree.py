@@ -17,6 +17,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.errors import format_exception_message
+from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
@@ -105,26 +106,17 @@ async def _apply_sqlite(backend: StorageBackend) -> None:
 async def _apply_postgresql(backend: StorageBackend) -> None:
     """Create the PostgreSQL context_index_nodes table and index (idempotent)."""
     migration_timeout_s = settings.storage.postgresql_migration_timeout_s
-    migration_timeout_ms = int(migration_timeout_s * 1000)
-    default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
 
     async def _apply(conn: asyncpg.Connection) -> None:
-        # Transaction-scoped advisory lock for multi-pod DDL safety (releases on
-        # COMMIT/ROLLBACK), mirroring the chunking/semantic/fts migrations. The lock
-        # acquire and the DDL run under the migration timeout so the pool's shorter
-        # command_timeout cannot cancel a slow build (or a lock wait on a peer pod's
-        # migration) before the server-side statement_timeout applies.
-        await execute_migration_ddl(
-            conn,
-            "SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))",
-            migration_timeout_s,
-        )
-        await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
-        try:
-            await execute_migration_ddl(conn, _CREATE_TABLE_POSTGRESQL, migration_timeout_s)
-            await execute_migration_ddl(conn, _CREATE_INDEX_POSTGRESQL, migration_timeout_s)
-        finally:
-            await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
+        # Raise the transaction-scoped statement_timeout to the migration budget and take
+        # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+        # no finally-restore that would raise 25P02 in an aborted transaction and mask the
+        # real error), mirroring the chunking/semantic/fts migrations. The lock acquire and
+        # the DDL run under the migration timeout so the pool's shorter command_timeout
+        # cannot cancel a slow build (or a lock wait on a peer pod's migration).
+        await begin_migration(conn, migration_timeout_s)
+        await execute_migration_ddl(conn, _CREATE_TABLE_POSTGRESQL, migration_timeout_s)
+        await execute_migration_ddl(conn, _CREATE_INDEX_POSTGRESQL, migration_timeout_s)
 
     await backend.execute_write(cast(Any, _apply))
     logger.info('Applied index_tree migration for PostgreSQL: context_index_nodes ready')

@@ -17,6 +17,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.errors import format_exception_message
+from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
@@ -263,53 +264,43 @@ async def _apply_migration_with_backend(
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
         async def _apply_migration_postgresql(conn: asyncpg.Connection) -> None:
-            # PostgreSQL: pgvector extension registration happens in backend initialization
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper. The lock acquire
-            # and the DDL run under the migration timeout -- this is the heaviest DDL (the
-            # fp32 vec table plus its HNSW index), so the pool's shorter command_timeout
-            # must not cancel a slow build before the server-side statement_timeout applies.
-            await execute_migration_ddl(
-                conn,
-                "SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))",
-                migration_timeout_s,
-            )
-            migration_timeout_ms = int(migration_timeout_s * 1000)
-            await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
-            try:
-                # Parse and execute migration SQL statements
-                statements: list[str] = []
-                current_stmt: list[str] = []
-                in_function = False
+            # PostgreSQL: pgvector extension registration happens in backend initialization.
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it. SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # there is no finally-restore SET -- which, in an aborted transaction, would raise
+            # 25P02 and mask the real DDL error. This is the heaviest DDL (the fp32 vec table
+            # plus its HNSW index), so the pool's shorter command_timeout must not cancel it.
+            await begin_migration(conn, migration_timeout_s)
 
-                for line in migration_sql.split('\n'):
-                    stripped = line.strip()
-                    # Skip comment-only lines
-                    if stripped.startswith('--'):
-                        continue
-                    # Track dollar-quoted strings (function bodies)
-                    if '$$' in stripped:
-                        in_function = not in_function
-                    if stripped:
-                        current_stmt.append(line)
-                    # End of statement: semicolon when not in dollar quotes
-                    if stripped.endswith(';') and not in_function:
-                        statements.append('\n'.join(current_stmt))
-                        current_stmt = []
+            # Parse and execute migration SQL statements
+            statements: list[str] = []
+            current_stmt: list[str] = []
+            in_function = False
 
-                # Add any remaining statement
-                if current_stmt:
+            for line in migration_sql.split('\n'):
+                stripped = line.strip()
+                # Skip comment-only lines
+                if stripped.startswith('--'):
+                    continue
+                # Track dollar-quoted strings (function bodies)
+                if '$$' in stripped:
+                    in_function = not in_function
+                if stripped:
+                    current_stmt.append(line)
+                # End of statement: semicolon when not in dollar quotes
+                if stripped.endswith(';') and not in_function:
                     statements.append('\n'.join(current_stmt))
+                    current_stmt = []
 
-                # Execute each statement
-                for stmt in statements:
-                    stmt = stmt.strip()
-                    if stmt and not stmt.startswith('--'):
-                        await execute_migration_ddl(conn, stmt, migration_timeout_s)
-            finally:
-                default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
-                await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
+            # Add any remaining statement
+            if current_stmt:
+                statements.append('\n'.join(current_stmt))
+
+            # Execute each statement
+            for stmt in statements:
+                stmt = stmt.strip()
+                if stmt and not stmt.startswith('--'):
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
         await manager.execute_write(cast(Any, _apply_migration_postgresql))
 
@@ -384,11 +375,13 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
         # Check if function already exists before applying
         function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction).
+            await begin_migration(conn, migration_timeout_s)
 
             # Parse SQL statements, handling dollar-quoted function bodies
             statements: list[str] = []
@@ -418,7 +411,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
             for stmt in statements:
                 stmt = stmt.strip()
                 if stmt and not stmt.startswith('--'):
-                    await conn.execute(stmt)
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
         await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
 
@@ -475,11 +468,13 @@ async def apply_function_search_path_migration(backend: StorageBackend) -> None:
         schema = settings.storage.postgresql_schema
         migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _apply_search_path_fix(conn: asyncpg.Connection) -> None:
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction).
+            await begin_migration(conn, migration_timeout_s)
 
             # Parse SQL statements, handling dollar-quoted DO blocks
             statements: list[str] = []
@@ -508,7 +503,7 @@ async def apply_function_search_path_migration(backend: StorageBackend) -> None:
             for stmt in statements:
                 stmt = stmt.strip()
                 if stmt and not stmt.startswith('--'):
-                    await conn.execute(stmt)
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
         await backend.execute_write(cast(Any, _apply_search_path_fix))
         logger.info('Applied function search_path security fix for PostgreSQL')

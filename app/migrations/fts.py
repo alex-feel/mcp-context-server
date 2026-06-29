@@ -20,6 +20,8 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.migrations._pg_ddl import begin_migration
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.repositories.fts_repository import FtsRepository
 from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
 from app.settings import get_settings
@@ -275,11 +277,16 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         migration_sql = migration_path.read_text(encoding='utf-8')
         migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts.language)
 
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _apply_fts_pg(conn: asyncpg.Connection) -> None:
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction). This is the
+            # heaviest DDL of all: the GENERATED ALWAYS AS (...) STORED tsvector column is a full
+            # table rewrite, plus a GIN index build, so the pool's shorter command_timeout must
+            # not cancel it (or a lock wait on a peer pod's migration) on a large existing table.
+            await begin_migration(conn, migration_timeout_s)
 
             statements: list[str] = []
             current_stmt: list[str] = []
@@ -303,7 +310,7 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
             for stmt in statements:
                 stmt = stmt.strip()
                 if stmt and not stmt.startswith('--'):
-                    await conn.execute(stmt)
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
         await manager.execute_write(cast(Any, _apply_fts_pg))
         logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts.language}')

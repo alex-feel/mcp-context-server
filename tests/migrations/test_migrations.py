@@ -1050,23 +1050,54 @@ class TestMigrationDdlTimeout:
 
     asyncpg applies the pool's ``command_timeout`` (default 60s) as the per-call
     CLIENT-side deadline for every ``conn.execute`` that passes no explicit
-    ``timeout``. Migration DDL sets a larger SERVER-side ``statement_timeout``
-    (POSTGRESQL_MIGRATION_TIMEOUT_S, default 300s), but the client-side default
-    cancels the call at ~60s first, defeating the configured budget and crashing
-    startup on any single DDL longer than 60s. These tests pin that the migration
-    DDL (and the advisory-lock acquire, which may wait on a peer pod's migration)
-    carry the migration timeout as the explicit per-call ``timeout`` -- the
-    existing advisory-lock tests record only the SQL string and cannot catch this.
+    ``timeout``. Migration DDL raises the SERVER-side ``statement_timeout`` to
+    POSTGRESQL_MIGRATION_TIMEOUT_S (default 300s) via ``SET LOCAL`` -- which is
+    transaction-scoped, so PostgreSQL auto-reverts it on COMMIT or ROLLBACK and no
+    ``finally`` restore is needed. A plain ``SET`` + a ``finally`` restore must NOT be
+    used: a failed DDL aborts the transaction and the restore ``SET`` would then raise
+    InFailedSQLTransactionError (25P02), masking the real error and defeating the
+    QueryCanceledError retry. The DDL and the advisory-lock acquire carry the migration
+    budget PLUS a small client-side margin so an overrun is cancelled server-side (a
+    retryable QueryCanceledError) rather than client-side (a non-retryable
+    asyncio.TimeoutError). These tests pin all of that; the existing advisory-lock
+    tests record only the SQL string and cannot catch it.
     """
 
     @pytest.mark.asyncio
     async def test_execute_migration_ddl_passes_timeout(self) -> None:
-        """The shared helper forwards ``timeout_s`` as asyncpg's per-call timeout."""
+        """The shared helper forwards ``timeout_s`` plus the client margin as the per-call timeout."""
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
         from app.migrations._pg_ddl import execute_migration_ddl
 
         mock_conn = AsyncMock()
         await execute_migration_ddl(mock_conn, 'CREATE TABLE x (id int)', 300.0)
-        mock_conn.execute.assert_awaited_once_with('CREATE TABLE x (id int)', timeout=300.0)
+        mock_conn.execute.assert_awaited_once_with(
+            'CREATE TABLE x (id int)',
+            timeout=300.0 + _CLIENT_TIMEOUT_MARGIN_S,
+        )
+
+    @pytest.mark.asyncio
+    async def test_begin_migration_uses_set_local_then_locks_under_budget(self) -> None:
+        """begin_migration issues SET LOCAL (transaction-scoped, no finally) then the lock under budget."""
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
+        from app.migrations._pg_ddl import begin_migration
+
+        recorded: list[tuple[str, float | None]] = []
+
+        async def record_execute(stmt, *_a, **kw):
+            recorded.append((stmt, kw.get('timeout')))
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = record_execute
+        await begin_migration(mock_conn, 300.0)
+
+        # First statement raises the budget transaction-scoped (no per-call timeout needed).
+        assert recorded[0] == ('SET LOCAL statement_timeout = 300000', None)
+        # Then the advisory-lock acquire carries the budget + client margin.
+        assert any(
+            'advisory' in stmt.lower() and t == 300.0 + _CLIENT_TIMEOUT_MARGIN_S
+            for stmt, t in recorded
+        )
 
     @staticmethod
     def _recording_pg_backend(executed: list[tuple[str, float | None]]) -> MagicMock:
@@ -1091,9 +1122,12 @@ class TestMigrationDdlTimeout:
     def _assert_ddl_carries_timeout(
         executed: list[tuple[str, float | None]],
         *,
-        timeout: float,
+        migration_timeout: float,
     ) -> None:
-        """Assert every advisory-lock / CREATE / ALTER / DROP / DO statement carries timeout."""
+        """Assert advisory-lock / CREATE / ALTER / DROP / DO statements carry the budget + client margin."""
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
+
+        expected = migration_timeout + _CLIENT_TIMEOUT_MARGIN_S
         ddl = [
             (stmt, t)
             for stmt, t in executed
@@ -1101,10 +1135,33 @@ class TestMigrationDdlTimeout:
             or stmt.strip().upper().startswith(('CREATE', 'ALTER', 'DROP', 'DO'))
         ]
         assert ddl, f'no migration DDL was recorded: {executed}'
-        offenders = [(stmt, t) for stmt, t in ddl if t != timeout]
+        offenders = [(stmt, t) for stmt, t in ddl if t != expected]
         assert not offenders, (
-            f'migration DDL must carry the {timeout}s migration timeout as the per-call '
-            f'asyncpg timeout; offenders: {offenders}'
+            f'migration DDL must carry the {expected}s per-call asyncpg timeout '
+            f'(migration budget {migration_timeout}s + client margin); offenders: {offenders}'
+        )
+
+    @staticmethod
+    def _assert_set_local_no_finally_restore(executed: list[tuple[str, float | None]]) -> None:
+        """The budget is raised via SET LOCAL, and no finally-restore SET statement_timeout is issued.
+
+        A plain ``SET statement_timeout = <default>`` in a ``finally`` would raise
+        InFailedSQLTransactionError (25P02) when a DDL failure has aborted the
+        transaction -- masking the real error and defeating the QueryCanceledError
+        retry. ``SET LOCAL`` is transaction-scoped and auto-reverts, so no restore runs.
+        """
+        set_locals = [stmt for stmt, _ in executed if 'set local statement_timeout' in stmt.lower()]
+        assert set_locals, f'migration must raise the budget via SET LOCAL; executed: {executed}'
+        bare_restores = [
+            stmt
+            for stmt, _ in executed
+            if stmt.strip().lower().startswith('set ')
+            and 'statement_timeout' in stmt.lower()
+            and 'set local' not in stmt.lower()
+        ]
+        assert not bare_restores, (
+            f'migration must not issue a plain SET statement_timeout (a finally-restore that '
+            f'raises 25P02 in an aborted transaction and masks the real error); found: {bare_restores}'
         )
 
     @pytest.mark.asyncio
@@ -1122,7 +1179,8 @@ class TestMigrationDdlTimeout:
 
             await apply_index_tree_migration(backend=mock_backend, force=True)
 
-        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
 
     @pytest.mark.asyncio
     async def test_chunking_migration_ddl_uses_migration_timeout(self) -> None:
@@ -1143,7 +1201,8 @@ class TestMigrationDdlTimeout:
 
             await apply_chunking_migration(backend=mock_backend)
 
-        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
 
     @pytest.mark.asyncio
     async def test_semantic_migration_ddl_uses_migration_timeout(self) -> None:
@@ -1171,7 +1230,8 @@ class TestMigrationDdlTimeout:
 
             await apply_semantic_search_migration(backend=mock_backend)
 
-        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
 
     @pytest.mark.asyncio
     async def test_compression_migration_ddl_uses_migration_timeout(self) -> None:
@@ -1191,7 +1251,8 @@ class TestMigrationDdlTimeout:
 
             await apply_compression_migration(backend=mock_backend)
 
-        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
 
     @pytest.mark.asyncio
     async def test_metadata_index_create_ddl_uses_migration_timeout(self) -> None:
@@ -1209,7 +1270,8 @@ class TestMigrationDdlTimeout:
 
             await _create_metadata_index(backend=mock_backend, field='test_field', type_hint='string')
 
-        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
 
     @pytest.mark.asyncio
     async def test_metadata_index_drop_ddl_uses_migration_timeout(self) -> None:
@@ -1227,4 +1289,118 @@ class TestMigrationDdlTimeout:
 
             await _drop_metadata_index(backend=mock_backend, field='test_field')
 
-        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_fts_initial_migration_ddl_uses_migration_timeout(self) -> None:
+        """FTS initial PG migration (heaviest DDL: STORED tsvector rewrite + GIN) carries the timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.fts.language = 'english'
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.fts.settings', mock_settings):
+            from app.migrations.fts import _apply_initial_fts_migration
+
+            await _apply_initial_fts_migration(mock_backend, 'postgresql')
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_version_migration_ddl_uses_migration_timeout(self) -> None:
+        """version-column PG migration takes the shared lock + ADD COLUMN under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.version.settings', mock_settings):
+            from app.migrations.version import apply_version_migration
+
+            await apply_version_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_content_hash_migration_ddl_uses_migration_timeout(self) -> None:
+        """content_hash PG migration takes the shared lock + ADD COLUMN/INDEX under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.content_hash.settings', mock_settings):
+            from app.migrations.content_hash import apply_content_hash_migration
+
+            await apply_content_hash_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_summary_migration_ddl_uses_migration_timeout(self) -> None:
+        """summary-column PG migration takes the shared lock + ADD COLUMN under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.summary.settings', mock_settings):
+            from app.migrations.summary import apply_summary_migration
+
+            await apply_summary_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_jsonb_merge_patch_migration_ddl_uses_migration_timeout(self) -> None:
+        """jsonb_merge_patch PG function migration takes the shared lock + DDL under the timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+        # function_exists check + post-migration verification both read True
+        mock_backend.execute_read = AsyncMock(return_value=True)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_schema = 'public'
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations.semantic import apply_jsonb_merge_patch_migration
+
+            await apply_jsonb_merge_patch_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_function_search_path_migration_ddl_uses_migration_timeout(self) -> None:
+        """function search_path PG migration takes the shared lock + DDL under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_schema = 'public'
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations.semantic import apply_function_search_path_migration
+
+            await apply_function_search_path_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)

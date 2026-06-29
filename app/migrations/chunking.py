@@ -18,6 +18,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.errors import format_exception_message
+from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
@@ -203,62 +204,49 @@ async def _apply_chunking_migration_with_backend(
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
         async def _apply_postgresql(conn: asyncpg.Connection) -> None:
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper. The lock
-            # acquire and the DDL below run under the migration timeout so the pool's
-            # shorter command_timeout cannot cancel them before statement_timeout applies.
-            await execute_migration_ddl(
-                conn,
-                "SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))",
-                migration_timeout_s,
-            )
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it. SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # there is no finally-restore SET -- which, in an aborted transaction, would raise
+            # 25P02 and mask the real DDL error. The lock acquire and the DDL run under the
+            # migration timeout so the pool's shorter command_timeout cannot cancel them.
+            await begin_migration(conn, migration_timeout_s)
 
-            # Set extended statement timeout for migration DDL operations
-            migration_timeout_ms = int(migration_timeout_s * 1000)
-            await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
+            # Parse SQL statements, handling dollar-quoted DO blocks
+            statements: list[str] = []
+            current_stmt: list[str] = []
+            in_dollar_quote = False
 
-            try:
-                # Parse SQL statements, handling dollar-quoted DO blocks
-                statements: list[str] = []
-                current_stmt: list[str] = []
-                in_dollar_quote = False
-
-                for line in migration_sql.split('\n'):
-                    stripped = line.strip()
-                    # Skip comment-only lines outside dollar quotes
-                    if stripped.startswith('--') and not in_dollar_quote:
-                        continue
-                    # Track dollar-quoted strings (DO blocks)
-                    if '$$' in stripped:
-                        in_dollar_quote = not in_dollar_quote
-                    if stripped:
-                        current_stmt.append(line)
-                    # End of statement: semicolon when not in dollar quotes
-                    if stripped.endswith(';') and not in_dollar_quote:
-                        statements.append('\n'.join(current_stmt))
-                        current_stmt = []
-
-                # Add any remaining statement
-                if current_stmt:
+            for line in migration_sql.split('\n'):
+                stripped = line.strip()
+                # Skip comment-only lines outside dollar quotes
+                if stripped.startswith('--') and not in_dollar_quote:
+                    continue
+                # Track dollar-quoted strings (DO blocks)
+                if '$$' in stripped:
+                    in_dollar_quote = not in_dollar_quote
+                if stripped:
+                    current_stmt.append(line)
+                # End of statement: semicolon when not in dollar quotes
+                if stripped.endswith(';') and not in_dollar_quote:
                     statements.append('\n'.join(current_stmt))
+                    current_stmt = []
 
-                # Execute each statement
-                for stmt in statements:
-                    stmt = stmt.strip()
-                    if not stmt or stmt.startswith('--'):
-                        continue
-                    # Under compression the fp32 vec_context_embeddings table is absent
-                    # (replaced by the compressed table), so skip the DO blocks that
-                    # ALTER / index it; the chunk_count ALTER on embedding_metadata,
-                    # which carries no such reference, still runs.
-                    if skip_fp32_vec and 'vec_context_embeddings' in stmt:
-                        continue
-                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
-            finally:
-                # Restore default statement timeout after migration
-                default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
-                await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
+            # Add any remaining statement
+            if current_stmt:
+                statements.append('\n'.join(current_stmt))
+
+            # Execute each statement
+            for stmt in statements:
+                stmt = stmt.strip()
+                if not stmt or stmt.startswith('--'):
+                    continue
+                # Under compression the fp32 vec_context_embeddings table is absent
+                # (replaced by the compressed table), so skip the DO blocks that
+                # ALTER / index it; the chunk_count ALTER on embedding_metadata,
+                # which carries no such reference, still runs.
+                if skip_fp32_vec and 'vec_context_embeddings' in stmt:
+                    continue
+                await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
         await manager.execute_write(cast(Any, _apply_postgresql))
         logger.info('Applied chunking migration for PostgreSQL: 1:N embedding relationship enabled')

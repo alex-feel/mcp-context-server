@@ -16,8 +16,12 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.migrations._pg_ddl import begin_migration
+from app.migrations._pg_ddl import execute_migration_ddl
+from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 async def apply_version_migration(backend: StorageBackend) -> None:
@@ -49,11 +53,20 @@ async def apply_version_migration(backend: StorageBackend) -> None:
         await backend.execute_write(_migrate_sqlite)
 
     else:  # postgresql
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _migrate_postgresql(conn: asyncpg.Connection) -> None:
-            # Advisory lock for multi-pod DDL safety (matches content_hash.py pattern).
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
-            await conn.execute(
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it, so a wait on a multi-pod peer holding the lock
+            # during a slow build is bounded by the migration budget, not the pool's shorter
+            # command_timeout (which would cancel the wait with a non-retryable timeout and crash
+            # startup). SET LOCAL auto-reverts on COMMIT/ROLLBACK; no finally-restore that would
+            # raise 25P02 in an aborted transaction.
+            await begin_migration(conn, migration_timeout_s)
+            await execute_migration_ddl(
+                conn,
                 'ALTER TABLE context_entries ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0',
+                migration_timeout_s,
             )
             logger.info('Added version column to context_entries (PostgreSQL)')
 
