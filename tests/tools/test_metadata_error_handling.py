@@ -242,6 +242,34 @@ class TestMetadataFilterValidation:
         with pytest.raises(ValidationError, match='requires a string value'):
             MetadataFilter(key='name', operator=MetadataOperator.ENDS_WITH, value=True)
 
+    def test_ordered_comparison_operators_reject_boolean(self) -> None:
+        """Ordered comparisons (GT/GTE/LT/LTE) reject a boolean value.
+
+        bool is a subclass of int, so without an explicit guard True/False would
+        silently coerce to 1/0 and be ordered against stored JSON numbers -- a
+        meaningless comparison. EQ/NE intentionally still accept a boolean
+        (boolean-typed equality).
+        """
+        from pydantic import ValidationError
+
+        from app.metadata_types import MetadataFilter
+        from app.metadata_types import MetadataOperator
+
+        for op in (
+            MetadataOperator.GT,
+            MetadataOperator.GTE,
+            MetadataOperator.LT,
+            MetadataOperator.LTE,
+        ):
+            with pytest.raises(ValidationError, match='not a boolean'):
+                MetadataFilter(key='flag', operator=op, value=True)
+            with pytest.raises(ValidationError, match='not a boolean'):
+                MetadataFilter(key='flag', operator=op, value=False)
+
+        # EQ/NE still accept a boolean (boolean-typed equality).
+        assert MetadataFilter(key='flag', operator=MetadataOperator.EQ, value=True).value is True
+        assert MetadataFilter(key='flag', operator=MetadataOperator.NE, value=False).value is False
+
     def test_existence_operators_ignore_value(self) -> None:
         """Test that existence operators ignore provided value."""
         from app.metadata_types import MetadataFilter

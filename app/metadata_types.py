@@ -216,6 +216,22 @@ class MetadataFilter(BaseModel):
         ):
             raise ValueError(f'Operator {operator} requires a non-null scalar value')
 
+        # Ordered comparison operators reject a boolean. bool is a subclass of int,
+        # so without this guard True/False would silently coerce to 1/0 and be
+        # ordered against stored JSON numbers -- a meaningless comparison. EQ/NE
+        # intentionally still accept a boolean (boolean-typed equality via the
+        # bool-first builder guard); use those, or IS_NULL / IS_NOT_NULL, instead.
+        if (
+            operator in (
+                MetadataOperator.GT,
+                MetadataOperator.GTE,
+                MetadataOperator.LT,
+                MetadataOperator.LTE,
+            )
+            and isinstance(v, bool)
+        ):
+            raise ValueError(f'Operator {operator} requires a numeric or string value, not a boolean')
+
         # ARRAY_CONTAINS requires a single scalar value (not a list)
         if operator == MetadataOperator.ARRAY_CONTAINS:
             if isinstance(v, list):
