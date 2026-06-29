@@ -500,7 +500,9 @@ class PostgreSQLBackend:
                 # from ENABLE_EMBEDDING_GENERATION (no vec tables exist when it is off), so
                 # the vector type codec is never needed and a missing pgvector extension must
                 # NOT fail connection setup -- mirroring the gated _ensure_pgvector_extension
-                # call in initialize() and the SQLite _load_sqlite_vec_extension gate.
+                # call in initialize(). (The SQLite _load_sqlite_vec_extension load is NOT an
+                # analogue: it is unconditional -- see its docstring -- because the vec0 module
+                # must stay reachable for durable stale-embedding cleanup when generation is off.)
                 if settings.embedding.generation_enabled:
                     try:
                         from pgvector.asyncpg import register_vector
