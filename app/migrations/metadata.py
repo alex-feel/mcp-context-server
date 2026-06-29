@@ -13,6 +13,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -187,13 +188,28 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
 
     else:  # postgresql
         sql = _generate_create_index_postgresql(field, type_hint)
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+        migration_timeout_ms = int(migration_timeout_s * 1000)
+        default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
 
         async def _create_postgresql_index(conn: asyncpg.Connection) -> None:
             # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
             # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
-            await conn.execute(sql)
+            # aligning with execute_write()'s conn.transaction() wrapper. CREATE INDEX
+            # on a large context_entries table can exceed the regular per-query budget,
+            # so run the lock acquire and the DDL under the migration timeout -- raising
+            # BOTH the per-connection server-side statement_timeout and asyncpg's
+            # client-side per-call timeout -- mirroring the schema migrations.
+            await execute_migration_ddl(
+                conn,
+                "SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))",
+                migration_timeout_s,
+            )
+            await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
+            try:
+                await execute_migration_ddl(conn, sql, migration_timeout_s)
+            finally:
+                await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
 
         await backend.execute_write(cast(Any, _create_postgresql_index))
 
@@ -222,11 +238,23 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
     else:  # postgresql
         # Use schema-qualified DROP to ensure correct index is dropped
         # This handles multi-schema environments like Supabase
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+        migration_timeout_ms = int(migration_timeout_s * 1000)
+        default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
+
         async def _drop_postgresql_index(conn: asyncpg.Connection) -> None:
             # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
             # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # aligning with execute_write()'s conn.transaction() wrapper. Run the lock
+            # acquire and the DROP under the migration timeout (the lock wait, or a DROP
+            # blocked on a concurrent ACCESS EXCLUSIVE lock, can exceed the regular
+            # per-query budget), mirroring the schema migrations and the create path.
+            await execute_migration_ddl(
+                conn,
+                "SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))",
+                migration_timeout_s,
+            )
+            await conn.execute(f'SET statement_timeout = {migration_timeout_ms}')
             # Quote the configured schema via the shared quote_pg_identifier helper so the
             # qualified DROP targets the schema the index actually lives in. PostgreSQL folds an
             # unquoted mixed-case or reserved schema name to lowercase, which would resolve to the
@@ -235,7 +263,10 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
 
             schema = quote_pg_identifier(settings.storage.postgresql_schema)
             sql = f'DROP INDEX IF EXISTS {schema}.{index_name};'
-            await conn.execute(sql)
+            try:
+                await execute_migration_ddl(conn, sql, migration_timeout_s)
+            finally:
+                await conn.execute(f'SET statement_timeout = {default_timeout_ms}')
 
         await backend.execute_write(cast(Any, _drop_postgresql_index))
 

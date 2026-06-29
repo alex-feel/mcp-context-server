@@ -1192,3 +1192,39 @@ class TestMigrationDdlTimeout:
             await apply_compression_migration(backend=mock_backend)
 
         self._assert_ddl_carries_timeout(executed, timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_metadata_index_create_ddl_uses_migration_timeout(self) -> None:
+        """metadata index CREATE + advisory lock carry the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.metadata.settings', mock_settings):
+            from app.migrations.metadata import _create_metadata_index
+
+            await _create_metadata_index(backend=mock_backend, field='test_field', type_hint='string')
+
+        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_metadata_index_drop_ddl_uses_migration_timeout(self) -> None:
+        """metadata index DROP + advisory lock carry the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.metadata.settings', mock_settings):
+            from app.migrations.metadata import _drop_metadata_index
+
+            await _drop_metadata_index(backend=mock_backend, field='test_field')
+
+        self._assert_ddl_carries_timeout(executed, timeout=300.0)
