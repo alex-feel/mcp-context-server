@@ -234,6 +234,35 @@ class TestValidateAndNormalizeImages:
         assert len(errors) == 1
         assert 'Image 0 has a non-string "data" field' in errors[0]
 
+    def test_raise_mode_garbage_decodes_to_zero_bytes(self) -> None:
+        """Garbage base64 (all non-alphabet, length a multiple of 4) decodes to 0 bytes and is rejected.
+
+        base64.b64decode is lenient (validate omitted), so a value like '!!!!' silently
+        discards every non-alphabet character and decodes to b''. Without an explicit
+        zero-length guard it would be stored as a 0-byte image, defeating the validator's
+        documented protection against silent 0-byte storage.
+        """
+        with pytest.raises(ToolError, match='Image 0 "data" decodes to zero bytes'):
+            validate_and_normalize_images([{'data': '!!!!'}], error_mode='raise')
+
+    def test_collect_mode_garbage_decodes_to_zero_bytes(self) -> None:
+        """collect mode records the zero-byte error instead of raising or storing a 0-byte image."""
+        _, content_type, errors = validate_and_normalize_images(
+            [{'data': '@#$%'}], error_mode='collect',
+        )
+        assert content_type == 'text'
+        assert len(errors) == 1
+        assert 'decodes to zero bytes' in errors[0]
+
+    def test_whitespace_wrapped_base64_still_accepted(self) -> None:
+        """Newline-wrapped base64 still decodes (the decode stays lenient; only a 0-byte result is rejected)."""
+        wrapped = VALID_BASE64_PNG[:4] + '\n' + VALID_BASE64_PNG[4:]
+        _, content_type, errors = validate_and_normalize_images(
+            [{'data': wrapped, 'mime_type': 'image/png'}], error_mode='collect',
+        )
+        assert content_type == 'multimodal'
+        assert errors == []
+
 
 # ---------------------------------------------------------------------------
 # New: TestBuildStoreResponseMessage

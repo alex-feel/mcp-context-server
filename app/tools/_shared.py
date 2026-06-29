@@ -913,6 +913,19 @@ def validate_and_normalize_images(
             errors.append(f'Image {idx} has invalid base64 encoding')
             return images, 'text', errors
 
+        # A non-empty data string that decodes to zero bytes is not a real image:
+        # base64.b64decode (lenient) silently discards every character outside the
+        # alphabet, so a garbage value like '!!!!' decodes to b'' and would otherwise be
+        # stored as a 0-byte attachment -- exactly what the empty-data check above is meant
+        # to prevent. Reject it. The decode stays lenient so legitimately whitespace- or
+        # newline-wrapped base64 still works; only the empty decode result is rejected.
+        if not image_binary:
+            msg = f'Image {idx} "data" decodes to zero bytes (not valid base64 image content)'
+            if error_mode == 'raise':
+                raise ToolError(msg)
+            errors.append(msg)
+            return images, 'text', errors
+
         # Validate image size
         image_size_mb = len(image_binary) / (1024 * 1024)
 
