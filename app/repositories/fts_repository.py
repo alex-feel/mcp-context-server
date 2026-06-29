@@ -1322,27 +1322,55 @@ class FtsRepository(BaseRepository):
         if self.backend.backend_type != 'postgresql':
             raise RuntimeError('migrate_language is only supported for PostgreSQL backend')
 
+        # Import locally to avoid a repository->migrations import at module load.
+        from app.migrations._pg_ddl import begin_migration
+        from app.migrations._pg_ddl import execute_migration_ddl
+        from app.settings import get_settings
+
+        migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
         old_language = await self.get_current_language()
 
         async def _migrate_language(conn: 'asyncpg.Connection') -> dict[str, Any]:
+            # Raise the transaction-scoped statement_timeout to the migration budget and
+            # take the shared advisory lock under it BEFORE the rewrite. Recreating the
+            # GENERATED ALWAYS AS (...) STORED tsvector column is the heaviest DDL of all
+            # -- a full table rewrite plus a GIN index build -- so on a large existing
+            # table it (and a lock wait on a peer pod's migration) must not be cancelled
+            # at the pool's shorter command_timeout. SET LOCAL auto-reverts on
+            # COMMIT/ROLLBACK, so no finally-restore (which would raise 25P02 in an
+            # aborted transaction and mask the real DDL error) is used.
+            await begin_migration(conn, migration_timeout_s)
+
             # Count entries for statistics
             entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
 
             # Drop existing column (also drops dependent GIN index)
-            await conn.execute('ALTER TABLE context_entries DROP COLUMN IF EXISTS text_search_vector')
+            await execute_migration_ddl(
+                conn,
+                'ALTER TABLE context_entries DROP COLUMN IF EXISTS text_search_vector',
+                migration_timeout_s,
+            )
 
             # Recreate column with new language
-            await conn.execute(f'''
+            await execute_migration_ddl(
+                conn,
+                f'''
                 ALTER TABLE context_entries
                 ADD COLUMN text_search_vector tsvector
                 GENERATED ALWAYS AS (to_tsvector('{new_language}', COALESCE(text_content, ''))) STORED
-            ''')
+            ''',
+                migration_timeout_s,
+            )
 
             # Recreate GIN index
-            await conn.execute('''
+            await execute_migration_ddl(
+                conn,
+                '''
                 CREATE INDEX IF NOT EXISTS idx_text_search_gin
                 ON context_entries USING GIN(text_search_vector)
-            ''')
+            ''',
+                migration_timeout_s,
+            )
 
             return {
                 'success': True,

@@ -1234,6 +1234,36 @@ class TestMigrationDdlTimeout:
         self._assert_set_local_no_finally_restore(executed)
 
     @pytest.mark.asyncio
+    async def test_fts_migrate_language_ddl_uses_migration_timeout(self) -> None:
+        """The PostgreSQL FTS language-change rewrite carries the migration timeout.
+
+        This heaviest-DDL path (DROP + ADD GENERATED ALWAYS AS (...) STORED tsvector
+        full-table rewrite + GIN index build) lives in the repository layer
+        (FtsRepository.migrate_language), not app/migrations, and by definition runs on
+        an already-populated table -- so it must raise the budget via begin_migration the
+        same way the initial FTS migration does, or a slow rewrite is cancelled at the
+        pool's shorter command_timeout and the language change silently never applies.
+        """
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        from app.repositories.fts_repository import FtsRepository
+
+        repo = FtsRepository(mock_backend)
+        with (
+            patch('app.settings.get_settings', return_value=mock_settings),
+            patch.object(FtsRepository, 'get_current_language', AsyncMock(return_value='english')),
+        ):
+            await repo.migrate_language('german')
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
     async def test_compression_migration_ddl_uses_migration_timeout(self) -> None:
         """compression migration DDL loop carries the migration timeout."""
         executed: list[tuple[str, float | None]] = []
