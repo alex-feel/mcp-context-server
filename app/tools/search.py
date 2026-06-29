@@ -278,9 +278,17 @@ async def _semantic_search_raw(
                     f'({len(result["rerank_text"])} chars)',
                 )
 
-            # Remove internal boundary fields from result
-            result.pop('matched_chunk_start', None)
-            result.pop('matched_chunk_end', None)
+    # matched_chunk_start/matched_chunk_end are internal chunk boundaries that
+    # exist only to feed the chunk-aware reranking above. Strip them from EVERY
+    # result unconditionally so this shared helper never returns implementation-only
+    # keys: the result contract declares no such fields, and the tools return
+    # dict[str, Any] (no FastMCP output-schema filtering), so leaving them in leaks
+    # them to the client whenever reranking did not run (provider disabled,
+    # unavailable, or failed). The rerank branch above already consumed the
+    # boundaries before this scrub, so removing them here is safe for every caller.
+    for result in search_results:
+        result.pop('matched_chunk_start', None)
+        result.pop('matched_chunk_end', None)
 
     # Parse JSON metadata to a dict for EVERY semantic result so this shared
     # helper returns the same metadata shape as search_context/fts_search_context.
