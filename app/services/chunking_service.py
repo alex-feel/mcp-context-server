@@ -184,6 +184,15 @@ class ChunkingService:
         # Key operational event: shows chunking produced results
         logger.info(f'Split complete: {len(split_docs)} chunks with boundaries')
 
+        if not split_docs:
+            # RecursiveCharacterTextSplitter returns zero documents for some
+            # over-length inputs (e.g. whitespace-only text longer than
+            # chunk_size), which would break the documented "always returns at
+            # least one chunk" contract and hand an empty embedding list to the
+            # storage layer. Fall back to a single whole-text chunk so the
+            # contract holds for the chunking layer in isolation.
+            return [TextChunk(text=text, chunk_index=0, start_index=0, end_index=len(text))]
+
         return [
             TextChunk(
                 text=split_doc.page_content,
