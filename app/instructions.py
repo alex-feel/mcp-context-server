@@ -32,6 +32,9 @@ Persistent context storage for LLM agents. Store, search, and retrieve context e
 | `delete_context`          | Delete entries by ID                                         |
 | `list_threads`            | List all thread IDs                                          |
 | `get_statistics`          | Database statistics                                          |
+| `grep_context`            | Locate literal/regex matches across entries                  |
+| `navigate_context`        | Markdown outline (index_tree) of one entry                   |
+| `read_context_range`      | Read a char/line/node slice of one entry                     |
 
 Batch: `store_context_batch`, `update_context_batch`, `delete_context_batch` (up to 100 entries each).
 
