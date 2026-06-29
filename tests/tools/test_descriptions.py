@@ -115,3 +115,12 @@ class TestDescriptionStructure:
         ]
         for field in expected_fields:
             assert field in _FTS_DESCRIPTION_TEMPLATE, f'{field} missing in template'
+
+    def test_description_lists_both_metadata_filter_params(self) -> None:
+        """Both backends advertise the working `metadata` simple-equality filter, not only metadata_filters."""
+        for backend in ('sqlite', 'postgresql'):
+            result = generate_fts_description(backend, 'english')
+            assert '- metadata: Simple key=value equality matching' in result, (
+                f'{backend} FTS description omits the simple `metadata` filter param'
+            )
+            assert 'metadata_filters' in result

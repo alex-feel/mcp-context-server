@@ -149,6 +149,7 @@ Filtering options (all combinable):
 - content_type: Filter by text or multimodal entries
 - tags: OR logic (matches ANY of provided tags)
 - start_date/end_date: Date range filtering (ISO 8601)
+- metadata: Simple key=value equality matching
 - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
 The `scores` object contains:
