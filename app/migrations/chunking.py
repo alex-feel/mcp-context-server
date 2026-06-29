@@ -18,6 +18,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.errors import format_exception_message
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -204,8 +205,14 @@ async def _apply_chunking_migration_with_backend(
         async def _apply_postgresql(conn: asyncpg.Connection) -> None:
             # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
             # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # aligning with execute_write()'s conn.transaction() wrapper. The lock
+            # acquire and the DDL below run under the migration timeout so the pool's
+            # shorter command_timeout cannot cancel them before statement_timeout applies.
+            await execute_migration_ddl(
+                conn,
+                "SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))",
+                migration_timeout_s,
+            )
 
             # Set extended statement timeout for migration DDL operations
             migration_timeout_ms = int(migration_timeout_s * 1000)
@@ -247,7 +254,7 @@ async def _apply_chunking_migration_with_backend(
                     # which carries no such reference, still runs.
                     if skip_fp32_vec and 'vec_context_embeddings' in stmt:
                         continue
-                    await conn.execute(stmt)
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
             finally:
                 # Restore default statement timeout after migration
                 default_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)

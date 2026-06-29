@@ -1043,3 +1043,152 @@ class TestEmbeddingStorageDecoupledFromSearchTool:
                 # Restore the process-wide settings singleton to the cached default so
                 # this test does not leak its env-driven configuration into others.
                 get_settings.cache_clear()
+
+
+class TestMigrationDdlTimeout:
+    """PostgreSQL migration DDL must run under POSTGRESQL_MIGRATION_TIMEOUT_S.
+
+    asyncpg applies the pool's ``command_timeout`` (default 60s) as the per-call
+    CLIENT-side deadline for every ``conn.execute`` that passes no explicit
+    ``timeout``. Migration DDL sets a larger SERVER-side ``statement_timeout``
+    (POSTGRESQL_MIGRATION_TIMEOUT_S, default 300s), but the client-side default
+    cancels the call at ~60s first, defeating the configured budget and crashing
+    startup on any single DDL longer than 60s. These tests pin that the migration
+    DDL (and the advisory-lock acquire, which may wait on a peer pod's migration)
+    carry the migration timeout as the explicit per-call ``timeout`` -- the
+    existing advisory-lock tests record only the SQL string and cannot catch this.
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_migration_ddl_passes_timeout(self) -> None:
+        """The shared helper forwards ``timeout_s`` as asyncpg's per-call timeout."""
+        from app.migrations._pg_ddl import execute_migration_ddl
+
+        mock_conn = AsyncMock()
+        await execute_migration_ddl(mock_conn, 'CREATE TABLE x (id int)', 300.0)
+        mock_conn.execute.assert_awaited_once_with('CREATE TABLE x (id int)', timeout=300.0)
+
+    @staticmethod
+    def _recording_pg_backend(executed: list[tuple[str, float | None]]) -> MagicMock:
+        """A PostgreSQL backend whose execute_write records (statement, timeout) pairs."""
+        mock_backend = MagicMock()
+        mock_backend.backend_type = 'postgresql'
+
+        async def mock_execute_write(operation, *_args, **_kwargs):
+            mock_conn = AsyncMock()
+
+            async def record_execute(stmt, *_a, **kw):
+                executed.append((stmt, kw.get('timeout')))
+
+            mock_conn.execute = record_execute
+            mock_conn.fetchrow = AsyncMock(return_value=None)
+            await operation(mock_conn)
+
+        mock_backend.execute_write = mock_execute_write
+        return mock_backend
+
+    @staticmethod
+    def _assert_ddl_carries_timeout(
+        executed: list[tuple[str, float | None]],
+        *,
+        timeout: float,
+    ) -> None:
+        """Assert every advisory-lock / CREATE / ALTER / DROP / DO statement carries timeout."""
+        ddl = [
+            (stmt, t)
+            for stmt, t in executed
+            if 'advisory' in stmt.lower()
+            or stmt.strip().upper().startswith(('CREATE', 'ALTER', 'DROP', 'DO'))
+        ]
+        assert ddl, f'no migration DDL was recorded: {executed}'
+        offenders = [(stmt, t) for stmt, t in ddl if t != timeout]
+        assert not offenders, (
+            f'migration DDL must carry the {timeout}s migration timeout as the per-call '
+            f'asyncpg timeout; offenders: {offenders}'
+        )
+
+    @pytest.mark.asyncio
+    async def test_index_tree_migration_ddl_uses_migration_timeout(self) -> None:
+        """index_tree CREATE TABLE/INDEX + advisory lock carry the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.index_tree.settings', mock_settings):
+            from app.migrations.index_tree import apply_index_tree_migration
+
+            await apply_index_tree_migration(backend=mock_backend, force=True)
+
+        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_chunking_migration_ddl_uses_migration_timeout(self) -> None:
+        """chunking migration DDL loop carries the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+        mock_backend.execute_read = AsyncMock(return_value=False)  # not already applied
+
+        mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.compression.enabled = False
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.chunking.settings', mock_settings):
+            from app.migrations.chunking import apply_chunking_migration
+
+            await apply_chunking_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_semantic_migration_ddl_uses_migration_timeout(self) -> None:
+        """semantic migration (heaviest DDL: fp32 vec table + HNSW) carries the timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        async def mock_execute_read(operation, *_args, **_kwargs):
+            mock_conn = AsyncMock()
+            mock_conn.fetchrow = AsyncMock(return_value=None)
+            return await operation(mock_conn)
+
+        mock_backend.execute_read = mock_execute_read
+
+        mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.embedding.dim = 768
+        mock_settings.compression.enabled = False
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations.semantic import apply_semantic_search_migration
+
+            await apply_semantic_search_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_compression_migration_ddl_uses_migration_timeout(self) -> None:
+        """compression migration DDL loop carries the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+        mock_backend.execute_read = AsyncMock(return_value=False)  # not already applied
+
+        mock_settings = MagicMock()
+        mock_settings.compression.enabled = True
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.compression.settings', mock_settings):
+            from app.migrations.compression import apply_compression_migration
+
+            await apply_compression_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, timeout=300.0)

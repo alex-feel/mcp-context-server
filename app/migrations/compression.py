@@ -20,6 +20,7 @@ import asyncpg
 
 from app.backends import StorageBackend
 from app.errors import format_exception_message
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -150,8 +151,13 @@ async def _apply_compression_migration_with_backend(
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
         async def _apply_postgresql(conn: asyncpg.Connection) -> None:
-            await conn.execute(
+            # The advisory-lock acquire and the DDL below run under the migration
+            # timeout so the pool's shorter command_timeout cannot cancel them before
+            # the server-side statement_timeout applies.
+            await execute_migration_ddl(
+                conn,
                 "SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))",
+                migration_timeout_s,
             )
 
             migration_timeout_ms = int(migration_timeout_s * 1000)
@@ -181,7 +187,7 @@ async def _apply_compression_migration_with_backend(
                 for stmt in statements:
                     stmt_clean = stmt.strip()
                     if stmt_clean and not stmt_clean.startswith('--'):
-                        await conn.execute(stmt_clean)
+                        await execute_migration_ddl(conn, stmt_clean, migration_timeout_s)
             finally:
                 default_timeout_ms = int(
                     settings.storage.postgresql_command_timeout_s * 1000 * 0.9,
