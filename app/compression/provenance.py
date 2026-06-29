@@ -48,6 +48,7 @@ async def read_compression_metadata(
                     'FROM compression_metadata WHERE id = 1',
                 )
             except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
                 # Pre-bootstrap state: the compression_metadata table has
                 # not been created yet. Treat as "no row". Errors that
                 # reference a different missing table indicate database
@@ -55,8 +56,25 @@ async def read_compression_metadata(
                 # loudly instead of silently masking the defect. Mirrors
                 # the type-safe asyncpg.UndefinedTableError precision in
                 # the PostgreSQL branch below.
-                if 'no such table: compression_metadata' in str(exc).lower():
+                if 'no such table: compression_metadata' in message:
                     return None
+                # In-place upgrade of a table that predates the
+                # codebook_fingerprint column: read the five scalar columns and
+                # treat the fingerprint as absent (None), identical to a NULL
+                # fingerprint value. The compression migration adds the column
+                # on the next server start; the standalone CLI never runs that
+                # migration, so it must not crash on this documented
+                # pre-fingerprint upgrade state. Every other OperationalError
+                # still propagates so genuine corruption fails loudly.
+                if 'no such column: codebook_fingerprint' in message:
+                    cursor = conn.execute(
+                        'SELECT provider, bits, variant, seed, dim '
+                        'FROM compression_metadata WHERE id = 1',
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        return None
+                    return (row[0], int(row[1]), row[2], int(row[3]), int(row[4]), None)
                 raise
             row = cursor.fetchone()
             if row is None:
@@ -76,6 +94,30 @@ async def read_compression_metadata(
                 )
             except asyncpg.UndefinedTableError:
                 return None
+            except asyncpg.UndefinedColumnError:
+                # In-place upgrade of a table that predates the
+                # codebook_fingerprint column. UndefinedColumnError (SQLSTATE
+                # 42703) is a SIBLING of UndefinedTableError (42P01), not a
+                # subclass, so it is not caught above. Read the five scalar
+                # columns and treat the fingerprint as absent (None), mirroring
+                # the SQLite branch and the NULL-fingerprint handling. The
+                # compression migration adds the column on the next server
+                # start; the standalone CLI must not crash on this documented
+                # pre-fingerprint upgrade state.
+                record = await conn.fetchrow(
+                    'SELECT provider, bits, variant, seed, dim '
+                    'FROM compression_metadata WHERE id = 1',
+                )
+                if record is None:
+                    return None
+                return (
+                    record['provider'],
+                    int(record['bits']),
+                    record['variant'],
+                    int(record['seed']),
+                    int(record['dim']),
+                    None,
+                )
             if record is None:
                 return None
             return (

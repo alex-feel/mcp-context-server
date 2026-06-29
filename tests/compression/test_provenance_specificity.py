@@ -16,6 +16,7 @@ import pytest
 
 from app.backends.sqlite_backend import SQLiteBackend
 from app.compression.provenance import read_compression_metadata
+from app.compression.types import CompressionMetadata
 
 
 @pytest.mark.asyncio
@@ -98,5 +99,57 @@ async def test_propagates_other_missing_table_errors(
             'The spy wrapper must forward the callback so the production '
             'code path executes against the fake connection.'
         )
+    finally:
+        await backend.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reads_none_fingerprint_when_column_missing(
+    tmp_path: Path,
+) -> None:
+    """A pre-fingerprint table (codebook_fingerprint column absent) reads as None.
+
+    The codebook_fingerprint column was added after the original compression
+    feature, and the compression migration adds it idempotently on the next
+    server start. The standalone migration CLI, however, reads the provenance
+    row BEFORE any migration runs, so a table created before the column existed
+    must be tolerated rather than crashing the CLI: a missing column is treated
+    identically to a NULL fingerprint value (no rotation digest recorded yet).
+    Every other schema deviation still propagates loudly.
+    """
+    db_path = tmp_path / 'pre_fingerprint.db'
+    backend = SQLiteBackend(db_path=db_path)
+    await backend.initialize()
+    try:
+
+        def _create_pre_fingerprint(conn: sqlite3.Connection) -> None:
+            # The compression_metadata schema as it existed before the
+            # codebook_fingerprint column was introduced (six columns, no digest).
+            conn.execute(
+                'CREATE TABLE compression_metadata ('
+                '  id INTEGER PRIMARY KEY CHECK (id = 1),'
+                '  provider TEXT NOT NULL,'
+                '  bits INTEGER NOT NULL CHECK (bits BETWEEN 2 AND 4),'
+                "  variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),"
+                '  seed INTEGER NOT NULL CHECK (seed >= 0),'
+                '  dim INTEGER NOT NULL CHECK (dim > 0),'
+                '  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP'
+                ')',
+            )
+            conn.execute(
+                'INSERT INTO compression_metadata (id, provider, bits, variant, seed, dim) '
+                "VALUES (1, 'turboquant', 4, 'ip', 0, 1024)",
+            )
+
+        await backend.execute_write(_create_pre_fingerprint)
+
+        result = await read_compression_metadata(backend)
+        assert isinstance(result, CompressionMetadata)
+        assert result.codebook_fingerprint is None
+        assert result.provider == 'turboquant'
+        assert result.bits == 4
+        assert result.variant == 'ip'
+        assert result.seed == 0
+        assert result.dim == 1024
     finally:
         await backend.shutdown()
