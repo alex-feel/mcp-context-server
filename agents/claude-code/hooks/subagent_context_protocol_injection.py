@@ -86,10 +86,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "agent reports (source='agent')."
             ),
             (
-                'Store a concise context-server report BEFORE you stop, if you have '
-                'context-server store tools (for example store_context) AND you '
-                'produced any work artifact or finding. If you have no store tools, '
-                'just stop.'
+                'Store a concise context-server report BEFORE you stop, if the '
+                'context-server store capability is available to you (for example a '
+                'store_context tool) AND you produced any work artifact or finding. '
+                'Context-server tools may load on demand: if you do not see a store '
+                'tool, search the available tool catalog by name (for example for '
+                'store_context) and load it before concluding it is absent. Only if '
+                'that search finds no store tool do you just stop.'
             ),
             (
                 'The StructuredOutput value you return to your caller is ephemeral '

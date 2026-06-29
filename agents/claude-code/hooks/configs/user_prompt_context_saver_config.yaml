@@ -16,6 +16,7 @@ output_context_id: true
 skip_patterns:
   - "^<task-notification>"
   - "^<bash-notification>"
+  - "^You are a fast tool-routing check"
 
 # Pre-built Claude Code slash commands to skip saving
 # These are system-level operations that don't need context preservation
