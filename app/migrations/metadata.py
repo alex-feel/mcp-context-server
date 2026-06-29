@@ -227,9 +227,13 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
             # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
             # aligning with execute_write()'s conn.transaction() wrapper.
             await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
-            # Use configured schema for qualified drop.
-            # This ensures correct schema is used in Supabase environments.
-            schema = settings.storage.postgresql_schema
+            # Quote the configured schema via the shared quote_pg_identifier helper so the
+            # qualified DROP targets the schema the index actually lives in. PostgreSQL folds an
+            # unquoted mixed-case or reserved schema name to lowercase, which would resolve to the
+            # wrong (or a nonexistent) schema and let IF EXISTS silently skip the real orphan index.
+            from app.backends.postgresql_backend import quote_pg_identifier
+
+            schema = quote_pg_identifier(settings.storage.postgresql_schema)
             sql = f'DROP INDEX IF EXISTS {schema}.{index_name};'
             await conn.execute(sql)
 

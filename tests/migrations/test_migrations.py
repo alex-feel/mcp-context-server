@@ -840,6 +840,47 @@ class TestAdvisoryLockFix:
         )
 
     @pytest.mark.asyncio
+    async def test_metadata_index_drop_quotes_mixed_case_schema(self) -> None:
+        """A mixed-case POSTGRESQL_SCHEMA is quoted in the qualified DROP so it is not folded.
+
+        PostgreSQL case-folds an unquoted identifier to lowercase, so an unquoted ``MyApp.``
+        qualifier would resolve to schema ``myapp`` and make ``DROP INDEX IF EXISTS`` silently
+        skip the orphan index that actually lives in ``MyApp``. The DROP must route the schema
+        through quote_pg_identifier, matching the search_path, CREATE SCHEMA, and target-probe sites.
+        """
+        mock_backend = MagicMock()
+        mock_backend.backend_type = 'postgresql'
+
+        executed_statements: list[str] = []
+
+        async def mock_execute_write(operation, *_args, **_kwargs):
+            mock_conn = AsyncMock()
+
+            async def record_execute(stmt, *_a, **_kw):
+                executed_statements.append(stmt)
+
+            mock_conn.execute = record_execute
+            await operation(mock_conn)
+
+        mock_backend.execute_write = mock_execute_write
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_schema = 'MyApp'
+
+        with patch('app.migrations.metadata.settings', mock_settings):
+            from app.migrations.metadata import _drop_metadata_index
+
+            await _drop_metadata_index(
+                backend=mock_backend,
+                field='test_field',
+            )
+
+        drop_sql = next(s for s in executed_statements if 'DROP INDEX' in s)
+        assert '"MyApp".idx_metadata_test_field' in drop_sql
+        # The unquoted form would be case-folded by PostgreSQL and silently miss the real index.
+        assert 'MyApp.idx_metadata_test_field' not in drop_sql
+
+    @pytest.mark.asyncio
     async def test_no_session_scoped_locks_in_migration_source(self) -> None:
         """Verify migration source files contain no session-scoped advisory locks.
 
