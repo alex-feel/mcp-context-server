@@ -46,24 +46,40 @@ class _ConcurrencyTrackingProvider:
 
     Both ``summarize`` (flat) and ``summarize_with_prompt`` (per-node) route
     through the same accounting so the test can observe the COMBINED concurrency
-    governed by the shared summary-model semaphore.
+    governed by the shared summary-model semaphore. ``node_current`` tracks only
+    the per-node calls, so a test can wait for a NODE summary specifically to be
+    in flight; ``node_hold`` blocks ONLY the per-node calls, letting the flat
+    summary complete promptly.
     """
 
-    def __init__(self, *, hold: asyncio.Event | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        hold: asyncio.Event | None = None,
+        node_hold: asyncio.Event | None = None,
+    ) -> None:
         self.current = 0
         self.peak = 0
         self.completed = 0
         self.cancelled = 0
-        # When set, every call blocks on this event until released, so the test
-        # can deterministically pin calls "in flight" while it triggers an abort.
+        # In-flight per-node (summarize_with_prompt) calls only.
+        self.node_current = 0
+        # When set, a call blocks on this event until released, so the test can
+        # deterministically pin calls "in flight" while it triggers an abort.
         self._hold = hold
+        # When set, ONLY the per-node calls block on this event; the flat summary
+        # then completes promptly (its own ``hold`` is typically None), so a test
+        # can pin node summaries in flight without stalling the flat-summary leg.
+        self._node_hold = node_hold
 
-    async def _run(self) -> str:
+    async def _run(self, hold_event: asyncio.Event | None, *, is_node: bool) -> str:
         self.current += 1
+        if is_node:
+            self.node_current += 1
         self.peak = max(self.peak, self.current)
         try:
-            if self._hold is not None:
-                await self._hold.wait()
+            if hold_event is not None:
+                await hold_event.wait()
             else:
                 # Yield so genuinely-concurrent calls overlap when the budget allows.
                 await asyncio.sleep(0.01)
@@ -74,12 +90,15 @@ class _ConcurrencyTrackingProvider:
             raise
         finally:
             self.current -= 1
+            if is_node:
+                self.node_current -= 1
 
     async def summarize(self, _text: str, _source: str) -> str:
-        return await self._run()
+        return await self._run(self._hold, is_node=False)
 
     async def summarize_with_prompt(self, _text: str, _system_prompt: str) -> str:
-        return await self._run()
+        node_event = self._node_hold if self._node_hold is not None else self._hold
+        return await self._run(node_event, is_node=True)
 
 
 @pytest.fixture(autouse=True)
@@ -202,24 +221,36 @@ class TestSharedSummarySemaphore:
     async def test_abort_releases_permits_and_cancels_node_summaries(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """ABORT path: the embedding leg raises while node summaries are in
+        """ABORT path: the embedding leg raises while a node summary is in
         flight. run_generation must (a) raise the combined error, (b) cancel the
-        in-flight node summaries so none is left running, and (c) leave the shared
+        in-flight NODE summary so none is left running, and (c) leave the shared
         semaphore's ``_value`` back at full count (no leaked permits).
+
+        Only the per-node calls block on ``hold``; the flat summary completes
+        promptly. This is deliberate: if the flat summary also blocked, the
+        abort-mandatory flat-summary leg would stall the whole abort-legs gather
+        until its timeout fired (a needless multi-second wait), and the node leg --
+        which awaits the flat summary first -- would never start, so the
+        cancellation assertion would be satisfied by the flat summary instead of a
+        genuine in-flight node summary.
         """
         from fastmcp.exceptions import ToolError
 
         _apply_low_summary_budget(monkeypatch, 2)
 
-        # The provider blocks every summary-model call on ``hold`` so node
-        # summaries are pinned in flight when the embedding leg fails.
+        # Block ONLY the per-node calls so a node summary is genuinely in flight
+        # (holding the shared permit) when the embedding leg fails, while the flat
+        # summary completes immediately.
         hold = asyncio.Event()
-        provider = _ConcurrencyTrackingProvider(hold=hold)
+        provider = _ConcurrencyTrackingProvider(node_hold=hold)
 
         async def failing_embed(_text: str) -> object:
-            # Let the node summaries reach their await point, then fail the
-            # abort-mandatory embedding leg.
-            await asyncio.sleep(0.02)
+            # Fail the abort-mandatory embedding leg only AFTER a node summary is
+            # genuinely in flight, so the abort cancels a real in-flight node call.
+            for _ in range(400):
+                if provider.node_current >= 1:
+                    break
+                await asyncio.sleep(0.005)
             raise RuntimeError('embedding provider exploded')
 
         monkeypatch.setattr(shared_tools, 'get_summary_provider', lambda: provider)
@@ -235,14 +266,15 @@ class TestSharedSummarySemaphore:
                 run_nodes=True,
             )
 
-        # The shared budget is fully restored: every acquired permit (flat summary
-        # + any in-flight node summaries) was released on cancellation.
+        # The shared budget is fully restored: every acquired permit (the flat
+        # summary + the in-flight node summary) was released on cancellation.
         assert shared_tools._summary_model_semaphore._value == 2
 
-        # No node-summary provider call is left running after the abort: anything
-        # that was in flight was cancelled, and nothing remains active.
+        # No node-summary provider call is left running after the abort: the
+        # in-flight node call was cancelled, and nothing remains active.
         assert provider.current == 0
-        # The abort genuinely cancelled in-flight summary-model work rather than
+        assert provider.node_current == 0
+        # The abort genuinely cancelled an in-flight NODE summary rather than
         # letting it complete (the hold event was never released).
         assert provider.cancelled >= 1
         assert not hold.is_set()
