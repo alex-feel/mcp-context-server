@@ -781,11 +781,25 @@ def main() -> None:
                     show_banner=False,
                 )
             else:
-                # SSE transport: stateless_http parameter is silently ignored by FastMCP
+                # SSE transport does not support stateless mode. FastMCP raises
+                # ValueError when stateless_http is True for transport='sse', and an
+                # unset stateless_http is resolved from FASTMCP_STATELESS_HTTP (whose
+                # documented default is true), so it MUST be passed explicitly as
+                # False here or SSE crashes on startup under the project's own
+                # default configuration. Warn when the configured value asked for
+                # stateless so the operator knows SSE forces stateful sessions.
+                if settings.transport.stateless_http:
+                    logger.warning(
+                        'Stateless HTTP mode is not supported by the SSE transport; '
+                        'forcing stateful sessions. Server-side session tracking is '
+                        'active, which requires sticky sessions for horizontal scaling. '
+                        'Use the streamable-http transport for stateless mode.',
+                    )
                 mcp.run(
                     transport=cast(Literal['stdio', 'http', 'sse', 'streamable-http'], transport),
                     host=host,
                     port=port,
+                    stateless_http=False,
                     show_banner=False,
                 )
 

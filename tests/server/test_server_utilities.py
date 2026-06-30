@@ -750,3 +750,40 @@ class TestGetServerVersion:
         assert call_kwargs['version'] == SERVER_VERSION, (
             f'Expected version={SERVER_VERSION!r}, got {call_kwargs["version"]!r}'
         )
+
+    def test_sse_transport_forces_stateful_under_stateless_env(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SSE must pass stateless_http=False even when FASTMCP_STATELESS_HTTP=true.
+
+        FastMCP raises ValueError for stateless_http=True with the SSE transport
+        and resolves an unset stateless_http from FASTMCP_STATELESS_HTTP (whose
+        documented default is true), so the SSE branch must force it to False or
+        the server crashes on startup under the project's own default config.
+        """
+        import app.server as server_module
+        from app.settings import get_settings
+
+        monkeypatch.setenv('MCP_TRANSPORT', 'sse')
+        monkeypatch.setenv('FASTMCP_STATELESS_HTTP', 'true')
+        get_settings.cache_clear()
+        monkeypatch.setattr(server_module, 'settings', get_settings())
+        assert server_module.settings.transport.transport == 'sse'
+        assert server_module.settings.transport.stateless_http is True
+
+        mock_fastmcp_cls = MagicMock()
+        mock_instance = mock_fastmcp_cls.return_value
+        mock_instance.run = MagicMock(side_effect=SystemExit(0))
+        mock_instance.custom_route = MagicMock(return_value=lambda f: f)
+
+        with (
+            patch('app.server.FastMCP', mock_fastmcp_cls),
+            patch('app.server.create_auth_provider', return_value=None),
+            pytest.raises(SystemExit),
+        ):
+            server_module.main()
+
+        mock_instance.run.assert_called_once()
+        run_kwargs = mock_instance.run.call_args.kwargs
+        assert run_kwargs['transport'] == 'sse'
+        assert run_kwargs['stateless_http'] is False
