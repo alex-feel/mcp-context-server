@@ -282,3 +282,32 @@ class TestStorageImageSizeLimits:
 
         with env_var('MAX_TOTAL_SIZE_MB', '-5'), pytest.raises(ValidationError):
             StorageSettings()
+
+
+class TestStoragePoolLimits:
+    """POOL_MAX_READERS / POOL_MAX_WRITERS must be at least 1.
+
+    POOL_MAX_READERS sizes an asyncio.Semaphore: a value of 0 would start it
+    locked (every reader blocks forever, a silent deadlock) and a negative value
+    raises an opaque ValueError deep in pool init, so both must be rejected
+    cleanly at the configuration boundary like every peer concurrency cap.
+    """
+
+    def test_defaults_are_positive(self) -> None:
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert settings.pool_max_readers == 8
+        assert settings.pool_max_writers == 1
+
+    def test_zero_readers_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POOL_MAX_READERS', '0'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_negative_writers_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POOL_MAX_WRITERS', '-1'), pytest.raises(ValidationError):
+            StorageSettings()

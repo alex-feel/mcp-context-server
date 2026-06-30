@@ -319,12 +319,7 @@ class EmbeddingSettings(CommonSettings):
     @field_validator('dim')
     @classmethod
     def validate_embedding_dim(cls, v: int) -> int:
-        """Validate embedding dimension is reasonable and warn about non-standard values."""
-        if v > 4096:
-            raise ValueError(
-                'EMBEDDING_DIM exceeds reasonable limit (4096). '
-                'Most embedding models use dimensions between 128-4096.',
-            )
+        """Warn when the dimension is not a multiple of 64 (the Field's ``le=4096`` already enforces the ceiling)."""
         if v % 64 != 0:
             logger.warning(
                 f'EMBEDDING_DIM={v} is not a multiple of 64. '
@@ -926,8 +921,8 @@ class StorageSettings(BaseSettings):
     db_path: Path | None = Field(default_factory=lambda: Path.home() / '.mcp' / 'context_storage.db', alias='DB_PATH')
 
     # Connection pool settings for StorageBackend
-    pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS')
-    pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS')
+    pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS', ge=1)
+    pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS', ge=1)
     pool_connection_timeout_s: float = Field(default=10.0, alias='POOL_CONNECTION_TIMEOUT_S')
     pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S')
     pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S')

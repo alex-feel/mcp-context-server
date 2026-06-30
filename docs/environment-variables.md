@@ -265,13 +265,13 @@ For detailed metadata usage, see the [Metadata Guide](metadata-addition-updating
 
 These settings apply only when `STORAGE_BACKEND=sqlite`.
 
-| Variable                       | Type    | Default | Description                                                        |
-|--------------------------------|---------|---------|--------------------------------------------------------------------|
-| `POOL_MAX_READERS`             | integer | `8`     | Maximum number of reader connections in the SQLite connection pool |
-| `POOL_MAX_WRITERS`             | integer | `1`     | Maximum number of writer connections in the SQLite connection pool |
-| `POOL_CONNECTION_TIMEOUT_S`    | float   | `10.0`  | Connection acquisition timeout in seconds                          |
-| `POOL_IDLE_TIMEOUT_S`          | float   | `300.0` | Idle connection timeout in seconds                                 |
-| `POOL_HEALTH_CHECK_INTERVAL_S` | float   | `30.0`  | Interval between connection health checks in seconds               |
+| Variable                       | Type    | Default | Description                                                                      |
+|--------------------------------|---------|---------|----------------------------------------------------------------------------------|
+| `POOL_MAX_READERS`             | integer | `8`     | Maximum number of reader connections in the SQLite connection pool (minimum `1`) |
+| `POOL_MAX_WRITERS`             | integer | `1`     | Maximum number of writer connections in the SQLite connection pool (minimum `1`) |
+| `POOL_CONNECTION_TIMEOUT_S`    | float   | `10.0`  | Connection acquisition timeout in seconds                                        |
+| `POOL_IDLE_TIMEOUT_S`          | float   | `300.0` | Idle connection timeout in seconds                                               |
+| `POOL_HEALTH_CHECK_INTERVAL_S` | float   | `30.0`  | Interval between connection health checks in seconds                             |
 
 ## SQLite Retry Settings
 
