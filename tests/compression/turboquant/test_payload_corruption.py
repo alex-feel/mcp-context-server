@@ -36,7 +36,7 @@ def _mutate_qjl_block_to_non_divisible(blob: bytes) -> bytes:
     """Return a copy of ``blob`` whose qjl block length is not a multiple
     of ``n_rows``.
 
-    The IP layout: header (16 B) + norms_block + residual_block + qjl_block
+    The IP layout: header (20 B) + norms_block + residual_block + qjl_block
     + packed_block. Each block is a 4-byte little-endian length prefix
     followed by ``length`` bytes. This helper truncates the qjl block by
     one byte and also drops one byte from its length prefix so the new

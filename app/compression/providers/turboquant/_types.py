@@ -6,12 +6,13 @@ path.
 Wire-format layer types (:class:`MSEPayload`, :class:`IPPayload`)
 carry a custom binary serialization protocol (:meth:`to_bytes` per
 subtype, :func:`payload_from_bytes` module-level dispatcher) used by
-the storage layer. Both subtypes use little-endian byte order and share
-a common 8-byte header so the variant code can be read without subtype
-context.
+the storage layer. Both subtypes use little-endian byte order and begin
+with the same 4-byte magic ``b'TQP1'`` followed by a 1-byte variant code
+at offset 4, so the variant can be read without subtype context.
 
-The wire-format discriminator is the second byte (offset 4) of the
-serialized blob: ``0 = mse``, ``1 = ip``. The :func:`payload_from_bytes`
+The wire-format discriminator is the variant-code byte at offset 4 (the
+byte immediately after the 4-byte magic) of the serialized blob:
+``0 = mse``, ``1 = ip``. The :func:`payload_from_bytes`
 dispatcher reads this byte and delegates to the corresponding
 ``from_bytes`` classmethod. At the type-system level, the
 :data:`CompressedPayload` alias is ``MSEPayload | IPPayload``; consumers
@@ -521,8 +522,9 @@ class IPPayload:
 CompressedPayload = MSEPayload | IPPayload
 '''Discriminated wire-format payload alias.
 
-The two subtypes share a common 8-byte header so the variant code
-(byte at offset 4) is readable without prior knowledge of the subtype.
+The two subtypes begin with the same 4-byte magic followed by a 1-byte
+variant code at offset 4, so the variant is readable without prior
+knowledge of the subtype.
 Use :func:`payload_from_bytes` to decode a blob whose variant is
 unknown at the call site. Consumers that handle both variants should
 use ``match payload:`` for exhaustive narrowing.

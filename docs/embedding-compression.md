@@ -85,7 +85,7 @@ Each row of `vec_context_embeddings_compressed` stores a single bit-packed paylo
 
 Two concrete dataclasses model the on-disk shape:
 
-- `MSEPayload` -- fields `bits`, `dim`, `seed`, `n_rows`, `norms`, `packed_indices`. Header layout `<4sBBHII` (4-byte magic prefix, variant code byte `0`, `bits` byte, `dim` as `H`, `seed` as `I`, `n_rows` as `I`) followed by length-prefixed `norms` and `packed_indices` blocks.
+- `MSEPayload` -- fields `bits`, `dim`, `seed`, `n_rows`, `norms`, `packed_indices`. Header layout `<4sBBHII` (4-byte magic prefix, variant code byte `0`, `bits` byte, `dim` as `H`, `n_rows` as `I`, `seed` as `I`) followed by length-prefixed `norms` and `packed_indices` blocks.
 - `IPPayload` -- fields `bits`, `mse_bits`, `dim`, `seed`, `n_rows`, `norms`, `residual_norms`, `qjl_bits`, `packed_indices`. Header layout `<4sBBHIIB3x` (the MSE header plus a single `mse_bits` byte and three padding bytes for 4-byte alignment of the following length-prefixed blocks) followed by length-prefixed `norms`, `residual_norms`, `qjl_bits`, and `packed_indices` blocks.
 
 A module-level dispatcher `payload_from_bytes(blob)` reads the 1-byte variant code at offset 4 and delegates to `MSEPayload.from_bytes` (code `0`) or `IPPayload.from_bytes` (code `1`); unknown magic or unknown variant codes raise `ValueError`. Decoders that have already typed the payload object can `match` on the concrete subtype directly.
