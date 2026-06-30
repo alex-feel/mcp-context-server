@@ -21,6 +21,7 @@ Usage in hooks:
 
 import json
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -118,6 +119,39 @@ def get_config_from_argv(defaults: dict[str, Any] | None = None) -> dict[str, An
     return load_config(config_path, defaults)
 
 
+def _path_is_excluded(file_path: str, patterns: list[str]) -> bool:
+    """Return True when file_path falls under any exclusion glob in patterns.
+
+    Matching is platform-neutral: backslashes are normalized to forward slashes
+    before comparison. A pattern ending in ``/**`` (for example ``.workflows/**``)
+    matches that directory at any depth by path segment; a bare directory name
+    (for example ``.workflows``) matches when it appears as a path segment; any
+    other pattern is matched with ``fnmatch`` against the full normalized path.
+
+    Args:
+        file_path: The candidate file path (absolute or relative).
+        patterns: Exclusion globs from the hook config's ``exclude_paths``.
+
+    Returns:
+        True if the path matches any exclusion pattern, False otherwise.
+    """
+    normalized = file_path.replace('\\', '/')
+    segments = [segment for segment in normalized.split('/') if segment]
+    for pattern in patterns:
+        normalized_pattern = pattern.replace('\\', '/')
+        if normalized_pattern.endswith('/**'):
+            directory = normalized_pattern[:-3].strip('/')
+            if directory and directory in segments:
+                return True
+            continue
+        bare = normalized_pattern.strip('/')
+        if bare and bare in segments:
+            return True
+        if fnmatch(normalized, normalized_pattern):
+            return True
+    return False
+
+
 def check_file_relevance(
     config: dict[str, Any],
     input_data: dict[str, Any],
@@ -125,15 +159,21 @@ def check_file_relevance(
     """Check if the edited file matches the hook's target file extensions.
 
     Reads 'file_extensions' from config and checks against the file path
-    from the hook input data.
+    from the hook input data. When the config supplies an 'exclude_paths' list,
+    a file under any of those globs is treated as not relevant regardless of its
+    extension -- this lets hooks skip Claude-internal ephemeral directories (for
+    example .workflows/ Workflow-tool scripts or .claude/ internals) that are
+    tool-generated rather than project source. 'exclude_paths' defaults to empty,
+    so hooks that omit it are unaffected.
 
     Args:
-        config: Hook configuration dictionary (should contain 'file_extensions' key).
+        config: Hook configuration dictionary (should contain 'file_extensions';
+            may contain an optional 'exclude_paths' list of path globs).
         input_data: Hook event input data (JSON from stdin).
 
     Returns:
         Tuple of (is_relevant, file_path).
-        is_relevant is True if file matches or no filtering configured.
+        is_relevant is True if file matches and is not excluded, False otherwise.
         file_path is the extracted path, or None if not found.
     """
     file_extensions = config.get('file_extensions')
@@ -148,6 +188,10 @@ def check_file_relevance(
 
     if not file_path:
         return False, None
+
+    exclude_paths = cast(list[str], config.get('exclude_paths') or [])
+    if exclude_paths and _path_is_excluded(file_path, exclude_paths):
+        return False, file_path
 
     ext = Path(file_path).suffix.lower()
     return ext in file_extensions, file_path

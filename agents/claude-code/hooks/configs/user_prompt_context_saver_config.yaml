@@ -9,14 +9,15 @@ enabled: true
 # allowing the orchestrator to reference the exact user message by ID in agent prompts.
 output_context_id: true
 
-# Regex patterns to skip saving (for internal hook prompts)
-# When creating new `type: prompt` hooks, add their prompt prefix pattern here
-# to prevent internal hook prompts from being saved to context server.
-# Patterns are matched against the START of the prompt text.
+# Regex patterns to skip saving (for internal hook prompts).
+# When creating a `type: prompt` hook, add its prompt-prefix pattern here so the
+# internal prompt is not saved as a user message. Patterns match the START of the
+# prompt text. This shared list is synced to external consumers; a pattern for a
+# hook a given consumer does not run simply never matches there, which is harmless.
 skip_patterns:
   - "^<task-notification>"
   - "^<bash-notification>"
-  - "^You are a fast tool-routing check"
+  - "^You are a fast, single-purpose tool-routing gate"
 
 # Pre-built Claude Code slash commands to skip saving
 # These are system-level operations that don't need context preservation
