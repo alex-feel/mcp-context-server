@@ -451,7 +451,7 @@ These read-only tools complement search: grep locates exact text, navigate orien
 
 ### grep_context
 
-Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern matching over stored `text_content`. Unlike `fts_search_context` (stemmed, ranked) it matches raw characters and returns precise match locations. Matching runs in Python `re`, so results are identical on SQLite and PostgreSQL.
+Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern matching over stored `text_content`. Unlike `fts_search_context` (stemmed, ranked) it matches raw characters and returns precise match locations. Matching runs in Python — the stdlib `re` engine for literal patterns and the third-party `regex` engine for user regular expressions — so results are identical on SQLite and PostgreSQL.
 
 **Parameters:**
 - `pattern` (str, required): Literal substring (default) or regular expression to match
