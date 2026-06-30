@@ -398,7 +398,7 @@ async def navigate_context(
     Returns:
         NavigateContextResultDict with ``context_id``, ``total_chars``,
         ``node_count`` (headings, excluding the root), and ``root`` -- a recursive
-        node carrying ``node_id``, ``level``, ``title``, ``char_start``,
+        node carrying ``node_id``, ``level``, ``ordinal``, ``title``, ``char_start``,
         ``char_end``, ``summary`` and ``children``.
 
     Raises:

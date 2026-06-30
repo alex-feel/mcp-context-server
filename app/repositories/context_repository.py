@@ -117,8 +117,8 @@ class ContextRepository(BaseRepository):
         """Store context entry with deduplication logic.
 
         Checks if the latest entry has identical thread_id, source, and text_content.
-        If found, updates metadata (via COALESCE), content_type, and updated_at.
-        Otherwise, inserts new entry.
+        If found, updates metadata and summary (via COALESCE), content_type, content_hash,
+        version (bumped by one), and updated_at. Otherwise, inserts new entry.
 
         Args:
             thread_id: Thread identifier
