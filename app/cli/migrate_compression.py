@@ -54,6 +54,8 @@ from app.cli.migrate import parse_backend_url
 from app.compression.base import CompressionProvider
 from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata
+from app.migrations._pg_ddl import execute_migration_ddl
+from app.migrations._pg_ddl import fetch_migration
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -938,6 +940,30 @@ async def _execute_compress_sqlite(
     )
 
 
+async def _raise_pg_migration_budget(
+    conn: 'asyncpg.Connection',
+    migration_timeout_s: float,
+) -> None:
+    """Raise this transaction's PostgreSQL statement budget to the migration timeout.
+
+    The compression CLI borrows the server ``PostgreSQLBackend`` pool (via
+    ``create_backend`` in :func:`_make_backend`), whose ``command_timeout``
+    (``POSTGRESQL_COMMAND_TIMEOUT_S``, ~60s) asyncpg applies as the default client-side
+    deadline and whose session ``statement_timeout`` is ~54s. The heavy vec-table DDL
+    these paths run -- a full HNSW index build, a whole-table DROP -- can exceed that on
+    a large corpus and be cancelled client-side as a non-retryable ``asyncio.TimeoutError``
+    before the longer migration budget ever applies. Raise the server-side
+    ``statement_timeout`` to ``POSTGRESQL_MIGRATION_TIMEOUT_S`` for THIS transaction only
+    via ``SET LOCAL`` (PostgreSQL auto-reverts it on COMMIT/ROLLBACK, so no finally-restore
+    that would raise 25P02 in an aborted transaction); the individual heavy statements
+    additionally carry the matching client-side deadline via :func:`execute_migration_ddl`
+    and :func:`fetch_migration`. Unlike :func:`begin_migration` this does NOT take the
+    schema-init advisory lock: the CLI creates its tables inline and runs as a deliberate
+    one-shot operator action, not concurrent multi-pod schema init.
+    """
+    await conn.execute(f'SET LOCAL statement_timeout = {int(migration_timeout_s * 1000)}')
+
+
 async def _execute_compress_postgresql(
     backend: StorageBackend,
     provider: CompressionProvider,
@@ -965,9 +991,14 @@ async def _execute_compress_postgresql(
             bridge), so the transaction aborts rather than dropping unread data.
     """
     batch_size = _MIGRATION_BATCH_SIZE
+    migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
 
     async with backend.begin_transaction() as txn:
         conn = cast('asyncpg.Connection', txn.connection)
+        # Raise this transaction's statement budget so the heavy vec-table DDL below
+        # (DROP TABLE / DROP INDEX) and the streamed batch reads run under the migration
+        # budget, not the pool's ~60s command_timeout. See _raise_pg_migration_budget.
+        await _raise_pg_migration_budget(conn, migration_timeout_s)
 
         # Bare table names rely on PostgreSQL's search_path resolution;
         # this matches the project-wide pattern in
@@ -1034,11 +1065,13 @@ async def _execute_compress_postgresql(
         current_ctx: str | None = None
         chunk_seq = 0
         while True:
-            batch = await conn.fetch(
+            batch = await fetch_migration(
+                conn,
                 'SELECT context_id, id, start_index, end_index, embedding '
                 'FROM vec_context_embeddings '
                 'ORDER BY context_id, id '
                 'LIMIT $1 OFFSET $2',
+                migration_timeout_s,
                 batch_size, offset,
             )
             if not batch:
@@ -1099,10 +1132,16 @@ async def _execute_compress_postgresql(
             provenance.dim,
             provenance.codebook_fingerprint,
         )
-        await conn.execute(
+        await execute_migration_ddl(
+            conn,
             'DROP INDEX IF EXISTS idx_vec_context_embeddings_hnsw',
+            migration_timeout_s,
         )
-        await conn.execute('DROP TABLE IF EXISTS vec_context_embeddings')
+        await execute_migration_ddl(
+            conn,
+            'DROP TABLE IF EXISTS vec_context_embeddings',
+            migration_timeout_s,
+        )
 
     logger.info(
         'Compressed %d fp32 row(s) into vec_context_embeddings_compressed; '
@@ -1258,9 +1297,15 @@ async def _execute_decompress_postgresql(
     batches.
     """
     batch_size = _MIGRATION_BATCH_SIZE
+    migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
 
     async with backend.begin_transaction() as txn:
         conn = cast('asyncpg.Connection', txn.connection)
+        # Raise this transaction's statement budget so the heavy vec-table DDL below
+        # (the HNSW CREATE INDEX / DROP TABLE) and the streamed batch reads run under the
+        # migration budget, not the pool's ~60s command_timeout. See
+        # _raise_pg_migration_budget.
+        await _raise_pg_migration_budget(conn, migration_timeout_s)
 
         # Bare table names rely on PostgreSQL's search_path resolution;
         # this matches the project-wide pattern in
@@ -1308,11 +1353,13 @@ async def _execute_decompress_postgresql(
         rows_processed = 0
         offset = 0
         while True:
-            batch = await conn.fetch(
+            batch = await fetch_migration(
+                conn,
                 'SELECT context_id, chunk_index, start_index, end_index, '
                 'payload FROM vec_context_embeddings_compressed '
                 'ORDER BY context_id, chunk_index '
                 'LIMIT $1 OFFSET $2',
+                migration_timeout_s,
                 batch_size, offset,
             )
             if not batch:
@@ -1333,14 +1380,18 @@ async def _execute_decompress_postgresql(
 
         # HNSW index CREATE + compressed source DROP + provenance DELETE
         # last inside the same transaction.
-        await conn.execute(
+        await execute_migration_ddl(
+            conn,
             'CREATE INDEX IF NOT EXISTS idx_vec_context_embeddings_hnsw '
             'ON vec_context_embeddings '
             'USING hnsw (embedding vector_l2_ops) '
             'WITH (m = 16, ef_construction = 64)',
+            migration_timeout_s,
         )
-        await conn.execute(
+        await execute_migration_ddl(
+            conn,
             'DROP TABLE IF EXISTS vec_context_embeddings_compressed',
+            migration_timeout_s,
         )
         await conn.execute(
             'DELETE FROM compression_metadata WHERE id = 1',

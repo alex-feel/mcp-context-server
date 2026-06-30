@@ -92,6 +92,36 @@ async def fetchval_migration(
     return count
 
 
+async def fetch_migration(
+    conn: asyncpg.Connection,
+    statement: str,
+    timeout_s: float,
+    *args: object,
+) -> list[asyncpg.Record]:
+    """Run a row-returning query inside a migration transaction, under the budget.
+
+    The row-returning sibling of :func:`fetchval_migration`: a streamed read (e.g. a
+    ``LIMIT``/``OFFSET`` batch fetch) issued INSIDE the migration transaction must carry
+    the same raised client-side deadline as the DDL it interleaves with. A bare
+    ``conn.fetch`` would instead inherit the pool's shorter ``command_timeout`` and be
+    cancelled client-side on a large table -- a non-retryable ``asyncio.TimeoutError``.
+
+    Args:
+        conn: PostgreSQL connection, already inside ``execute_write()``'s transaction.
+        statement: A single row-returning SQL statement.
+        timeout_s: The migration budget in seconds (pass
+            ``settings.storage.postgresql_migration_timeout_s``); asyncpg's client-side
+            per-call deadline is ``timeout_s + _CLIENT_TIMEOUT_MARGIN_S`` so an overrun is
+            cancelled server-side (retryable) before the client gives up (non-retryable).
+        *args: Positional bind parameters forwarded to ``conn.fetch``.
+
+    Returns:
+        The fetched rows (possibly empty).
+    """
+    rows: list[asyncpg.Record] = await conn.fetch(statement, *args, timeout=timeout_s + _CLIENT_TIMEOUT_MARGIN_S)
+    return rows
+
+
 async def begin_migration(
     conn: asyncpg.Connection,
     migration_timeout_s: float,
