@@ -364,7 +364,7 @@ Each result includes a `scores` object with:
 - `fts_rank`: Position in FTS results (1-based), null if not in FTS results
 - `semantic_rank`: Position in semantic results (1-based), null if not in semantic results
 - `fts_score`: Original FTS relevance score (BM25/ts_rank)
-- `semantic_distance`: Original semantic distance (L2, lower = more similar)
+- `semantic_distance`: Original semantic distance, lower = more similar. The underlying metric is Euclidean L2 (>= 0) for uncompressed/`mse` storage, or a negated inner product (~ -1..0 for normalized embeddings, more negative = more similar) when the default `ip` compression variant is active.
 - `rerank_score`: Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled
 
 **Note:** When `ENABLE_RERANKING=true` (default), results are re-ordered by `rerank_score` after initial retrieval. The original scores (`fts_score`, `semantic_distance`) are preserved for debugging but `rerank_score` determines final ordering.

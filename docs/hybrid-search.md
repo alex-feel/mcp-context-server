@@ -345,14 +345,14 @@ When `explain_query=True`, the response includes a `stats` object with detailed 
 
 Each result includes a `scores` object with detailed breakdown:
 
-| Field               | Type          | Description                                                                          |
-|---------------------|---------------|--------------------------------------------------------------------------------------|
-| `rrf`               | float         | Combined RRF score (higher = better)                                                 |
-| `fts_rank`          | int or null   | Position in FTS results (1-based), null if not in FTS results                        |
-| `semantic_rank`     | int or null   | Position in semantic results (1-based), null if not in semantic results              |
-| `fts_score`         | float or null | Original FTS relevance score (BM25/ts_rank)                                          |
-| `semantic_distance` | float or null | Original semantic distance (L2, lower = more similar)                                |
-| `rerank_score`      | float or null | Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled |
+| Field               | Type          | Description                                                                                                                                                            |
+|---------------------|---------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `rrf`               | float         | Combined RRF score (higher = better)                                                                                                                                   |
+| `fts_rank`          | int or null   | Position in FTS results (1-based), null if not in FTS results                                                                                                          |
+| `semantic_rank`     | int or null   | Position in semantic results (1-based), null if not in semantic results                                                                                                |
+| `fts_score`         | float or null | Original FTS relevance score (BM25/ts_rank)                                                                                                                            |
+| `semantic_distance` | float or null | Original semantic distance, lower = more similar (Euclidean L2 for uncompressed/`mse` storage; negated inner product ~ -1..0 for the default `ip` compression variant) |
+| `rerank_score`      | float or null | Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled                                                                                   |
 
 **Interpreting null values:**
 
@@ -597,7 +597,7 @@ Both FTS and semantic search should show as available for full hybrid functional
 | Feature                  | FTS                        | Semantic                 | Hybrid                         |
 |--------------------------|----------------------------|--------------------------|--------------------------------|
 | **Query Type**           | Keywords/phrases           | Natural language meaning | Both                           |
-| **Result Ranking**       | BM25/ts_rank score         | L2 distance              | RRF combined score             |
+| **Result Ranking**       | BM25/ts_rank score         | L2 / negated-IP distance | RRF combined score             |
 | **Best For**             | Exact matches, known terms | Concept discovery        | High-confidence matches        |
 | **Performance**          | Fastest                    | Slower                   | Similar to semantic (parallel) |
 | **Dependencies**         | None                       | Ollama + model           | At least one method            |
