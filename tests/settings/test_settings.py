@@ -259,3 +259,26 @@ class TestTransportStatelessHttp:
         with env_var('FASTMCP_STATELESS_HTTP', 'false'):
             settings = TransportSettings()
             assert settings.stateless_http is False
+
+
+class TestStorageImageSizeLimits:
+    """MAX_IMAGE_SIZE_MB / MAX_TOTAL_SIZE_MB must be at least 1 megabyte."""
+
+    def test_defaults_are_positive(self) -> None:
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert settings.max_image_size_mb == 10
+        assert settings.max_total_size_mb == 100
+
+    def test_zero_image_size_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('MAX_IMAGE_SIZE_MB', '0'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_negative_total_size_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('MAX_TOTAL_SIZE_MB', '-5'), pytest.raises(ValidationError):
+            StorageSettings()

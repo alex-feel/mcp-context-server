@@ -829,9 +829,10 @@ class HybridSearchSettings(FeatureToggleSettings):
     mode: Literal['auto', 'true', 'false'] = Field(
         default='auto',
         alias='ENABLE_HYBRID_SEARCH',
-        description='Hybrid search tool registration: auto (register when at '
-                    'least one of full-text or semantic search is available), '
-                    'true (force on), false (force off).',
+        description='Hybrid search tool registration: auto and true both register the '
+                    'tool when at least one of full-text or semantic search is available '
+                    '(a warning is logged when neither is, since hybrid has no underlying '
+                    'mode to fuse), false (force off).',
     )
 
     rrf_k: int = Field(
@@ -920,8 +921,8 @@ class StorageSettings(BaseSettings):
         alias='STORAGE_BACKEND',
     )
     # General storage
-    max_image_size_mb: int = Field(default=10, alias='MAX_IMAGE_SIZE_MB')
-    max_total_size_mb: int = Field(default=100, alias='MAX_TOTAL_SIZE_MB')
+    max_image_size_mb: int = Field(default=10, alias='MAX_IMAGE_SIZE_MB', ge=1)
+    max_total_size_mb: int = Field(default=100, alias='MAX_TOTAL_SIZE_MB', ge=1)
     db_path: Path | None = Field(default_factory=lambda: Path.home() / '.mcp' / 'context_storage.db', alias='DB_PATH')
 
     # Connection pool settings for StorageBackend
