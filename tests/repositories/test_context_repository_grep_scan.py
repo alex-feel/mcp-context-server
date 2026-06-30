@@ -172,6 +172,39 @@ class TestGrepScanBounds:
         assert stats['truncated'] is True
 
     @pytest.mark.asyncio
+    async def test_budget_exact_fit_on_last_row_is_not_truncated(
+        self,
+        backend_and_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        # Regression: when the aggregate byte budget is crossed EXACTLY on the
+        # final matching row (no further matches remain), the scan was exhaustive
+        # and must NOT be flagged truncated -- the budget break runs the same
+        # single-row lookahead as the entry-cap break. Five 20-char entries with a
+        # 100-code-point budget cross the budget on the oldest (last) row.
+        backend, repos = backend_and_repos
+        await _insert_entries(backend, count=5, text_fn=lambda _i: 'x' * 20)
+        rows, stats = await repos.context.grep_scan_text_contents(
+            ascii_literal=None, thread_id='t', aggregate_bytes_budget=100, max_entries_scanned=1000,
+        )
+        assert len(rows) == 5
+        assert stats['truncated'] is False
+
+    @pytest.mark.asyncio
+    async def test_budget_with_more_rows_remaining_is_truncated(
+        self,
+        backend_and_repos: tuple[StorageBackend, RepositoryContainer],
+    ) -> None:
+        # One more matching row than the budget admits -> the lookahead finds it
+        # -> truncated, and only the budgeted rows are returned.
+        backend, repos = backend_and_repos
+        await _insert_entries(backend, count=6, text_fn=lambda _i: 'x' * 20)
+        rows, stats = await repos.context.grep_scan_text_contents(
+            ascii_literal=None, thread_id='t', aggregate_bytes_budget=100, max_entries_scanned=1000,
+        )
+        assert len(rows) == 5
+        assert stats['truncated'] is True
+
+    @pytest.mark.asyncio
     async def test_exact_fit_without_pre_narrow_is_not_truncated(
         self,
         backend_and_repos: tuple[StorageBackend, RepositoryContainer],

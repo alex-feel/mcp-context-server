@@ -906,6 +906,26 @@ class ContextRepository(BaseRepository):
                 total_chars = 0
                 last_id: str | None = None
                 truncated = False
+
+                def _has_more_beyond(boundary_id: str | None) -> bool:
+                    # Single-row lookahead beyond the last collected id, carrying the
+                    # SAME base filters and optional ASCII pre-narrow, so a scan that
+                    # stopped exactly on the final matching row is not falsely flagged
+                    # truncated. Used by BOTH stop triggers (byte budget and entry cap).
+                    look_params: list[Any] = list(base_params)
+                    look_clause = where_sql
+                    if ascii_literal is not None:
+                        look_clause += f" AND text_content LIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
+                        look_params.append(f'%{_escape_like(ascii_literal)}%')
+                    if boundary_id is not None:
+                        look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
+                        look_params.append(boundary_id)
+                    cursor.execute(
+                        f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                        tuple(look_params),
+                    )
+                    return cursor.fetchone() is not None
+
                 while scanned < max_entries_scanned:
                     page_params: list[Any] = list(base_params)
                     clause = where_sql
@@ -925,6 +945,7 @@ class ContextRepository(BaseRepository):
                     page = cursor.fetchall()
                     if not page:
                         break
+                    budget_hit = False
                     for row in page:
                         raw_id = row['id']
                         text_value = row['text_content']
@@ -934,28 +955,23 @@ class ContextRepository(BaseRepository):
                         out.append((normalize_id(str(raw_id)), text_str))
                         total_chars += len(text_str)
                         if total_chars >= aggregate_bytes_budget:
-                            truncated = True
+                            budget_hit = True
                             break
-                    if truncated or len(page) < page_limit:
+                    if budget_hit:
+                        # Aggregate byte budget reached. A lookahead beyond the last
+                        # collected row distinguishes a genuinely truncated scan from
+                        # one that stopped exactly on the final matching row, mirroring
+                        # the entry-cap path below.
+                        truncated = _has_more_beyond(last_id)
+                        break
+                    if len(page) < page_limit:
                         break
                     if scanned >= max_entries_scanned:
                         # Cap reached on a full page. Distinguish exhaustion (the
                         # matching set is EXACTLY max_entries_scanned) from overflow
-                        # (more remain) with a single-row lookahead beyond last_id,
-                        # so an exact-fit result is not falsely flagged truncated.
-                        look_params: list[Any] = list(base_params)
-                        look_clause = where_sql
-                        if ascii_literal is not None:
-                            look_clause += f" AND text_content LIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
-                            look_params.append(f'%{_escape_like(ascii_literal)}%')
-                        if last_id is not None:
-                            look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
-                            look_params.append(last_id)
-                        cursor.execute(
-                            f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
-                            tuple(look_params),
-                        )
-                        truncated = cursor.fetchone() is not None
+                        # (more remain) with the same single-row lookahead, so an
+                        # exact-fit result is not falsely flagged truncated.
+                        truncated = _has_more_beyond(last_id)
                         break
                 return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'sqlite'}
 
@@ -967,6 +983,26 @@ class ContextRepository(BaseRepository):
             total_chars = 0
             last_id: Any | None = None
             truncated = False
+
+            async def _has_more_beyond(boundary_id: object) -> bool:
+                # Single-row lookahead beyond the last collected id, carrying the
+                # SAME base filters and optional ASCII pre-narrow, so a scan that
+                # stopped exactly on the final matching row is not falsely flagged
+                # truncated. Used by BOTH stop triggers (byte budget and entry cap).
+                look_params: list[Any] = list(base_params)
+                look_clause = where_sql
+                if ascii_literal is not None:
+                    look_clause += f" AND text_content ILIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
+                    look_params.append(f'%{_escape_like(ascii_literal)}%')
+                if boundary_id is not None:
+                    look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
+                    look_params.append(boundary_id)
+                look_hit = await conn.fetchval(
+                    f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                    *look_params,
+                )
+                return look_hit is not None
+
             while scanned < max_entries_scanned:
                 page_params: list[Any] = list(base_params)
                 clause = where_sql
@@ -985,6 +1021,7 @@ class ContextRepository(BaseRepository):
                 page = await conn.fetch(query, *page_params)
                 if not page:
                     break
+                budget_hit = False
                 for row in page:
                     raw_id = row['id']
                     text_value = row['text_content']
@@ -994,27 +1031,22 @@ class ContextRepository(BaseRepository):
                     out.append((normalize_id(str(raw_id)), text_str))
                     total_chars += len(text_str)
                     if total_chars >= aggregate_bytes_budget:
-                        truncated = True
+                        budget_hit = True
                         break
-                if truncated or len(page) < page_limit:
+                if budget_hit:
+                    # Aggregate byte budget reached. A lookahead beyond the last
+                    # collected row distinguishes a genuinely truncated scan from
+                    # one that stopped exactly on the final matching row, mirroring
+                    # the entry-cap path below.
+                    truncated = await _has_more_beyond(last_id)
+                    break
+                if len(page) < page_limit:
                     break
                 if scanned >= max_entries_scanned:
                     # Cap reached on a full page. Single-row lookahead beyond
                     # last_id distinguishes exhaustion (exactly the cap) from
                     # overflow, so an exact-fit result is not falsely flagged.
-                    look_params: list[Any] = list(base_params)
-                    look_clause = where_sql
-                    if ascii_literal is not None:
-                        look_clause += f" AND text_content ILIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
-                        look_params.append(f'%{_escape_like(ascii_literal)}%')
-                    if last_id is not None:
-                        look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
-                        look_params.append(last_id)
-                    look_hit = await conn.fetchval(
-                        f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
-                        *look_params,
-                    )
-                    truncated = look_hit is not None
+                    truncated = await _has_more_beyond(last_id)
                     break
             return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'postgresql'}
 
