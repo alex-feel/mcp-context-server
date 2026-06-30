@@ -62,6 +62,36 @@ async def execute_migration_ddl(
     await conn.execute(statement, timeout=timeout_s + _CLIENT_TIMEOUT_MARGIN_S)
 
 
+async def fetchval_migration(
+    conn: asyncpg.Connection,
+    statement: str,
+    timeout_s: float,
+) -> int | None:
+    """Fetch a scalar count inside a migration transaction, under the migration budget.
+
+    The read sibling of :func:`execute_migration_ddl`: a probe such as a ``COUNT(*)``
+    issued INSIDE the migration transaction (after :func:`begin_migration` has raised the
+    server-side ``statement_timeout``) must carry the same raised client-side deadline. A
+    bare ``conn.fetchval`` would instead inherit the pool's shorter ``command_timeout`` and
+    be cancelled client-side on a large table -- a non-retryable ``asyncio.TimeoutError``
+    -- before the budgeted DDL that follows ever runs.
+
+    Args:
+        conn: PostgreSQL connection, already inside ``execute_write()``'s transaction.
+        statement: A single scalar-returning SQL statement (e.g. a ``COUNT(*)`` probe).
+        timeout_s: The migration budget in seconds (pass
+            ``settings.storage.postgresql_migration_timeout_s``); asyncpg's client-side
+            per-call deadline is ``timeout_s + _CLIENT_TIMEOUT_MARGIN_S`` so an overrun is
+            cancelled server-side (retryable) before the client gives up (non-retryable).
+
+    Returns:
+        The scalar first column of the first row (e.g. the row count), or ``None`` if the
+        query returns no rows.
+    """
+    count: int | None = await conn.fetchval(statement, timeout=timeout_s + _CLIENT_TIMEOUT_MARGIN_S)
+    return count
+
+
 async def begin_migration(
     conn: asyncpg.Connection,
     migration_timeout_s: float,

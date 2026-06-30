@@ -232,6 +232,39 @@ class TestApplySemanticSearchMigration:
                 await backend.shutdown()
 
     @pytest.mark.asyncio
+    async def test_migration_dimension_mismatch_postgresql_message(self) -> None:
+        """On PostgreSQL the dimension-mismatch error gives schema/pg_dump guidance, not SQLite file steps.
+
+        The dimension guard is backend-agnostic, but its remediation text must branch on the
+        backend: a PostgreSQL deployment has no database file to delete, so the message must
+        reference the embedding tables in the configured schema and a pg_dump backup instead
+        of the SQLite db_path file-deletion steps.
+        """
+        mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.embedding.dim = 768  # Configured dimension
+        mock_settings.storage.db_path = Path('/var/lib/should-not-appear/context_storage.db')
+        mock_settings.storage.postgresql_schema = 'public'
+
+        mock_backend = MagicMock()
+        mock_backend.backend_type = 'postgresql'
+        # The dimension probe returns (table_exists=True, existing_dim=384): a mismatch vs 768.
+        mock_backend.execute_read = AsyncMock(return_value=(True, 384))
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations import apply_semantic_search_migration
+
+            with pytest.raises(RuntimeError, match='dimension mismatch') as exc_info:
+                await apply_semantic_search_migration(backend=mock_backend)
+
+        message = str(exc_info.value)
+        assert 'public' in message  # references the configured PostgreSQL schema
+        assert 'pg_dump' in message  # PostgreSQL-appropriate backup guidance
+        # The SQLite-only remediation must NOT appear on PostgreSQL:
+        assert 'Delete or rename the database file' not in message
+        assert 'should-not-appear' not in message  # the SQLite db_path must not leak
+
+    @pytest.mark.asyncio
     async def test_migration_file_not_found_raises(self, tmp_path: Path) -> None:
         """Verify RuntimeError when migration file missing."""
         db_path = tmp_path / 'test.db'
@@ -1111,7 +1144,12 @@ class TestMigrationDdlTimeout:
             async def record_execute(stmt, *_a, **kw):
                 executed.append((stmt, kw.get('timeout')))
 
+            async def record_fetchval(stmt, *_a, **kw):
+                executed.append((stmt, kw.get('timeout')))
+                return MagicMock()
+
             mock_conn.execute = record_execute
+            mock_conn.fetchval = record_fetchval
             mock_conn.fetchrow = AsyncMock(return_value=None)
             await operation(mock_conn)
 
@@ -1132,7 +1170,7 @@ class TestMigrationDdlTimeout:
             (stmt, t)
             for stmt, t in executed
             if 'advisory' in stmt.lower()
-            or stmt.strip().upper().startswith(('CREATE', 'ALTER', 'DROP', 'DO'))
+            or stmt.strip().upper().startswith(('CREATE', 'ALTER', 'DROP', 'DO', 'REINDEX'))
         ]
         assert ddl, f'no migration DDL was recorded: {executed}'
         offenders = [(stmt, t) for stmt, t in ddl if t != expected]
@@ -1163,6 +1201,80 @@ class TestMigrationDdlTimeout:
             f'migration must not issue a plain SET statement_timeout (a finally-restore that '
             f'raises 25P02 in an aborted transaction and masks the real error); found: {bare_restores}'
         )
+
+    @staticmethod
+    def _assert_count_probe_carries_timeout(
+        executed: list[tuple[str, float | None]],
+        *,
+        migration_timeout: float,
+    ) -> None:
+        """Assert a COUNT(*) probe issued inside the migration transaction carries the budget.
+
+        A bare ``conn.fetchval`` would inherit the pool's shorter command_timeout and be
+        cancelled client-side on a large table (a non-retryable asyncio.TimeoutError)
+        before the budgeted DDL runs, so the probe must share the migration deadline too.
+        """
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
+
+        expected = migration_timeout + _CLIENT_TIMEOUT_MARGIN_S
+        probes = [(stmt, t) for stmt, t in executed if 'count(*)' in stmt.lower()]
+        assert probes, f'no COUNT(*) probe was recorded: {executed}'
+        offenders = [(stmt, t) for stmt, t in probes if t != expected]
+        assert not offenders, (
+            f'COUNT(*) probe inside the migration transaction must carry the {expected}s '
+            f'per-call asyncpg timeout; offenders: {offenders}'
+        )
+
+    @pytest.mark.asyncio
+    async def test_fts_migrate_language_count_probe_uses_migration_timeout(self) -> None:
+        """The COUNT(*) probe inside the FTS language migration carries the migration budget.
+
+        It runs inside the same transaction as the heavy DDL (after begin_migration raises
+        the server-side budget), so a bare fetchval inheriting the pool's command_timeout
+        would be cancelled client-side on a large table before the rewrite ever runs.
+        """
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        from app.repositories.fts_repository import FtsRepository
+
+        repo = FtsRepository(mock_backend)
+        with (
+            patch('app.settings.get_settings', return_value=mock_settings),
+            patch.object(FtsRepository, 'get_current_language', AsyncMock(return_value='english')),
+        ):
+            await repo.migrate_language('german')
+
+        self._assert_count_probe_carries_timeout(executed, migration_timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_fts_rebuild_index_ddl_uses_migration_timeout(self) -> None:
+        """FtsRepository.rebuild_index runs its REINDEX and COUNT(*) under the migration budget.
+
+        Reindexing the GIN index on a large table can far exceed the pool's command_timeout,
+        so rebuild_index must raise the budget via begin_migration and route both the COUNT(*)
+        probe and the REINDEX through the migration deadline (same invariant as migrate_language).
+        """
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        from app.repositories.fts_repository import FtsRepository
+
+        repo = FtsRepository(mock_backend)
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            await repo.rebuild_index()
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+        self._assert_count_probe_carries_timeout(executed, migration_timeout=300.0)
 
     @pytest.mark.asyncio
     async def test_index_tree_migration_ddl_uses_migration_timeout(self) -> None:

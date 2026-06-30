@@ -201,16 +201,31 @@ async def _apply_migration_with_backend(
 
     # Validate dimension compatibility
     if table_exists and existing_dim is not None and existing_dim != effective_dim:
-        db_path = str(settings.storage.db_path).replace('\\', '/')
-        raise RuntimeError(
+        header = (
             f'Embedding dimension mismatch detected!\n'
             f'  Existing database dimension: {existing_dim}\n'
             f'  Configured EMBEDDING_DIM: {effective_dim}\n\n'
             f'To change embedding dimensions, you must:\n'
-            f'  1. Back up your database: {db_path}\n'
-            f'  2. Delete or rename the database file\n'
-            f'  3. Restart the server to create new tables with dimension {effective_dim}\n'
-            f'  4. Re-import your context data (embeddings will be regenerated)\n\n'
+        )
+        if manager.backend_type == 'sqlite':
+            db_path = str(settings.storage.db_path).replace('\\', '/')
+            remediation = (
+                f'  1. Back up your database: {db_path}\n'
+                f'  2. Delete or rename the database file\n'
+                f'  3. Restart the server to create new tables with dimension {effective_dim}\n'
+                f'  4. Re-import your context data (embeddings will be regenerated)\n'
+            )
+        else:  # postgresql
+            schema = settings.storage.postgresql_schema
+            remediation = (
+                f'  1. Back up your PostgreSQL database (e.g. with pg_dump)\n'
+                f'  2. Drop the embedding tables in schema "{schema}" (vec_context_embeddings '
+                f'/ vec_context_embeddings_compressed, embedding_metadata, embedding_chunks)\n'
+                f'  3. Restart the server to recreate them with dimension {effective_dim}\n'
+                f'  4. Re-import your context data (embeddings will be regenerated)\n'
+            )
+        raise RuntimeError(
+            f'{header}{remediation}\n'
             f'Note: Changing dimensions will lose all existing embeddings.',
         )
 

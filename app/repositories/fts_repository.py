@@ -987,12 +987,28 @@ class FtsRepository(BaseRepository):
             return await self.backend.execute_write(_rebuild_sqlite)
 
         # postgresql
+        # Import locally to avoid a repository->migrations import at module load.
+        from app.migrations._pg_ddl import begin_migration
+        from app.migrations._pg_ddl import execute_migration_ddl
+        from app.migrations._pg_ddl import fetchval_migration
+        from app.settings import get_settings
+
+        migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
+
         async def _rebuild_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
+            # Raise the transaction-scoped statement_timeout to the migration budget and
+            # take the shared advisory lock BEFORE the rebuild. Reindexing the GIN index on
+            # a large table (and the COUNT(*) probe) can run far longer than the pool's
+            # command_timeout, so both must share the migration budget rather than be
+            # cancelled client-side as a non-retryable error. SET LOCAL auto-reverts on
+            # COMMIT/ROLLBACK.
+            await begin_migration(conn, migration_timeout_s)
+
             # Count entries
-            entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+            entry_count = await fetchval_migration(conn, 'SELECT COUNT(*) FROM context_entries', migration_timeout_s)
 
             # Reindex the GIN index
-            await conn.execute('REINDEX INDEX idx_text_search_gin')
+            await execute_migration_ddl(conn, 'REINDEX INDEX idx_text_search_gin', migration_timeout_s)
 
             return {
                 'success': True,
@@ -1325,6 +1341,7 @@ class FtsRepository(BaseRepository):
         # Import locally to avoid a repository->migrations import at module load.
         from app.migrations._pg_ddl import begin_migration
         from app.migrations._pg_ddl import execute_migration_ddl
+        from app.migrations._pg_ddl import fetchval_migration
         from app.settings import get_settings
 
         migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
@@ -1342,7 +1359,7 @@ class FtsRepository(BaseRepository):
             await begin_migration(conn, migration_timeout_s)
 
             # Count entries for statistics
-            entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+            entry_count = await fetchval_migration(conn, 'SELECT COUNT(*) FROM context_entries', migration_timeout_s)
 
             # Drop existing column (also drops dependent GIN index)
             await execute_migration_ddl(
