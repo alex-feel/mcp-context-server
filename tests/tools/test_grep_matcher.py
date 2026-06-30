@@ -212,6 +212,21 @@ class TestMatchEntry:
         assert result.capped is False
 
     @pytest.mark.asyncio
+    async def test_terminator_cr_at_cap_boundary_does_not_signal_truncation(self) -> None:
+        # Regression: a literal lone-'\r' search whose (max_matches+1)-th raw finditer hit is
+        # the '\r' half of a CRLF terminator must NOT flag truncation. That terminator '\r' is
+        # rejected (it is not line content), so with exactly max_matches REPORTABLE matches and
+        # no further reportable match, capped must stay False. Before the fix the cap check ran
+        # before the terminator rejection and flipped capped=True here.
+        text = '\r\r\r\n'  # two lone-CR content matches, then a CRLF terminator
+        compiled = compile_pattern('\r', is_regex=False, case_sensitive=True)
+        result = await match_entry(
+            'cid', text, compiled, context_lines=0, max_matches=2, is_regex=False, regex_timeout_s=5.0,
+        )
+        assert result.match_count == 2
+        assert result.capped is False
+
+    @pytest.mark.asyncio
     async def test_regex_timeout_skips_entry(self) -> None:
         # A GENUINE catastrophic pattern the regex engine cannot optimize away
         # ((a|a)* over a non-matching tail): the engine's own preemptive timeout

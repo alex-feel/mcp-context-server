@@ -289,10 +289,6 @@ def _match_entry_literal_sync(
     capped = False
     line_data: tuple[list[str], list[int]] | None = None
     for match in compiled.finditer(text):
-        if len(matches) >= max_matches:
-            # A further match exists beyond the budget: signal truncation.
-            capped = True
-            break
         if line_data is None:
             line_data = split_lines_with_offsets(text)
         lines, line_starts = line_data
@@ -301,8 +297,15 @@ def _match_entry_literal_sync(
         # literal pattern containing a lone '\r' can otherwise match the '\r' that forms the
         # first half of a source CRLF ('\r\n') terminator, which is NOT line content and
         # diverges from the per-line regex path (whose match can never include a terminator).
+        # The rejection runs BEFORE the cap check below so a terminator '\r' -- never a
+        # reportable match -- can never flip ``capped`` (and thus ``truncated``) when it lands
+        # at the max_matches boundary.
         if match.end() > line_starts[idx] + len(lines[idx]):
             continue
+        if len(matches) >= max_matches:
+            # A further REPORTABLE match exists beyond the budget: signal truncation.
+            capped = True
+            break
         before_start = max(0, idx - context_lines)
         after_end = min(len(lines), idx + 1 + context_lines)
         matches.append(
