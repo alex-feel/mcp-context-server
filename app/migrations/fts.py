@@ -96,17 +96,28 @@ def estimate_migration_time(records_count: int) -> int:
     return 1200  # 20 minutes for very large datasets
 
 
-async def apply_fts_migration(backend: StorageBackend, repos: 'RepositoryContainer | None' = None) -> None:
+async def apply_fts_migration(
+    backend: StorageBackend,
+    repos: 'RepositoryContainer | None' = None,
+    *,
+    force: bool = False,
+) -> None:
     """Apply full-text search migration if enabled, with language-aware tokenizer selection.
 
     Args:
         backend: Storage backend instance.
         repos: Optional repository container. If None, creates a transient
             :class:`FtsRepository` around ``backend`` for migration use.
+        force: When True, provision FTS regardless of the ENABLE_FTS setting.
+            Used by the migration CLI's PostgreSQL target-init so a migrated
+            database gains the FTS schema whenever the SOURCE had it, decoupled
+            from the CLI process's ENABLE_FTS toggle (parity with the
+            semantic/chunking/index_tree migrations' force hooks and the SQLite
+            CLI target, which keys FTS on source-table presence).
 
     This function applies the FTS migration (FTS5 for SQLite, tsvector for PostgreSQL)
-    when ENABLE_FTS=true. For SQLite, it selects the appropriate tokenizer based on
-    FTS_LANGUAGE setting:
+    when ENABLE_FTS=true (or force=True). For SQLite, it selects the appropriate tokenizer
+    based on FTS_LANGUAGE setting:
     - english (or not set) -> 'porter unicode61' (English stemming)
     - other languages -> 'unicode61' (multilingual, no stemming)
 
@@ -114,8 +125,8 @@ async def apply_fts_migration(backend: StorageBackend, repos: 'RepositoryContain
     """
     # Import here to avoid circular import (repos type hint uses string annotation above)
 
-    # Skip if FTS is not enabled
-    if not settings.fts.enabled:
+    # Skip if FTS is not enabled (unless the migration CLI forces provisioning)
+    if not force and not settings.fts.enabled:
         logger.debug('FTS disabled (ENABLE_FTS=false), skipping migration')
         return
 

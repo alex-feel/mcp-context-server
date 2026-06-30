@@ -1649,6 +1649,7 @@ async def initialize_target_postgresql(
     *,
     embedding_dim: int | None,
     with_semantic: bool,
+    source_has_fts: bool,
     stats: MigrationStats,
 ) -> None:
     """Auto-initialize a PostgreSQL target's v3 schema, mirroring
@@ -1680,6 +1681,10 @@ async def initialize_target_postgresql(
             and the PostgreSQL helper functions are created; the server creates
             the vector layout later, at the operator's configured dimension,
             when re-embedding.
+        source_has_fts: When True, provision the tsvector FTS column + GIN index
+            on the target regardless of the CLI process's ENABLE_FTS setting,
+            mirroring the SQLite CLI target's source-presence gate. When False
+            (the source had no FTS) it is left unprovisioned.
         stats: Mutated to record an informational warning describing the
             auto-init.
 
@@ -1736,13 +1741,17 @@ async def initialize_target_postgresql(
             await apply_semantic_search_migration(backend, force=True, embedding_dim=embedding_dim)
         await apply_jsonb_merge_patch_migration(backend)
         await apply_function_search_path_migration(backend)
-        # FTS: create the tsvector GENERATED column + GIN index so a migrated target
-        # matches a server-initialized DB (the server applies FTS at startup when
-        # ENABLE_FTS is on; apply_fts_migration gates internally on settings.fts.enabled).
-        # It MUST run BEFORE the data copy so the STORED generated column auto-populates
-        # as rows are INSERTed. Without it the migrated PostgreSQL DB has no full-text
-        # search, diverging from both the server and the SQLite CLI target.
-        await apply_fts_migration(backend)
+        # FTS: create the tsvector GENERATED column + GIN index ONLY when the
+        # SOURCE had full-text search, mirroring the SQLite CLI target's
+        # source-presence gate (initialize_target_sqlite keys FTS on
+        # optional_tables['context_entries_fts']). force=True bypasses the CLI
+        # process's ENABLE_FTS toggle so the migrated target's FTS capability is
+        # decided solely by the source -- otherwise a SQLite->PG or PG->PG
+        # migration run with ENABLE_FTS=false would silently drop the FTS the
+        # SQLite target keeps. It MUST run BEFORE the data copy so the STORED
+        # generated column auto-populates as rows are INSERTed.
+        if source_has_fts:
+            await apply_fts_migration(backend, force=True)
         if with_semantic:
             await apply_chunking_migration(backend, force=True)
         # index_tree node-summary table: provisioned regardless of with_semantic
@@ -1849,6 +1858,10 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         # SQLite path already detects the vec table separately.
         source_has_vec = await _pg_table_exists(source_conn, 'vec_context_embeddings')
         source_dim = await _detect_source_embedding_dim_pg(source_conn)
+        # FTS on PostgreSQL is the text_search_vector generated column on
+        # context_entries (no separate table); detect it so the auto-init
+        # provisions target FTS iff the source had it, mirroring the SQLite path.
+        source_has_fts = await _pg_column_exists(source_conn, 'context_entries', 'text_search_vector')
 
         # Auto-initialize the target schema when it has no context_entries table,
         # mirroring the SQLite path (initialize_target_sqlite). This removes the
@@ -1869,6 +1882,7 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                     options.target_url,
                     embedding_dim=source_dim,
                     with_semantic=source_has_embeddings,
+                    source_has_fts=source_has_fts,
                     stats=stats,
                 )
 
@@ -2133,6 +2147,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     options.target_url,
                     embedding_dim=None,
                     with_semantic=False,
+                    source_has_fts=optional_tables.get('context_entries_fts', False),
                     stats=stats,
                 )
 

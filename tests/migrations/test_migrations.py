@@ -475,6 +475,53 @@ class TestApplyFtsMigration:
                 await backend.shutdown()
 
     @pytest.mark.asyncio
+    async def test_force_provisions_fts_when_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """force=True provisions FTS even when ENABLE_FTS=false.
+
+        This is the migration-CLI parity path: the PostgreSQL target-init must be
+        able to provision FTS on the target whenever the source had it, decoupled
+        from the CLI process's ENABLE_FTS toggle.
+        """
+        from app.settings import get_settings
+
+        db_path = tmp_path / 'test_fts_forced.db'
+
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.executescript(schema_sql)
+
+        monkeypatch.setenv('ENABLE_FTS', 'false')
+        monkeypatch.setenv('STORAGE_BACKEND', 'sqlite')
+        monkeypatch.setenv('DB_PATH', str(db_path))
+        get_settings.cache_clear()
+        import app.migrations.fts as fts_module
+
+        monkeypatch.setattr(fts_module, 'settings', get_settings())
+
+        from app.backends.sqlite_backend import SQLiteBackend
+        from app.repositories.fts_repository import FtsRepository
+
+        backend = SQLiteBackend(db_path=str(db_path))
+        await backend.initialize()
+        try:
+            fts_repo = FtsRepository(backend)
+            assert await fts_repo.is_available() is False
+
+            # ENABLE_FTS=false: a normal migration is a no-op.
+            await fts_module.apply_fts_migration(backend=backend)
+            assert await fts_repo.is_available() is False
+
+            # force=True provisions FTS regardless of the disabled toggle.
+            await fts_module.apply_fts_migration(backend=backend, force=True)
+            assert await fts_repo.is_available() is True
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
     async def test_migration_file_not_found_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """Verify warning logged when migration file missing.
 
