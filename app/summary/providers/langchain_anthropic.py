@@ -62,12 +62,18 @@ class AnthropicSummaryProvider:
                 'Set the environment variable or use a different provider.',
             )
 
-        # Build kwargs to avoid pyright complaints about dynamically-loaded constructor
+        # Build kwargs to avoid pyright complaints about dynamically-loaded constructor.
+        # Disable internal SDK retry (max_retries=0) and timeout (timeout=None) so the
+        # tenacity wrapper is the sole retry/timeout authority, matching the embedding
+        # providers; otherwise each tenacity attempt would perform the SDK's own default
+        # retries on top, multiplying call volume and inflating the per-attempt budget.
         kwargs: dict[str, Any] = {
             'model': self._model,
             'temperature': 0,
             'max_tokens': self._max_tokens,
             'api_key': self._api_key.get_secret_value(),
+            'max_retries': 0,
+            'timeout': None,
         }
         if self._effort is not None:
             kwargs['effort'] = self._effort
