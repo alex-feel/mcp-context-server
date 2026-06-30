@@ -49,7 +49,7 @@ FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
 3. **Storage Backend Layer** (`app/backends/`):
    - **StorageBackend / TransactionContext Protocols** (`base.py`): database-agnostic interface (8 methods incl. `begin_transaction()`); `TransactionContext` exposes `connection`/`backend_type` for atomic multi-op transactions.
    - **SQLiteBackend**: zero-config, connection pooling, write queue, circuit breaker, single-user.
-   - **PostgreSQLBackend**: async via asyncpg, connection pooling, MVCC, JSONB/GIN indexes, pgvector, Pgpool-II auto-detection (disables prepared statements).
+   - **PostgreSQLBackend**: async via asyncpg, connection pooling, MVCC, JSONB/GIN indexes, pgvector, Pgpool-II auto-detection (warns to set `POSTGRESQL_STATEMENT_CACHE_SIZE=0`).
    - **Backend Factory** (`factory.py`): creates backend from `STORAGE_BACKEND`.
 
 4. **Repository Pattern** (`app/repositories/`): **RepositoryContainer** (`__init__.py`) = DI container. Repositories: Context (CRUD, search, deduplication), Tag (normalization, many-to-many), Image (binary attachments), Statistics, Embedding (vector storage/search), Fts (FTS5/tsvector). All use the `StorageBackend` protocol (database-agnostic); `BaseRepository` provides `_placeholder()`, `_placeholders()`, `_json_extract()`.
@@ -392,7 +392,7 @@ class AppSettings(CommonSettings):
     my_feature: MyFeatureSettings = Field(default_factory=MyFeatureSettings)
 ```
 
-Existing settings classes are enumerated in `app/settings.py` (one per domain, e.g. `EmbeddingSettings`, `SummarySettings`, `RerankingSettings`, `FtsSettings`, `HybridSearchSettings`, `GrepContextSettings`, `ContextNavigationSettings`, `ContextRangeSettings`, `IndexTreeNodeSummarySettings`, `ChunkingSettings`, `RetrievalSettings`, `LangSmithSettings`); `StorageSettings` extends `BaseSettings`, the search-toggle classes (`GrepContextSettings`/`ContextNavigationSettings`/`ContextRangeSettings`) extend `FeatureToggleSettings`, the rest extend `CommonSettings`.
+Existing settings classes are enumerated in `app/settings.py` (one per domain, e.g. `EmbeddingSettings`, `SummarySettings`, `RerankingSettings`, `FtsSettings`, `HybridSearchSettings`, `GrepContextSettings`, `ContextNavigationSettings`, `ContextRangeSettings`, `IndexTreeNodeSummarySettings`, `ChunkingSettings`, `RetrievalSettings`, `LangSmithSettings`); `StorageSettings` extends `BaseSettings`, the search and navigation toggle classes (`SemanticSearchSettings`/`FtsSettings`/`HybridSearchSettings`/`GrepContextSettings`/`ContextNavigationSettings`/`ContextRangeSettings`) extend `FeatureToggleSettings`, the rest extend `CommonSettings`.
 
 ### FASTMCP_* Env Var Governance
 

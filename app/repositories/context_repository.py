@@ -1829,14 +1829,16 @@ class ContextRepository(BaseRepository):
     async def find_ids_by_prefix(self, prefix: str, limit: int = 2) -> list[str]:
         """Find context entry IDs that begin with the given prefix.
 
-        Used by the optional CLI prefix-resolution flow (`mcp-context-id-resolve`)
-        to expand a short user-supplied prefix into a full id when ambiguity is
-        unlikely. The caller decides what to do when ``limit`` rows are returned;
-        this method's contract is "return up to N matches".
+        Backs the ID-prefix resolution helper :func:`app.ids.resolve_prefix` (reached via
+        :func:`app.ids.resolve_or_normalize_id`), which expands a short user-supplied
+        prefix into a full id when ambiguity is unlikely. The caller decides what to do
+        when ``limit`` rows are returned; this method's contract is "return up to N
+        matches".
 
         Args:
-            prefix: Lowercase hex prefix (3-32 characters). Caller is responsible
-                for normalization.
+            prefix: Lowercase hex prefix. ``resolve_prefix`` only calls this for prefixes
+                of 8-31 hex characters (the range :func:`app.ids.is_id_prefix` accepts);
+                the caller is responsible for normalization and that length check.
             limit: Maximum number of IDs to return. Defaults to 2 so callers can
                 detect ambiguity by checking ``len(result) > 1``.
 

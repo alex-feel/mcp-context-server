@@ -105,9 +105,10 @@ class FlashRankProvider:
         Creates the FlashRank Ranker, then replaces its default ONNX InferenceSession
         with one configured for constrained resource usage:
 
-        - **Thread limiting:** intra-op threads set to a fixed count (default 2)
-          instead of ONNX Runtime's default of host physical core count, which
-          causes thread explosion in containers with lower CPU quotas.
+        - **Thread limiting:** intra-op threads set to ``RERANKING_INTRA_OP_THREADS``
+          (default ``0`` = ONNX Runtime's own all-host-cores auto mode, i.e. no extra
+          limiting). Set it to a small fixed count to cap intra-op parallelism and avoid
+          thread explosion in containers with lower CPU quotas.
         - **Arena disabled:** CPU memory arena (``enable_cpu_mem_arena``) set to
           ``False`` by default to prevent ONNX Runtime from permanently retaining
           multi-GiB intermediate tensor buffers after inference.
