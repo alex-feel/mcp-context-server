@@ -430,7 +430,7 @@ async def get_context_by_ids(
                 entry_id_img = entry.get('id')
                 if entry_id_img is not None:
                     images_result = await repos.images.get_images_for_context(str(entry_id_img), include_data=True)
-                    entry['images'] = cast(list[dict[str, str]], images_result)
+                    entry['images'] = images_result
                 else:
                     entry['images'] = []
 

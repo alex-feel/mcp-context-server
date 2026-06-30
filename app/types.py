@@ -18,13 +18,17 @@ type MetadataDict = dict[str, JsonValue]
 
 
 # API Response TypedDicts for proper return type annotations
-class ImageAttachmentDict(TypedDict):
-    """Type definition for image attachment responses."""
+class ImageDict(TypedDict):
+    """Type definition for image data in API responses.
 
-    image_id: int
-    context_id: str
+    ``mime_type`` is always present; ``data`` is present only when images are fetched
+    with ``include_data=True``; ``metadata`` is present only when the image carries
+    metadata.
+    """
+
     mime_type: str
-    size_bytes: int
+    data: NotRequired[str]
+    metadata: NotRequired[dict[str, str] | None]
 
 
 class ContextEntryDict(TypedDict, total=False):
@@ -43,7 +47,7 @@ class ContextEntryDict(TypedDict, total=False):
     created_at: str
     updated_at: str
     tags: list[str]
-    images: list[ImageAttachmentDict] | list[dict[str, str]] | None
+    images: list[ImageDict] | None
     is_text_content_truncated: bool | None
 
 
@@ -389,14 +393,6 @@ class StatisticsResponseDict(TypedDict):
     index_tree: IndexTreeStatsDict
 
 
-class ImageDict(TypedDict, total=False):
-    """Type definition for image data in API responses."""
-
-    data: str
-    mime_type: str
-    metadata: dict[str, str] | None
-
-
 class UpdateContextSuccessDict(TypedDict):
     """Type definition for successful update context response."""
 
@@ -587,7 +583,7 @@ class SemanticSearchResultDict(TypedDict, total=False):
     updated_at: str
     tags: list[str]
     scores: ScoresDict
-    images: list[ImageAttachmentDict] | list[dict[str, str]] | None
+    images: list[ImageDict] | None
 
 
 class SemanticSearchResponseDict(TypedDict, total=False):

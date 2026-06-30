@@ -567,7 +567,7 @@ async def search_context(
             if include_images and entry.get('content_type') == 'multimodal':
                 entry_id = str(entry.get('id', ''))
                 images_result = await repos.images.get_images_for_context(entry_id, include_data=True)
-                entry['images'] = cast(list[dict[str, str]], images_result)
+                entry['images'] = images_result
 
             entries.append(entry)
 
