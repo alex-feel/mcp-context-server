@@ -263,6 +263,13 @@ class TestApplySemanticSearchMigration:
         # The SQLite-only remediation must NOT appear on PostgreSQL:
         assert 'Delete or rename the database file' not in message
         assert 'should-not-appear' not in message  # the SQLite db_path must not leak
+        # The remediation must list the REAL PostgreSQL embedding tables and must NOT
+        # name embedding_chunks, which is a SQLite-only construct (PostgreSQL keeps the
+        # chunk identity/boundaries as columns on vec_context_embeddings).
+        assert 'vec_context_embeddings' in message
+        assert 'embedding_metadata' in message
+        assert 'compression_metadata' in message
+        assert 'embedding_chunks' not in message
 
     @pytest.mark.asyncio
     async def test_migration_file_not_found_raises(self, tmp_path: Path) -> None:

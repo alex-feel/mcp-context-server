@@ -220,7 +220,8 @@ async def _apply_migration_with_backend(
             remediation = (
                 f'  1. Back up your PostgreSQL database (e.g. with pg_dump)\n'
                 f'  2. Drop the embedding tables in schema "{schema}" (vec_context_embeddings '
-                f'/ vec_context_embeddings_compressed, embedding_metadata, embedding_chunks)\n'
+                f'/ vec_context_embeddings_compressed, embedding_metadata, and compression_metadata '
+                f'when compression is enabled)\n'
                 f'  3. Restart the server to recreate them with dimension {effective_dim}\n'
                 f'  4. Re-import your context data (embeddings will be regenerated)\n'
             )
