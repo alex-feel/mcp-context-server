@@ -92,7 +92,7 @@ Tables: `context_entries` (main; thread_id/source indexes, JSON metadata, summar
 
 `search_context` (exact keyword), `semantic_search_context` (vector similarity), `fts_search_context` (linguistic + snippets), `hybrid_search_context` (RRF fusion of FTS + semantic).
 
-**FTS modes**: `match` (default, stemming), `prefix` (autocomplete), `phrase` (exact order), `boolean` (AND/OR/NOT). SQLite: FTS5 with BM25, Porter stemmer. PostgreSQL: tsvector/tsquery with ts_rank, 29 languages.
+**FTS modes**: `match` (default, stemming), `prefix` (autocomplete), `phrase` (exact order), `boolean` (AND/OR/NOT). SQLite: FTS5 with BM25, Porter stemmer. PostgreSQL: tsvector/tsquery with ts_rank_cd, 29 languages.
 
 **Hybrid search**: RRF `score(d) = Σ(1 / (k + rank_i(d)))`. Parallel execution, graceful degradation. Adaptive FTS: queries with ≥ `HYBRID_FTS_OR_THRESHOLD` (default 4) significant terms switch AND→OR for better recall.
 

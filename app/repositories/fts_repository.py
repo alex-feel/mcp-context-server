@@ -148,9 +148,12 @@ class FtsRepository(BaseRepository):
     depending on the configured storage backend.
 
     Supported backends:
-    - SQLite: Uses FTS5 with unicode61 tokenizer and BM25 ranking.
-      Note: unicode61 provides multilingual tokenization but NO stemming,
-      so "running" will NOT match "run". The language parameter is ignored.
+    - SQLite: Uses FTS5 with BM25 ranking and a language-aware tokenizer.
+      'english' (the default) uses 'porter unicode61' (Porter stemming, so
+      "running" matches "run"); any other language uses plain 'unicode61'
+      (multilingual tokenization, no stemming). The language parameter selects
+      between those two tokenizers at table creation; per-language stemming for
+      non-English values is not supported.
     - PostgreSQL: Uses tsvector with ts_rank_cd and language-specific stemming
       (supports 29 languages). Stemming means "running" WILL match "run".
     """
@@ -202,8 +205,9 @@ class FtsRepository(BaseRepository):
             highlight: Whether to include highlighted snippets in results
             language: Language for stemming (default: 'english').
                 PostgreSQL: Supports 29 languages with full stemming.
-                SQLite: This parameter is IGNORED - FTS5 uses unicode61 tokenizer
-                which provides multilingual tokenization but no stemming.
+                SQLite: 'english' uses the 'porter unicode61' tokenizer (Porter
+                stemming, so "running" matches "run"); any other value uses plain
+                'unicode61' (multilingual tokenization, no stemming).
             explain_query: If True, include query execution plan in stats
 
         Returns:

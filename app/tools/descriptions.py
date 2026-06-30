@@ -175,7 +175,7 @@ match (default): Natural language query. Words joined with implicit AND.
 
 prefix: Wildcard search with * suffix. Matches word beginnings.
   Example: "search*" matches "searching", "searched", "searchable"
-  Note: Hyphenated words are kept as single tokens ("full-text*")
+  Note: Hyphenated words become an adjacency phrase-prefix ("full-text" -> "full" then a word starting with "text")
 
 phrase: Exact phrase matching. Words must appear in exact order.
   Example: "exact phrase" matches only "exact phrase", not "phrase exact"
