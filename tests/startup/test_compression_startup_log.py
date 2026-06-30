@@ -75,6 +75,13 @@ async def _run_lifespan_to_yield(monkeypatch: pytest.MonkeyPatch) -> None:
     # env-flipped values.
     get_settings.cache_clear()
     monkeypatch.setattr(server_module, 'settings', get_settings())
+    # lifespan() creates the backend from server.py's own module-level DB_PATH
+    # (imported `from app.startup import DB_PATH`, bound at import time to the
+    # default DB). Repoint it at the per-test isolated DB so the lifespan never
+    # touches the developer's default database -- otherwise the enabled test
+    # would bootstrap a compression_metadata row into it and the disabled test
+    # would then trip the validator's disabled-branch guard against it.
+    monkeypatch.setattr(server_module, 'DB_PATH', Path(os.environ['DB_PATH']))
     # Refresh the cached settings in modules touched by lifespan that bind
     # at import time.
     import app.migrations.compression as compression_module
@@ -128,10 +135,6 @@ async def test_compression_startup_log_enabled(
     monkeypatch.setenv('COMPRESSION_VARIANT', 'ip')
     monkeypatch.setenv('COMPRESSION_SEED', '7')
     monkeypatch.setenv('EMBEDDING_DIM', '1024')
-    # The DB_PATH constant is read at import time; tests rely on the
-    # backend being created from the same DB_PATH inside lifespan.
-    import app.startup as startup_module
-    monkeypatch.setattr(startup_module, 'DB_PATH', Path(os.environ['DB_PATH']))
 
     caplog.set_level(logging.INFO, logger='app.server')
 
@@ -161,9 +164,6 @@ async def test_compression_startup_log_disabled(
     del isolated_db_path
     _baseline_disable_external_services(monkeypatch)
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
-
-    import app.startup as startup_module
-    monkeypatch.setattr(startup_module, 'DB_PATH', Path(os.environ['DB_PATH']))
 
     caplog.set_level(logging.INFO, logger='app.server')
 

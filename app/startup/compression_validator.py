@@ -132,6 +132,29 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
     settings = get_settings()
     comp = settings.compression
     if not comp.enabled:
+        # Compression is disabled. A FRESH/never-compressed database (no
+        # provenance row) is fine -- return and let the server provision fp32
+        # storage. But a database that ALREADY holds compressed data (a
+        # provenance row is present) cannot be served as fp32 by a bare env
+        # flip: the store/search/delete dispatch keys on this same runtime
+        # toggle, so every read would route to the EMPTY recreated fp32 table
+        # and silently return nothing. Refuse loudly (exit 78) and direct the
+        # operator to decode the data back to fp32 first. The legitimate
+        # --decompress CLI clears the provenance row (delete_compression_metadata),
+        # so a post-decompress startup reads None here and proceeds normally.
+        existing = await read_compression_metadata(backend)
+        if existing is not None:
+            raise ConfigurationError(
+                'ENABLE_EMBEDDING_COMPRESSION is false but this database already '
+                'holds compressed embeddings (a compression_metadata provenance row '
+                'is present). Disabling compression by environment variable alone '
+                'would route semantic and hybrid search to an empty fp32 table and '
+                'silently return no results. Run "mcp-context-server-migrate '
+                '--decompress" to decode the embeddings back to fp32 storage (which '
+                'also clears the provenance row) BEFORE disabling compression, or '
+                're-enable ENABLE_EMBEDDING_COMPRESSION to keep serving the '
+                'compressed data.',
+            )
         return
 
     # Byte-alignment invariant for the compressed READ path (see helper docstring):

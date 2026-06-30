@@ -163,6 +163,25 @@ async def test_returns_early_when_disabled(
 
 
 @pytest.mark.asyncio
+async def test_raises_when_disabled_but_compressed_data_present(
+    backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabling compression on a database that already holds a provenance row is
+    refused at startup (exit 78): a bare env flip would route search to an empty
+    fp32 table and silently lose the compressed embeddings. The legitimate
+    --decompress flow clears the row first, so this fires only on a bare flip."""
+    # Bootstrap a compressed database: enable, migrate, record the singleton row.
+    _set_compression_env(monkeypatch, enabled=True, seed='42', bits='4', variant='ip', dim='1024')
+    await apply_compression_migration(backend=backend)
+    await validate_compression_provenance(backend=backend)
+
+    # Flip compression off by env var alone, leaving the provenance row in place.
+    _set_compression_env(monkeypatch, enabled=False, seed=None)
+    with pytest.raises(ConfigurationError, match='already holds compressed embeddings'):
+        await validate_compression_provenance(backend=backend)
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_inserts_provenance_row(
     backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

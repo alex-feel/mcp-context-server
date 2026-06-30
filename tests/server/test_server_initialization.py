@@ -409,6 +409,9 @@ class TestLifespanErrorHandling:
         mock_backend.initialize = AsyncMock()
         mock_backend.shutdown = AsyncMock()
         mock_backend.backend_type = 'sqlite'
+        # The compression validator probes provenance even when disabled; an
+        # awaitable execute_read returning None models a never-compressed DB.
+        mock_backend.execute_read = AsyncMock(return_value=None)
 
         # Create properly mocked repository container
         mock_repos = MagicMock()
@@ -429,9 +432,9 @@ class TestLifespanErrorHandling:
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
-        # Disable compression so the lifespan inline INFO log skips the
-        # provenance read against the mock backend (mock_backend.execute_read
-        # returns MagicMock which cannot be awaited).
+        # Compression off: the validator's disabled-branch provenance probe
+        # finds no row (execute_read -> None) and the inline INFO log reports
+        # disabled without a read.
         mock_settings.compression.enabled = False
 
         # Store and restore globals
@@ -478,6 +481,9 @@ class TestLifespanErrorHandling:
         mock_backend.initialize = AsyncMock()
         mock_backend.shutdown = AsyncMock()
         mock_backend.backend_type = 'sqlite'
+        # The compression validator probes provenance even when disabled; an
+        # awaitable execute_read returning None models a never-compressed DB.
+        mock_backend.execute_read = AsyncMock(return_value=None)
 
         # Create properly mocked repository container
         mock_repos = MagicMock()
@@ -498,8 +504,9 @@ class TestLifespanErrorHandling:
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
-        # Disable compression so the lifespan inline INFO log skips the
-        # provenance read against the mock backend.
+        # Compression off: the validator's disabled-branch provenance probe
+        # finds no row (execute_read -> None) and the inline INFO log reports
+        # disabled without a read.
         mock_settings.compression.enabled = False
 
         # Store and restore globals
@@ -544,6 +551,9 @@ class TestLifespanErrorHandling:
         # Shutdown will raise an error
         mock_backend.shutdown = AsyncMock(side_effect=RuntimeError('Shutdown failed'))
         mock_backend.backend_type = 'sqlite'
+        # The compression validator probes provenance even when disabled; an
+        # awaitable execute_read returning None models a never-compressed DB.
+        mock_backend.execute_read = AsyncMock(return_value=None)
 
         # Create properly mocked repository container
         mock_repos = MagicMock()
@@ -560,8 +570,9 @@ class TestLifespanErrorHandling:
         mock_settings.semantic_search.enabled = False
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
-        # Disable compression so the lifespan inline INFO log skips the
-        # provenance read against the mock backend.
+        # Compression off: the validator's disabled-branch provenance probe
+        # finds no row (execute_read -> None) and the inline INFO log reports
+        # disabled without a read.
         mock_settings.compression.enabled = False
 
         original_backend = app.startup._backend
@@ -603,6 +614,9 @@ class TestLifespanErrorHandling:
         mock_backend.initialize = AsyncMock()
         mock_backend.shutdown = AsyncMock()
         mock_backend.backend_type = 'sqlite'
+        # The compression validator probes provenance even when disabled; an
+        # awaitable execute_read returning None models a never-compressed DB.
+        mock_backend.execute_read = AsyncMock(return_value=None)
 
         # Create properly mocked repository container
         mock_repos = MagicMock()
@@ -628,8 +642,9 @@ class TestLifespanErrorHandling:
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.embedding.provider = 'ollama'
-        # Disable compression so the lifespan inline INFO log skips the
-        # provenance read against the mock backend.
+        # Compression off: the validator's disabled-branch provenance probe
+        # finds no row (execute_read -> None) and the inline INFO log reports
+        # disabled without a read.
         mock_settings.compression.enabled = False
 
         original_backend = app.startup._backend
@@ -709,6 +724,9 @@ class TestSearchToolRegistrationMatrix:
         mock_backend.initialize = AsyncMock()
         mock_backend.shutdown = AsyncMock()
         mock_backend.backend_type = 'sqlite'
+        # The compression validator probes provenance even when disabled; an
+        # awaitable execute_read returning None models a never-compressed DB.
+        mock_backend.execute_read = AsyncMock(return_value=None)
 
         mock_repos = MagicMock()
         mock_repos.fts.is_available = AsyncMock(return_value=True)
@@ -728,8 +746,9 @@ class TestSearchToolRegistrationMatrix:
         mock_settings.fts.language = 'english'
         mock_settings.hybrid_search.enabled = hybrid_enabled
         mock_settings.embedding.provider = 'ollama'
-        # Disable compression so the lifespan inline INFO log skips the
-        # provenance read against the mock backend.
+        # Compression off: the validator's disabled-branch provenance probe
+        # finds no row (execute_read -> None) and the inline INFO log reports
+        # disabled without a read.
         mock_settings.compression.enabled = False
 
         mock_embedding_provider = MagicMock()
