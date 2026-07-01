@@ -114,10 +114,14 @@ class MetadataFilter(BaseModel):
             raise ValueError('Metadata key cannot be empty')
 
         # Basic validation to prevent obvious SQL injection attempts
-        # Allow alphanumeric, dots, underscores, and hyphens for JSON paths
+        # Allow alphanumeric, dots, underscores, and hyphens for JSON paths.
+        # fullmatch (not match) so a trailing newline is rejected: `$` also
+        # matches immediately before a single trailing '\n', which would let a
+        # key like 'a.status\n' through and diverge across backends (twin of the
+        # MetadataQueryBuilder._is_safe_key guard on the simple-filter path).
         import re
 
-        if not re.match(r'^[a-zA-Z0-9_.-]+$', v):
+        if not re.fullmatch(r'[a-zA-Z0-9_.-]+', v):
             raise ValueError(
                 f'Invalid metadata key: {v}. Only alphanumeric characters, dots, underscores, and hyphens are allowed.',
             )

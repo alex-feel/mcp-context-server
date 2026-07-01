@@ -239,8 +239,13 @@ class MetadataQueryBuilder:
         if not key.strip():
             return False
 
-        # Only allow alphanumeric, dots, underscores, and hyphens
-        if not re.match(r'^[a-zA-Z0-9_.-]+$', key):
+        # Only allow alphanumeric, dots, underscores, and hyphens.
+        # fullmatch (not match) so a trailing newline is rejected: in Python
+        # `$` also matches immediately before a single trailing '\n', so
+        # re.match(r'^...$', 'status\n') would pass and diverge across backends
+        # (SQLite json_extract('$.a.status\n') misses while PostgreSQL's #>>
+        # array-literal parse trims the newline and matches).
+        if not re.fullmatch(r'[a-zA-Z0-9_.-]+', key):
             return False
 
         # Reject empty path segments (leading/trailing/consecutive dots): they build a

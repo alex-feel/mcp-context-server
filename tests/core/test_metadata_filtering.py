@@ -455,6 +455,21 @@ class TestMetadataQueryBuilder:
             assert builder._is_safe_key(good) is True
             MetadataFilter(key=good, operator=MetadataOperator.EQ, value=1)  # must not raise
 
+    def test_trailing_newline_key_rejected(self) -> None:
+        """A key ending in a newline is rejected on BOTH validators. Python's `$` also matches
+        immediately before a single trailing '\\n', so a `re.match(r'^...$')` gate would have
+        passed 'status\\n'; the un-stripped simple-filter path then diverged (SQLite
+        json_extract('$.a.status\\n') misses while PostgreSQL's #>> array-literal parse trims
+        the newline and matches). fullmatch closes the parity gap. Clean keys stay valid."""
+        builder = MetadataQueryBuilder()
+        for bad in ('status\n', 'a.status\n', 'status\n\n', 'a\nb'):
+            assert builder._is_safe_key(bad) is False
+            with pytest.raises(ValueError, match='Invalid metadata key'):
+                MetadataFilter(key=bad, operator=MetadataOperator.EQ, value='x')
+        for good in ('status', 'a.status', 'user.preferences.theme'):
+            assert builder._is_safe_key(good) is True
+            MetadataFilter(key=good, operator=MetadataOperator.EQ, value='x')  # must not raise
+
     def test_string_operator_matches_string_typed_only(self) -> None:
         """String operators match JSON-string-typed stored values ONLY (text guard), so a stored
         number is never compared as text (which diverges across backends for out-of-int64 /
