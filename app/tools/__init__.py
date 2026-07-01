@@ -168,11 +168,15 @@ def register_tool(
     # Get annotations from centralized mapping
     annotations = TOOL_ANNOTATIONS.get(tool_name, {})
 
-    # Pass description if provided (overrides docstring in FastMCP)
+    # Pass description if provided (overrides docstring in FastMCP).
+    # Forward name=tool_name so an explicit name argument actually renames the
+    # registration (FastMCP otherwise derives the name from func.__name__); this
+    # keeps the DISABLED_TOOLS check, the TOOL_ANNOTATIONS lookup, and the served
+    # tool name in agreement for a caller that passes name != func.__name__.
     if description:
-        mcp_instance.tool(description=description, annotations=annotations)(func)
+        mcp_instance.tool(name=tool_name, description=description, annotations=annotations)(func)
     else:
-        mcp_instance.tool(annotations=annotations)(func)
+        mcp_instance.tool(name=tool_name, annotations=annotations)(func)
 
     logger.info(f'{tool_name} registered')
     return True
