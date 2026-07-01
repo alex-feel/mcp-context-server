@@ -900,15 +900,31 @@ def copy_embedding_chunks(
     ``id`` (INTEGER) and ``vec_rowid`` (INTEGER) are preserved verbatim;
     only ``context_id`` is remapped.
     """
+    # Probe both sides for the start_index/end_index boundary columns, mirroring
+    # copy_embedding_metadata's chunk_count guard. A pre-f36266c source schema
+    # (embedding_chunks created before the boundary columns and never upgraded
+    # in-place by a live server -- the CLI's "run on a backup" workflow bypasses
+    # that backfill) lacks them; naming them unconditionally would raise
+    # sqlite3.OperationalError and abort the whole migration. When the source
+    # lacks them, default to 0 (the chunking migration's own backfill default).
+    source_has_boundaries = _table_has_column(source, 'embedding_chunks', 'start_index')
+    target_has_boundaries = _table_has_column(target, 'embedding_chunks', 'start_index')
+
+    source_columns = ['id', 'context_id', 'vec_rowid']
+    if source_has_boundaries:
+        source_columns += ['start_index', 'end_index']
+    source_columns.append('created_at')
     cursor = source.execute(
-        'SELECT id, context_id, vec_rowid, start_index, end_index, created_at '
-        'FROM embedding_chunks ORDER BY id ASC',
+        f'SELECT {", ".join(source_columns)} FROM embedding_chunks ORDER BY id ASC',
     )
-    insert_sql = (
-        'INSERT INTO embedding_chunks '
-        '(id, context_id, vec_rowid, start_index, end_index, created_at) '
-        'VALUES (?, ?, ?, ?, ?, ?)'
-    )
+
+    target_columns = ['id', 'context_id', 'vec_rowid']
+    if target_has_boundaries:
+        target_columns += ['start_index', 'end_index']
+    target_columns.append('created_at')
+    placeholders = ', '.join('?' * len(target_columns))
+    insert_sql = f'INSERT INTO embedding_chunks ({", ".join(target_columns)}) VALUES ({placeholders})'
+
     inserted = 0
     for row in cursor:
         source_id = int(row['context_id'])
@@ -918,14 +934,13 @@ def copy_embedding_chunks(
                 f'embedding_chunks row references missing context_id={source_id}; skipped',
             )
             continue
-        params = (
-            row['id'],
-            mapped,
-            row['vec_rowid'],
-            row['start_index'],
-            row['end_index'],
-            row['created_at'],
-        )
+        params: list[object] = [row['id'], mapped, row['vec_rowid']]
+        if target_has_boundaries:
+            params += [
+                row['start_index'] if source_has_boundaries else 0,
+                row['end_index'] if source_has_boundaries else 0,
+            ]
+        params.append(row['created_at'])
         if not dry_run:
             target.execute(insert_sql, params)
         inserted += 1

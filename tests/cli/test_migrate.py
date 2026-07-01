@@ -775,6 +775,97 @@ class TestEmbeddingPreservation:
             tgt.close()
 
 
+@pytest.fixture
+def source_pre_boundary_columns(tmp_path: Path) -> Path:
+    """Create a source DB whose embedding_chunks predates start_index/end_index (pre-f36266c)."""
+    if not _sqlite_vec_available():
+        pytest.skip('sqlite-vec required for this fixture')
+    import sqlite_vec
+
+    path = tmp_path / 'source-pre-boundary.db'
+    rows: list[dict[str, object]] = [
+        {
+            'id': 1,
+            'thread_id': 'thread-x',
+            'source': 'user',
+            'content_type': 'text',
+            'text_content': 'legacy embedding row',
+            'metadata': None,
+            'created_at': '2025-05-01 09:00:00',
+        },
+    ]
+    _seed_source_db(path, rows)
+
+    conn = sqlite3.connect(str(path))
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    try:
+        conn.execute('CREATE VIRTUAL TABLE vec_context_embeddings USING vec0(embedding float[4])')
+        conn.execute(
+            'CREATE TABLE embedding_metadata ('
+            'context_id INTEGER NOT NULL PRIMARY KEY, '
+            'model_name TEXT NOT NULL, '
+            'dimensions INTEGER NOT NULL, '
+            'chunk_count INTEGER NOT NULL DEFAULT 1, '
+            'created_at TEXT NOT NULL, '
+            'updated_at TEXT NOT NULL)',
+        )
+        # Pre-f36266c schema: NO start_index / end_index columns.
+        conn.execute(
+            'CREATE TABLE embedding_chunks ('
+            'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+            'context_id INTEGER NOT NULL, '
+            'vec_rowid INTEGER NOT NULL, '
+            'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)',
+        )
+        conn.execute('INSERT INTO vec_context_embeddings(rowid, embedding) VALUES (1, ?)', (bytes([1, 2, 3, 4] * 4),))
+        conn.execute(
+            'INSERT INTO embedding_metadata VALUES (?, ?, ?, ?, ?, ?)',
+            (1, 'model-a', 4, 1, '2025-05-01 09:00:00', '2025-05-01 09:00:00'),
+        )
+        conn.execute(
+            'INSERT INTO embedding_chunks (id, context_id, vec_rowid, created_at) VALUES (?, ?, ?, ?)',
+            (1, 1, 1, '2025-05-01 09:00:00'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+class TestPreBoundaryColumnSource:
+    """A source embedding_chunks table lacking start_index/end_index is tolerated."""
+
+    @requires_sqlite_vec
+    def test_migration_succeeds_and_defaults_boundaries_to_zero(
+        self,
+        source_pre_boundary_columns: Path,
+        new_target_db_path: Path,
+    ) -> None:
+        """The unguarded boundary-column SELECT would raise OperationalError; the guarded
+        copier instead migrates the row and defaults start_index/end_index to 0 on a target
+        that has the columns.
+        """
+        options = _build_options(source_pre_boundary_columns, new_target_db_path)
+        stats = run_migration_sqlite_to_sqlite(options)
+
+        assert not stats.errors, f'unexpected errors: {stats.errors}'
+        assert stats.embedding_chunks_migrated == 1
+
+        tgt = sqlite3.connect(str(new_target_db_path))
+        try:
+            tgt.row_factory = sqlite3.Row
+            row = tgt.execute(
+                'SELECT id, vec_rowid, start_index, end_index FROM embedding_chunks',
+            ).fetchone()
+            assert row['id'] == 1
+            assert row['vec_rowid'] == 1
+            assert row['start_index'] == 0
+            assert row['end_index'] == 0
+        finally:
+            tgt.close()
+
+
 # ---------------------------------------------------------------------------
 # Dry-run behaviour
 # ---------------------------------------------------------------------------
