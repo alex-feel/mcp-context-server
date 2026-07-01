@@ -1169,16 +1169,15 @@ async def update_context_batch(
             if new_text is not None:
                 rebuilt = await generate_index_nodes_with_timeout(new_text)
                 # Text changed: a None result must CLEAR the rows describing the old text
-                # ([]) whenever the per-node layer is ENABLED, because navigate_context
-                # surfaces those rows gated only on settings.index_tree.node_summaries_enabled
-                # (no provider required). Gating the clear on node_summaries_enabled rather
-                # than node_layer_active() covers the provider-removed-but-feature-on case
-                # (None for lack of a provider) as well as total degradation, mirroring the
-                # single-update path and the provider-independent embedding/summary clears.
-                # When the feature is OFF the reader is also off, so None leaves them alone.
-                update_index_nodes[vu_idx] = (
-                    [] if rebuilt is None and settings.index_tree.node_summaries_enabled else rebuilt
-                )
+                # ([]) because navigate_context attaches stored summaries by heading-slug
+                # node_id, so a retained slug would otherwise receive its pre-edit summary.
+                # The clear is UNCONDITIONAL (not gated on node_summaries_enabled) so a
+                # disable/edit/re-enable cycle cannot resurface stale rows; it covers the
+                # provider-removed case (None for lack of a provider) and total degradation,
+                # mirroring the single-update path and the provider-independent
+                # embedding/summary clears. replace_nodes_for_context pre-checks table
+                # existence, so clearing when the table is absent is a safe no-op.
+                update_index_nodes[vu_idx] = [] if rebuilt is None else rebuilt
 
         # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend

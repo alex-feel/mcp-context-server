@@ -693,19 +693,18 @@ async def update_context(
             if run_summary and summary_text is None:
                 clear_summary = True
             # On a text change, a None node result must CLEAR the stored rows ([] replaces)
-            # whenever the per-node layer is ENABLED, because those rows describe the OLD
-            # text and navigate_context surfaces them gated ONLY on
-            # settings.index_tree.node_summaries_enabled (it does NOT require a provider).
-            # This covers BOTH total degradation (every section summary failed) AND the
-            # provider-removed-but-feature-on case (generation returns None for lack of a
-            # provider): in either case preserving the stale rows would let
-            # navigate_context mis-attach an old section summary to a new section by reused
-            # heading slug. Gating on node_summaries_enabled (the reader's gate) rather than
-            # node_layer_active() (which also requires a provider) mirrors the
-            # provider-independent stale-clear the embedding and flat-summary legs already
-            # perform on this same text-change path. When the feature is OFF the reader is
-            # also off, so a None legitimately leaves the table untouched.
-            if index_nodes is None and settings.index_tree.node_summaries_enabled:
+            # because those rows describe the OLD text: any heading whose slug the edit
+            # retains would otherwise have its pre-edit summary mis-attached to the new
+            # section (node_id is a pure function of heading path). This covers total
+            # degradation (every section summary failed) AND the provider-removed case
+            # (generation returns None for lack of a provider). The clear is UNCONDITIONAL
+            # (not gated on node_summaries_enabled) so a disable/edit/re-enable cycle cannot
+            # resurface stale rows: while the feature is off the reader is also off, but the
+            # rows must not survive the edit and reappear when the toggle is turned back on.
+            # This mirrors the provider-independent stale-clear the embedding and flat-summary
+            # legs already perform on this same text-change path; replace_nodes_for_context
+            # pre-checks table existence, so clearing when the table is absent is a safe no-op.
+            if index_nodes is None:
                 index_nodes = []
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===

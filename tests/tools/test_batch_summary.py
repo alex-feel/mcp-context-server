@@ -507,11 +507,13 @@ class TestUpdateContextBatchWithSummary:
         assert repos.index_nodes.replace_nodes_for_context.call_args.args[1] == []
 
     @pytest.mark.asyncio
-    async def test_update_batch_text_change_feature_off_preserves_nodes(self) -> None:
-        """When the per-node layer is DISABLED (ENABLE_INDEX_TREE_NODE_SUMMARIES off), a None
-        node result is left untouched (stays None), so replace_nodes_for_context is never
-        called and existing rows are preserved. navigate_context is also gated off in this
-        state, so dormant rows are never surfaced.
+    async def test_update_batch_text_change_feature_off_clears_stale_nodes(self) -> None:
+        """A text-change batch update CLEARS stale node rows even when the per-node layer is
+        DISABLED. The clear is UNCONDITIONAL (not gated on node_summaries_enabled), so a
+        disable/edit/re-enable cycle cannot resurface pre-edit rows that navigate_context would
+        mis-attach to a reused heading slug once the feature is turned back on.
+        replace_nodes_for_context pre-checks table existence, so clearing while the table is
+        absent is a safe no-op.
         """
         repos = _create_mock_repositories()
         mock_summary = MagicMock()
@@ -533,7 +535,9 @@ class TestUpdateContextBatchWithSummary:
             result = await update_context_batch(updates=updates, atomic=True)
 
         assert result['success'] is True
-        repos.index_nodes.replace_nodes_for_context.assert_not_awaited()
+        # feature off + text change -> stale rows still cleared ([] -> replace).
+        repos.index_nodes.replace_nodes_for_context.assert_awaited_once()
+        assert repos.index_nodes.replace_nodes_for_context.call_args.args[1] == []
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')

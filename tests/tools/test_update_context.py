@@ -829,12 +829,16 @@ class TestUpdateContext:
         assert captured['index_nodes'] == []  # feature on, provider gone -> stale rows cleared
 
     @pytest.mark.asyncio
-    async def test_text_change_feature_off_preserves_nodes(self, mock_context, mock_repositories):
-        """When the per-node layer is DISABLED (ENABLE_INDEX_TREE_NODE_SUMMARIES off), a None
-        node result is LEFT UNTOUCHED (stays None), so the transaction skips
-        replace_nodes_for_context and existing rows are preserved. navigate_context is also
-        gated off in this state, so dormant rows are never surfaced -- preserving them is
-        harmless and avoids a needless write.
+    async def test_text_change_feature_off_clears_stale_nodes(self, mock_context, mock_repositories):
+        """A text-change update CLEARS stale node rows even when the per-node layer is DISABLED.
+
+        The clear is UNCONDITIONAL (not gated on node_summaries_enabled), so a
+        disable/edit/re-enable cycle cannot resurface pre-edit rows: without this, an admin
+        could turn the feature off (a documented reversible cost lever), edit the entry's text
+        while off (leaving the stale rows in place), then re-enable -- and navigate_context
+        would mis-attach the pre-edit summary onto the changed section by its reused heading
+        slug. replace_nodes_for_context pre-checks table existence, so clearing while the table
+        is absent is a safe no-op.
         """
         captured: dict[str, object] = {}
 
@@ -857,7 +861,7 @@ class TestUpdateContext:
             )
 
         assert result['success'] is True
-        assert captured['index_nodes'] is None  # feature off -> untouched
+        assert captured['index_nodes'] == []  # feature off + text change -> stale rows still cleared
 
 
 class TestMetadataPatchIntegration:
