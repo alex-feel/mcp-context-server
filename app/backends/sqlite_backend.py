@@ -763,8 +763,14 @@ class SQLiteBackend:
                         with suppress(asyncio.CancelledError):
                             await task
 
-                    if shutdown_task in done:
+                    if shutdown_task in done and wait_task not in done:
                         break
+                    # When BOTH tasks complete in the same asyncio.wait batch, a
+                    # WriteRequest has already been dequeued by wait_task; breaking
+                    # on shutdown first would orphan it (its future never resolved,
+                    # the caller awaiting execute_write hangs past shutdown). Service
+                    # the dequeued request first; the loop condition (and the next
+                    # iteration's shutdown check) then honors the shutdown signal.
 
                     if wait_task in done:
                         try:
