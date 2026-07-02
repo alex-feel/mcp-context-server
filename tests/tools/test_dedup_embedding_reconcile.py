@@ -105,6 +105,66 @@ class TestStoreContextReconcile:
         assert mock_gen_emb.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_reconcile_regenerates_reused_summary(self) -> None:
+        """A divergence INSERT regenerates a summary the pre-check reused.
+
+        The pre-check reads the candidate's stored summary AFTER the hash check;
+        a concurrent commit between the two can change the candidate's text so
+        the reused summary describes DIFFERENT text. When the transaction then
+        diverges into an INSERT, the reconcile path must regenerate the summary
+        for THIS text instead of persisting the poisoned reuse.
+        """
+        from app.tools.context import store_context
+
+        _, mock_begin_transaction = _make_mock_txn()
+
+        with (
+            patch('app.tools.context.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.context.get_embedding_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.context.execute_store_in_transaction') as mock_exec,
+            patch(
+                'app.tools.context.generate_summary_with_timeout',
+                new_callable=AsyncMock,
+                return_value='fresh summary for this text',
+            ) as mock_gen_summary,
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+
+            # Pre-check sees a duplicate WITH a stored summary -> reuse, no model call.
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value='dup-id')
+            mock_repos.context.get_summary = AsyncMock(return_value='stale summary of other text')
+
+            # First transaction diverges (INSERT); second succeeds after regeneration.
+            mock_exec.side_effect = [
+                EmbeddingsReconcileRequiredError('x' * 600),
+                ('ctx-1', False, False),
+            ]
+
+            result = await store_context(
+                thread_id='reconcile-thread',
+                source='user',
+                text='x' * 600,
+            )
+
+        assert result['success'] is True
+        # The reused (potentially poisoned) summary was replaced by a fresh one.
+        assert mock_gen_summary.await_count == 1
+        assert mock_exec.call_count == 2
+        # The retry passed the regenerated summary, not the reused one.
+        retry_kwargs = mock_exec.call_args_list[1].kwargs
+        assert retry_kwargs['summary'] == 'fresh summary for this text'
+        # The first attempt flagged the reuse so the transaction could abort.
+        first_kwargs = mock_exec.call_args_list[0].kwargs
+        assert first_kwargs['summary_pending'] is True
+
+    @pytest.mark.asyncio
     async def test_reconcile_does_not_loop_forever(self) -> None:
         """A repeated reconcile signal surfaces a ToolError rather than looping."""
         from app.tools.context import store_context

@@ -56,6 +56,7 @@ from app.tools._shared import embed_then_compress
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
 from app.tools._shared import generate_index_nodes_with_timeout
+from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import node_layer_active
 from app.tools._shared import run_generation
@@ -180,6 +181,7 @@ async def store_context(
                 run_embedding = True
 
         run_summary = False
+        summary_reused = False
         if get_summary_provider() is not None:
             min_content_length = settings.summary.min_content_length
             if min_content_length > 0 and len(text) < min_content_length:
@@ -191,6 +193,7 @@ async def store_context(
                 existing_summary = await repos.context.get_summary(likely_duplicate_id)
                 if existing_summary is not None:
                     summary_text = existing_summary  # reuse; no model call
+                    summary_reused = True
                     logger.debug(
                         'Pre-check: reusing existing summary for likely duplicate '
                         'of context %s in thread %s', likely_duplicate_id, thread_id,
@@ -241,11 +244,13 @@ async def store_context(
                         summary=summary_text,
                         tags=tags,
                         validated_images=validated_images,
+                        images_provided=images is not None,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
                         embedding_generation_enabled=get_embedding_provider() is not None,
                         index_nodes=index_nodes,
                         nodes_pending=node_layer_active() and likely_duplicate_id is not None,
+                        summary_pending=summary_reused and not summary_generated,
                     )
 
                 # Transaction committed successfully -- break retry loop
@@ -274,6 +279,13 @@ async def store_context(
                 if chunk_embeddings is None:
                     chunk_embeddings = await embed_then_compress(text)
                     embedding_generated = chunk_embeddings is not None
+                # A REUSED summary was read from the since-diverged candidate and
+                # may describe different text; regenerate it for THIS text so the
+                # divergence INSERT cannot persist a mismatched summary.
+                if summary_reused and not summary_generated:
+                    summary_text = await generate_summary_with_timeout(text, source)
+                    summary_generated = summary_text is not None
+                    summary_reused = False
                 # The divergence INSERTed a new entry, so its node summaries were
                 # never computed (gated off above as a likely duplicate). Regenerate
                 # for the diverged text so the new entry gets its index_tree nodes.

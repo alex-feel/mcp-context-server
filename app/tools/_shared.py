@@ -553,11 +553,13 @@ def node_layer_active() -> bool:
     reconcile).
 
     NOTE: the TEXT-CHANGE update stale-node clear does NOT use this helper. It
-    gates on ``settings.index_tree.node_summaries_enabled`` directly (the
-    provider-independent reader's gate that ``navigate_context`` consults), so a
-    provider-removed-but-feature-on update still CLEARS stale rows that would
-    otherwise let ``navigate_context`` mis-attach an old section summary to a new
-    section sharing a reused heading slug.
+    is UNCONDITIONAL (a None node result on a text change becomes an empty
+    list regardless of any toggle or provider), so stale rows describing the
+    old text can never survive the edit -- not even through a
+    disable/edit/re-enable cycle -- and ``navigate_context`` can never
+    mis-attach an old section summary to a new section sharing a reused
+    heading slug. ``replace_nodes_for_context`` pre-checks table existence,
+    making the clear a safe no-op when the node table is absent.
 
     Returns:
         True when per-node summaries are enabled and a summary provider exists.
@@ -672,11 +674,19 @@ async def run_generation(
 
         errors: list[str] = []
         if abort_legs:
-            await asyncio.gather(*(task for _, task in abort_legs), return_exceptions=True)
-            for name, task in abort_legs:
-                exc = task.exception()
-                if exc is not None and not isinstance(exc, asyncio.CancelledError):
-                    errors.append(f'{name}: {type(exc).__name__}: {exc}')
+            # Inspect the GATHER RESULTS, not Task.exception(): a task whose
+            # coroutine ended with CancelledError is marked cancelled, and
+            # Task.exception() then RAISES CancelledError instead of returning
+            # it -- so an exception()-based loop can never skip a cancelled leg
+            # (the tolerance the CancelledError check intends). gather with
+            # return_exceptions=True hands back the CancelledError as a value,
+            # which is safe to type-check.
+            leg_outcomes = await asyncio.gather(
+                *(task for _, task in abort_legs), return_exceptions=True,
+            )
+            for (name, _task), outcome in zip(abort_legs, leg_outcomes, strict=True):
+                if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                    errors.append(f'{name}: {type(outcome).__name__}: {outcome}')
 
         if errors:
             # Abort-mandatory failure: surface a combined, deterministic error
@@ -1112,11 +1122,13 @@ async def execute_store_in_transaction(
     summary: str | None,
     tags: list[str] | None,
     validated_images: list[dict[str, str]],
+    images_provided: bool | None = None,
     chunk_embeddings: list[ChunkEmbedding] | None,
     embedding_model: str,
     embedding_generation_enabled: bool = False,
     index_nodes: list[IndexNodeRow] | None = None,
     nodes_pending: bool = False,
+    summary_pending: bool = False,
 ) -> tuple[str, bool, bool]:
     """Execute all store operations within an existing transaction.
 
@@ -1136,8 +1148,14 @@ async def execute_store_in_transaction(
         text_content: The text content to store.
         metadata_str: JSON-serialized metadata or None.
         summary: Generated/preserved summary or None.
-        tags: Tag list or None.
+        tags: Tag list or None. None PRESERVES existing tags on a dedup UPDATE;
+            a provided list (including []) REPLACES them, matching the
+            documented replacement contract and update_context semantics.
         validated_images: Validated image list (may be empty).
+        images_provided: Whether the CALLER passed an images value. None (the
+            default) falls back to ``bool(validated_images)`` for callers that
+            predate the flag; True with an empty validated_images clears
+            existing images on a dedup UPDATE instead of preserving them.
         chunk_embeddings: Generated embeddings or None.
         embedding_model: Model name for embedding storage.
         embedding_generation_enabled: True when an embedding provider is
@@ -1155,6 +1173,13 @@ async def execute_store_in_transaction(
             EmbeddingsReconcileRequiredError so the caller regenerates node
             summaries outside the transaction and retries -- even when embedding
             generation is disabled. Defaults to False.
+        summary_pending: True when the caller's pre-check REUSED the likely
+            duplicate's stored summary instead of generating one. When True and
+            this store INSERTs a new entry (was_updated False), the reused
+            summary was read from a candidate that has since diverged and may
+            describe different text, so the transaction aborts via
+            EmbeddingsReconcileRequiredError for the caller to regenerate the
+            summary outside the transaction and retry. Defaults to False.
 
     Returns:
         Tuple of (context_id, was_updated, embedding_stored):
@@ -1169,6 +1194,13 @@ async def execute_store_in_transaction(
             nodes_pending) node-summary generation; signals the caller to
             regenerate the skipped legs outside the transaction and retry.
     """
+    # Resolve whether the CALLER passed an images value before any use: an
+    # explicitly provided empty list must behave as a REPLACEMENT (clear) on a
+    # dedup UPDATE, not as absent. Falls back to list truthiness for callers
+    # that predate the flag.
+    if images_provided is None:
+        images_provided = bool(validated_images)
+
     # Store context entry with deduplication
     context_id, was_updated = await repos.context.store_with_deduplication(
         thread_id=thread_id,
@@ -1177,11 +1209,13 @@ async def execute_store_in_transaction(
         text_content=text_content,
         metadata=metadata_str,
         summary=summary,
-        # Preserve the existing content_type on a dedup UPDATE when no images are provided
-        # this call (images are preserved, not replaced). Overwriting it would flip a
-        # multimodal entry to 'text' while its image rows remain, making them
-        # unretrievable. When images ARE provided, content_type is overwritten to match.
-        preserve_content_type_on_dedup=not validated_images,
+        # Preserve the existing content_type on a dedup UPDATE only when no images
+        # value was provided this call (images are preserved, not replaced).
+        # Overwriting it then would flip a multimodal entry to 'text' while its
+        # image rows remain, making them unretrievable. When images ARE provided
+        # -- including an explicit empty list, which clears them below --
+        # content_type is overwritten to match the request.
+        preserve_content_type_on_dedup=not images_provided,
         txn=txn,
     )
 
@@ -1189,37 +1223,49 @@ async def execute_store_in_transaction(
         raise ToolError('Failed to store context')
 
     # Generation-first reconciliation: the caller's read-only pre-check skips
-    # embedding AND node-summary generation when a likely duplicate already has
-    # them, expecting this store to deduplicate into an UPDATE. If a concurrent
-    # same-thread write committed in the meantime, store_with_deduplication can
-    # instead INSERT a brand-new entry (was_updated False). Committing now would
-    # persist a row missing its embeddings (when generation is enabled) or its
-    # per-node summaries (when the node layer is active), violating the
-    # generation-first guarantee. Abort so the caller regenerates the skipped
-    # legs OUTSIDE the transaction and retries. The node reconcile is decoupled
-    # from embeddings so the node layer is repaired even when embeddings are off.
+    # embedding AND node-summary generation (and may REUSE the candidate's
+    # summary) when a likely duplicate already has them, expecting this store to
+    # deduplicate into an UPDATE. If a concurrent same-thread write committed in
+    # the meantime, store_with_deduplication can instead INSERT a brand-new
+    # entry (was_updated False). Committing now would persist a row missing its
+    # embeddings (when generation is enabled) or its per-node summaries (when
+    # the node layer is active) -- or carrying a REUSED summary read from the
+    # since-diverged candidate, which may describe DIFFERENT text (the summary
+    # read happens after the hash check, so a commit between them poisons it).
+    # Abort so the caller regenerates the skipped/reused legs OUTSIDE the
+    # transaction and retries. The three reconcile triggers are decoupled so
+    # each leg is repaired regardless of which others are active.
     needs_embedding_reconcile = embedding_generation_enabled and chunk_embeddings is None
     needs_node_reconcile = nodes_pending and index_nodes is None
-    if not was_updated and (needs_embedding_reconcile or needs_node_reconcile):
+    needs_summary_reconcile = summary_pending
+    if not was_updated and (needs_embedding_reconcile or needs_node_reconcile or needs_summary_reconcile):
         raise EmbeddingsReconcileRequiredError(text_content)
 
     # Heartbeat: keep connection alive between sequential operations
     await transaction_heartbeat(txn)
 
-    # Store or replace tags depending on deduplication outcome
-    if tags:
+    # Store or replace tags depending on deduplication outcome. The documented
+    # contract distinguishes PROVIDED from None: an explicitly provided empty
+    # list REPLACES (clears) existing tags on a dedup UPDATE, exactly like
+    # update_context's `if tags is not None` semantics; only None preserves.
+    # On a fresh INSERT an empty list stores nothing, so the write is skipped.
+    if tags is not None:
         if was_updated:
             await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
-        else:
+        elif tags:
             await repos.tags.store_tags(context_id, tags, txn=txn)
 
-    # Store or replace images depending on deduplication outcome
-    if validated_images:
+    # Store or replace images depending on deduplication outcome, with the same
+    # provided-vs-None distinction. validated_images is always a list (the
+    # validator normalizes None to []), so images_provided (resolved above)
+    # carries whether the CALLER passed an images value; when it did, an empty
+    # list clears existing images on a dedup UPDATE instead of preserving them.
+    if images_provided:
         if was_updated:
             await repos.images.replace_images_for_context(
                 context_id, validated_images, txn=txn,
             )
-        else:
+        elif validated_images:
             await repos.images.store_images(context_id, validated_images, txn=txn)
 
     # Store embeddings only if:

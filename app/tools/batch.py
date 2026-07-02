@@ -149,8 +149,11 @@ async def store_context_batch(
                 validation_errors.append((idx, 'text cannot be empty or whitespace'))
                 continue
 
-            # Validate images if present
-            images = entry.get('images', [])
+            # Validate images if present. images is None when the caller omitted
+            # the key OR passed an explicit None (both mean PRESERVE on a dedup
+            # UPDATE); a provided list -- including [] -- means REPLACE.
+            images = entry.get('images')
+            images_provided = images is not None
             if images is not None and (
                 not isinstance(images, list) or not all(isinstance(i, dict) for i in images)
             ):
@@ -188,7 +191,9 @@ async def store_context_batch(
                 validation_errors.append((idx, 'tags must be a list of strings'))
                 continue
 
-            # Prepare validated entry
+            # Prepare validated entry. tags/images keep their None-ness so the
+            # store can distinguish PRESERVE (None) from REPLACE-with-empty ([])
+            # on a dedup UPDATE, matching the documented replacement contract.
             validated_entries.append({
                 'index': idx,
                 'thread_id': thread_id,
@@ -196,8 +201,9 @@ async def store_context_batch(
                 'text_content': text,
                 'metadata': json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
                 'content_type': content_type,
-                'tags': entry.get('tags', []),
-                'images': images,
+                'tags': tags,
+                'images': images if images is not None else [],
+                'images_provided': images_provided,
             })
 
         # In atomic mode, fail fast if any validation errors
@@ -482,6 +488,7 @@ async def store_context_batch(
                                     summary=entry_summaries.get(ve_idx),
                                     tags=entry.get('tags'),
                                     validated_images=entry.get('images', []),
+                                    images_provided=bool(entry.get('images_provided')),
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
@@ -490,6 +497,7 @@ async def store_context_batch(
                                         node_layer_active()
                                         and entry_likely_duplicate.get(ve_idx) is not None
                                     ),
+                                    summary_pending=ve_idx in preserved_summary_indices,
                                 )
                             )
 
@@ -547,6 +555,22 @@ async def store_context_batch(
                                 # the generated count (parity with the single store).
                                 if regenerated is not None:
                                     embeddings_generated_count += 1
+                    # A REUSED summary was read from the since-diverged candidate
+                    # and may describe different text; regenerate it for the
+                    # diverged text so the divergence INSERT cannot persist a
+                    # mismatched summary. Clearing the preserved marker also
+                    # clears the summary_pending reconcile gate on retry.
+                    if summary_provider is not None:
+                        for r_ve_idx, r_entry in validated_entries_filtered:
+                            if (r_ve_idx in preserved_summary_indices
+                                    and r_entry['text_content'] == reconcile.text_content):
+                                entry_summaries[r_ve_idx] = await generate_summary_with_timeout(
+                                    reconcile.text_content, r_entry['source'],
+                                )
+                                preserved_summary_indices.discard(r_ve_idx)
+                                summaries_preserved_count -= 1
+                                if entry_summaries[r_ve_idx] is not None:
+                                    summaries_generated_count += 1
                     # Node summaries for the diverged text were gated off as a
                     # likely duplicate; this divergence INSERTs, so regenerate them.
                     # Coerce total degradation (None) to [] so the reconcile gate
@@ -595,6 +619,7 @@ async def store_context_batch(
                                     summary=entry_summaries.get(ve_idx),
                                     tags=entry.get('tags'),
                                     validated_images=entry.get('images', []),
+                                    images_provided=bool(entry.get('images_provided')),
                                     chunk_embeddings=entry_embeddings.get(ve_idx),
                                     embedding_model=settings.embedding.model,
                                     embedding_generation_enabled=embedding_provider is not None,
@@ -603,6 +628,7 @@ async def store_context_batch(
                                         node_layer_active()
                                         and entry_likely_duplicate.get(ve_idx) is not None
                                     ),
+                                    summary_pending=ve_idx in preserved_summary_indices,
                                 )
                             )
 
@@ -671,6 +697,32 @@ async def store_context_batch(
                                 error=format_exception_message(e),
                             ))
                             break
+                        # A REUSED summary was read from the since-diverged candidate
+                        # and may describe different text; regenerate it for this
+                        # entry's text. Same per-entry ToolError isolation as the
+                        # embedding regeneration above. Clearing the preserved marker
+                        # also clears the summary_pending reconcile gate on retry.
+                        if summary_provider is not None and ve_idx in preserved_summary_indices:
+                            try:
+                                entry_summaries[ve_idx] = await generate_summary_with_timeout(
+                                    reconcile.text_content, entry['source'],
+                                )
+                            except ToolError as e:
+                                logger.error(
+                                    'Failed to regenerate summary for entry at index %d '
+                                    'after deduplication divergence: %s', original_idx, e,
+                                )
+                                results.append(BulkStoreResultItemDict(
+                                    index=original_idx,
+                                    success=False,
+                                    context_id=None,
+                                    error=format_exception_message(e),
+                                ))
+                                break
+                            preserved_summary_indices.discard(ve_idx)
+                            summaries_preserved_count -= 1
+                            if entry_summaries[ve_idx] is not None:
+                                summaries_generated_count += 1
                         # Node summaries were gated off as a likely duplicate; this
                         # entry actually INSERTs, so regenerate its index_tree nodes.
                         # Coerce total degradation (None) to [] so the reconcile gate
