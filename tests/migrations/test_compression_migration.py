@@ -244,6 +244,93 @@ async def test_sqlite_migration_drops_legacy_vec_table(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_migration_refuses_first_time_with_populated_fp32(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First-time application on a database with POPULATED fp32 embeddings refuses.
+
+    A bare ENABLE_EMBEDDING_COMPRESSION=true flip on a deployment that stored
+    fp32 embeddings while compression was off must NOT silently drop them: the
+    migration raises ConfigurationError (exit 78) directing the operator to the
+    --compress CLI, and the fp32 table survives untouched.
+    """
+    from app.errors import ConfigurationError
+
+    _enable_compression(monkeypatch)
+
+    def _create_populated_legacy(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS vec_context_embeddings '
+            '(rowid INTEGER PRIMARY KEY, embedding BLOB)',
+        )
+        conn.execute(
+            'INSERT INTO vec_context_embeddings (rowid, embedding) VALUES (1, ?)',
+            (b'\x00\x01\x02\x03',),
+        )
+
+    await backend.execute_write(_create_populated_legacy)
+
+    with pytest.raises(ConfigurationError, match='mcp-context-server-migrate'):
+        await apply_compression_migration(backend=backend)
+
+    def _survives(conn: sqlite3.Connection) -> int:
+        return int(conn.execute('SELECT COUNT(*) FROM vec_context_embeddings').fetchone()[0])
+
+    assert await backend.execute_read(_survives) == 1
+
+
+@pytest.mark.asyncio
+async def test_sqlite_migration_proceeds_with_populated_fp32_when_provenance_present(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provenance row marks the database as already-compressed, so a leftover
+    populated fp32 table is a stray artifact and the migration proceeds
+    (re-running the DROP) instead of refusing."""
+    _enable_compression(monkeypatch)
+
+    # First application on a clean database, then simulate the validator's
+    # bootstrap INSERT so the provenance row is present (the real post-first-
+    # startup state).
+    await apply_compression_migration(backend=backend)
+
+    def _insert_provenance(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'INSERT INTO compression_metadata (id, provider, bits, variant, seed, dim) '
+            'VALUES (1, ?, ?, ?, ?, ?)',
+            ('turboquant', 4, 'ip', 42, 1024),
+        )
+
+    await backend.execute_write(_insert_provenance)
+
+    def _create_populated_legacy(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS vec_context_embeddings '
+            '(rowid INTEGER PRIMARY KEY, embedding BLOB)',
+        )
+        conn.execute(
+            'INSERT INTO vec_context_embeddings (rowid, embedding) VALUES (1, ?)',
+            (b'\x00\x01\x02\x03',),
+        )
+
+    await backend.execute_write(_create_populated_legacy)
+
+    # Must not raise: the provenance row proves the compressed table is the
+    # authoritative store, so the stray fp32 table is dropped.
+    await apply_compression_migration(backend=backend)
+
+    def _exists(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='vec_context_embeddings'",
+        )
+        return cur.fetchone() is not None
+
+    assert await backend.execute_read(_exists) is False
+
+
+@pytest.mark.asyncio
 @requires_sqlite_vec
 async def test_compression_skips_fp32_vec_provisioning_across_restart(
     backend: StorageBackend,

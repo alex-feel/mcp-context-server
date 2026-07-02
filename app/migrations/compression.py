@@ -19,6 +19,8 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.compression.provenance import read_compression_metadata
+from app.errors import ConfigurationError
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
@@ -26,6 +28,63 @@ from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+async def _fp32_table_has_rows(backend: StorageBackend) -> bool:
+    """Return True when the fp32 ``vec_context_embeddings`` table exists and holds rows.
+
+    Used by the pre-drop guard in :func:`apply_compression_migration`: when no
+    compression provenance row exists, a populated fp32 table is the
+    AUTHORITATIVE embedding store, and the migration's ``DROP TABLE IF EXISTS
+    vec_context_embeddings`` would destroy it irrecoverably.
+
+    Args:
+        backend: Storage backend instance.
+
+    Returns:
+        True when the table exists and holds at least one row (or, on SQLite,
+        when the vec0 module cannot read it -- refuse rather than risk dropping
+        shadow-table data that becomes readable once the extension loads);
+        False when the table is absent or empty (the drop is harmless).
+    """
+    if backend.backend_type == 'sqlite':
+
+        def _probe_sqlite(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_context_embeddings'",
+            )
+            if cursor.fetchone() is None:
+                return False
+            try:
+                row = conn.execute(
+                    'SELECT EXISTS (SELECT 1 FROM vec_context_embeddings)',
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return True
+            return bool(row and row[0])
+
+        return await backend.execute_read(_probe_sqlite)
+
+    async def _probe_pg(conn: asyncpg.Connection) -> bool:
+        schema = settings.storage.postgresql_schema
+        exists = await conn.fetchval(
+            '''
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = $1
+                  AND table_name = 'vec_context_embeddings'
+            )
+            ''',
+            schema,
+        )
+        if not exists:
+            return False
+        populated = await conn.fetchval(
+            'SELECT EXISTS (SELECT 1 FROM vec_context_embeddings)',
+        )
+        return bool(populated)
+
+    return await backend.execute_read(cast(Any, _probe_pg))
 
 
 def _check_compression_migration_applied_sqlite(conn: sqlite3.Connection) -> bool:
@@ -73,6 +132,17 @@ async def apply_compression_migration(backend: StorageBackend) -> None:
         backend: Storage backend instance.
 
     Raises:
+        ConfigurationError: When this would be the FIRST application of the
+            compression schema (no provenance row) on a database whose fp32
+            ``vec_context_embeddings`` table holds rows. The migration's
+            ``DROP TABLE IF EXISTS vec_context_embeddings`` would destroy
+            those embeddings irrecoverably, so a bare
+            ``ENABLE_EMBEDDING_COMPRESSION=true`` flip (or removing a
+            ``false`` override, since the default is true) on a populated
+            fp32 deployment refuses loudly (exit 78) and directs the
+            operator to ``mcp-context-server-migrate --compress``, which
+            encodes the embeddings before swapping the tables. Mirrors the
+            disable-direction guard in the compression validator.
         RuntimeError: If migration execution fails or the SQL file is missing.
 
     Notes:
@@ -82,6 +152,26 @@ async def apply_compression_migration(backend: StorageBackend) -> None:
     """
     if not settings.compression.enabled:
         return
+
+    # Enable-direction data guard: on FIRST-TIME application (no provenance
+    # row yet -- read_compression_metadata returns None when the table is
+    # absent or empty), a populated fp32 table is the authoritative embedding
+    # store and must not be dropped by a bare env flip. The --compress CLI is
+    # the sanctioned path: it encodes every fp32 row into compressed payloads
+    # and writes the provenance row, after which this startup migration only
+    # finalizes the swap. A database that already carries a provenance row
+    # proceeds normally (the fp32 table there is a stray artifact, not data).
+    if await read_compression_metadata(backend) is None and await _fp32_table_has_rows(backend):
+        raise ConfigurationError(
+            'ENABLE_EMBEDDING_COMPRESSION is true but this database still holds '
+            'uncompressed fp32 embeddings in vec_context_embeddings and has never '
+            'been compressed (no compression_metadata provenance row). Applying '
+            'the compression schema now would DROP that table and permanently '
+            'destroy every stored embedding. Run "mcp-context-server-migrate '
+            '--compress" to encode the existing embeddings into compressed '
+            'storage first, or set ENABLE_EMBEDDING_COMPRESSION=false to keep '
+            'serving the fp32 data.',
+        )
 
     backend_type = backend.backend_type
 

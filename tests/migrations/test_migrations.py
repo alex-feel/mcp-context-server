@@ -1434,7 +1434,10 @@ class TestMigrationDdlTimeout:
         """compression migration DDL loop carries the migration timeout."""
         executed: list[tuple[str, float | None]] = []
         mock_backend = self._recording_pg_backend(executed)
-        mock_backend.execute_read = AsyncMock(return_value=False)  # not already applied
+        # Reads in order: the enable-guard's provenance read (None = no sealed
+        # row) and its fp32 data probe (False = no populated fp32 table, guard
+        # passes), then the already-applied check (False = first-time).
+        mock_backend.execute_read = AsyncMock(side_effect=[None, False, False])
 
         mock_settings = MagicMock()
         mock_settings.compression.enabled = True
