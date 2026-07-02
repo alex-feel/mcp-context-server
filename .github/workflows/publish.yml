@@ -347,7 +347,7 @@ jobs:
           labels: |
             io.modelcontextprotocol.server.name=${{ env.SERVER_NAME }}
             org.opencontainers.image.description=MCP server providing persistent multimodal context storage for LLM agents. Ollama embeddings and summary provider.
-            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.licenses=Elastic-2.0
             org.opencontainers.image.vendor=alex-feel
             org.opencontainers.image.documentation=https://github.com/alex-feel/mcp-context-server#readme
             org.opencontainers.image.base.name=docker.io/library/python:3.12-slim-bookworm
@@ -427,7 +427,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.description=MCP server providing persistent multimodal context storage for LLM agents. Ollama embeddings + OpenAI summary provider.
-            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.licenses=Elastic-2.0
             org.opencontainers.image.vendor=alex-feel
             org.opencontainers.image.documentation=https://github.com/alex-feel/mcp-context-server#readme
             org.opencontainers.image.base.name=docker.io/library/python:3.12-slim-bookworm

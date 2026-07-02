@@ -1,5 +1,11 @@
 # Contributing to MCP Context Server
 
+## Contributor Terms
+
+MCP Context Server is licensed under the [Elastic License 2.0](LICENSE) and is dual-licensed commercially by the project owner (see [Commercial Licensing](docs/commercial-licensing.md)). To keep that model legally sound, every external contribution must grant the project owner the right to license the contributed code under any terms, including commercial ones.
+
+By submitting a pull request, you agree that: (1) the contribution is your original work (or you have the right to submit it); (2) you grant Aleksandr Filippov a perpetual, worldwide, non-exclusive, irrevocable, royalty-free license to use, reproduce, modify, distribute, sublicense, and relicense your contribution under any license terms, including the Elastic License 2.0 and separate commercial licenses; and (3) you retain copyright in your contribution. A Developer Certificate of Origin sign-off alone is not sufficient, because it does not convey relicensing rights.
+
 We welcome contributions! Please follow these guidelines:
 
 1. **Fork the repository** and create a feature branch

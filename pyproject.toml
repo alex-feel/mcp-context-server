@@ -3,6 +3,8 @@ name = "mcp-context-server"
 version = "2.2.2"
 description = "MCP Context Server — a FastMCP-based server providing persistent multimodal context storage for LLM agents."
 readme = "README.md"
+license = "Elastic-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
 
@@ -18,7 +20,7 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]  # PEP 639 license expression support
 build-backend = "hatchling.build"
 
 [project.scripts]

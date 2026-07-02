@@ -96,4 +96,14 @@ For HTTP transport deployments requiring authentication, see the [Authentication
 - **Documentation issues**: [Report a docs issue](https://github.com/alex-feel/mcp-context-server/issues/new?template=docs-issue.yml)
 - **Questions**: [Ask a question](https://github.com/alex-feel/mcp-context-server/issues/new?template=question.yml)
 
+## License
+
+MCP Context Server is licensed under the [Elastic License 2.0](LICENSE) (ELv2).
+
+In short: you may use, copy, modify, distribute, and run the software freely and at no cost — for personal projects, inside companies of any size, and as part of commercial work. The one thing you may not do without a commercial agreement is provide the software to third parties as a hosted or managed service that gives users access to any substantial set of its features or functionality (for example, a cloud "memory for agents" offering built on it).
+
+See [Commercial Licensing](docs/commercial-licensing.md) for plain-language examples of what is and is not permitted, and contact [alexfeel@protonmail.com](mailto:alexfeel@protonmail.com) for commercial licensing, including hosted or managed service rights.
+
+Releases up to and including v2.2.2 were published under the MIT License and remain available under it; the Elastic License 2.0 applies from v3.0.0 onward.
+
 <!-- mcp-name: io.github.alex-feel/mcp-context-server -->

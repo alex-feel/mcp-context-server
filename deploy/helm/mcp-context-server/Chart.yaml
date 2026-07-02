@@ -12,6 +12,8 @@ keywords:
   - sqlite
   - postgresql
 home: https://github.com/alex-feel/mcp-context-server
+annotations:
+  artifacthub.io/license: Elastic-2.0
 sources:
   - https://github.com/alex-feel/mcp-context-server
 maintainers:
