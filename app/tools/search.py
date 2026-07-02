@@ -1271,10 +1271,19 @@ async def hybrid_search_context(
         semantic_results: list[dict[str, Any]] = []
         fts_error: str | None = None
         semantic_error: str | None = None
+        # Structured validation details captured from FtsValidationError /
+        # MetadataFilterValidationError, so the all-modes-failed response can
+        # carry the same validation_errors key the sibling search tools return
+        # instead of flattening them into an opaque string.
+        fts_validation_errors: list[str] | None = None
+        semantic_validation_errors: list[str] | None = None
 
         # Stats collection for explain_query
         fts_stats: dict[str, Any] | None = None
         semantic_stats: dict[str, Any] | None = None
+
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.fts_repository import FtsValidationError
 
         # Determine adaptive FTS mode for hybrid search
         adaptive_query, adaptive_mode = _prepare_hybrid_fts_query(
@@ -1284,7 +1293,7 @@ async def hybrid_search_context(
         )
 
         async def run_fts_search() -> None:
-            nonlocal fts_results, fts_error, fts_stats
+            nonlocal fts_results, fts_error, fts_stats, fts_validation_errors
             try:
                 results, stats = await _fts_search_raw(
                     query=adaptive_query,
@@ -1306,13 +1315,16 @@ async def hybrid_search_context(
                 fts_results = results
                 if explain_query:
                     fts_stats = stats
+            except FtsValidationError as e:
+                fts_error = e.message
+                fts_validation_errors = e.validation_errors
             except ToolError as e:
                 fts_error = format_exception_message(e)
             except Exception as e:
                 fts_error = format_exception_message(e)
 
         async def run_semantic_search() -> None:
-            nonlocal semantic_results, semantic_error, semantic_stats
+            nonlocal semantic_results, semantic_error, semantic_stats, semantic_validation_errors
             try:
                 results, stats = await _semantic_search_raw(
                     query=query,
@@ -1332,6 +1344,9 @@ async def hybrid_search_context(
                 semantic_results = results
                 if explain_query:
                     semantic_stats = stats
+            except MetadataFilterValidationError as e:
+                semantic_error = e.message
+                semantic_validation_errors = e.validation_errors
             except ToolError as e:
                 semantic_error = format_exception_message(e)
             except Exception as e:
@@ -1389,6 +1404,24 @@ async def hybrid_search_context(
                     f'Semantic: {semantic_error}' if semantic_error else '',
                 ) if part
             )
+            # When a sub-search failed on FILTER VALIDATION, return the same
+            # structured error response the sibling search tools produce (error
+            # + validation_errors, count 0) instead of an opaque raised
+            # ToolError: the caller needs the per-filter details to correct the
+            # query rather than retry a permanently-invalid request.
+            combined_validation_errors = [
+                *(fts_validation_errors or []),
+                *(semantic_validation_errors or []),
+            ]
+            if combined_validation_errors:
+                return {
+                    'query': query,
+                    'results': [],
+                    'count': 0,
+                    'modes_used': [],
+                    'error': f'All available search modes failed. {details}',
+                    'validation_errors': combined_validation_errors,
+                }
             raise ToolError(f'All available search modes failed. {details}')
 
         # Parse FTS metadata (returned as JSON strings from DB)

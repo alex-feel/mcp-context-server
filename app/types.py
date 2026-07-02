@@ -543,6 +543,7 @@ class FtsSearchResultDict(TypedDict, total=False):
     tags: list[str]
     scores: ScoresDict
     highlighted: str | None
+    images: list[ImageDict] | None
 
 
 class FtsSearchResponseDict(TypedDict, total=False):
@@ -657,6 +658,7 @@ class HybridSearchResultDict(TypedDict, total=False):
     tags: list[str]
     scores: HybridScoresDict  # Hybrid scoring breakdown
     rerank_text: str | None  # Internal: chunk text for reranking (removed before API response)
+    images: list[ImageDict] | None
 
 
 # Hybrid Search Stats TypedDicts (for explain_query parameter)
