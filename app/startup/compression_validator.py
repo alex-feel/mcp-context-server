@@ -140,8 +140,9 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
         # toggle, so every read would route to the EMPTY recreated fp32 table
         # and silently return nothing. Refuse loudly (exit 78) and direct the
         # operator to decode the data back to fp32 first. The legitimate
-        # --decompress CLI clears the provenance row (delete_compression_metadata),
-        # so a post-decompress startup reads None here and proceeds normally.
+        # --decompress CLI clears the provenance row via an inline DELETE inside
+        # its single atomic transaction (app/cli/migrate_compression.py), so a
+        # post-decompress startup reads None here and proceeds normally.
         existing = await read_compression_metadata(backend)
         if existing is not None:
             raise ConfigurationError(
