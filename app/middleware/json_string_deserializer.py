@@ -25,8 +25,8 @@ import mcp.types as mt
 from fastmcp.server.middleware.middleware import CallNext
 from fastmcp.server.middleware.middleware import Middleware
 from fastmcp.server.middleware.middleware import MiddlewareContext
-from fastmcp.tools.tool import Tool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools.base import Tool
+from fastmcp.tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
 

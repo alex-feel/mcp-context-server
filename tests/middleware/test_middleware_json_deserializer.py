@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 import mcp.types as mt
 import pytest
 from fastmcp.server.middleware.middleware import MiddlewareContext
-from fastmcp.tools.tool import Tool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools.base import Tool
+from fastmcp.tools.base import ToolResult
 
 from app.middleware.json_string_deserializer import JsonStringDeserializerMiddleware
 from app.middleware.json_string_deserializer import _is_complex_type

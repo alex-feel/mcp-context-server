@@ -36,13 +36,13 @@ Note: Real-server integration tests run against BOTH backends from one shared, b
 
 ### MCP Server Architecture
 
-FastMCP 3.1.x-based server providing persistent context storage for LLM agents:
+FastMCP 3.2.x-based server providing persistent context storage for LLM agents:
 
 1. **FastMCP Server Layer** (`app/server.py`, `app/tools/`, `app/startup/`):
    - Entry point: FastMCP instance, lifespan, `main()`, `/health` endpoint (HTTP transport only); tool registration via `register_tool()` from `app/tools/__init__.py`.
    - Tools in `app/tools/` by domain: `context.py` (CRUD), `search.py` (4 search tools), `navigation.py` (locate/navigate/extract: `grep_context`, `navigate_context`, `read_context_range`), `discovery.py` (list_threads, get_statistics), `batch.py` (batch CRUD), `descriptions.py` (backend-specific dynamic descriptions), `_shared.py` (internal infra: per-entry processing, image validation, concurrent generation orchestration via `run_generation` — the embedding→compression leg `embed_then_compress`, the flat summary leg `generate_summary_with_timeout`, and the overlapped node-summary leg `_nodes_after_summary` — transaction execution, response builders — used by `context.py`/`batch.py`, not re-exported via `__init__.py`).
    - Global state/init in `app/startup/`: `init_database()`, `ensure_repositories()`, `set_summary_provider()`/`get_summary_provider()`.
-   - **Temporary Patches** (`app/patches/`): startup monkey-patches for upstream MCP SDK bugs. **Middleware** (`app/middleware/`): schema-aware `JsonStringDeserializerMiddleware` (FastMCP 3.1.x Middleware API), registered via `mcp.add_middleware()` in lifespan() after all tool registrations. (Both detailed under "Known Upstream Bugs and Temporary Patches".)
+   - **Temporary Patches** (`app/patches/`): startup monkey-patches for upstream MCP SDK bugs. **Middleware** (`app/middleware/`): schema-aware `JsonStringDeserializerMiddleware` (FastMCP 3.2.x Middleware API), registered via `mcp.add_middleware()` in lifespan() after all tool registrations. (Both detailed under "Known Upstream Bugs and Temporary Patches".)
 
 2. **Authentication Layer** (`app/auth/simple_token.py`): Bearer token auth for HTTP transport, constant-time comparison. Via `MCP_AUTH_PROVIDER` + `MCP_AUTH_TOKEN`.
 
