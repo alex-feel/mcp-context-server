@@ -547,8 +547,10 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('semantic_search_context not registered (feature disabled)')
         elif get_embedding_provider() is not None:
+            # register_tool logs both outcomes itself ('<tool> registered' or
+            # 'not registered (in DISABLED_TOOLS)'); an extra unconditional log
+            # here would falsely assert registration when DISABLED_TOOLS skips it.
             register_tool(mcp, semantic_search_context)
-            logger.info('semantic_search_context registered')
         elif semantic_mode == 'true':
             logger.warning(
                 'ENABLE_SEMANTIC_SEARCH=true but no embedding provider is available '

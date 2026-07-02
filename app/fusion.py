@@ -39,13 +39,14 @@ def reciprocal_rank_fusion(
         Combined results sorted by RRF score (descending), with scores breakdown.
 
     Example:
-        >>> fts = [{'id': 1, 'score': 2.5}, {'id': 2, 'score': 1.8}]
-        >>> semantic = [{'id': 2, 'distance': 0.3}, {'id': 3, 'distance': 0.5}]
+        >>> fts = [{'id': '0190abcdef1234567890abcdef123401', 'score': 2.5}]
+        >>> semantic = [{'id': '0190abcdef1234567890abcdef123401', 'distance': 0.3}]
         >>> results = reciprocal_rank_fusion(fts, semantic, k=60)
-        >>> # Document 2 appears in both, so it ranks higher
+        >>> # The document appears in both sources, so it ranks higher
     """
-    # Build document registry with scores from each source
-    doc_registry: dict[int, dict[str, Any]] = {}
+    # Build document registry with scores from each source, keyed by the
+    # 32-char lowercase hex UUIDv7 context id.
+    doc_registry: dict[str, dict[str, Any]] = {}
 
     # Process FTS results (rank 1 = best score, highest relevance)
     for rank, result in enumerate(fts_results, start=1):
