@@ -411,27 +411,48 @@ async def navigate_context(
         except ValueError as exc:
             raise ToolError(f'Invalid context ID: {exc}') from exc
 
-        rows = await repos.context.get_by_ids([resolved_id])
-        if not rows:
-            raise ToolError(f'Context entry not found: {context_id}')
-        row = rows[0]
-        text_value = row['text_content']
-        text = text_value if text_value is not None else ''
-
-        # Root summary mirrors the live summary column by reference; an empty or
-        # whitespace-only stored summary normalizes to None per the optional-field
-        # convention (OutlineNodeDict.summary is str | None), which is distinct from
-        # the search tools' '' (empty string) for an absent summary. The flat
-        # summary column is never overloaded.
-        summary_value = row['summary']
-        root_summary = summary_value if isinstance(summary_value, str) and summary_value.strip() else None
-
-        # Stored per-node summaries are fetched by id and do NOT depend on the
-        # parse, so they are loaded first; the whole CPU-bound parse + serialize
-        # block can then run as a single (optionally offloaded) unit.
+        # The entry row and the stored node summaries live in different tables and
+        # are read on separate connections (no shared snapshot). A text-change
+        # update commits new text AND replacement node rows atomically, so a commit
+        # landing between the two reads would pair the OLD text's outline with the
+        # NEW node summaries -- mis-attaching a post-edit section summary to a
+        # pre-edit span via a retained heading slug. Probe the entry's updated_at
+        # after the node read and re-take the whole snapshot (bounded) when a
+        # concurrent update landed in the window; the race is milliseconds-wide,
+        # so one retry virtually always converges.
+        text = ''
+        root_summary: str | None = None
         node_summaries: dict[str, str] = {}
-        if include_node_summaries and settings.index_tree.node_summaries_enabled:
+        want_node_summaries = include_node_summaries and settings.index_tree.node_summaries_enabled
+        for _snapshot_attempt in range(3):
+            rows = await repos.context.get_by_ids([resolved_id])
+            if not rows:
+                raise ToolError(f'Context entry not found: {context_id}')
+            row = rows[0]
+            text_value = row['text_content']
+            text = text_value if text_value is not None else ''
+
+            # Root summary mirrors the live summary column by reference; an empty or
+            # whitespace-only stored summary normalizes to None per the optional-field
+            # convention (OutlineNodeDict.summary is str | None), which is distinct from
+            # the search tools' '' (empty string) for an absent summary. The flat
+            # summary column is never overloaded.
+            summary_value = row['summary']
+            root_summary = summary_value if isinstance(summary_value, str) and summary_value.strip() else None
+
+            if not want_node_summaries:
+                break
+
+            # Stored per-node summaries are fetched by id and do NOT depend on the
+            # parse, so they are loaded before the CPU-bound parse + serialize block.
             node_summaries = await repos.index_nodes.get_nodes_for_context(resolved_id)
+            recheck = await repos.context.get_by_ids([resolved_id])
+            if recheck and recheck[0]['updated_at'] == row['updated_at']:
+                break
+            logger.debug(
+                'navigate_context %s: entry changed between text and node-summary '
+                'reads; retaking snapshot', resolved_id,
+            )
 
         def _build_outline() -> tuple[OutlineNodeDict, int]:
             built = parse_outline(text, max_depth=max_depth)
