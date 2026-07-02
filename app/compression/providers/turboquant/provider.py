@@ -10,6 +10,7 @@ the caller to bound CPU concurrency.
 
 import asyncio
 import logging
+import threading
 from typing import Literal
 
 import numpy as np
@@ -23,6 +24,19 @@ from app.compression.types import CompressionMetadata
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# threadpoolctl's save/set/restore of the BLAS thread count is PROCESS-GLOBAL
+# ("There is no thread level isolation" per its own docs). The hot path fans
+# encode/decode/estimate across worker threads (asyncio.to_thread bounded by
+# COMPRESSION_MAX_CONCURRENT), so unsynchronized threadpool_limits blocks
+# would race: one thread's exit can restore the UNPINNED count while a sibling
+# still computes (breaking the pin), or capture a sibling's pinned value as the
+# "original" to restore (leaking the pin after all work ends). Serializing the
+# whole limit-scoped BLAS section keeps both documented contracts -- pinned
+# during the GEMM, restored after -- at the cost of serializing the BLAS calls
+# themselves, which is acceptable: they are the CPU-bound section the pin
+# exists to keep from oversubscribing.
+_blas_limits_lock = threading.Lock()
 
 
 class TurboQuantProvider:
@@ -153,7 +167,7 @@ class TurboQuantProvider:
         Returns:
             Serialized payload bytes.
         """
-        with threadpool_limits(limits=2, user_api='blas'):
+        with _blas_limits_lock, threadpool_limits(limits=2, user_api='blas'):
             payload = encoder.encode(
                 vectors,
                 bits=self._bits,
@@ -175,7 +189,7 @@ class TurboQuantProvider:
             Reconstructed float32 vectors.
         """
         decoded_payload = payload_from_bytes(payload)
-        with threadpool_limits(limits=2, user_api='blas'):
+        with _blas_limits_lock, threadpool_limits(limits=2, user_api='blas'):
             return decoder.decode(decoded_payload)
 
     def estimate_inner_product_sync(
@@ -199,7 +213,7 @@ class TurboQuantProvider:
             Float32 array of shape ``(nq, n_rows)``.
         """
         decoded_payload = payload_from_bytes(payload)
-        with threadpool_limits(limits=2, user_api='blas'):
+        with _blas_limits_lock, threadpool_limits(limits=2, user_api='blas'):
             return decoder.estimate_inner_product(decoded_payload, queries)
 
     def warmup(self) -> None:
