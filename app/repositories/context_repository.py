@@ -181,11 +181,14 @@ class ContextRepository(BaseRepository):
                 latest_row = cursor.fetchone()
 
                 is_duplicate = False
+                # The hash value the dedup decision observed; re-asserted by the
+                # UPDATE's null-safe predicate below (NULL for pre-migration rows).
+                observed_hash: str | None = None
                 if latest_row:
-                    existing_hash = latest_row['content_hash']
-                    if existing_hash is not None:
+                    observed_hash = latest_row['content_hash']
+                    if observed_hash is not None:
                         # Hash-based comparison (fast path)
-                        is_duplicate = existing_hash == content_hash
+                        is_duplicate = observed_hash == content_hash
                     else:
                         # Fallback for pre-migration rows without content_hash
                         is_duplicate = latest_row['text_content'] == text_content
@@ -212,7 +215,16 @@ class ContextRepository(BaseRepository):
                         is_duplicate = False
 
                 if is_duplicate and latest_row:
-                    # The latest entry has identical text - update metadata, content_type, and timestamp
+                    # The latest entry has identical text - update metadata, content_type,
+                    # and timestamp. The content_hash predicate (IS = SQLite's null-safe
+                    # equality) re-asserts the dedup decision at write time: a concurrent
+                    # committed writer that changed the candidate's text (its hash) or
+                    # deleted the row between the SELECT above and this UPDATE makes the
+                    # predicate miss, so the store falls through to INSERT instead of
+                    # overwriting the newer text's hash/summary/metadata with values
+                    # describing THIS request's text. SQLite's serialized single writer
+                    # makes the race unreachable here, but the guard keeps the two
+                    # backends behaviorally identical.
                     existing_id = latest_row['id']
                     cursor.execute(
                         f'''
@@ -224,17 +236,21 @@ class ContextRepository(BaseRepository):
                             version = version + 1,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {self._placeholder(5)}
+                          AND content_hash IS {self._placeholder(6)}
                         ''',
-                        (metadata, dedup_content_type, summary, content_hash, existing_id),
+                        (metadata, dedup_content_type, summary, content_hash, existing_id, observed_hash),
                     )
-                    rows_affected = cursor.rowcount
-                    if rows_affected == 0:
-                        logger.warning(
-                            'Deduplication UPDATE affected 0 rows for context %s in thread %s',
-                            existing_id, thread_id,
-                        )
-                    logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                    return existing_id, True
+                    if cursor.rowcount > 0:
+                        logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
+                        return existing_id, True
+                    # A concurrent writer invalidated the dedup decision; fall through to
+                    # the INSERT below (the caller's reconcile machinery regenerates any
+                    # generation legs its pre-check skipped expecting an UPDATE).
+                    logger.info(
+                        'Deduplication UPDATE for context %s in thread %s matched 0 rows '
+                        '(concurrent modification); inserting a new entry instead',
+                        existing_id, thread_id,
+                    )
 
                 # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
                 new_id = generate_id()
@@ -270,10 +286,13 @@ class ContextRepository(BaseRepository):
             )
 
             is_duplicate = False
+            # The hash value the dedup decision observed; re-asserted by the
+            # UPDATE's null-safe predicate below (NULL for pre-migration rows).
+            observed_hash: str | None = None
             if latest_row:
-                existing_hash = latest_row['content_hash']
-                if existing_hash is not None:
-                    is_duplicate = existing_hash == content_hash
+                observed_hash = latest_row['content_hash']
+                if observed_hash is not None:
+                    is_duplicate = observed_hash == content_hash
                 else:
                     is_duplicate = latest_row['text_content'] == text_content
 
@@ -301,7 +320,15 @@ class ContextRepository(BaseRepository):
                     is_duplicate = False
 
             if is_duplicate and latest_row:
-                # Update metadata, content_type, and timestamp
+                # Update metadata, content_type, and timestamp. The content_hash
+                # predicate (IS NOT DISTINCT FROM = null-safe equality) re-asserts
+                # the dedup decision at write time: under READ COMMITTED a
+                # concurrent writer can commit a text change (new hash) or a delete
+                # between the SELECT above and this UPDATE, and the bare id
+                # predicate would re-evaluate against the NEW row version
+                # (EvalPlanQual) and overwrite it -- poisoning content_hash with
+                # THIS request's hash and cross-attributing summary/metadata to
+                # different text. A 0-row match instead falls through to INSERT.
                 existing_id = latest_row['id']
                 result = await conn.execute(
                     f'''
@@ -313,24 +340,30 @@ class ContextRepository(BaseRepository):
                             version = version + 1,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {self._placeholder(5)}
+                          AND content_hash IS NOT DISTINCT FROM {self._placeholder(6)}
                         ''',
                     metadata,
                     dedup_content_type,
                     summary,
                     content_hash,
                     existing_id,
+                    observed_hash,
                 )
                 rows_affected = int(result.split()[-1]) if result else 0
-                if rows_affected == 0:
-                    logger.warning(
-                        'Deduplication UPDATE affected 0 rows for context %s in thread %s',
-                        existing_id, thread_id,
-                    )
-                logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                # Normalize the asyncpg pgproto.UUID to the canonical 32-char hex
-                # the MCP API contract requires (the SQLite branch's TEXT id is
-                # already hex); returning the raw UUID diverges and breaks callers.
-                return normalize_id(str(existing_id)), True
+                if rows_affected > 0:
+                    logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
+                    # Normalize the asyncpg pgproto.UUID to the canonical 32-char hex
+                    # the MCP API contract requires (the SQLite branch's TEXT id is
+                    # already hex); returning the raw UUID diverges and breaks callers.
+                    return normalize_id(str(existing_id)), True
+                # A concurrent writer invalidated the dedup decision; fall through to
+                # the INSERT below (the caller's reconcile machinery regenerates any
+                # generation legs its pre-check skipped expecting an UPDATE).
+                logger.info(
+                    'Deduplication UPDATE for context %s in thread %s matched 0 rows '
+                    '(concurrent modification); inserting a new entry instead',
+                    existing_id, thread_id,
+                )
 
             # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
             new_id = generate_id()

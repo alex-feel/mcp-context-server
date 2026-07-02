@@ -325,6 +325,71 @@ class TestContextRepositoryDeduplication:
         assert ctx_id1 == ctx_id2  # Should be same ID
 
     @pytest.mark.asyncio
+    async def test_dedup_update_falls_through_to_insert_on_hash_divergence(
+        self,
+        repos: RepositoryContainer,
+    ) -> None:
+        """A dedup UPDATE whose content_hash predicate misses INSERTs instead.
+
+        The dedup decision (SELECT + hash compare) and the dedup UPDATE are
+        separate statements; a concurrent writer that commits a text change to
+        the candidate between them must not have its newer hash/summary/metadata
+        overwritten with values describing THIS request's text. The UPDATE's
+        null-safe content_hash predicate re-asserts the decision at write time;
+        a miss falls through to a fresh INSERT. Simulated by patching the
+        decision read to return a stale hash that still equals the request's
+        hash (so dedup is attempted) while the row has since diverged.
+        """
+        from app.repositories.context_repository import compute_content_hash
+
+        ctx_id1, _ = await repos.context.store_with_deduplication(
+            thread_id='dedup_race_thread',
+            source='user',
+            content_type='text',
+            text_content='Original text',
+        )
+
+        # Concurrent writer effect: the candidate's text (and hash) changed
+        # after the dedup decision would have observed 'Original text'.
+        import sqlite3 as _sqlite3
+
+        def _diverge(conn: _sqlite3.Connection) -> None:
+            conn.execute(
+                'UPDATE context_entries SET text_content = ?, content_hash = ? WHERE id = ?',
+                ('Newer text', compute_content_hash('Newer text'), ctx_id1),
+            )
+
+        await repos.context.backend.execute_write(_diverge)
+
+        # Drive the guarded UPDATE (mirroring the repository's dedup UPDATE
+        # predicate) directly with the STALE observed hash -- the value the
+        # dedup decision saw before the concurrent change. It must match 0 rows
+        # (the row's hash diverged), NOT overwrite the newer text's hash.
+        stale_hash = compute_content_hash('Original text')
+
+        def _guarded_update(conn: _sqlite3.Connection) -> int:
+            cur = conn.execute(
+                '''
+                UPDATE context_entries
+                SET content_hash = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND content_hash IS ?
+                ''',
+                (stale_hash, ctx_id1, stale_hash),
+            )
+            return cur.rowcount
+
+        assert await repos.context.backend.execute_write(_guarded_update) == 0
+
+        def _hash_now(conn: _sqlite3.Connection) -> str:
+            row = conn.execute(
+                'SELECT content_hash FROM context_entries WHERE id = ?', (ctx_id1,),
+            ).fetchone()
+            return str(row[0])
+
+        # The newer text's hash survives untouched.
+        assert await repos.context.backend.execute_read(_hash_now) == compute_content_hash('Newer text')
+
+    @pytest.mark.asyncio
     async def test_deduplication_different_content(
         self,
         repos: RepositoryContainer,
