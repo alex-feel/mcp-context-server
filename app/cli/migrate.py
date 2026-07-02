@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 # UUIDv7 generation for integer-keyed rows uses the timestamp parameter of
@@ -189,6 +190,13 @@ def parse_backend_url(url: str) -> tuple[str, str]:
         raise ValueError('database URL must not be empty')
     if lowered.startswith('sqlite://'):
         path = url[len('sqlite://') :]
+        if path.startswith('//'):
+            # SQLAlchemy POSIX absolute form: sqlite:////abs/path keeps an
+            # extra leading slash after the scheme strip. Collapse the run to
+            # a single slash; a retained double-slash prefix would later be
+            # read as a file-URI authority by the SQLite backend and rejected
+            # (sqlite3.OperationalError: invalid uri authority).
+            path = '/' + path.lstrip('/')
         if path.startswith('/') and len(path) >= 3 and path[2] == ':':
             # Windows drive form: sqlite:///C:/foo -> C:/foo
             path = path.lstrip('/')
@@ -254,7 +262,13 @@ def open_source_sqlite(path: str) -> sqlite3.Connection:
     abs_path = Path(path).resolve()
     if not abs_path.exists():
         raise sqlite3.OperationalError(f'source database file does not exist: {abs_path}')
-    uri = f'file:{abs_path.as_posix()}?mode=ro'
+    # SQLite percent-decodes URI paths before use, so the path must be
+    # percent-encoded ('%', '?', '#' would be misread), and a POSIX
+    # double-slash root would be parsed as a URI authority.
+    posix_path = abs_path.as_posix()
+    if posix_path.startswith('//'):
+        posix_path = '/' + posix_path.lstrip('/')
+    uri = f"file:{quote(posix_path, safe='/:')}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     return conn

@@ -1271,6 +1271,23 @@ class TestUrlHelpers:
         assert kind == 'sqlite'
         assert addr.endswith('tmp/file.db')
 
+    def test_parse_backend_url_sqlalchemy_posix_absolute_form(self) -> None:
+        """``sqlite:////abs/path`` collapses to a single-slash absolute path.
+
+        The SQLAlchemy absolute form on POSIX uses four slashes; keeping the
+        double-slash prefix would later be parsed as a file-URI authority by
+        the SQLite backend and rejected.
+        """
+        kind, addr = parse_backend_url('sqlite:////tmp/file.db')
+        assert kind == 'sqlite'
+        assert addr == '/tmp/file.db'
+
+    def test_parse_backend_url_windows_drive_scheme_form(self) -> None:
+        """``sqlite:///C:/foo`` strips the leading slash before the drive letter."""
+        kind, addr = parse_backend_url('sqlite:///C:/data/file.db')
+        assert kind == 'sqlite'
+        assert addr == 'C:/data/file.db'
+
     def test_parse_backend_url_postgresql_form(self) -> None:
         """``postgresql://`` URLs resolve to a PostgreSQL address."""
         kind, addr = parse_backend_url('postgresql://u:p@h/db')

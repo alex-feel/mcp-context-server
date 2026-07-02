@@ -99,6 +99,41 @@ class TestDatabaseInitialization:
         await async_temp_db_path.chmod(0o644)
 
 
+class TestConnectionUriEncoding:
+    """Filesystem paths must survive the SQLite file-URI round trip."""
+
+    @pytest.mark.asyncio
+    async def test_backend_opens_path_with_uri_special_characters(self, tmp_path: Path) -> None:
+        """A db path containing '%' and '#' opens the exact file, not a decoded variant.
+
+        SQLite percent-decodes URI paths before use, so the backend must
+        percent-encode the filesystem path when building the connection URI;
+        a raw '%40' segment would otherwise be decoded to '@' and a '#'
+        would truncate the path as a URI fragment.
+        """
+        from app.backends import create_backend
+
+        special_dir = tmp_path / 'pct %40 and #frag'
+        special_dir.mkdir()
+        db_path = special_dir / 'context.db'
+
+        backend = create_backend(backend_type='sqlite', db_path=str(db_path))
+        await backend.initialize()
+        try:
+            def _select_one(conn: sqlite3.Connection) -> int:
+                row = conn.execute('SELECT 1').fetchone()
+                return int(row[0])
+
+            assert await backend.execute_read(_select_one) == 1
+        finally:
+            await backend.shutdown()
+
+        assert db_path.exists()
+        # The mis-decoded variant ('#' read as a fragment, '%40' decoded to
+        # '@') would land directly under tmp_path; it must not exist.
+        assert not (tmp_path / 'pct @ and ').exists()
+
+
 class TestDatabaseConnection:
     """Test database connection management."""
 

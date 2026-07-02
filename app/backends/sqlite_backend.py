@@ -30,6 +30,7 @@ from typing import TypeVar
 from typing import cast
 from typing import overload
 from typing import override
+from urllib.parse import quote
 
 from app.errors import ControlFlowError
 from app.settings import get_settings
@@ -580,8 +581,16 @@ class SQLiteBackend:
                 init_conn.execute('PRAGMA encoding = "UTF-8"')
                 init_conn.commit()
 
-        # Use URI mode for better control
-        uri = f"file:{self.db_path}?mode={'ro' if readonly else 'rw'}"
+        # Use URI mode for better control. SQLite percent-decodes the URI
+        # path before use, so the filesystem path must be percent-encoded:
+        # a raw path containing '%', '?', or '#' would otherwise be misread
+        # as an escape sequence, query string, or fragment. A POSIX path
+        # with a leading double slash is collapsed first -- 'file://tmp/db'
+        # would parse 'tmp' as the URI authority and be rejected.
+        path_str = str(self.db_path)
+        if path_str.startswith('//'):
+            path_str = '/' + path_str.lstrip('/')
+        uri = f"file:{quote(path_str, safe='/:')}?mode={'ro' if readonly else 'rw'}"
         conn = sqlite3.connect(
             uri,
             uri=True,
