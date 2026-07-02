@@ -966,9 +966,14 @@ class StorageSettings(BaseSettings):
     postgresql_password: SecretStr = Field(default=SecretStr('postgres'), alias='POSTGRESQL_PASSWORD')
     postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
 
-    # PostgreSQL connection pool settings
-    postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN')
-    postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX')
+    # PostgreSQL connection pool settings. ge bounds mirror the SQLite pool
+    # fields: a zero or negative size passes pydantic but only fails later at
+    # asyncpg pool creation with a plain ValueError, which the backend's broad
+    # exception handler would misclassify as a retryable DependencyError
+    # (exit 69, supervisor restart loop) instead of a permanent
+    # ConfigurationError. min stays ge=0 (an empty warm pool is valid).
+    postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN', ge=0)
+    postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX', ge=1)
     postgresql_session_pooler_max_clients: int = Field(
         default=15,
         alias='POSTGRESQL_SESSION_POOLER_MAX_CLIENTS',
