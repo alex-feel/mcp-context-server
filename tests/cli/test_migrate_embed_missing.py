@@ -346,7 +346,11 @@ def test_embed_missing_refuses_dim_mismatch(
     assert '[512]' in err
 
 
-def _seed_compression_metadata(path: Path, dim: int) -> None:
+def _seed_compression_metadata(
+    path: Path,
+    dim: int,
+    fingerprint: str | None = None,
+) -> None:
     """Create + populate the singleton compression_metadata row at ``dim``."""
     conn = sqlite3.connect(str(path))
     try:
@@ -365,9 +369,10 @@ def _seed_compression_metadata(path: Path, dim: int) -> None:
             ''',
         )
         conn.execute(
-            'INSERT INTO compression_metadata (id, provider, bits, variant, seed, dim) '
-            "VALUES (1, 'turboquant', 4, 'ip', 0, ?)",
-            (dim,),
+            'INSERT INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, ?, ?)",
+            (dim, fingerprint),
         )
         conn.commit()
     finally:
@@ -438,3 +443,39 @@ def test_embed_missing_refuses_compression_seed_mismatch(
     err = capsys.readouterr().err
     assert 'COMPRESSION_SEED=7' in err
     assert 'compression_metadata' in err
+
+
+def test_embed_missing_refuses_codebook_fingerprint_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A sealed codebook fingerprint this host cannot reproduce is refused.
+
+    Regression: the guard compared only the sealed scalar tuple. On a host
+    whose BLAS/LAPACK build materializes a DIFFERENT numpy.linalg.qr rotation
+    for the same (dim, seed) -- the cross-host divergence the fingerprint
+    machinery exists to catch -- every scalar matches, yet encoding would write
+    payloads in the wrong rotation basis. The guard MUST compare the realized
+    fingerprint like the server startup validator and the decompress guard do.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('COMPRESSION_SEED', '0')
+    monkeypatch.setenv('COMPRESSION_BITS', '4')
+    monkeypatch.setenv('COMPRESSION_VARIANT', 'ip')
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')
+    monkeypatch.setenv('DB_PATH', str(tmp_path / 'test.db'))
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    _bootstrap_schema(db)
+    # Every scalar matches the sealed row, but the recorded fingerprint is one
+    # this host's rotation cannot reproduce (simulating the divergent-BLAS host).
+    _seed_compression_metadata(db, 1024, fingerprint='0' * 64)
+
+    rc = cli_main(['--source-url', f'sqlite:///{db}', '--embed-missing'])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert 'fingerprint' in err
+    assert 'rotation' in err

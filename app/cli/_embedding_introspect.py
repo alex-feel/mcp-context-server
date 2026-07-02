@@ -128,6 +128,36 @@ async def dimension_conflict_error(
                     'env vars to the sealed values, or decompress and rebuild to change '
                     'them. Mismatches: ' + '; '.join(mismatches) + '.'
                 )
+
+            # The scalar tuple matching is NOT sufficient: the same (dim, seed)
+            # can materialize a DIFFERENT numpy.linalg.qr rotation on a host with
+            # a different BLAS/LAPACK build or CPU dispatch, so encoding here
+            # would write payloads in the wrong rotation basis -- unreadable by
+            # the original server host, whose own startup fingerprint check
+            # still passes (its realized rotation matches the sealed digest).
+            # Compare the REALIZED fingerprint like the server startup validator
+            # and the --decompress guard do; a row that predates fingerprinting
+            # (None) cannot be checked and proceeds (the decompress guard's
+            # warn-only stance for the same state).
+            if meta.codebook_fingerprint is not None:
+                import asyncio
+
+                from app.compression.factory import create_compression_provider
+
+                provider = create_compression_provider()
+                realized = await asyncio.to_thread(provider.codebook_fingerprint)
+                if realized != meta.codebook_fingerprint:
+                    return (
+                        'the realized compression codebook fingerprint on THIS host does '
+                        'not match the one recorded when the database was first compressed '
+                        '(typically a different BLAS/LAPACK build or CPU materializing a '
+                        'different rotation for the same dim and seed). Embedding now would '
+                        'write payloads in the wrong rotation basis, silently corrupting '
+                        'semantic search for the new entries. Run this command on a host '
+                        'whose numerical libraries reproduce the original codebook (for '
+                        'example the server host itself). Expected '
+                        f'fingerprint={meta.codebook_fingerprint}, realized={realized}.'
+                    )
     return None
 
 
