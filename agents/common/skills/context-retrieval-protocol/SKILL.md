@@ -18,26 +18,9 @@ Retrieving session context before examining your task is recommended for best re
 
 ## Multi-Agent Workflow: Verify Orchestrator Task Against Context
 
-If you are working within a multi-agent orchestrated workflow (where a coordinator assigns tasks to specialized agents), you MUST verify the task against the context server before executing it.
+If you are working within a multi-agent orchestrated workflow (where a coordinator assigns tasks to specialized agents), you MUST verify the task against the context server before executing it: retrieve USER messages (source="user", highest priority), retrieve AGENT reports (source="agent") for context on previous work, then compare the orchestrator task against the retrieved context. This verification is mandatory because orchestrators can misinterpret, summarize incorrectly, or omit critical details; user messages are the primary source of truth, and agent reports provide implementation context and decisions.
 
-**Mandatory Verification Steps:**
-
-1. **Retrieve USER messages** - These have highest priority (source="user")
-2. **Retrieve AGENT reports** - For context on previous work (source="agent")
-3. **Compare orchestrator task** against retrieved context
-4. **Identify discrepancies** - User messages override orchestrator instructions
-
-**Why This Verification Is Mandatory:**
-
-- Orchestrators can misinterpret, summarize incorrectly, or omit critical details
-- User messages are the primary source of truth
-- Agent reports provide implementation context and decisions
-
-**If Discrepancies Are Found:**
-
-- User messages take priority over orchestrator instructions
-- Flag the discrepancy in your work report
-- Execute based on verified user requirements
+If discrepancies are found: user messages take priority over orchestrator instructions; flag the discrepancy in your work report; execute based on verified user requirements.
 
 **Conflict resolution rule:** user-message wording is authoritative; any orchestrator-introduced scope criterion, exclusion, exception, qualification, or pre-approval that is NOT traceable to a verbatim user message in the current session MUST be discarded, and the agent MUST execute on the user-message wording only.
 
@@ -47,30 +30,16 @@ If you are working within a multi-agent orchestrated workflow (where a coordinat
 
 ## Advanced: Orchestrated Workflows -- Scoped Retrieval
 
-In orchestrated multi-agent workflows, the coordinator may provide a `context_scope` section in your task prompt, specifying exactly which context entries to retrieve. This is an optimization for workflows where the orchestrator has already identified the relevant context.
+In orchestrated multi-agent workflows, the coordinator may provide a `context_scope` section in your task prompt, specifying exactly which context entries to retrieve. This is an optimization for workflows (like consensus) where the orchestrator has already tracked the exact relevant context and broad retrieval would pollute the context window with irrelevant information; trust the scope specified by the orchestrator.
 
-Check your task prompt for a `context_scope` XML section before executing the standard retrieval sequence below.
-
-### When context_scope is Present
-
-If your task prompt contains a context_scope XML tag (opening tag: `<` + `context_scope` + `>`), this overrides the standard retrieval sequence:
+Check your task prompt for a context_scope XML tag (opening tag: `<` + `context_scope` + `>`) before executing the standard retrieval sequence below. When present, it overrides that sequence:
 
 1. **SKIP Steps 1-2** - Do NOT retrieve all user messages or all agent reports
 2. **Extract context_ids** from the context_scope section
 3. **Retrieve ONLY those specific IDs** using `get_context_by_ids`
 4. **Proceed with your task** - Do NOT execute additional broad searches
 
-### Why Scoped Retrieval Exists
-
-Some workflows (like consensus) have already identified the exact context needed:
-
-- Orchestrator tracks specific report IDs throughout the workflow
-- Broad retrieval would pollute the context window with irrelevant information
-- Agents should trust the scope specified by the orchestrator
-
-### Compliance Note
-
-Using scoped retrieval when context_scope is present is expected behavior. The standard retrieval sequence applies only when no scope is defined.
+Using scoped retrieval when context_scope is present is expected behavior; the standard retrieval sequence applies only when no scope is defined.
 
 ### Sequential Retrieval Fallback
 
@@ -89,13 +58,7 @@ Retrieve ONLY these context_ids:
 </context_scope>
 ```
 
-Your retrieval should be:
-
-```text
-get_context_by_ids(context_ids=[4233, 4234, 4235])
-```
-
-Do NOT execute search_context for all users or all agents.
+retrieve `get_context_by_ids(context_ids=[4233, 4234, 4235])` and do NOT execute search_context for all users or all agents.
 
 </scoped_retrieval>
 
@@ -105,7 +68,7 @@ Do NOT execute search_context for all users or all agents.
 
 ## Quick Recall (Default Pattern)
 
-For most use cases, two steps are sufficient:
+For most use cases, two steps are sufficient.
 
 ### Step 1: Search for Relevant Context
 
@@ -122,11 +85,9 @@ Browse truncated previews to identify entries relevant to your task.
 get_context_by_ids(context_ids=[...relevant IDs from Step 1...])
 ```
 
-Retrieve full content of relevant entries identified in Step 1.
-
 ## Comprehensive Multi-Agent Pattern
 
-When working in a multi-agent workflow or when deeper context discovery is needed, extend the quick recall with additional steps:
+When working in a multi-agent workflow or when deeper context discovery is needed, extend the quick recall:
 
 ### Step 3: Hybrid Search for Additional Context (Recommended)
 
@@ -134,25 +95,11 @@ When working in a multi-agent workflow or when deeper context discovery is neede
 hybrid_search_context(query="relevant search terms", thread_id="session-id", limit=15)
 ```
 
-Use hybrid search to find conceptually related content. Useful when:
-
-- Metadata filtering alone may miss relevant entries
-- You need conceptual matches beyond exact keyword matches
-- You are uncertain if you have retrieved all relevant context
+Use hybrid search to find conceptually related content when metadata filtering alone may miss relevant entries, when you need conceptual matches beyond exact keyword matches, or when you are uncertain you have retrieved all relevant context.
 
 ### Step 4: Navigate References (Optional)
 
-```text
-# Check if retrieved entries have references.context_ids
-# If yes, consider retrieving them for deeper understanding
-get_context_by_ids(context_ids=[...IDs from metadata.references.context_ids...])
-```
-
-When entries retrieved in earlier steps contain `references.context_ids` in their metadata, these represent related entries the original author worked with. Consider following these references when:
-
-- The current context seems incomplete
-- You need to understand the reasoning behind decisions
-- Referenced entries appear relevant to your task
+When entries retrieved in earlier steps contain `references.context_ids` in their metadata, these represent related entries the original author worked with. Retrieve them via `get_context_by_ids(context_ids=[...IDs from metadata.references.context_ids...])` when the current context seems incomplete, when you need to understand the reasoning behind decisions, or when referenced entries appear relevant to your task.
 
 ## Complete Example
 
@@ -176,7 +123,7 @@ The thread ID is used as `thread_id` for context server queries. Obtain it using
 
 1. **Already available** -- If the thread ID is provided via context or prompt, use it directly
 2. **Thread ID file** -- Check `.context_server/.thread_id` in the project working directory
-3. **Project directory name** -- If no thread ID file exists, derive the thread identifier from the project directory basename using the git remote URL fallback chain described below. Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
+3. **Project directory name** -- If no thread ID file exists, derive the thread identifier using the canonical project name fallback chain described below (git remote URL preferred, then git toplevel basename, then current directory basename). Using the project name ensures all agents working on the same project write to the same thread, which is essential for multi-agent coordination
 
 </thread_id>
 
@@ -184,30 +131,13 @@ The thread ID is used as `thread_id` for context server queries. Obtain it using
 
 # How to Obtain Canonical Project Name
 
-The project name should be derived using the following fallback chain to ensure consistency across git worktrees:
+Derive the project name using the following fallback chain (in priority order) to ensure consistency across git worktrees:
 
-**Fallback Chain (in priority order):**
+1. **Parse from git remote URL** (PREFERRED) -- Try `origin` first: `git remote get-url origin`; parse the repository name from the URL (`https://github.com/user/my-project.git` -> `my-project`; `git@github.com:user/my-project.git` -> `my-project`). If `origin` is unavailable, try `upstream`, then the first available remote
+2. **Git toplevel basename** (FALLBACK for repos without remotes) -- `git rev-parse --show-toplevel`, extract the last path component (`/home/user/projects/my-project` -> `my-project`)
+3. **Current directory basename** (FALLBACK for non-git directories) -- Extract the last directory name from the working directory path (`/home/user/work/my-project` -> `my-project`)
 
-1. **Parse from git remote URL** (PREFERRED)
-   - Try `origin` remote first: `git remote get-url origin`
-   - Parse repository name from URL:
-     - `https://github.com/user/my-project.git` -> `my-project`
-     - `git@github.com:user/my-project.git` -> `my-project`
-   - If `origin` unavailable, try `upstream`, then first available remote
-
-2. **Git toplevel basename** (FALLBACK for repos without remotes)
-   - `git rev-parse --show-toplevel` -> extract last path component
-   - Example: `/home/user/projects/my-project` -> `my-project`
-
-3. **Current directory basename** (FALLBACK for non-git directories)
-   - Extract last directory name from working directory path
-   - Example: `/home/user/work/my-project` -> `my-project`
-
-**Why this matters:**
-
-- Different worktrees of the same repository have different directory names
-- Using directory name causes context isolation to break across worktrees
-- Remote URL provides true canonical identity across all worktrees and users
+Why this matters: different worktrees of the same repository have different directory names, so directory-derived names break context isolation across worktrees; the remote URL provides true canonical identity across all worktrees and users.
 
 </project_name>
 
@@ -215,21 +145,19 @@ The project name should be derived using the following fallback chain to ensure 
 
 ## Worktree-Aware Context Queries
 
-When working in git worktree environments, use appropriate query patterns based on your search scope.
+When working in git worktree environments, use the query pattern matching your search scope.
 
 ### Same-Session Queries (Default)
 
-Always use `thread_id` filter for current session context:
+Always use the `thread_id` filter for current session context; this is the default pattern for all retrieval steps:
 
 ```text
 search_context(thread_id="session-uuid", source="agent", limit=30)
 ```
 
-This is the default pattern for all retrieval steps.
-
 ### Cross-Session, Same-Worktree Queries
 
-When searching across sessions within the same worktree:
+Find historical work in the same worktree but different sessions:
 
 ```text
 search_context(
@@ -238,33 +166,22 @@ search_context(
 )
 ```
 
-Use this pattern to find historical work in the same worktree but different sessions.
-
 ### Cross-Session, Same-Project Queries
 
-When searching across all worktrees of the same project:
+Find work across all worktrees of the repository:
 
 ```text
 search_context(metadata={"project": "canonical-name"}, limit=20)
 hybrid_search_context(query="...", metadata={"project": "canonical-name"})
 ```
 
-Use this pattern to find work across all worktrees of the repository.
-
 ### WARNING: Cross-Worktree Context
 
-When retrieving context from other worktrees, exercise caution:
-
-- **File paths may not exist** - Different worktrees have different branches checked out
-- **Implementation status may differ** - Code merged in one worktree may not exist in another
-- **Always verify file existence** before referencing paths from cross-worktree context
-- **Check branch compatibility** - Features implemented for one branch may conflict with another
-
-**Safe Cross-Worktree Usage:**
+Exercise caution with context from other worktrees: different worktrees have different branches checked out, so referenced file paths may not exist, implementation status may differ (code merged in one worktree may not exist in another), and features implemented for one branch may conflict with another. Safe usage:
 
 1. Use cross-worktree context for **conceptual understanding** (patterns, decisions, rationale)
-2. **Verify** that referenced files exist in current worktree before editing
-3. **Do not assume** implementation status applies to current branch
+2. **Always verify** that referenced files exist in the current worktree before referencing or editing them
+3. **Do not assume** implementation status applies to the current branch
 
 </worktree_queries>
 
@@ -272,34 +189,11 @@ When retrieving context from other worktrees, exercise caution:
 
 ## Environment Integration Patterns
 
-Context retrieval operations can interact with environment-level hooks, validation gates, and orchestration workflows. The patterns below describe how to leverage these interactions for more robust context management.
+Context retrieval operations can interact with environment-level hooks, validation gates, and orchestration workflows:
 
-### Hook-Aware Retrieval
-
-In environments with event-driven hooks, context retrieval may trigger or be gated by validation logic:
-
-- **Pre-retrieval validation:** Environment hooks may verify that agents retrieve context before starting work, enforcing retrieval discipline
-- **Post-retrieval verification:** Orchestration workflows may compare retrieved context against task instructions to detect discrepancies
-- **Retrieval auditing:** Hooks may log which context entries were retrieved by which agent, supporting traceability
-
-When operating in such environments, ensure your retrieval follows the documented sequence (Quick Recall or Comprehensive Multi-Agent Pattern) to avoid triggering validation failures.
-
-### Metadata Patterns for Multi-Agent Coordination
-
-Environments that coordinate multiple specialized agents benefit from structured metadata queries:
-
-- **Agent-specific retrieval:** Filter by `agent_name` to find prior work from a specific agent role (e.g., find all research plans from an implementation planner)
-- **Status-aware retrieval:** Filter by `status: "done"` to find completed work, or `status: "pending"` to find work requiring continuation
-- **Cross-agent discovery:** Use `report_type` filtering to find all validation reports, all research reports, or all implementation reports regardless of which agent produced them
-- **Reference chain traversal:** Follow `references.context_ids` to reconstruct the full workflow chain (research -> plan -> implementation -> validation)
-
-### Integration with Orchestrated Workflows
-
-When an orchestrator coordinates multiple agents, context retrieval serves as the shared memory layer:
-
-- **Task handoff:** Agents retrieve prior agent reports to understand completed work before continuing
-- **Plan verification:** Agents retrieve implementation plans and compare against current task instructions
-- **Conflict detection:** Agents retrieve user messages to verify orchestrator instructions match user intent (see Orchestrator Verification section)
+- **Hook-aware retrieval:** Environment hooks may verify that agents retrieve context before starting work (enforcing retrieval discipline), compare retrieved context against task instructions to detect discrepancies, or log which context entries were retrieved by which agent for traceability. In such environments, follow the documented sequence (Quick Recall or Comprehensive Multi-Agent Pattern) to avoid triggering validation failures.
+- **Metadata patterns for multi-agent coordination:** Filter by `agent_name` to find prior work from a specific agent role, by `status: "done"` or `status: "pending"` to find completed work or work requiring continuation, and by `report_type` to find all validation, research, or implementation reports regardless of which agent produced them; follow `references.context_ids` to reconstruct the full workflow chain (research -> plan -> implementation -> validation).
+- **Orchestrated workflows:** Context retrieval serves as the shared memory layer -- agents retrieve prior agent reports to understand completed work before continuing (task handoff), retrieve implementation plans and compare against current task instructions (plan verification), and retrieve user messages to verify orchestrator instructions match user intent (conflict detection; see Orchestrator Verification section).
 
 These patterns are generic and apply to any environment with multi-agent coordination capabilities.
 
@@ -309,9 +203,7 @@ These patterns are generic and apply to any environment with multi-agent coordin
 
 # Available Context Server Tools
 
-**Note:** Not all tools listed below may be available in your environment. Tool availability depends on server configuration and how the server is connected to your MCP client. Use the tools that are available to you. If a recommended tool is unavailable, use an alternative from this table.
-
-The tools below cover retrieval. For storage and update operations, the context server exposes a parallel set of tools (for example `store_context` and `update_context`) -- consult the storage section of the server's own documentation.
+**Note:** Not all tools listed below may be available in your environment; availability depends on server configuration and how the server is connected to your MCP client. Use the tools that are available to you; if a recommended tool is unavailable, use an alternative from this table. The tools below cover retrieval -- for storage and update operations, the context server exposes a parallel set of tools (for example `store_context` and `update_context`); consult the storage section of the server's own documentation.
 
 | Tool                      | Status           | Returns                           | Use For                                                |
 |---------------------------|------------------|-----------------------------------|--------------------------------------------------------|
@@ -326,21 +218,13 @@ The tools below cover retrieval. For storage and update operations, the context 
 
 **Key notes:**
 
-- **ALL search tools return TRUNCATED content** (text + summary). Use `get_context_by_ids` to retrieve full content of relevant entries identified through search. This applies to `search_context`, `hybrid_search_context`, `semantic_search_context`, and `fts_search_context` equally.
-- Because results are truncated, you can search more aggressively: use higher limits (10-20+), perform multiple sequential searches with different queries, and iterate to find the best matches before retrieving full content.
-- `search_context` is recommended for browsing user and agent entries
-- `get_context_by_ids` is recommended for retrieving full content
-- `hybrid_search_context` is recommended for conceptual discovery -- use when in doubt
-- Specify `thread_id` to search within the current session
-- **Truncated text, summaries, and metadata are for RELEVANCE ASSESSMENT only -- not for understanding substance.** Always retrieve full content via `get_context_by_ids` before reasoning about an entry's actual content (the Truncation Discipline section below states this rule in full).
+- **ALL search tools return TRUNCATED content** (text + summary): this applies to `search_context`, `hybrid_search_context`, `semantic_search_context`, and `fts_search_context` equally. Use `get_context_by_ids` to retrieve full content of relevant entries identified through search.
+- Because results are truncated, you can search more aggressively: use higher limits (10-20+), perform multiple sequential searches with different queries, and iterate to find the best matches before retrieving full content. Use `hybrid_search_context` for conceptual discovery -- use it when in doubt.
+- Specify `thread_id` to search within the current session.
 
 ## Truncation Discipline (ABSOLUTE)
 
-Truncated text, summaries, and metadata returned by ALL search tools (`search_context`, `hybrid_search_context`, `semantic_search_context`, `fts_search_context`) are FOR RELEVANCE ASSESSMENT ONLY. Substance MUST come from `get_context_by_ids` full retrieval.
-
-This is an ABSOLUTE rule with NO exception. Search-result summaries are AI-generated approximations that MAY omit critical conditions, caveats, or nuance present in the full text. Drawing conclusions about what an entry says, recommends, or decides from search results alone -- before retrieving the full text via `get_context_by_ids` -- is the failure mode this rule prevents.
-
-This applies to every search tool, every result field (text, summary, metadata, tags), and every downstream consumer. Reasoning about an entry's substance from any source other than `get_context_by_ids` full retrieval is a PROTOCOL VIOLATION.
+Truncated text, summaries, and metadata returned by ALL search tools (`search_context`, `hybrid_search_context`, `semantic_search_context`, `fts_search_context`) are FOR RELEVANCE ASSESSMENT ONLY; substance MUST come from `get_context_by_ids` full retrieval. This is an ABSOLUTE rule with NO exception: search-result summaries are AI-generated approximations that MAY omit critical conditions, caveats, or nuance present in the full text, and drawing conclusions about what an entry says, recommends, or decides from search results alone -- before retrieving the full text via `get_context_by_ids` -- is exactly the failure mode this rule prevents. It applies to every search tool, every result field (text, summary, metadata, tags), and every downstream consumer; reasoning about an entry's substance from any source other than `get_context_by_ids` full retrieval is a PROTOCOL VIOLATION.
 
 ## Score Fields Reference
 
@@ -354,14 +238,14 @@ Each search tool returns a `scores` object with different fields:
 
 ### Score Polarity
 
-| Field               | Polarity        | Description                       |
-|---------------------|-----------------|-----------------------------------|
-| `fts_score`         | HIGHER = better | BM25/ts_rank relevance            |
-| `fts_rank`          | LOWER = better  | FTS result rank (1 = best)        |
-| `semantic_distance` | LOWER = better  | L2 Euclidean distance             |
-| `semantic_rank`     | LOWER = better  | Semantic result rank (1 = best)   |
-| `rrf`               | HIGHER = better | Combined RRF score                |
-| `rerank_score`      | HIGHER = better | Cross-encoder relevance (0.0-1.0) |
+| Field               | Polarity        | Description                                                             |
+|---------------------|-----------------|-------------------------------------------------------------------------|
+| `fts_score`         | HIGHER = better | BM25/ts_rank relevance                                                  |
+| `fts_rank`          | LOWER = better  | FTS result rank (1 = best)                                              |
+| `semantic_distance` | LOWER = better  | Similarity-ordered: L2 (fp32/mse) or negated inner product (ip variant) |
+| `semantic_rank`     | LOWER = better  | Semantic result rank (1 = best)                                         |
+| `rrf`               | HIGHER = better | Combined RRF score                                                      |
+| `rerank_score`      | HIGHER = better | Cross-encoder relevance (0.0-1.0)                                       |
 
 </tools>
 
@@ -369,7 +253,7 @@ Each search tool returns a `scores` object with different fields:
 
 ## Metadata Filtering
 
-When filtering search results, use the metadata fields documented by the context server itself. Common fields include `agent_name`, `task_name`, `status`, `project`, `report_type`, `technologies`, and `references` (an object that may contain a `context_ids` array). The filter operators supported by the server's search API include direct equality (via the `metadata` parameter) and the `metadata_filters` advanced operators such as `eq`, `ne`, `gt`, `lt`, `contains`, `array_contains`, `starts_with`, `exists`, and similar comparators.
+When filtering search results, use the metadata fields documented by the context server itself. Common fields include `agent_name`, `task_name`, `status`, `project`, `report_type`, `technologies`, and `references` (an object that may contain a `context_ids` array). Supported filter operators include direct equality (via the `metadata` parameter) and the `metadata_filters` advanced operators such as `eq`, `ne`, `gt`, `lt`, `contains`, `array_contains`, `starts_with`, `exists`, and similar comparators.
 
 **Quick Reference for Filtering:**
 
@@ -382,9 +266,7 @@ When filtering search results, use the metadata fields documented by the context
 | Technology  | Use `array_contains` or tags             | `metadata_filters: [{key: "technologies", operator: "array_contains", value: "python"}]` |
 | References  | `metadata_filters` with `array_contains` | `[{key: "references.context_ids", operator: "array_contains", value: 2322}]`             |
 
-**Note:** For technology filtering, you have two options:
-- Use `array_contains` operator for exact element match: `metadata_filters: [{key: "technologies", operator: "array_contains", value: "python"}]`
-- Use `tags` parameter for OR logic: `tags: ["python", "fastapi"]`
+**Note:** For technology filtering, use the `array_contains` operator for exact element match (see table) or the `tags` parameter for OR logic: `tags: ["python", "fastapi"]`.
 
 </metadata_reference>
 
@@ -392,9 +274,7 @@ When filtering search results, use the metadata fields documented by the context
 
 ## Advanced: Revision Context Detection
 
-This section is relevant for multi-agent workflows where agents update each other's prior work. If you are working in a simple single-agent setup, you can skip this section.
-
-### Detecting Revision Mode
+This section is relevant for multi-agent workflows where agents update each other's prior work; in a simple single-agent setup, you can skip it.
 
 When your task prompt contains revision indicators, extract the previous context_id and use `update_context` instead of `store_context`.
 
@@ -406,23 +286,11 @@ When your task prompt contains revision indicators, extract the previous context
 | `PLAN REVISION REQUEST`    | Revision mode - look for context_id     |
 | `RESEARCH CONTINUATION`    | Continuation mode - look for context_id |
 
-### Extraction Protocol
-
-1. **Detect revision mode** by scanning prompt for indicators above
-2. **Extract the context_id:**
-   ```text
-   # Look for: PREVIOUS CONTEXT ID: 123
-   # Extract: 123
-   ```
-3. **Retrieve the previous entry:**
-   ```text
-   get_context_by_ids(context_ids=[extracted_id])
-   ```
-4. **Store the context_id** for use with `update_context` when saving
+**Extraction protocol:** (1) detect revision mode by scanning the prompt for the indicators above; (2) extract the context_id (e.g., `PREVIOUS CONTEXT ID: 123` -> `123`); (3) retrieve the previous entry with `get_context_by_ids(context_ids=[extracted_id])`; (4) store the context_id for use with `update_context` when saving.
 
 ### Finding Your Own Prior Entries (for Update)
 
-When you need to update your own prior work but context_id is not provided:
+When you need to update your own prior work but the context_id is not provided:
 
 ```text
 search_context(
@@ -433,9 +301,7 @@ search_context(
 )
 ```
 
-Then use `update_context(context_id=...)` with the most recent matching entry.
-
-Only update entries where `agent_name` matches your agent identifier. Never update another agent's entries.
+Then use `update_context(context_id=...)` with the most recent matching entry. Only update entries where `agent_name` matches your agent identifier. Never update another agent's entries.
 
 </revision_context_detection>
 
@@ -443,48 +309,23 @@ Only update entries where `agent_name` matches your agent identifier. Never upda
 
 ## References-Based Navigation
 
-### Understanding `references.context_ids`
+When you retrieve context entries, check for `metadata.references.context_ids`. These IDs are NOT random - they represent entries the original agent actually WORKED WITH: implementation guides reference the research plans they are based on, validation reports reference the implementation reports they validated, and research reports reference prior work they built upon. These connections form a knowledge graph that you can navigate.
 
-When you retrieve context entries, check for `metadata.references.context_ids`. These IDs are NOT random - they represent entries the original agent actually WORKED WITH:
+**CONSIDER following references when:** you need deeper understanding of WHY decisions were made; the current entry references a plan or research you have not yet retrieved; you want to trace the full history of a task (research -> implementation -> validation); or the truncated preview suggests related context would be valuable. You do NOT need to follow references when you already have sufficient context for your task.
 
-- Implementation guides reference research plans they are based on
-- Validation reports reference implementation reports they validated
-- Research reports reference prior work they built upon
+**How to navigate:** identify references in the retrieved entry's metadata, retrieve the related entries using `get_context_by_ids`, and evaluate relevance -- not all referenced entries may be needed for the current task:
 
-**These connections form a knowledge graph that you can navigate.**
+```json
+"metadata": {
+  "references": {
+    "context_ids": [3348, 3349, 3352]
+  }
+}
+```
 
-### When to Follow References
-
-**CONSIDER following `references.context_ids` when:**
-
-- You need deeper understanding of WHY decisions were made
-- The current entry references a plan or research you have not yet retrieved
-- You want to trace the full history of a task (research -> implementation -> validation)
-- The truncated preview suggests related context would be valuable
-
-**You do NOT need to follow references when:**
-
-- You already have sufficient context for your task
-
-### How to Navigate References
-
-1. **Identify references** in retrieved entry's metadata:
-
-   ```json
-   "metadata": {
-     "references": {
-       "context_ids": [3348, 3349, 3352]
-     }
-   }
-   ```
-
-2. **Retrieve related entries** using `get_context_by_ids`:
-
-   ```text
-   get_context_by_ids(context_ids=[3348, 3349, 3352])
-   ```
-
-3. **Evaluate relevance** - not all referenced entries may be needed for current task
+```text
+get_context_by_ids(context_ids=[3348, 3349, 3352])
+```
 
 ### Navigation Depth Guidance
 
@@ -504,48 +345,21 @@ These patterns help agents maintain coherence across context window boundaries a
 
 ### Basic Continuity (Default)
 
-These patterns should be applied by default in all sessions:
+Apply these patterns by default in all sessions:
 
 - **Status tracking:** Always set `status: "done"` or `status: "pending"` in metadata to indicate work completion state
-- **Session handoff notes:** Before stopping, store a brief summary of work performed, decisions made, and next steps. This enables the next session (or agent) to resume without re-discovering context
+- **Session handoff notes:** Before stopping, store a brief summary of work performed, decisions made, and next steps, so the next session (or agent) can resume without re-discovering context
 - **Task completion markers:** Use `references.context_ids` to link new work to the prior entries it builds upon, creating a navigable chain of work history
-- **Re-retrieval after context loss:** After any context compaction or window reset, re-read key context entries from the server (plans, requirements, prior decisions) to restore working memory. Do not rely on compacted summaries or search-truncated previews for critical details -- always retrieve full content via `get_context_by_ids` (see Key Notes in tools section)
+- **Re-retrieval after context loss:** After any context compaction or window reset, re-read key context entries (plans, requirements, prior decisions) from the server to restore working memory. Do not rely on compacted summaries or search-truncated previews for critical details -- always retrieve full content via `get_context_by_ids`
 
 ### Advanced: Long-Running Task Continuity (Optional)
 
 For tasks spanning multiple context windows or requiring extended multi-step execution, consider these additional patterns:
 
-**Progressive Summarization:**
-
-Periodically condense accumulated context into structured summaries stored on the context server. This preserves critical information (architectural decisions, unresolved issues, implementation progress) while reducing context window pressure. Store summaries as new context entries with `references.context_ids` pointing to the original detailed entries.
-
-**Checkpoint Patterns:**
-
-At defined milestones during multi-step tasks, store intermediate state as a context entry:
-
-- Current progress (what is completed, what remains)
-- Key decisions made and their rationale
-- Active blockers or dependencies
-- Files modified and their purpose
-
-This enables recovery if a session is interrupted and provides a clear starting point for the next session.
-
-**Context Window Monitoring:**
-
-When working on extended tasks, be aware of context window limits:
-
-- If approaching limits, proactively store current progress before compaction occurs
-- After compaction, immediately retrieve critical context entries (plans, requirements) from the server
-- Treat the context server as persistent memory that survives compaction -- store anything that must not be lost
-
-**Multi-Agent Handoff Protocols:**
-
-For clean agent-to-agent transitions in orchestrated workflows:
-
-- The completing agent stores a comprehensive handoff report with clear next steps
-- The receiving agent retrieves the handoff report and referenced context before starting
-- Both agents use consistent metadata (`references.context_ids`) to maintain the work chain
-- Disagreements between orchestrator instructions and stored context should be resolved in favor of stored user messages (see Orchestrator Verification)
+- **Progressive summarization:** Periodically condense accumulated context into structured summaries stored on the context server, preserving critical information (architectural decisions, unresolved issues, implementation progress) while reducing context window pressure. Store summaries as new context entries with `references.context_ids` pointing to the original detailed entries
+- **Checkpoints:** At defined milestones during multi-step tasks, store intermediate state as a context entry -- current progress (what is completed, what remains), key decisions and their rationale, active blockers or dependencies, and files modified and their purpose. This enables recovery if a session is interrupted and provides a clear starting point for the next session
+- **Context window monitoring:** If approaching context limits, proactively store current progress before compaction occurs; after compaction, immediately retrieve critical context entries (plans, requirements) from the server. Treat the context server as persistent memory that survives compaction -- store anything that must not be lost
+- **Multi-agent handoff:** For clean agent-to-agent transitions in orchestrated workflows, the completing agent stores a comprehensive handoff report with clear next steps; the receiving agent retrieves the handoff report and referenced context before starting; both agents use consistent metadata (`references.context_ids`) to maintain the work chain; and disagreements between orchestrator instructions and stored context are resolved in favor of stored user messages (see Orchestrator Verification)
 
 </context_continuity>
 
@@ -554,9 +368,8 @@ For clean agent-to-agent transitions in orchestrated workflows:
 # Retrieval Strategy
 
 - Retrieve relevant user and agent context to understand the current task
-- You can query the context server as many times as needed
-- You can return to the context server at any point during your work
-- Search iteratively and liberally -- all search results are truncated, so you can safely perform multiple searches with higher limits (10-20+) without overwhelming your context window. Use `get_context_by_ids` to retrieve full content only for entries that appear relevant.
+- Query the context server as many times as needed; you can return to it at any point during your work
+- Search iteratively and liberally -- all search results are truncated, so you can safely perform multiple searches with higher limits (10-20+) without overwhelming your context window. Use `get_context_by_ids` to retrieve full content only for entries that appear relevant
 - Include `include_images: true` to capture visual context (diagrams, matrices, charts)
 
 </strategy>
@@ -565,81 +378,48 @@ For clean agent-to-agent transitions in orchestrated workflows:
 
 # Retrieval Patterns
 
-**When to use each pattern:**
-
-- **Browse and Retrieve**: Default pattern for most use cases
-- **Hybrid Search**: Recommended when you need conceptual search
-- **Semantic Search**: Optional - alternative to hybrid when only semantic matching is needed
-- **Full-Text Search**: Optional - precise keyword matching, boolean queries, exact phrases
+For every search pattern below: specify `thread_id` to search within the current session, and remember that results are truncated -- assess relevance from truncated text + summary + metadata, then use `get_context_by_ids` for full content of relevant entries.
 
 ## Pattern 1 - Browse and Retrieve (Default)
 
-Use for the default retrieval workflow (finding context by source and metadata):
+Default retrieval workflow (finding context by source and metadata):
 
-1. Use `search_context` with `thread_id` and `source="user"` (Step 1)
-2. Use `search_context` with `thread_id` and `source="agent"` (Step 2)
+1. Use `search_context` with `thread_id` and `source="user"`
+2. Use `search_context` with `thread_id` and `source="agent"`
 3. Browse truncated previews to identify ALL relevant entries
-4. Use `get_context_by_ids` to retrieve full content of selected entries (Step 3)
+4. Use `get_context_by_ids` to retrieve full content of selected entries
 
 ## Pattern 2 - Hybrid Search (Recommended)
 
-Use for iterative discovery (combined FTS + semantic search):
+Iterative conceptual discovery (combined FTS + semantic search):
 
-1. Use `hybrid_search_context` with a natural language query describing what you need
-2. Specify `thread_id` to search within current session context
-3. Documents found by BOTH FTS and semantic methods rank highest
-4. Best for finding prior solutions, knowledge, principles, and conceptually related content
-5. Search iteratively: start broad with higher limits (10-20+), assess truncated previews + summaries, refine queries, then retrieve full content of best matches via `get_context_by_ids`
-6. Results are truncated -- assess relevance from truncated text + summary + metadata, then use `get_context_by_ids` for full content of relevant entries
+1. Use `hybrid_search_context` with a natural language query describing what you need; documents found by BOTH FTS and semantic methods rank highest
+2. Best for finding prior solutions, knowledge, principles, and conceptually related content
+3. Search iteratively: start broad with higher limits (10-20+), assess truncated previews + summaries, refine queries, then retrieve full content of best matches via `get_context_by_ids`
 
-**Use hybrid search aggressively.** Because results are lightweight (truncated), you can safely perform multiple rounds of searching with different queries and higher limits without overwhelming the context window.
-
-IF IN DOUBT - USE IT!
+**Use hybrid search aggressively.** Because results are lightweight (truncated), you can safely perform multiple rounds of searching with different queries and higher limits without overwhelming the context window. IF IN DOUBT - USE IT!
 
 ## Pattern 3 - Semantic Search (Optional)
 
-Use for meaning-based discovery when hybrid search is not needed:
-
-1. Use `semantic_search_context` with a query describing what you need
-2. Specify `thread_id` to search within current session context
-3. Results are truncated -- assess relevance from truncated text + summary + metadata, then use `get_context_by_ids` for full content of relevant entries
+Meaning-based discovery when hybrid search is not needed: use `semantic_search_context` with a query describing what you need.
 
 ## Pattern 4 - Full-Text Search (Optional)
 
-Use for precise keyword matching:
+Precise keyword matching with `fts_search_context`:
 
-1. Use `fts_search_context` for keyword-based search
-2. Specify `thread_id` to search within current session context
-3. Use `boolean` mode for complex queries: `"python AND async NOT deprecated"`
-4. Use `phrase` mode for exact matches: `"error handling"`
-5. Enable `highlight: true` to see matching snippets
-6. Results are truncated -- assess relevance from truncated text + summary + metadata, then use `get_context_by_ids` for full content of relevant entries
+1. Use `boolean` mode for complex queries: `"python AND async NOT deprecated"`
+2. Use `phrase` mode for exact matches: `"error handling"`
+3. Enable `highlight: true` to see matching snippets
 
 ## Pattern 5 - References Navigation (Optional)
 
-Use for following knowledge graph links when deeper context is needed:
+Follow knowledge graph links when deeper context is needed -- research plans reference prior research you need to understand, validation reports reference implementations you need to verify, or you see a chain of work and need the full picture, including the full user intent:
 
-1. Retrieve entries using Steps 1-2 (or extended Steps 1-4)
+1. Retrieve entries using the retrieval sequence (Steps 1-2, optionally 3-4)
 2. Use `get_context_by_ids` to retrieve selected referenced entries
 3. Repeat if those entries have further relevant references (depth limit: 2-3 levels)
 
-**Example workflow:**
-
-```text
-# Step 1-3: Retrieved entry 3357 (validation report)
-# Entry 3357 has metadata.references.context_ids: [3349, 3352]
-
-# These are: 3349 (potentially implementation plan), 3352 (potentially implementation report)
-# Retrieve them for complete picture
-
-get_context_by_ids(context_ids=[3349, 3352])
-```
-
-**When to use Pattern 5:**
-
-- Research plans reference prior research you need to understand
-- Validation reports reference implementations you need to verify
-- You see a chain of work and need the full picture, including the full user intent
+**Example:** a retrieved validation report (entry 3357) has `metadata.references.context_ids: [3349, 3352]` -- potentially the implementation plan and implementation report. Retrieve them for the complete picture: `get_context_by_ids(context_ids=[3349, 3352])`.
 
 </patterns>
 
@@ -649,39 +429,33 @@ get_context_by_ids(context_ids=[3349, 3352])
 
 <example scenario="complete_mandatory_sequence">
 **Input:** Agent starts task, receives instructions from orchestrator
-**Correct Approach:** (1) Obtain thread ID; (2) Step 1: Call `search_context(thread_id="session-id", source="user", limit=10)` to retrieve user messages; (3) Call `search_context(thread_id="session-id", source="agent", limit=30)` to retrieve agent reports; (4) Step 2: Call `get_context_by_ids(context_ids=[...])` to retrieve full content; (5) If in a multi-agent workflow, verify orchestrator task against retrieved user messages and agent reports; (6) Step 3: Call `hybrid_search_context` if additional context needed
+**Correct Approach:** (1) Obtain thread ID; (2) Step 1: call `search_context(thread_id="session-id", source="user", limit=10)` and `search_context(thread_id="session-id", source="agent", limit=30)`; (3) Step 2: call `get_context_by_ids(context_ids=[...])` to retrieve full content; (4) if in a multi-agent workflow, verify the orchestrator task against retrieved user messages and agent reports; (5) Step 3: call `hybrid_search_context` if additional context is needed
 **Result:** Agent has full context of user requirements, verified orchestrator task, and implementation plans
 </example>
 
 <example scenario="orchestrator_verification">
 **Input:** Orchestrator provides task "Implement feature X with approach A"
-**Correct Approach:** (1) Execute Steps 1-2 to retrieve user messages and agent reports; (2) Compare orchestrator task against user messages; (3) Discover user message says "Use approach B, not A"; (4) Flag discrepancy; (5) Execute based on USER requirement (approach B)
-**Result:** Agent correctly identifies orchestrator error and follows user's actual requirements
+**Correct Approach:** (1) Execute Steps 1-2 to retrieve user messages and agent reports; (2) compare the orchestrator task against user messages; (3) discover the user message says "Use approach B, not A"; (4) flag the discrepancy; (5) execute based on the USER requirement (approach B)
+**Result:** Agent correctly identifies the orchestrator error and follows the user's actual requirements
 </example>
 
-<example scenario="hybrid_search_usage">
-**Input:** Agent completed Steps 1-3 but uncertain if all relevant context was retrieved
-**Correct Approach:** (1) Execute Step 4: `hybrid_search_context(query="authentication implementation patterns", thread_id="session-id", limit=15)`; (2) Review truncated previews + summaries to identify relevant entries; (3) Call `get_context_by_ids(context_ids=[...relevant IDs...])` to retrieve full content of promising matches; (4) If needed, search again with refined queries or different terms
-**Result:** Agent finds additional conceptually related context that metadata filtering missed, using iterative truncation-aware search
-</example>
-
-<example scenario="truncation_aware_retrieval">
-**Input:** Agent needs to find prior implementation decisions about database schema design
-**Correct Approach:** (1) Search broadly: `hybrid_search_context(query="database schema design decisions", thread_id="session-id", limit=15)`; (2) Review truncated text + summary + metadata of each result to assess POTENTIAL RELEVANCE only -- do not conclude what an entry recommends or decides based on truncated previews; (3) Identify 3-4 entries that appear potentially relevant based on previews; (4) Retrieve full content: `get_context_by_ids(context_ids=[id1, id2, id3, id4])`; (5) Only AFTER reading full content, reason about what the entries actually say; (6) If insufficient, search again with refined query
-**Result:** Agent efficiently discovers relevant context through iterative search, retrieves full content before drawing any conclusions about substance, and avoids the silent failure mode of acting on truncated approximations
+<example scenario="truncation_aware_hybrid_search">
+**Input:** Agent completed Steps 1-2 but is uncertain all relevant context was retrieved (e.g., prior decisions about database schema design)
+**Correct Approach:** (1) Execute Step 3: `hybrid_search_context(query="database schema design decisions", thread_id="session-id", limit=15)`; (2) review truncated text + summary + metadata of each result to assess POTENTIAL RELEVANCE only -- do not conclude what an entry recommends or decides based on truncated previews; (3) retrieve full content of the entries that appear relevant: `get_context_by_ids(context_ids=[...relevant IDs...])`; (4) only AFTER reading full content, reason about what the entries actually say; (5) if insufficient, search again with refined queries or different terms
+**Result:** Agent finds conceptually related context that metadata filtering missed, retrieves full content before drawing any conclusions about substance, and avoids the silent failure mode of acting on truncated approximations
 </example>
 
 <example scenario="protocol_violation">
-**Input:** Agent receives orchestrator task and skips context retrieval, trusting orchestrator's summary
-**Incorrect Approach:** Agent proceeds directly with task based only on orchestrator-provided information
+**Input:** Agent receives orchestrator task and skips context retrieval, trusting the orchestrator's summary
+**Incorrect Approach:** Agent proceeds directly with the task based only on orchestrator-provided information
 **Result:** Not recommended - Agent missed critical user requirements and produced incorrect work
-**Correct Action:** Agent should execute retrieval Steps 1-2 before examining any task
+**Correct Action:** Execute retrieval Steps 1-2 before examining any task
 </example>
 
 <example scenario="references_navigation">
-**Input:** Agent retrieves implementation report with metadata showing `references.context_ids: [3322, 3323]`
-**Correct Approach:** (1) Note that entry references two prior entries; (2) Call `get_context_by_ids(context_ids=[3322, 3323])` to retrieve BOTH entries;
-**Result:** Agent has complete context chain: (3322) -> (3323) -> current context entry, enabling full traceability and verification of decisions
+**Input:** Agent retrieves an implementation report whose metadata shows `references.context_ids: [3322, 3323]`
+**Correct Approach:** Call `get_context_by_ids(context_ids=[3322, 3323])` to retrieve BOTH referenced entries
+**Result:** Agent has the complete context chain (3322) -> (3323) -> current entry, enabling full traceability and verification of decisions
 </example>
 
 </examples>
@@ -692,11 +466,11 @@ get_context_by_ids(context_ids=[3349, 3352])
 
 Before proceeding with your task, consider verifying the following:
 
-- [ ] **Step 1 completed**: Called `search_context(source="user")` to retrieve user messages
-- [ ] **Step 2 completed**: Called `search_context(source="agent")` to retrieve agent reports
+- [ ] **User messages retrieved**: Called `search_context(source="user")`
+- [ ] **Agent reports retrieved**: Called `search_context(source="agent")`
 - [ ] **Full content retrieved**: Called `get_context_by_ids` for full content of relevant entries
 - [ ] **Hybrid search considered**: Evaluated whether `hybrid_search_context` is needed for additional context
-- [ ] **References considered**: Checked `metadata.references.context_ids` in retrieved entries; followed references when deeper context needed
+- [ ] **References considered**: Checked `metadata.references.context_ids` in retrieved entries; followed references when deeper context was needed
 
 Completing this checklist is a best practice for reliable results.
 
@@ -706,18 +480,9 @@ Completing this checklist is a best practice for reliable results.
 
 # Error Handling
 
-**If a context retrieval step fails:**
+**If a context retrieval step fails:** retry once after a brief pause; document the failure in your work report; continue with the remaining steps of the retrieval sequence; and note limitations in your analysis due to incomplete context. A single failure does not excuse skipping other steps.
 
-1. **Retry once** after a brief pause
-2. **Document the failure** in your work report
-3. **Continue with remaining steps** of the mandatory sequence
-4. **Note limitations** in your analysis due to incomplete context
-
-Even if one step fails, attempt the remaining steps. A single failure does not excuse skipping other steps.
-
-**If ALL context retrieval fails:**
-
-**WARNING: Results will be significantly degraded without context server access.**
+**If ALL context retrieval fails**, results will be significantly degraded without context server access:
 
 1. **Log the failure** with the specific error message
 2. **Proceed with available information** if any context was obtained through other means
@@ -729,6 +494,6 @@ Even if one step fails, attempt the remaining steps. A single failure does not e
    ```
 4. **Note limitations** in your work report so downstream consumers know context was unavailable
 
-**Rationale:** Context server provides session continuity and coordination. Without it, results may be degraded but work can still proceed with reduced confidence.
+**Rationale:** The context server provides session continuity and coordination; without it, work can still proceed, but with reduced confidence.
 
 </error_handling>
