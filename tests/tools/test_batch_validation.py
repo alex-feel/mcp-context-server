@@ -49,6 +49,48 @@ class TestStoreBatchEntryTypeValidation:
         assert result['results'][0]['success'] is False
         assert 'tags must be a list of strings' in (result['results'][0]['error'] or '')
 
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_text(self) -> None:
+        """A truthy non-string text is rejected, never str()-coerced.
+
+        Coercion would silently store the Python repr of the payload (a dict
+        becomes "{'a': 1}") -- text the Pydantic-typed single-entry
+        store_context rejects at the tool boundary.
+        """
+        from app.tools.batch import store_context_batch
+
+        result = await store_context_batch(
+            entries=[{'thread_id': 't', 'source': 'user', 'text': {'a': 1}}],
+            atomic=False,
+        )
+        assert result['results'][0]['success'] is False
+        assert 'text must be a string' in (result['results'][0]['error'] or '')
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_thread_id(self) -> None:
+        from app.tools.batch import store_context_batch
+
+        result = await store_context_batch(
+            entries=[{'thread_id': 123, 'source': 'user', 'text': 'hi'}],
+            atomic=False,
+        )
+        assert result['results'][0]['success'] is False
+        assert 'thread_id must be a string' in (result['results'][0]['error'] or '')
+
+    @pytest.mark.asyncio
+    async def test_update_batch_rejects_non_string_text(self) -> None:
+        from app.tools.batch import update_context_batch
+
+        result = await update_context_batch(
+            updates=[{
+                'context_id': '0190abcdef1234567890abcdef123456',
+                'text': ['not', 'a', 'string'],
+            }],
+            atomic=False,
+        )
+        assert result['results'][0]['success'] is False
+        assert 'text must be a string' in (result['results'][0]['error'] or '')
+
 
 # A minimal but well-formed base64 PNG signature: enough to pass image normalization
 # so the only reason an entry can fail is the deliberately malformed images SHAPE.

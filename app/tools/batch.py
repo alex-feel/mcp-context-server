@@ -138,9 +138,21 @@ async def store_context_batch(
                 validation_errors.append((idx, 'Missing required field: text'))
                 continue
 
-            # Clean input strings
-            thread_id = str(entry['thread_id']).strip()
-            text = str(entry['text']).strip()
+            # Clean input strings. Reject non-strings instead of str()-coercing:
+            # coercion would silently persist the Python repr of a truthy dict/
+            # list/number payload the Pydantic-typed single-entry store_context
+            # rejects at the tool boundary (parity with the metadata/tags/images
+            # rejections below).
+            thread_id_raw = entry['thread_id']
+            if not isinstance(thread_id_raw, str):
+                validation_errors.append((idx, 'thread_id must be a string'))
+                continue
+            text_raw = entry['text']
+            if not isinstance(text_raw, str):
+                validation_errors.append((idx, 'text must be a string'))
+                continue
+            thread_id = thread_id_raw.strip()
+            text = text_raw.strip()
 
             if not thread_id:
                 validation_errors.append((idx, 'thread_id cannot be empty or whitespace'))
@@ -912,10 +924,17 @@ async def update_context_batch(
                 ))
                 continue
 
-            # Validate text if provided
+            # Validate text if provided. Reject non-strings instead of
+            # str()-coercing: coercion would silently persist the Python repr
+            # of a dict/list/number payload the Pydantic-typed single-entry
+            # update_context rejects at the tool boundary (parity with the
+            # metadata/tags rejections below).
             text = update.get('text')
             if text is not None:
-                text = str(text).strip()
+                if not isinstance(text, str):
+                    validation_errors.append((idx, context_id, 'text must be a string'))
+                    continue
+                text = text.strip()
                 if not text:
                     validation_errors.append((idx, context_id, 'text cannot be empty or whitespace'))
                     continue
