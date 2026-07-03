@@ -30,6 +30,7 @@ from app.compression.provenance import insert_compression_metadata
 from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata
 from app.errors import ConfigurationError
+from app.migrations.compression import uncompressed_fp32_guard_message
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -169,16 +170,27 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
     db_meta = await read_compression_metadata(backend)
 
     if db_meta is None and not settings.embedding.generation_enabled:
+        # Mirror the migration's enable-direction guard before skipping: a
+        # populated, never-compressed fp32 store must refuse loudly (exit 78)
+        # even while embedding generation is toggled off, otherwise a bare
+        # compression flip on an archive/read-only deployment would boot
+        # silently with every stored embedding invisible to search. Server
+        # startup already raises in apply_compression_migration before
+        # reaching this validator; the re-check keeps the validator safe when
+        # invoked standalone.
+        guard_message = await uncompressed_fp32_guard_message(backend)
+        if guard_message is not None:
+            raise ConfigurationError(guard_message)
         # Embedding storage -- and with it the compression schema -- is
         # provisioned from ENABLE_EMBEDDING_GENERATION, so with generation off
         # and no provenance row there is nothing to validate and nothing to
-        # seed (the compression migration skips schema creation on this
-        # configuration too). Seeding a row here would wedge a later
-        # ENABLE_EMBEDDING_COMPRESSION=false flip behind the disable-direction
-        # guard's --decompress instruction on a deployment whose
-        # embedding_chunks / vector infrastructure was never provisioned. A
-        # database that compressed data while generation was on still carries
-        # its row and is validated below.
+        # seed (on a fresh database without embedding infrastructure the
+        # compression migration skips schema creation too). Seeding a row here
+        # would wedge a later ENABLE_EMBEDDING_COMPRESSION=false flip behind
+        # the disable-direction guard's --decompress instruction on a
+        # deployment whose embedding_chunks / vector infrastructure was never
+        # provisioned. A database that compressed data while generation was on
+        # still carries its row and is validated below.
         logger.debug(
             'Compression provenance: skipped (embedding generation disabled, '
             'no provenance row)',

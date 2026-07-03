@@ -540,6 +540,40 @@ async def test_generation_disabled_without_row_skips_seeding(
 
 
 @pytest.mark.asyncio
+async def test_generation_disabled_with_populated_fp32_and_no_row_raises(
+    backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The validator mirrors the enable-direction guard when invoked standalone.
+
+    A populated, never-compressed fp32 store with compression enabled must
+    refuse (exit 78) even while embedding generation is off; returning
+    silently from the generation-off skip would let a bare compression flip
+    hide every stored embedding from search on an archive deployment.
+    """
+
+    def _seed_fp32(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'CREATE TABLE vec_context_embeddings '
+            '(id INTEGER PRIMARY KEY, context_id TEXT, embedding BLOB)',
+        )
+        conn.execute(
+            'INSERT INTO vec_context_embeddings (context_id, embedding) '
+            "VALUES ('abc', x'00')",
+        )
+
+    await backend.execute_write(_seed_fp32)
+
+    _set_compression_env(monkeypatch)
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    import app.migrations.compression as compression_module
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+    with pytest.raises(ConfigurationError, match='--compress'):
+        await validate_compression_provenance(backend=backend)
+
+
+@pytest.mark.asyncio
 async def test_generation_disabled_with_existing_row_still_validates(
     backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

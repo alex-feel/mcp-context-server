@@ -287,9 +287,12 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             elif not settings.embedding.generation_enabled:
                 # Embedding storage is provisioned from
                 # ENABLE_EMBEDDING_GENERATION; with generation off and nothing
-                # previously compressed, no compression schema or provenance
-                # row exists by design (the migration and validator both skip),
-                # so the absent row is the expected idle state, not an error.
+                # previously compressed, no provenance row exists by design
+                # (the validator skips seeding, and the migration provisions
+                # the schema only when embedding infrastructure exists), so
+                # the absent row is the expected idle state, not an error. A
+                # populated fp32 store cannot reach this branch: the
+                # enable-direction guard exits 78 in the migration first.
                 logger.info(
                     'Embedding compression enabled but idle: embedding '
                     'generation is disabled and no compressed data exists',
