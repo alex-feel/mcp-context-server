@@ -820,11 +820,17 @@ class SQLiteBackend:
                             current_request = request
                             self.metrics.write_queue_size = self._write_queue.qsize()
 
-                            # Check circuit breaker
+                            # Check circuit breaker. The done() guard matches every
+                            # other resolution site in this block: the caller's task
+                            # may have been cancelled while the request sat queued
+                            # (client disconnect), and set_exception on a done future
+                            # raises InvalidStateError -- which would skip the
+                            # current_request reset and log a spurious processor error.
                             if self.circuit_breaker.is_open():
-                                request.future.set_exception(
-                                    Exception('Database circuit breaker is open, too many failures'),
-                                )
+                                if not request.future.done():
+                                    request.future.set_exception(
+                                        Exception('Database circuit breaker is open, too many failures'),
+                                    )
                                 current_request = None
                                 continue
 

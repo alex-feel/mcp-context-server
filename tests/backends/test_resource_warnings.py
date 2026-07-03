@@ -424,6 +424,55 @@ class TestResourceWarningDetection:
         gc.collect()
 
     @pytest.mark.asyncio
+    async def test_open_breaker_tolerates_caller_cancelled_future(self, temp_db: Path) -> None:
+        """The open-breaker branch survives a request whose future is already done.
+
+        A caller's task can be cancelled while its request sits queued (client
+        disconnect), leaving a cancelled -- done -- future in the queue. The
+        open-breaker branch resolves dequeued requests with set_exception,
+        which raises InvalidStateError on a done future; without the done()
+        guard that error escapes into the loop's broad handler as a spurious
+        processor error and skips the current-request bookkeeping reset. The
+        processor must instead skip the resolution and keep servicing.
+        """
+        from app.backends.sqlite_backend import WriteRequest
+
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+        assert manager._write_queue is not None
+
+        cancelled_future: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        cancelled_future.cancel()
+        with patch.object(manager.circuit_breaker, 'is_open', return_value=True):
+            manager._write_queue.put_nowait(
+                WriteRequest(
+                    operation=lambda conn: conn.execute('SELECT 1'),
+                    args=(),
+                    kwargs={},
+                    future=cancelled_future,
+                ),
+            )
+            # Let the processor dequeue and hit the open-breaker branch.
+            for _ in range(200):
+                if manager._write_queue.qsize() == 0:
+                    break
+                await asyncio.sleep(0.01)
+            assert manager._write_queue.qsize() == 0, 'processor never dequeued the request'
+            await asyncio.sleep(0.05)
+
+        processor = manager._write_processor_task
+        assert processor is not None
+        assert not processor.done(), 'processor must survive the done-future resolution'
+
+        # With the breaker closed again the queue must still service writes.
+        result = await manager.execute_write(lambda conn: conn.execute('SELECT 42').fetchone()[0])
+        assert result == 42
+
+        await manager.shutdown()
+        del manager
+        gc.collect()
+
+    @pytest.mark.asyncio
     async def test_cancelled_processor_resolves_in_flight_future(self, temp_db: Path) -> None:
         """Direct processor cancellation mid-write terminally resolves the caller's future.
 
