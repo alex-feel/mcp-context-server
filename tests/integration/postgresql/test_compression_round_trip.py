@@ -6,9 +6,13 @@ container. Verifies the schema migration replaced the fp32 vec table
 with the compressed-payload table, the singleton ``compression_metadata``
 row exists, and the basic store/get tool surface still works.
 
-Embedding generation is disabled so the test does not require Ollama;
-the compressed write path is exercised by the unit suite under
-``tests/repositories/test_embedding_repository_compressed.py``.
+The round-trip tests keep embedding generation disabled so they do not
+require Ollama; because compression provisioning follows embedding storage,
+they pre-seed the compression schema (reproducing a database compressed
+while generation was on) before booting. The re-enable test instead boots
+with generation enabled (provisioning must run) and proves the regression
+by direct schema inspection. The compressed write path is exercised by the
+unit suite under ``tests/repositories/test_embedding_repository_compressed.py``.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ def _build_server_env(
     bits: str = '4',
     variant: str = 'ip',
     seed: str = '42',
+    generation: str = 'false',
 ) -> dict[str, str]:
     """Build the env dict for the spawned server with compression enabled."""
     return {
@@ -42,7 +47,7 @@ def _build_server_env(
         'ENABLE_SEMANTIC_SEARCH': 'false',
         'ENABLE_FTS': 'false',
         'ENABLE_HYBRID_SEARCH': 'false',
-        'ENABLE_EMBEDDING_GENERATION': 'false',
+        'ENABLE_EMBEDDING_GENERATION': generation,
         'ENABLE_SUMMARY_GENERATION': 'false',
         'ENABLE_EMBEDDING_COMPRESSION': 'true',
         'COMPRESSION_BITS': bits,
@@ -50,6 +55,58 @@ def _build_server_env(
         'COMPRESSION_SEED': seed,
         'COMPRESSION_MAX_CONCURRENT': '2',
     }
+
+
+async def _preseed_compression_schema(pg_url: str, *, seed: int = 42) -> None:
+    """Seed the compression schema + provenance row into a fresh PG database.
+
+    Compression provisioning follows embedding storage: with
+    ``ENABLE_EMBEDDING_GENERATION=false`` the server creates no compression
+    schema on a fresh database. Pre-seeding reproduces a database whose data
+    was compressed while generation was on, so an Ollama-free (generation-off)
+    server boot maintains and seed-validates the schema instead of idling.
+    The fingerprint stays NULL (the documented pre-fingerprint state) so the
+    validator warns and proceeds. The payload-table FK to ``context_entries``
+    is omitted because the base schema does not exist yet at pre-seed time and
+    no row is ever inserted by these generation-off runs.
+    """
+    conn = await asyncpg.connect(pg_url)
+    try:
+        await conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS compression_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                bits INTEGER NOT NULL CHECK (bits BETWEEN 2 AND 4),
+                variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
+                seed BIGINT NOT NULL CHECK (seed >= 0),
+                dim INTEGER NOT NULL CHECK (dim > 0),
+                codebook_fingerprint TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            ''',
+        )
+        await conn.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS vec_context_embeddings_compressed (
+                id BIGSERIAL PRIMARY KEY,
+                context_id UUID NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                start_index INTEGER NOT NULL DEFAULT 0,
+                end_index INTEGER NOT NULL DEFAULT 0,
+                payload BYTEA NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            ''',
+        )
+        await conn.execute(
+            'INSERT INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', $1, 1024, NULL)",
+            seed,
+        )
+    finally:
+        await conn.close()
 
 
 async def _table_exists(conn: asyncpg.Connection, table: str) -> bool:
@@ -72,8 +129,11 @@ async def test_compression_round_trip_postgresql(pg_test_url: str) -> None:
 
     Verifies:
 
-    1. The migration replaces ``vec_context_embeddings`` with
-       ``vec_context_embeddings_compressed``.
+    1. The compressed schema is present and maintained (pre-seeded here,
+       reproducing a database compressed while generation was on, because
+       compression provisioning follows embedding storage and this
+       Ollama-free run keeps generation off) while the fp32
+       ``vec_context_embeddings`` table stays absent.
     2. The singleton ``compression_metadata`` row reflects env values.
     3. ``store_context`` + ``get_context_by_ids`` still work via MCP.
 
@@ -83,6 +143,7 @@ async def test_compression_round_trip_postgresql(pg_test_url: str) -> None:
     """
     wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
     server_env = _build_server_env(pg_test_url)
+    await _preseed_compression_schema(pg_test_url)
 
     transport = PythonStdioTransport(
         script_path=str(wrapper_script),
@@ -236,6 +297,15 @@ async def test_compression_reenable_after_decompress_recreates_payload_table(
     UndefinedTableError and no CLI path recovers (--compress no-ops on the
     validator-reseeded row, --decompress errors on the absent table).
 
+    Both boots run with ``ENABLE_EMBEDDING_GENERATION=true`` because
+    compression provisioning follows embedding storage -- the wedge this
+    guards against arises on generation-on deployments. Booting does not
+    require a reachable Ollama (provider construction is lazy and the
+    pre-warm degrades to a warning), so the test stays CI-safe; the proof is
+    direct schema inspection rather than a store call, whose embedding leg
+    would need a live provider (the store path over the re-created table is
+    covered by the unit suite and the live-stack end-to-end run).
+
     Args:
         pg_test_url: Connection string from the session-scoped docker
             fixture.
@@ -257,7 +327,7 @@ async def test_compression_reenable_after_decompress_recreates_payload_table(
         await db_admin.close()
 
     wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
-    server_env = _build_server_env(reenable_url)
+    server_env = _build_server_env(reenable_url, generation='true')
 
     # First start: compression schema created, provenance row bootstrapped.
     transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
@@ -278,26 +348,11 @@ async def test_compression_reenable_after_decompress_recreates_payload_table(
 
     # Second start with compression still enabled: the migration must
     # re-create the payload table instead of early-returning on the marker
-    # table, and the store path must work against it.
+    # table, and the validator must re-seed the provenance row.
     transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
     client = Client(transport)
     async with client:
         await client.ping()
-
-        thread_id = f'pg_compression_reenable_{int(time.time())}'
-        store_result = await client.call_tool(
-            'store_context',
-            {
-                'thread_id': thread_id,
-                'source': 'agent',
-                'text': 'Re-enable after decompress round trip',
-            },
-        )
-        store_content: dict[str, Any] | None = None
-        if hasattr(store_result, 'structured_content'):
-            store_content = store_result.structured_content
-        assert store_content is not None
-        assert store_content.get('success') is True, store_content
 
     conn = await asyncpg.connect(reenable_url)
     try:

@@ -168,6 +168,30 @@ async def apply_compression_migration(backend: StorageBackend) -> None:
     if not settings.compression.enabled:
         return
 
+    # Compression is a storage format FOR embeddings, and embedding storage is
+    # provisioned from ENABLE_EMBEDDING_GENERATION (the semantic/chunking
+    # migrations gate on it). With generation off nothing can ever write a
+    # compressed payload, so a database WITHOUT the compression schema gets
+    # none -- otherwise the validator would seed a provenance row for a schema
+    # that can never hold data, and a later ENABLE_EMBEDDING_COMPRESSION=false
+    # flip would wedge behind the disable-direction guard's --decompress
+    # instruction on a deployment whose embedding_chunks / vector
+    # infrastructure was never provisioned. A database that ALREADY carries
+    # the schema (data compressed while generation was on) falls through so
+    # the already-applied branch keeps the fingerprint column ensured for the
+    # decode path.
+    if not settings.embedding.generation_enabled:
+        if backend.backend_type == 'postgresql':
+            applied = await backend.execute_read(
+                cast(Any, _check_compression_migration_applied_postgresql),
+            )
+        else:
+            applied = await backend.execute_read(
+                _check_compression_migration_applied_sqlite,
+            )
+        if not applied:
+            return
+
     # Enable-direction data guard: on FIRST-TIME application (no provenance
     # row yet -- read_compression_metadata returns None when the table is
     # absent or empty), a populated fp32 table is the authoritative embedding

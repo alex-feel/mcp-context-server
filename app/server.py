@@ -284,6 +284,16 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
                     f'dim={db_meta.dim}, seed={db_meta.seed}, '
                     f'max_concurrent={settings.compression.max_concurrent})',
                 )
+            elif not settings.embedding.generation_enabled:
+                # Embedding storage is provisioned from
+                # ENABLE_EMBEDDING_GENERATION; with generation off and nothing
+                # previously compressed, no compression schema or provenance
+                # row exists by design (the migration and validator both skip),
+                # so the absent row is the expected idle state, not an error.
+                logger.info(
+                    'Embedding compression enabled but idle: embedding '
+                    'generation is disabled and no compressed data exists',
+                )
             else:
                 # Defensive: validate_compression_provenance ran above and
                 # would have raised ConfigurationError if the singleton row

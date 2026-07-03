@@ -168,6 +168,23 @@ async def validate_compression_provenance(backend: StorageBackend) -> None:
 
     db_meta = await read_compression_metadata(backend)
 
+    if db_meta is None and not settings.embedding.generation_enabled:
+        # Embedding storage -- and with it the compression schema -- is
+        # provisioned from ENABLE_EMBEDDING_GENERATION, so with generation off
+        # and no provenance row there is nothing to validate and nothing to
+        # seed (the compression migration skips schema creation on this
+        # configuration too). Seeding a row here would wedge a later
+        # ENABLE_EMBEDDING_COMPRESSION=false flip behind the disable-direction
+        # guard's --decompress instruction on a deployment whose
+        # embedding_chunks / vector infrastructure was never provisioned. A
+        # database that compressed data while generation was on still carries
+        # its row and is validated below.
+        logger.debug(
+            'Compression provenance: skipped (embedding generation disabled, '
+            'no provenance row)',
+        )
+        return
+
     if db_meta is None:
         meta = CompressionMetadata(
             provider=comp.provider,

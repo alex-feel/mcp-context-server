@@ -366,6 +366,90 @@ def test_main_decompress_errors_when_provenance_missing(
 
 
 @requires_numpy
+def test_decompress_zero_rows_drops_table_without_fp32_infrastructure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--decompress`` with ZERO compressed rows drops the table and clears the row.
+
+    A deployment running with ``ENABLE_EMBEDDING_GENERATION=false`` could
+    carry the compression schema and a provenance row while embedding_chunks,
+    sqlite-vec, and any fp32 vec table were never provisioned. The full
+    reverse path crashes there (the vec0 ``CREATE VIRTUAL TABLE``, the
+    ``DELETE FROM embedding_chunks``), wedging the disable direction behind
+    its own prescribed remedy. The zero-data path must instead drop the empty
+    compressed table and delete the provenance row WITHOUT touching fp32
+    infrastructure, so the next startup proceeds cleanly.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    # Base schema ONLY -- deliberately NOT _bootstrap_schema: a generation-off
+    # deployment never provisioned embedding_chunks or embedding_metadata, and
+    # the zero-data reverse path must not require them.
+    from app.schemas import load_schema
+
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(load_schema('sqlite'))
+        conn.executescript(
+            '''
+            CREATE TABLE IF NOT EXISTS vec_context_embeddings_compressed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                start_index INTEGER NOT NULL DEFAULT 0,
+                end_index INTEGER NOT NULL DEFAULT 0,
+                payload BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS compression_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                bits INTEGER NOT NULL,
+                variant TEXT NOT NULL,
+                seed INTEGER NOT NULL,
+                dim INTEGER NOT NULL,
+                codebook_fingerprint TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ''',
+        )
+        conn.execute(
+            'INSERT INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, 1024, NULL)",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc = run_decompress(f'sqlite:///{db}', dry_run=False)
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert 'Decompression complete' in err
+    conn = sqlite3.connect(str(db))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            )
+        }
+        assert 'vec_context_embeddings_compressed' not in tables
+        # No fp32 infrastructure may be provisioned by the zero-data path.
+        assert 'vec_context_embeddings' not in tables
+        assert 'embedding_chunks' not in tables
+        count = conn.execute('SELECT COUNT(*) FROM compression_metadata').fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+
+@requires_numpy
 def test_decompress_aborts_on_codebook_fingerprint_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
