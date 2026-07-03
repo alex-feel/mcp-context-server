@@ -544,6 +544,31 @@ class TestInitializeErrorClassification:
             await backend.initialize()
 
     @pytest.mark.asyncio
+    async def test_value_error_raises_configuration_error(self) -> None:
+        """ValueError during pool creation raises ConfigurationError.
+
+        asyncpg raises plain ValueError synchronously for invalid construction
+        inputs (pool size combinations, malformed DSNs) before any network
+        I/O; these are permanent misconfigurations that must exit 78 instead
+        of restart-looping as a retryable dependency failure.
+        """
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=ValueError('min_size is greater than max_size'),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL configuration invalid'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
     async def test_unknown_exception_raises_dependency_error(self) -> None:
         """Unknown exceptions during pool creation default to DependencyError."""
 

@@ -316,11 +316,13 @@ class TestStoragePoolLimits:
 class TestPostgresqlPoolLimits:
     """POSTGRESQL_POOL_MIN / POSTGRESQL_POOL_MAX bounds at the config boundary.
 
-    A zero or negative max passes pydantic without bounds but only fails later
-    at asyncpg pool creation with a plain ValueError, which the backend's broad
-    exception handler misclassifies as a retryable DependencyError (supervisor
-    restart loop) instead of a permanent configuration error. min may be 0 (an
-    empty warm pool is valid) but never negative.
+    Any size combination asyncpg would reject (zero or negative max, negative
+    min, min above max) passes pydantic without these guards but only fails
+    later at asyncpg pool creation with a plain ValueError, which the
+    backend's broad exception handler misclassifies as a retryable
+    DependencyError (supervisor restart loop) instead of a permanent
+    configuration error. min may be 0 (an empty warm pool is valid) but never
+    negative, and never above max.
     """
 
     def test_defaults_are_valid(self) -> None:
@@ -347,3 +349,22 @@ class TestPostgresqlPoolLimits:
 
         with env_var('POSTGRESQL_POOL_MIN', '0'):
             assert StorageSettings().postgresql_pool_min == 0
+
+    def test_pool_min_above_max_rejected(self) -> None:
+        """min above max would reach asyncpg as ValueError('min_size is greater than max_size')."""
+        from app.settings import StorageSettings
+
+        with (
+            env_var('POSTGRESQL_POOL_MIN', '2'),
+            env_var('POSTGRESQL_POOL_MAX', '1'),
+            pytest.raises(ValidationError, match='must not exceed'),
+        ):
+            StorageSettings()
+
+    def test_pool_min_equal_max_accepted(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_POOL_MIN', '5'), env_var('POSTGRESQL_POOL_MAX', '5'):
+            settings = StorageSettings()
+        assert settings.postgresql_pool_min == 5
+        assert settings.postgresql_pool_max == 5

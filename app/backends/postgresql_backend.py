@@ -708,6 +708,18 @@ class PostgreSQLBackend:
         except DependencyError:
             raise  # Re-raise already-classified errors (from _ensure_pgvector_extension)
 
+        except ValueError as e:
+            # asyncpg raises plain ValueError for invalid construction inputs
+            # (pool size combinations, malformed DSNs) before any network I/O.
+            # These are permanent misconfigurations: exit 78 so the supervisor
+            # does not restart-loop on them.
+            logger.error(f'PostgreSQL configuration invalid: {e}')
+            await self.circuit_breaker.record_failure()
+            raise ConfigurationError(
+                f'PostgreSQL configuration invalid: {e}. '
+                'Check POSTGRESQL_POOL_* values and the connection string.',
+            ) from e
+
         except Exception as e:
             logger.error(f'Failed to initialize PostgreSQL backend: {e}')
             await self.circuit_breaker.record_failure()

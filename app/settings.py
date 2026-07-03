@@ -967,7 +967,8 @@ class StorageSettings(BaseSettings):
     postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
 
     # PostgreSQL connection pool settings. ge bounds mirror the SQLite pool
-    # fields: a zero or negative size passes pydantic but only fails later at
+    # fields, and validate_pool_min_not_above_max below enforces min <= max:
+    # any size asyncpg would reject passes pydantic but only fails later at
     # asyncpg pool creation with a plain ValueError, which the backend's broad
     # exception handler would misclassify as a retryable DependencyError
     # (exit 69, supervisor restart loop) instead of a permanent
@@ -1132,6 +1133,29 @@ class StorageSettings(BaseSettings):
             return self.sqlite_busy_timeout_ms
         # Convert connection timeout from seconds to milliseconds
         return int(self.pool_connection_timeout_s * 1000)
+
+    @model_validator(mode='after')
+    def validate_pool_min_not_above_max(self) -> Self:
+        """Reject a warm-pool floor above the pool ceiling.
+
+        asyncpg raises a plain ValueError('min_size is greater than max_size')
+        from Pool.__init__ for this combination; caught at the backend's broad
+        handler it would be misclassified as a retryable DependencyError and
+        send the supervisor into a restart loop for a permanent
+        misconfiguration, so it is rejected at the configuration boundary.
+
+        Returns:
+            The validated settings instance.
+
+        Raises:
+            ValueError: If POSTGRESQL_POOL_MIN exceeds POSTGRESQL_POOL_MAX.
+        """
+        if self.postgresql_pool_min > self.postgresql_pool_max:
+            raise ValueError(
+                f'POSTGRESQL_POOL_MIN ({self.postgresql_pool_min}) must not exceed '
+                f'POSTGRESQL_POOL_MAX ({self.postgresql_pool_max})',
+            )
+        return self
 
 
 class CompressionSettings(CommonSettings):
