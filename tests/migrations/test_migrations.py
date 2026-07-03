@@ -1454,6 +1454,40 @@ class TestMigrationDdlTimeout:
         self._assert_set_local_no_finally_restore(executed)
 
     @pytest.mark.asyncio
+    async def test_compression_already_applied_fingerprint_ddl_uses_migration_timeout(self) -> None:
+        """The already-applied branch's fingerprint ALTER carries the migration timeout.
+
+        This branch runs on EVERY steady-state startup of a compressed
+        PostgreSQL deployment; its ALTER must go through the same advisory
+        lock + SET LOCAL discipline as the first-time path, which routes the
+        identical statement through execute_migration_ddl.
+        """
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+        # Reads in order: the enable-guard's provenance read (a sealed row
+        # exists -- returned as the raw 6-column tuple read_compression_metadata
+        # unpacks -- so the guard's fp32 probe short-circuits away) and the
+        # already-applied check (True = both tables present).
+        mock_backend.execute_read = AsyncMock(
+            side_effect=[('turboquant', 4, 'ip', 0, 1024, None), True],
+        )
+
+        mock_settings = MagicMock()
+        mock_settings.compression.enabled = True
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.compression.settings', mock_settings):
+            from app.migrations.compression import apply_compression_migration
+
+            await apply_compression_migration(backend=mock_backend)
+
+        assert any('codebook_fingerprint' in stmt for stmt, _t in executed)
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
     async def test_metadata_index_create_ddl_uses_migration_timeout(self) -> None:
         """metadata index CREATE + advisory lock carry the migration timeout."""
         executed: list[tuple[str, float | None]] = []

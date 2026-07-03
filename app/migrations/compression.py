@@ -258,14 +258,23 @@ async def _apply_compression_migration_with_backend(
             cast(Any, _check_compression_migration_applied_postgresql),
         )
 
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _ensure_fingerprint_column(conn: asyncpg.Connection) -> None:
             # A compression_metadata table may predate the codebook_fingerprint
             # column (CREATE TABLE IF NOT EXISTS never adds a column to an
             # existing table). Add it idempotently so the read path -- which
-            # SELECTs the column -- works after an in-place upgrade.
-            await conn.execute(
+            # SELECTs the column -- works after an in-place upgrade. Runs under
+            # the same migration discipline as every other PostgreSQL migration
+            # DDL statement (advisory schema-init lock + SET LOCAL migration
+            # timeout + client-side deadline), matching the first-time path,
+            # which routes the identical ALTER through execute_migration_ddl.
+            await begin_migration(conn, migration_timeout_s)
+            await execute_migration_ddl(
+                conn,
                 'ALTER TABLE compression_metadata '
                 'ADD COLUMN IF NOT EXISTS codebook_fingerprint TEXT',
+                migration_timeout_s,
             )
 
         if already_applied:
@@ -279,8 +288,6 @@ async def _apply_compression_migration_with_backend(
             return
 
         migration_sql = migration_sql_template
-
-        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
         async def _apply_postgresql(conn: asyncpg.Connection) -> None:
             # Raise the transaction-scoped statement_timeout to the migration budget and take
