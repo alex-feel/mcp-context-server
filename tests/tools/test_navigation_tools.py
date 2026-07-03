@@ -28,6 +28,7 @@ from app.ids import generate_id_with_timestamp
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories import RepositoryContainer
 from app.repositories.index_node_repository import IndexNodeRow
+from app.repositories.index_node_repository import StoredNodeSummaries
 from app.services.grep_service import GrepEntryResult
 from app.startup import ensure_repositories
 from app.tools.navigation import _OFFLOAD_MIN_CHARS
@@ -383,6 +384,43 @@ class TestNavigateNodeSummaries:
         assert enriched['root']['children'][0]['children'][0]['summary'] == 'Covers the details.'
 
     @pytest.mark.asyncio
+    async def test_pre_cap_stored_node_ids_reattach_by_span(self, nav_backend: StorageBackend) -> None:
+        """Rows keyed by an older slug algorithm's node_id re-attach by span.
+
+        The slug segment cap changed the computed node_id for long headings,
+        so rows stored BEFORE the cap carry the uncapped id for the SAME
+        section. The document is unchanged, so the stored (char_start,
+        char_end) still matches the recomputed section exactly and the
+        summary must surface instead of silently detaching until the next
+        text-change update regenerates the rows.
+        """
+        await apply_index_tree_migration(nav_backend, force=True)
+        repos = await ensure_repositories()
+        long_title = ('alpha beta gamma delta ' * 8).strip()  # slugifies past the cap
+        cid = await _store(nav_backend, f'# {long_title}\nsection body here\n')
+
+        baseline = await _navigate(context_id=cid)
+        section = baseline['root']['children'][0]
+        # The uncapped slug an older parse produced for the identical title.
+        pre_cap_id = ('alpha-beta-gamma-delta-' * 8).rstrip('-')
+        assert section['node_id'] != pre_cap_id  # the ids genuinely diverged
+
+        await repos.index_nodes.replace_nodes_for_context(cid, [
+            IndexNodeRow(
+                node_id=pre_cap_id, level=1, ordinal=1, title=long_title,
+                node_summary='Section abstract from before the cap.',
+                char_start=section['char_start'], char_end=section['char_end'],
+            ),
+        ])
+
+        enriched = await _navigate(context_id=cid, include_node_summaries=True)
+        node = enriched['root']['children'][0]
+        assert node['summary'] == 'Section abstract from before the cap.'
+        # The synthetic root keeps mirroring the entry summary (None here) even
+        # though this document-spanning section shares the root's char span.
+        assert enriched['root']['summary'] is None
+
+    @pytest.mark.asyncio
     async def test_same_second_concurrent_update_retakes_snapshot(self, nav_backend: StorageBackend) -> None:
         """A text-change committing between the two reads forces a snapshot retake.
 
@@ -407,7 +445,7 @@ class TestNavigateNodeSummaries:
         real_get_nodes = repos.index_nodes.get_nodes_for_context
         update_committed = False
 
-        async def racing_get_nodes(context_id: str) -> dict[str, str]:
+        async def racing_get_nodes(context_id: str) -> StoredNodeSummaries:
             # First node read: commit a text-change update (new text, bumped
             # version, replaced node rows, same-second updated_at) between
             # navigate's text read and its node read, then serve the NEW rows.

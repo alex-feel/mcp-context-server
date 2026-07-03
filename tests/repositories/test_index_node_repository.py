@@ -21,10 +21,10 @@ from app.repositories import RepositoryContainer
 from app.repositories.index_node_repository import IndexNodeRow
 
 
-def _row(node_id: str, summary: str) -> IndexNodeRow:
+def _row(node_id: str, summary: str, span: tuple[int, int] = (0, 10)) -> IndexNodeRow:
     return IndexNodeRow(
         node_id=node_id, level=1, ordinal=1, title=node_id.title(),
-        node_summary=summary, char_start=0, char_end=10,
+        node_summary=summary, char_start=span[0], char_end=span[1],
     )
 
 
@@ -65,9 +65,15 @@ class TestReplaceAndGet:
         repos_with_table: tuple[StorageBackend, RepositoryContainer, str],
     ) -> None:
         _backend, repos, cid = repos_with_table
-        await repos.index_nodes.replace_nodes_for_context(cid, [_row('intro', 'About intro'), _row('setup', 'About setup')])
+        await repos.index_nodes.replace_nodes_for_context(
+            cid,
+            [_row('intro', 'About intro', span=(0, 10)), _row('setup', 'About setup', span=(10, 25))],
+        )
         summaries = await repos.index_nodes.get_nodes_for_context(cid)
-        assert summaries == {'intro': 'About intro', 'setup': 'About setup'}
+        assert summaries.by_node_id == {'intro': 'About intro', 'setup': 'About setup'}
+        # The span index carries the same summaries keyed by (char_start, char_end)
+        # so rows written by an older slug algorithm can re-attach by position.
+        assert summaries.by_span == {(0, 10): 'About intro', (10, 25): 'About setup'}
 
     @pytest.mark.asyncio
     async def test_replace_is_wholesale(
@@ -78,7 +84,7 @@ class TestReplaceAndGet:
         await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first'), _row('b', 'second')])
         await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'updated')])
         summaries = await repos.index_nodes.get_nodes_for_context(cid)
-        assert summaries == {'a': 'updated'}
+        assert summaries.by_node_id == {'a': 'updated'}
 
     @pytest.mark.asyncio
     async def test_empty_replace_clears(
@@ -88,7 +94,7 @@ class TestReplaceAndGet:
         _backend, repos, cid = repos_with_table
         await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first')])
         await repos.index_nodes.replace_nodes_for_context(cid, [])
-        assert await repos.index_nodes.get_nodes_for_context(cid) == {}
+        assert (await repos.index_nodes.get_nodes_for_context(cid)).by_node_id == {}
 
     @pytest.mark.asyncio
     async def test_count_all_nodes(
@@ -110,7 +116,7 @@ class TestCascadeDelete:
         await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'x')])
         deleted = await repos.context.delete_by_ids([cid])
         assert deleted == 1
-        assert await repos.index_nodes.get_nodes_for_context(cid) == {}
+        assert (await repos.index_nodes.get_nodes_for_context(cid)).by_node_id == {}
 
 
 class TestTableAbsent:
@@ -128,7 +134,9 @@ class TestTableAbsent:
         repos = RepositoryContainer(backend)
         try:
             # No index_tree migration applied -> table absent.
-            assert await repos.index_nodes.get_nodes_for_context('0' * 32) == {}
+            absent = await repos.index_nodes.get_nodes_for_context('0' * 32)
+            assert absent.by_node_id == {}
+            assert absent.by_span == {}
             assert await repos.index_nodes.count_all_nodes() == 0
         finally:
             await backend.shutdown()
@@ -155,6 +163,6 @@ class TestTableAbsent:
             # Writing nodes against the absent table must NOT raise; it is a no-op
             # and the read side still degrades to empty.
             await repos.index_nodes.replace_nodes_for_context('0' * 32, [_row('a', 'x')])
-            assert await repos.index_nodes.get_nodes_for_context('0' * 32) == {}
+            assert (await repos.index_nodes.get_nodes_for_context('0' * 32)).by_node_id == {}
         finally:
             await backend.shutdown()
