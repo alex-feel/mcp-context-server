@@ -113,6 +113,14 @@ class TestDefaultInstructions:
 
         assert 2000 < len(DEFAULT_INSTRUCTIONS) < 5000
 
+    def test_default_instructions_lists_navigation_tools(self) -> None:
+        """DEFAULT_INSTRUCTIONS must list the v3 navigation tools so clients discover them."""
+        from app.instructions import DEFAULT_INSTRUCTIONS
+
+        assert 'grep_context' in DEFAULT_INSTRUCTIONS
+        assert 'navigate_context' in DEFAULT_INSTRUCTIONS
+        assert 'read_context_range' in DEFAULT_INSTRUCTIONS
+
     def test_default_instructions_is_static_constant(self) -> None:
         """DEFAULT_INSTRUCTIONS must be a simple string constant, not dynamically generated."""
         from app.instructions import DEFAULT_INSTRUCTIONS

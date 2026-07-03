@@ -45,9 +45,10 @@ docker run --name pgvector18 \
   -p 5432:5432 \
   -d pgvector/pgvector:pg18-trixie
 
-# 2. Configure the server (minimal setup - just 2 variables)
+# 2. Configure the server (minimal setup - just 1 variable)
 export STORAGE_BACKEND=postgresql
-export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
+# Semantic search registers automatically once an embedding provider extra is installed
+# (set ENABLE_SEMANTIC_SEARCH=false to disable).
 ```
 
 **That's it!** The server will automatically:
@@ -70,8 +71,7 @@ export ENABLE_SEMANTIC_SEARCH=true  # Optional: only if you need semantic search
         "POSTGRESQL_HOST": "localhost",
         "POSTGRESQL_USER": "postgres",
         "POSTGRESQL_PASSWORD": "postgres",
-        "POSTGRESQL_DATABASE": "mcp_context",
-        "ENABLE_SEMANTIC_SEARCH": "true"
+        "POSTGRESQL_DATABASE": "mcp_context"
       }
     }
   }
@@ -242,8 +242,7 @@ Best for: VMs, servers, and local development with IPv6 support
            "POSTGRESQL_PORT": "5432",
            "POSTGRESQL_USER": "postgres",
            "POSTGRESQL_PASSWORD": "your-actual-password",
-           "POSTGRESQL_DATABASE": "postgres",
-           "ENABLE_SEMANTIC_SEARCH": "true"
+           "POSTGRESQL_DATABASE": "postgres"
          }
        }
      }
@@ -319,8 +318,7 @@ Best for: Systems without IPv6 support (Windows, corporate networks, restricted 
            "POSTGRESQL_PORT": "5432",
            "POSTGRESQL_USER": "postgres.[PROJECT-REF]",
            "POSTGRESQL_PASSWORD": "your-actual-password",
-           "POSTGRESQL_DATABASE": "postgres",
-           "ENABLE_SEMANTIC_SEARCH": "true"
+           "POSTGRESQL_DATABASE": "postgres"
          }
        }
      }
@@ -427,6 +425,32 @@ MaxClientsInSessionMode: max clients reached - in Session mode max clients are l
 
 4. **Use Direct Connection:** If your network supports IPv6, Direct Connection has much higher connection limits (60-500+).
 
+**Startup advisory:** When the server connects through a Supabase Session Pooler endpoint (host `*.pooler.supabase.com` on port 5432) and `POSTGRESQL_POOL_MAX` exceeds the conservative default per-session client cap (~15 on Free/Pro tiers), it logs a WARNING at startup naming this symptom and fix. The advisory never clamps the pool; it surfaces the misconfiguration loudly instead of as intermittent search failures.
+
+### Statement Timeout on store/update (SQLSTATE 57014) in fp32 mode
+
+**Symptom:**
+```text
+canceling statement due to statement timeout
+```
+emitted by `store_context` / `update_context` (and their batch variants) while PostgreSQL is the backend.
+
+**Cause:** Each connection sets `statement_timeout` to `0.9 * POSTGRESQL_COMMAND_TIMEOUT_S` (about 54s with the 60s default). All embedding, summary, and compression generation runs BEFORE the transaction (generation-first), so the timeout is hit by the database write itself. The dominant in-transaction cost appears only in fp32 mode (`ENABLE_EMBEDDING_COMPRESSION=false`): every per-chunk INSERT into `vec_context_embeddings` performs an HNSW graph insert inside the transaction. Under concurrent writers, the transaction both waits on locks and does slow index maintenance, and can exceed the ceiling.
+
+**Why the default is already mitigated:** With compression ON (`ENABLE_EMBEDDING_COMPRESSION=true`, the default since v3.0.0) the fp32 `vec_context_embeddings` table and its HNSW index are replaced by `vec_context_embeddings_compressed` (a plain `BYTEA` table with no ANN index). Compressed writes are plain INSERTs with no in-transaction HNSW maintenance, so the slow-op cause disappears.
+
+**Solution (in priority order):**
+
+1. **Keep compression ON (recommended default).** This removes HNSW maintenance from the write path entirely and is the structural fix for the slow-op cause. See [`docs/embedding-compression.md`](embedding-compression.md).
+2. **If you must run fp32** (`ENABLE_EMBEDDING_COMPRESSION=false`), raise the timeout to fit the slowest expected write under your concurrency, e.g.:
+   ```bash
+   export POSTGRESQL_COMMAND_TIMEOUT_S=180
+   ```
+   The per-connection `statement_timeout` follows automatically at `0.9 *` this value.
+3. **Reduce write concurrency** if a pooler or replica count is forcing many simultaneous fp32 writes through the HNSW index.
+
+**Automatic retry (transient cases only):** A statement cancellation (SQLSTATE 57014) is retried with bounded exponential backoff at both the tool layer (store/update/batch) and in `execute_write`. Retry uses the SAME timeout ceiling, so it recovers only a TRANSIENT lock-WAIT (the write was blocked behind another writer and the contention has cleared by the retry). It does NOT rescue a write that is fundamentally slower than the ceiling -- for that, apply solution 1 or 2 above. Retry is safe because the database write is idempotent (deduplicating store / keyed update) and generation already completed outside the transaction, so a retry never regenerates or skips embeddings/summaries.
+
 ## Troubleshooting
 
 ### "getaddrinfo failed" Error
@@ -465,8 +489,7 @@ If you want to use semantic search with Supabase, you must enable the pgvector e
          "args": ["--python", "3.12", "mcp-context-server"],
          "env": {
            "STORAGE_BACKEND": "postgresql",
-           "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres",
-           "ENABLE_SEMANTIC_SEARCH": "true"
+           "POSTGRESQL_CONNECTION_STRING": "postgresql://postgres:your-actual-password@db.[PROJECT_REF].supabase.co:5432/postgres"
          }
        }
      }

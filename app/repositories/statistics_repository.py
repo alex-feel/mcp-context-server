@@ -5,9 +5,10 @@ This module handles all database operations related to statistics,
 thread information, and database metrics.
 """
 
-from __future__ import annotations
 
+import logging
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -16,11 +17,39 @@ from typing import cast
 from anyio import Path as AsyncPath
 
 from app.backends.base import StorageBackend
+from app.ids import normalize_id
 from app.repositories.base import BaseRepository
 from app.types import ThreadInfoDict
 
 if TYPE_CHECKING:
     import asyncpg
+
+logger = logging.getLogger(__name__)
+
+
+def _to_float(value: float | Decimal | None, default: float = 0.0) -> float:
+    """Coerce a database aggregate value to a native rounded float.
+
+    The asyncpg driver maps PostgreSQL ``AVG()`` and other numeric aggregates to
+    ``decimal.Decimal``. ``Decimal`` serializes to a JSON string, which fails the
+    MCP output schema that expects a native ``number`` for fields such as
+    ``avg_entries_per_thread``. This helper guarantees a native ``float`` for any
+    numeric aggregate at response-assembly time, on every backend.
+
+    A ``None`` value (empty result set) yields ``default``. A legitimate zero is
+    preserved as ``0.0`` because the guard tests against ``None`` explicitly
+    rather than truthiness.
+
+    Args:
+        value: Aggregate value from a query row (int, float, Decimal, or None).
+        default: Value returned when ``value`` is ``None``.
+
+    Returns:
+        Native ``float`` rounded to two decimal places, or ``default``.
+    """
+    if value is None:
+        return default
+    return round(float(value), 2)
 
 
 class StatisticsRepository(BaseRepository):
@@ -38,29 +67,50 @@ class StatisticsRepository(BaseRepository):
         """
         super().__init__(backend)
 
-    async def get_thread_list(self) -> list[ThreadInfoDict]:
-        """Get list of all threads with statistics.
+    async def get_thread_list(self, limit: int | None = None, offset: int = 0) -> list[ThreadInfoDict]:
+        """Get list of threads with statistics, optionally paginated.
+
+        When ``limit`` is None (the default) ALL threads are returned and no
+        LIMIT/OFFSET clause is emitted, preserving the historical unbounded
+        behavior. When ``limit`` is provided, the result is bounded to ``limit``
+        rows starting at ``offset``, applied AFTER the ORDER BY so pagination
+        walks the most-recently-active threads first.
+
+        Args:
+            limit: Maximum number of threads to return. None returns all threads.
+            offset: Number of leading threads to skip (only applied when ``limit``
+                is provided).
 
         Returns:
-            List of thread information dictionaries
+            List of thread information dictionaries for the requested page.
         """
+        # Bind LIMIT/OFFSET only when a limit is requested. The placeholders are
+        # positions 1 and 2 because the GROUP BY listing queries carry no other
+        # bound parameters; _placeholder yields '?' on SQLite and '$1'/'$2' on
+        # PostgreSQL.
+        pagination_clause = ''
+        params: tuple[int, ...] = ()
+        if limit is not None:
+            pagination_clause = f'\n                    LIMIT {self._placeholder(1)} OFFSET {self._placeholder(2)}'
+            params = (limit, offset)
+
         if self.backend.backend_type == 'sqlite':
 
             def _list_threads_sqlite(conn: sqlite3.Connection) -> list[ThreadInfoDict]:
                 cursor = conn.cursor()
-                cursor.execute('''
+                cursor.execute(f'''
                     SELECT
                         thread_id,
                         COUNT(*) as entry_count,
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry,
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MIN(created_at)) as first_entry,
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MAX(created_at)) as last_entry,
                         MAX(id) as last_id
                     FROM context_entries
                     GROUP BY thread_id
-                    ORDER BY MAX(created_at) DESC, MAX(id) DESC
-                ''')
+                    ORDER BY MAX(created_at) DESC, MAX(id) DESC{pagination_clause}
+                ''', params)
 
                 threads: list[ThreadInfoDict] = []
                 for row in cursor.fetchall():
@@ -73,25 +123,31 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _list_threads_postgresql(conn: asyncpg.Connection) -> list[ThreadInfoDict]:
-            rows = await conn.fetch('''
+        async def _list_threads_postgresql(conn: 'asyncpg.Connection') -> list[ThreadInfoDict]:
+            rows = await conn.fetch(f'''
                     SELECT
                         thread_id,
                         COUNT(*) as entry_count,
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry,
-                        MAX(id) as last_id
+                        to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as first_entry,
+                        to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_entry,
+                        (array_agg(id ORDER BY id DESC))[1] as last_id
                     FROM context_entries
                     GROUP BY thread_id
-                    ORDER BY MAX(created_at) DESC, MAX(id) DESC
-                ''')
+                    ORDER BY MAX(created_at) DESC, (array_agg(id ORDER BY id DESC))[1] DESC{pagination_clause}
+                ''', *params)
 
             threads: list[ThreadInfoDict] = []
             for row in rows:
-                thread = cast(ThreadInfoDict, dict(row))
-                threads.append(thread)
+                d = dict(row)
+                # asyncpg returns last_id as a native (hyphenated 36-char) UUID; normalize
+                # to the canonical 32-char hyphen-free lowercase hex the SQLite branch
+                # already emits, so list_threads' last_id is identical and contract-valid
+                # (str id format) on both backends.
+                if d.get('last_id') is not None:
+                    d['last_id'] = normalize_id(str(d['last_id']))
+                threads.append(cast(ThreadInfoDict, d))
 
             return threads
 
@@ -141,7 +197,7 @@ class StatisticsRepository(BaseRepository):
                     FROM (SELECT thread_id, COUNT(*) as entry_count FROM context_entries GROUP BY thread_id)
                 ''')
                 result = cursor.fetchone()
-                stats['avg_entries_per_thread'] = round(result['avg_entries'], 2) if result['avg_entries'] else 0
+                stats['avg_entries_per_thread'] = _to_float(result['avg_entries'])
 
                 cursor.execute('''
                     SELECT thread_id, COUNT(*) as count FROM context_entries
@@ -162,7 +218,7 @@ class StatisticsRepository(BaseRepository):
             stats = await self.backend.execute_read(_get_stats_sqlite)
         else:  # postgresql
 
-            async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+            async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
                 stats: dict[str, Any] = {}
 
                 row = await conn.fetchrow('SELECT COUNT(*) as count FROM context_entries')
@@ -193,7 +249,7 @@ class StatisticsRepository(BaseRepository):
                     SELECT AVG(entry_count) as avg_entries
                     FROM (SELECT thread_id, COUNT(*) as entry_count FROM context_entries GROUP BY thread_id) sub
                 ''')
-                stats['avg_entries_per_thread'] = round(row['avg_entries'], 2) if row and row['avg_entries'] else 0
+                stats['avg_entries_per_thread'] = _to_float(row['avg_entries'] if row else None)
 
                 rows = await conn.fetch('''
                     SELECT thread_id, COUNT(*) as count FROM context_entries
@@ -211,13 +267,32 @@ class StatisticsRepository(BaseRepository):
 
             stats = await self.backend.execute_read(_get_stats_postgresql)
 
-        if db_path:
-            async_path = AsyncPath(db_path)
-            if await async_path.exists():
-                stat_result = await async_path.stat()
-                size_in_bytes: int = stat_result.st_size
-                size_in_mb: float = size_in_bytes / (1024 * 1024)
-                stats['database_size_mb'] = round(size_in_mb, 2)
+        backend_type = self.backend.backend_type
+        if backend_type == 'sqlite':
+            # SQLite size is the on-disk size of the database file. This excludes
+            # the -wal/-shm sidecars, so the figure can transiently under-report
+            # under WAL mode. An in-memory or missing-file database leaves the
+            # key absent (tolerated by the NotRequired schema).
+            if db_path:
+                async_path = AsyncPath(db_path)
+                if await async_path.exists():
+                    stat_result = await async_path.stat()
+                    size_in_bytes: int = stat_result.st_size
+                    size_in_mb: float = size_in_bytes / (1024 * 1024)
+                    stats['database_size_mb'] = round(size_in_mb, 2)
+        elif backend_type == 'postgresql':
+            # PostgreSQL size is the whole database, queried server-side. The
+            # local db_path is irrelevant to a remote PostgreSQL database, so it
+            # is never file-stat'd here.
+            async def _get_db_size_postgresql(conn: 'asyncpg.Connection') -> int | None:
+                row = await conn.fetchrow('SELECT pg_database_size(current_database()) AS db_size')
+                return row['db_size'] if row else None
+
+            size_bytes = await self.backend.execute_read(_get_db_size_postgresql)
+            if size_bytes is not None:
+                stats['database_size_mb'] = round(float(size_bytes) / (1024 * 1024), 2)
+        else:
+            logger.warning('Unknown backend type %r; database_size_mb omitted', backend_type)
 
         return stats
 
@@ -242,8 +317,8 @@ class StatisticsRepository(BaseRepository):
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'text' THEN 1 ELSE 0 END) as text_count,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MIN(created_at)) as first_entry,
+                        strftime('%Y-%m-%dT%H:%M:%SZ', MAX(created_at)) as last_entry
                     FROM context_entries
                     WHERE thread_id = {self._placeholder(1)}
                 '''
@@ -290,7 +365,7 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_thread_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_thread_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             stats: dict[str, Any] = {'thread_id': thread_id}
 
             query1 = f'''
@@ -299,8 +374,8 @@ class StatisticsRepository(BaseRepository):
                         COUNT(DISTINCT source) as source_types,
                         SUM(CASE WHEN content_type = 'text' THEN 1 ELSE 0 END) as text_count,
                         SUM(CASE WHEN content_type = 'multimodal' THEN 1 ELSE 0 END) as multimodal_count,
-                        MIN(created_at) as first_entry,
-                        MAX(created_at) as last_entry
+                        to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as first_entry,
+                        to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as last_entry
                     FROM context_entries
                     WHERE thread_id = {self._placeholder(1)}
                 '''
@@ -372,7 +447,7 @@ class StatisticsRepository(BaseRepository):
                     FROM (SELECT context_entry_id, COUNT(*) as tag_count FROM tags GROUP BY context_entry_id)
                 ''')
                 result = cursor.fetchone()
-                stats['avg_tags_per_entry'] = round(result['avg_tags'], 2) if result['avg_tags'] else 0
+                stats['avg_tags_per_entry'] = _to_float(result['avg_tags'])
 
                 return stats
 
@@ -380,7 +455,7 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_tag_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_tag_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             stats: dict[str, Any] = {}
 
             row = await conn.fetchrow('SELECT COUNT(*) as count FROM tags')
@@ -398,7 +473,7 @@ class StatisticsRepository(BaseRepository):
                     SELECT AVG(tag_count) as avg_tags
                     FROM (SELECT context_entry_id, COUNT(*) as tag_count FROM tags GROUP BY context_entry_id) sub
                 ''')
-            stats['avg_tags_per_entry'] = round(row['avg_tags'], 2) if row and row['avg_tags'] else 0
+            stats['avg_tags_per_entry'] = _to_float(row['avg_tags'] if row else None)
 
             return stats
 
@@ -439,7 +514,7 @@ class StatisticsRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_summary_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_summary_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             total_entries = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
 
             summary_count = await conn.fetchval(

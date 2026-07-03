@@ -11,7 +11,6 @@ Uses tenacity library for robust async retry logic with:
 - Automatic logging before retry sleep
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging

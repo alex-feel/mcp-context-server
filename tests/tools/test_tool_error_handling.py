@@ -201,7 +201,7 @@ class TestUpdateContextErrors:
         _ = mock_server_dependencies  # Fixture needed for mocking
         with pytest.raises(ToolError, match='text cannot be empty'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='',
             )
 
@@ -211,7 +211,7 @@ class TestUpdateContextErrors:
         _ = mock_server_dependencies  # Fixture needed for mocking
         with pytest.raises(ToolError, match='text cannot be empty'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='   ',
             )
 
@@ -221,51 +221,51 @@ class TestUpdateContextErrors:
         _ = mock_server_dependencies  # Fixture needed for mocking
         with pytest.raises(ToolError, match='At least one field must be provided'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
             )
 
     @pytest.mark.asyncio
     async def test_context_not_found(self, mock_server_dependencies):
         """Test that updating non-existent context raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (False, None)
+        mock_server_dependencies.context.check_entry_exists.return_value = (False, None, None)
 
-        with pytest.raises(ToolError, match='Context entry with ID 999 not found'):
+        with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd000003e7 not found'):
             await update_context(
-                context_id=999,
+                context_id='0190abcdef1234567890abcd000003e7',
                 text='new text',
             )
 
     @pytest.mark.asyncio
     async def test_update_failure(self, mock_server_dependencies):
         """Test that update failure raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
         mock_server_dependencies.context.update_context_entry.return_value = (False, [])
 
         with pytest.raises(ToolError, match='Failed to update context entry'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='new text',
             )
 
     @pytest.mark.asyncio
     async def test_invalid_image_format(self, mock_server_dependencies):
         """Test that invalid image data raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 images=[{'data': 'not-valid-base64!!!'}],  # Invalid base64, mime_type defaults to 'image/png'
             )
 
     @pytest.mark.asyncio
     async def test_invalid_base64_in_update(self, mock_server_dependencies):
         """Test that invalid base64 in update raises ToolError."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
 
         with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding'):
             await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 images=[{'data': 'not-base64!!!', 'mime_type': 'image/png'}],
             )
 
@@ -286,7 +286,13 @@ class TestDeleteContextErrors:
         mock_server_dependencies.context.delete_by_ids.side_effect = Exception('Deletion failed')
 
         with pytest.raises(ToolError, match='Failed to delete context: Deletion failed'):
-            await delete_context(context_ids=[1, 2, 3])
+            await delete_context(
+                context_ids=[
+                    '0190abcdef1234567890abcd00000001',
+                    '0190abcdef1234567890abcd00000002',
+                    '0190abcdef1234567890abcd00000003',
+                ],
+            )
 
 
 class TestSearchContextErrors:
@@ -346,7 +352,13 @@ class TestGetContextByIdsErrors:
         mock_server_dependencies.context.get_by_ids.return_value = []
 
         # Valid non-empty list works fine
-        result = await get_context_by_ids(context_ids=[1, 2, 3])
+        result = await get_context_by_ids(
+            context_ids=[
+                '0190abcdef1234567890abcd00000001',
+                '0190abcdef1234567890abcd00000002',
+                '0190abcdef1234567890abcd00000003',
+            ],
+        )
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
@@ -355,7 +367,13 @@ class TestGetContextByIdsErrors:
         mock_server_dependencies.context.get_by_ids.side_effect = Exception('Fetch failed')
 
         with pytest.raises(ToolError, match='Failed to fetch context entries: Fetch failed'):
-            await get_context_by_ids(context_ids=[1, 2, 3])
+            await get_context_by_ids(
+                context_ids=[
+                    '0190abcdef1234567890abcd00000001',
+                    '0190abcdef1234567890abcd00000002',
+                    '0190abcdef1234567890abcd00000003',
+                ],
+            )
 
 
 class TestListThreadsErrors:
@@ -414,12 +432,12 @@ class TestFieldValidation:
     @pytest.mark.asyncio
     async def test_context_id_positive(self, mock_server_dependencies):
         """Test that context_id must be positive."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
         # This would be caught by Field(gt=0) at FastMCP level
         # Testing our manual validation as fallback
         with pytest.raises(ToolError):
             await update_context(
-                context_id=0,  # Should be > 0
+                context_id='0190abcdef1234567890abcd00000000',  # Should be > 0
                 text='test',
             )
 
@@ -472,11 +490,11 @@ class TestErrorMessageConsistency:
     @pytest.mark.asyncio
     async def test_business_logic_errors_are_clear(self, mock_server_dependencies):
         """Test that business logic errors have clear messages."""
-        mock_server_dependencies.context.check_entry_exists.return_value = (False, None)
+        mock_server_dependencies.context.check_entry_exists.return_value = (False, None, None)
 
         with pytest.raises(ToolError, match='Context entry with ID .* not found'):
             await update_context(
-                context_id=999,
+                context_id='0190abcdef1234567890abcd000003e7',
                 text='test',
             )
 
@@ -682,7 +700,7 @@ class TestJSONErrorConsistency:
         """
         # Set up mocks for successful database operations
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
 
         # Test cases that should raise ToolError for BUSINESS LOGIC
         test_cases = [
@@ -696,8 +714,12 @@ class TestJSONErrorConsistency:
             ),
             ('store_context whitespace text', lambda: store_context(thread_id='test', source='user', text='   '), 'text'),
             # update_context business logic validation
-            ('update_context empty text', lambda: update_context(context_id=1, text=''), 'text'),
-            ('update_context no fields', lambda: update_context(context_id=1), 'field'),
+            (
+                'update_context empty text',
+                lambda: update_context(context_id='0190abcdef1234567890abcd00000001', text=''),
+                'text',
+            ),
+            ('update_context no fields', lambda: update_context(context_id='0190abcdef1234567890abcd00000001'), 'field'),
             # delete_context business logic validation
             ('delete_context no parameters', lambda: delete_context(), 'provide'),
         ]
@@ -726,10 +748,10 @@ class TestJSONErrorConsistency:
         mock_server_dependencies.context.store_with_deduplication.return_value = (1, False)
 
         # Test update_context database error
-        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent')
+        mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
         mock_server_dependencies.context.update_context_entry.side_effect = Exception('Update failed')
         with pytest.raises(ToolError, match='Failed to update context'):
-            await update_context(context_id=1, text='new text')
+            await update_context(context_id='0190abcdef1234567890abcd00000001', text='new text')
 
         # Test search_context database error
         mock_server_dependencies.context.search_contexts.side_effect = Exception('Search failed')
@@ -739,7 +761,7 @@ class TestJSONErrorConsistency:
         # Test get_context_by_ids database error
         mock_server_dependencies.context.get_by_ids.side_effect = Exception('Fetch failed')
         with pytest.raises(ToolError, match='Failed to fetch context'):
-            await get_context_by_ids(context_ids=[1, 2])
+            await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001', '0190abcdef1234567890abcd00000002'])
 
         # Test list_threads database error
         mock_server_dependencies.statistics.get_thread_list.side_effect = Exception('List failed')
@@ -799,7 +821,7 @@ class TestJSONErrorConsistency:
 
         # Test no fields provided (business logic: at least one field required)
         with pytest.raises(ToolError) as exc_info:
-            await update_context(context_id=1)
+            await update_context(context_id='0190abcdef1234567890abcd00000001')
         assert 'field' in str(exc_info.value).lower()
         assert 'least' in str(exc_info.value).lower() or 'provide' in str(exc_info.value).lower()
 
@@ -838,7 +860,7 @@ class TestJSONErrorConsistency:
             error_messages.append(str(e))
 
         try:
-            await update_context(context_id=1)
+            await update_context(context_id='0190abcdef1234567890abcd00000001')
         except ToolError as e:
             error_messages.append(str(e))
 
@@ -860,22 +882,29 @@ class TestJSONErrorConsistency:
         This test validates business logic error consistency.
         """
         _ = mock_server_dependencies  # Fixture needed for mocking
-        # All tools should raise ToolError for business logic failures
-        tools_and_errors = [
-            (store_context, {'thread_id': '', 'source': 'user', 'text': 'test'}),  # Empty after strip
-            (update_context, {'context_id': 1, 'text': ''}),  # Empty text
-            (delete_context, {}),  # No parameters provided
-        ]
 
-        for tool_func, params in tools_and_errors:
-            with pytest.raises(ToolError) as exc_info:
-                await tool_func(**params)
+        # All tools should raise ToolError for business logic failures.
+        # Each call is unrolled so static type checkers bind to the specific
+        # overload of the called tool, rather than a union over all three tools.
+        async def _invoke_tools() -> list[ToolError]:
+            errors: list[ToolError] = []
+            with pytest.raises(ToolError) as exc_info_store:
+                await store_context(thread_id='', source='user', text='test')  # Empty after strip
+            errors.append(exc_info_store.value)
+            with pytest.raises(ToolError) as exc_info_update:
+                await update_context(context_id='0190abcdef1234567890abcd00000001', text='')  # Empty text
+            errors.append(exc_info_update.value)
+            with pytest.raises(ToolError) as exc_info_delete:
+                await delete_context()  # No parameters provided
+            errors.append(exc_info_delete.value)
+            return errors
 
+        for error in await _invoke_tools():
             # All errors should be ToolError instances
-            assert isinstance(exc_info.value, ToolError)
+            assert isinstance(error, ToolError)
 
             # All error messages should be strings
-            error_msg = str(exc_info.value)
+            error_msg = str(error)
             assert isinstance(error_msg, str)
 
             # All error messages should be non-empty

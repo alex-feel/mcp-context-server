@@ -25,7 +25,6 @@ Example:
     ```
 """
 
-from __future__ import annotations
 
 import hmac
 import logging
@@ -113,8 +112,13 @@ class SimpleTokenVerifier(TokenVerifier):
         # Get the expected token value
         expected_token = self._token.get_secret_value()
 
-        # Use constant-time comparison to prevent timing attacks
-        if not hmac.compare_digest(token, expected_token):
+        # Use constant-time comparison to prevent timing attacks. Compare on
+        # UTF-8 bytes, not str: hmac.compare_digest raises TypeError on str
+        # operands containing non-ASCII characters, which would escape this
+        # method uncaught and surface as an HTTP 500 instead of a clean 401.
+        # Encoding both sides makes a non-ASCII client token an ordinary
+        # mismatch while staying constant-time.
+        if not hmac.compare_digest(token.encode('utf-8'), expected_token.encode('utf-8')):
             logger.debug('Token validation failed: token mismatch')
             return None
 

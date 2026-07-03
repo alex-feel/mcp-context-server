@@ -4,7 +4,7 @@ This module tests the MetadataQueryBuilder class with PostgreSQL backend type
 to ensure proper SQL generation for PostgreSQL syntax.
 """
 
-from __future__ import annotations
+import re
 
 import pytest
 
@@ -69,7 +69,8 @@ class TestMetadataQueryBuilderPostgresql:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert 'LOWER' in where_clause
+        # Case-insensitive fold is ASCII-only via translate() (parity with SQLite LOWER).
+        assert 'translate' in where_clause
         # PostgreSQL uses ->> or #>> for JSON access
         assert '->>' in where_clause or '#>>' in where_clause
         # Value is passed as-is, LOWER is applied in SQL to both sides
@@ -163,7 +164,10 @@ class TestMetadataQueryBuilderPostgresql:
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        assert 'NOT IN (' in where_clause
+        # NOT_IN is now a presence guard + negated membership (so boolean members can be
+        # type-guarded without colliding with same-text non-booleans).
+        assert 'IS NOT NULL AND NOT (' in where_clause
+        assert 'IN (' in where_clause
         assert len(params) == 2
 
     def test_operator_exists_postgresql(self) -> None:
@@ -212,7 +216,8 @@ class TestMetadataQueryBuilderPostgresql:
 
         where_clause, params = builder.build_where_clause()
         assert 'LIKE' in where_clause or 'ILIKE' in where_clause
-        assert params == ['test_']
+        # The '_' in the value is escaped so it matches literally (ESCAPE clause).
+        assert params == ['test\\_']
 
     def test_operator_ends_with_postgresql(self) -> None:
         """Test ENDS_WITH operator for PostgreSQL."""
@@ -229,14 +234,22 @@ class TestMetadataQueryBuilderPostgresql:
         assert params == ['.txt']
 
     def test_operator_is_null_postgresql(self) -> None:
-        """Test IS_NULL operator for PostgreSQL."""
+        """IS_NULL matches a PRESENT JSON null only, via jsonb_typeof.
+
+        Regression guard for the cross-backend divergence where the prior
+        ``->>key IS NULL OR ...`` form also matched a MISSING key, unlike SQLite's
+        ``json_type='null'``. The fix mirrors SQLite by using jsonb_typeof, which
+        yields SQL NULL for a missing key and therefore does not match it. It also
+        removes the unparenthesized ``OR`` that risked AND/OR precedence bugs.
+        """
         builder = MetadataQueryBuilder(backend_type='postgresql')
         filter_spec = MetadataFilter(key='deleted_at', operator=MetadataOperator.IS_NULL)
         builder.add_advanced_filter(filter_spec)
 
         where_clause, params = builder.build_where_clause()
-        # PostgreSQL uses jsonb_typeof for null checks
-        assert 'jsonb_typeof' in where_clause or 'null' in where_clause.lower()
+        assert "jsonb_typeof(metadata->'deleted_at') = 'null'" in where_clause
+        # Must NOT fall back to the absent-key-matching ``IS NULL`` form.
+        assert 'IS NULL' not in where_clause
         assert len(params) == 0
 
     def test_operator_is_not_null_postgresql(self) -> None:
@@ -469,8 +482,9 @@ class TestMetadataQueryBuilderPostgresql:
 
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata->'technologies') = 'array'" in where_clause
-        assert "jsonb_array_elements_text(metadata->'technologies')" in where_clause
-        assert 'LOWER(elem) = LOWER($1)' in where_clause
+        assert "jsonb_array_elements(metadata->'technologies')" in where_clause
+        assert "jsonb_typeof(elem) = 'string'" in where_clause  # string member matches string elements only
+        assert 'translate(elem' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
         assert 'CASE WHEN' in where_clause
         assert 'ELSE FALSE END' in where_clause
         assert params == ['python']
@@ -507,8 +521,9 @@ class TestMetadataQueryBuilderPostgresql:
 
         where_clause, params = builder.build_where_clause()
         assert "jsonb_typeof(metadata#>'{user,preferences,tags}') = 'array'" in where_clause
-        assert "jsonb_array_elements_text(metadata#>'{user,preferences,tags}')" in where_clause
-        assert 'LOWER(elem) = LOWER($1)' in where_clause
+        assert "jsonb_array_elements(metadata#>'{user,preferences,tags}')" in where_clause
+        assert "jsonb_typeof(elem) = 'string'" in where_clause  # string member matches string elements only
+        assert 'translate(elem' in where_clause  # ASCII-only ci fold (parity with SQLite LOWER)
         assert params == ['favorite']
 
     def test_operator_array_contains_integer_postgresql(self) -> None:
@@ -651,3 +666,325 @@ class TestSqliteBooleanBackwardCompatibility:
         where_clause, params = builder.build_where_clause()
         assert 'json_extract' in where_clause
         assert params == [0]
+
+
+def _alias_filter_cases(key: str) -> list[MetadataFilter]:
+    """One MetadataFilter per operator on ``key``, honoring each value contract.
+
+    Each of the 16 metadata operators emits structurally different SQL that the
+    table_alias column-qualification regex (query_builder.build_where_clause) must
+    handle. The list/None values are literals passed directly to the model, so they
+    are inferred in-context against the field type (no cast needed).
+
+    Returns:
+        One MetadataFilter per supported operator, all bound to ``key``.
+    """
+    return [
+        MetadataFilter(key=key, operator=MetadataOperator.EQ, value=5),
+        MetadataFilter(key=key, operator=MetadataOperator.NE, value=5),
+        MetadataFilter(key=key, operator=MetadataOperator.GT, value=5),
+        MetadataFilter(key=key, operator=MetadataOperator.GTE, value=5),
+        MetadataFilter(key=key, operator=MetadataOperator.LT, value=5),
+        MetadataFilter(key=key, operator=MetadataOperator.LTE, value=5),
+        MetadataFilter(key=key, operator=MetadataOperator.IN, value=[1, 2]),
+        MetadataFilter(key=key, operator=MetadataOperator.NOT_IN, value=[1, 2]),
+        MetadataFilter(key=key, operator=MetadataOperator.EXISTS, value=None),
+        MetadataFilter(key=key, operator=MetadataOperator.NOT_EXISTS, value=None),
+        MetadataFilter(key=key, operator=MetadataOperator.CONTAINS, value='x'),
+        MetadataFilter(key=key, operator=MetadataOperator.STARTS_WITH, value='x'),
+        MetadataFilter(key=key, operator=MetadataOperator.ENDS_WITH, value='x'),
+        MetadataFilter(key=key, operator=MetadataOperator.IS_NULL, value=None),
+        MetadataFilter(key=key, operator=MetadataOperator.IS_NOT_NULL, value=None),
+        MetadataFilter(key=key, operator=MetadataOperator.ARRAY_CONTAINS, value='x'),
+    ]
+
+
+# Built over two keys whose NAME contains the substring 'metadata' (top-level and
+# nested) -- exactly the keys the global str.replace bug corrupted.
+_ALIAS_FILTER_CASES = _alias_filter_cases('metadata_version') + _alias_filter_cases('a.metadata_b')
+
+# A metadata COLUMN position NOT already qualified with the 'ce.' alias (a bare
+# leak the FTS/semantic JOIN could mis-resolve). SQLite passes the column as the
+# first json_extract/json_type/json_each argument (immediately followed by a
+# comma); PostgreSQL accesses it via ->/#>. A JSON key never matches either form
+# (a key never precedes ->/#> nor sits in the column-comma position).
+_SQLITE_COLUMN_LEAK_RE = re.compile(r'(?<!ce\.)\b(?:json_extract|json_type|json_each)\(\s*metadata\s*,')
+_PG_COLUMN_LEAK_RE = re.compile(r'(?<![\w.])metadata(?=->|#>)')
+
+
+class TestMetadataQueryBuilderTableAlias:
+    """table_alias qualifies the metadata COLUMN, never a JSON key.
+
+    Regression for a global ``clause.replace('metadata', 'ce.metadata')`` that
+    corrupted any JSON key containing the substring 'metadata' (e.g. a filter on
+    'metadata_version' became 'ce.metadata_version', so PostgreSQL semantic search
+    silently matched no rows). The builder now qualifies only column positions.
+    """
+
+    def test_no_alias_emits_bare_column(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_simple_filter('status', 'active')
+        where_clause, _ = builder.build_where_clause()
+        assert "metadata->>'status'" in where_clause
+        assert 'ce.metadata' not in where_clause
+
+    def test_alias_qualifies_column(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('status', 'active')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata->>'status'" in where_clause
+
+    def test_alias_does_not_corrupt_metadata_substring_key(self) -> None:
+        # The bug: a 'metadata_version' key was rewritten to 'ce.metadata_version'.
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('metadata_version', '1')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata->>'metadata_version'" in where_clause
+        assert "'ce.metadata_version'" not in where_clause
+
+    def test_alias_does_not_corrupt_key_named_exactly_metadata(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('metadata', 'x')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata->>'metadata'" in where_clause
+        assert "->>'ce.metadata'" not in where_clause
+
+    def test_alias_does_not_corrupt_nested_metadata_segment(self) -> None:
+        # A nested array-path segment named 'metadata' (followed by a comma) must
+        # NOT be mistaken for the column.
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_simple_filter('metadata.version', 'x')
+        where_clause, _ = builder.build_where_clause()
+        assert "ce.metadata#>>'{metadata,version}'" in where_clause
+        assert '{ce.metadata,version}' not in where_clause
+
+    def test_alias_qualifies_sqlite_json_extract_column(self) -> None:
+        builder = MetadataQueryBuilder(backend_type='sqlite', table_alias='ce')
+        builder.add_simple_filter('metadata_version', '1')
+        where_clause, _ = builder.build_where_clause()
+        assert "json_extract(ce.metadata, '$.metadata_version')" in where_clause
+        assert '$.ce.metadata_version' not in where_clause
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    @pytest.mark.parametrize('filter_spec', _ALIAS_FILTER_CASES, ids=lambda f: f'{f.operator.value}-{f.key}')
+    def test_alias_qualifies_every_operator_without_key_corruption(
+        self,
+        backend: str,
+        filter_spec: MetadataFilter,
+    ) -> None:
+        """Every operator: column qualified to ce.metadata, 'metadata'-substring key intact.
+
+        The simple-filter cases above pin only ``eq``. These pin the structurally
+        distinct branches the column-qualification regex must also handle -- the
+        multi-column-position SQLite ``array_contains`` (json_type + json_each) and
+        the ``->``-form PostgreSQL ``is_null``/``exists``/``array_contains`` -- so a
+        future regex or operator-SQL change cannot silently re-introduce JSON-key
+        corruption (e.g. ``metadata_version`` -> ``ce.metadata_version``) on an
+        operator no test exercises. Codifies the all-operator x both-backend sweep.
+        """
+        builder = MetadataQueryBuilder(backend_type=backend, table_alias='ce')
+        builder.add_advanced_filter(filter_spec)
+        clause, _ = builder.build_where_clause()
+        op_name = filter_spec.operator.value
+        assert clause, f'{op_name} on {backend} produced no clause'
+        leak_re = _SQLITE_COLUMN_LEAK_RE if backend == 'sqlite' else _PG_COLUMN_LEAK_RE
+        assert leak_re.search(clause) is None, f'unqualified metadata column leaked ({op_name}/{backend}): {clause}'
+        key_segment = filter_spec.key.split('.')[-1]
+        assert key_segment in clause, f'key {key_segment} missing ({op_name}/{backend}): {clause}'
+        assert f'ce.{key_segment}' not in clause, f'JSON key corrupted ({op_name}/{backend}): {clause}'
+
+    def test_alias_sqlite_array_contains_qualifies_both_column_positions(self) -> None:
+        # SQLite array_contains is the only form with TWO column positions
+        # (json_type(...) AND json_each(...)); both must be qualified, key intact.
+        builder = MetadataQueryBuilder(backend_type='sqlite', table_alias='ce')
+        builder.add_advanced_filter(
+            MetadataFilter(key='metadata_version', operator=MetadataOperator.ARRAY_CONTAINS, value='x'),
+        )
+        clause, _ = builder.build_where_clause()
+        assert 'json_type(ce.metadata,' in clause
+        assert 'json_each(ce.metadata,' in clause
+        assert "'$.ce.metadata_version'" not in clause
+
+    def test_alias_pg_is_null_qualifies_arrow_form_column(self) -> None:
+        # PostgreSQL is_null uses the '->' (not '->>') accessor via jsonb_typeof.
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_advanced_filter(
+            MetadataFilter(key='metadata_version', operator=MetadataOperator.IS_NULL, value=None),
+        )
+        clause, _ = builder.build_where_clause()
+        assert 'jsonb_typeof(ce.metadata->' in clause
+        assert "'ce.metadata_version'" not in clause
+
+    def test_alias_pg_array_contains_qualifies_arrow_form_column(self) -> None:
+        # PostgreSQL array_contains uses '->' via jsonb_array_elements / jsonb_typeof.
+        builder = MetadataQueryBuilder(backend_type='postgresql', table_alias='ce')
+        builder.add_advanced_filter(
+            MetadataFilter(key='metadata_version', operator=MetadataOperator.ARRAY_CONTAINS, value='x'),
+        )
+        clause, _ = builder.build_where_clause()
+        assert 'jsonb_array_elements(ce.metadata->' in clause
+        assert "'ce.metadata_version'" not in clause
+
+
+_NESTED_KEY = 'user.preferences.theme'
+_NESTED_ARRAY = '{user,preferences,theme}'
+
+
+def _pg_nested_operator_cases() -> list[MetadataFilter]:
+    """One MetadataFilter per advanced operator on a NESTED key.
+
+    Each operator emits structurally distinct SQL that must TRAVERSE the nested
+    path via PostgreSQL ``#>>``/``#>`` array notation. The list/None values are
+    literals inferred in-context against the field type.
+
+    Returns:
+        One MetadataFilter per supported operator, all bound to a nested key.
+    """
+    k = _NESTED_KEY
+    return [
+        MetadataFilter(key=k, operator=MetadataOperator.EQ, value='dark'),
+        MetadataFilter(key=k, operator=MetadataOperator.NE, value='dark'),
+        MetadataFilter(key=k, operator=MetadataOperator.GT, value=5),
+        MetadataFilter(key=k, operator=MetadataOperator.GTE, value=5),
+        MetadataFilter(key=k, operator=MetadataOperator.LT, value=5),
+        MetadataFilter(key=k, operator=MetadataOperator.LTE, value=5),
+        MetadataFilter(key=k, operator=MetadataOperator.IN, value=['a', 'b']),
+        MetadataFilter(key=k, operator=MetadataOperator.NOT_IN, value=['a', 'b']),
+        MetadataFilter(key=k, operator=MetadataOperator.EXISTS, value=None),
+        MetadataFilter(key=k, operator=MetadataOperator.NOT_EXISTS, value=None),
+        MetadataFilter(key=k, operator=MetadataOperator.CONTAINS, value='x'),
+        MetadataFilter(key=k, operator=MetadataOperator.STARTS_WITH, value='x'),
+        MetadataFilter(key=k, operator=MetadataOperator.ENDS_WITH, value='x'),
+        MetadataFilter(key=k, operator=MetadataOperator.IS_NULL, value=None),
+        MetadataFilter(key=k, operator=MetadataOperator.IS_NOT_NULL, value=None),
+        MetadataFilter(key=k, operator=MetadataOperator.ARRAY_CONTAINS, value='x'),
+    ]
+
+
+_PG_NESTED_OPERATOR_CASES = _pg_nested_operator_cases()
+
+
+class TestMetadataQueryBuilderPostgresqlNestedPathTraversal:
+    """Every PostgreSQL advanced operator TRAVERSES a nested key via #>>/#>.
+
+    Regression for the cross-backend divergence where 13 of 16 operators emitted
+    ``metadata->>'a.b.c'`` -- a literal top-level key named ``a.b.c`` that never
+    traverses on PostgreSQL -- instead of ``metadata#>>'{a,b,c}'``. SQLite always
+    traversed (``json_extract`` with ``$.a.b.c``), so nested-path filters silently
+    returned wrong/empty results on PostgreSQL only, and PostgreSQL was internally
+    inconsistent (``eq`` traversed, ``ne`` did not). Only ``eq``/``add_simple_filter``/
+    ``array_contains`` were previously correct; these pin all of them.
+    """
+
+    @pytest.mark.parametrize('filter_spec', _PG_NESTED_OPERATOR_CASES, ids=lambda f: f.operator.value)
+    def test_pg_nested_operator_uses_array_notation(self, filter_spec: MetadataFilter) -> None:
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_advanced_filter(filter_spec)
+        clause, _ = builder.build_where_clause()
+        op = filter_spec.operator.value
+        assert clause, f'{op} produced no clause'
+        # Must traverse via the array-notation accessor...
+        assert _NESTED_ARRAY in clause, f'{op} did not use #>>/#> array notation: {clause}'
+        # ...and NEVER read a literal top-level key whose name contains the dots.
+        assert _NESTED_KEY not in clause, f'{op} read a literal dotted key: {clause}'
+
+    @pytest.mark.parametrize('filter_spec', _PG_NESTED_OPERATOR_CASES, ids=lambda f: f.operator.value)
+    def test_sqlite_nested_operator_traverses(self, filter_spec: MetadataFilter) -> None:
+        # Counterpart guard: SQLite traverses for every operator via the full
+        # JSONPath ($.user.preferences.theme), so the cross-backend result agrees.
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(filter_spec)
+        clause, _ = builder.build_where_clause()
+        op = filter_spec.operator.value
+        assert clause, f'{op} produced no clause'
+        assert f'$.{_NESTED_KEY}' in clause, f'{op} did not traverse on SQLite: {clause}'
+
+
+class TestMetadataQueryBuilderLikeWildcardEscaping:
+    """contains/starts_with/ends_with escape LIKE wildcards (%, _) in the value.
+
+    Regression: a filter value containing the LIKE metacharacters ``%`` (any run)
+    or ``_`` (any single char) was interpreted as a pattern, so e.g. CONTAINS
+    ``"50%"`` matched any value containing ``"50"`` followed by anything. The value
+    is now escaped and an explicit ``ESCAPE '\\'`` clause is added on every LIKE
+    branch of both backends (the SQLite case-sensitive INSTR/GLOB branches need no
+    escape and are excluded). This is a correctness fix, not an injection fix (the
+    value is always bound as a parameter).
+    """
+
+    @pytest.mark.parametrize('backend', ['sqlite', 'postgresql'])
+    @pytest.mark.parametrize(
+        'op',
+        [MetadataOperator.CONTAINS, MetadataOperator.STARTS_WITH, MetadataOperator.ENDS_WITH],
+        ids=lambda o: o.value,
+    )
+    def test_case_insensitive_like_escapes_wildcards(self, backend: str, op: MetadataOperator) -> None:
+        builder = MetadataQueryBuilder(backend_type=backend)
+        builder.add_advanced_filter(
+            MetadataFilter(key='note', operator=op, value='50%_x', case_sensitive=False),
+        )
+        clause, params = builder.build_where_clause()
+        assert 'LIKE' in clause
+        assert "ESCAPE '\\'" in clause, f'{op.value}/{backend} missing ESCAPE clause: {clause}'
+        # % and _ in the bound value are escaped so they match literally.
+        assert params == ['50\\%\\_x']
+
+    @pytest.mark.parametrize(
+        'op',
+        [MetadataOperator.CONTAINS, MetadataOperator.STARTS_WITH, MetadataOperator.ENDS_WITH],
+        ids=lambda o: o.value,
+    )
+    def test_postgresql_case_sensitive_like_escapes_wildcards(self, op: MetadataOperator) -> None:
+        # PostgreSQL has no GLOB/INSTR fallback, so even the case-sensitive
+        # contains/starts/ends branches use LIKE and must escape.
+        builder = MetadataQueryBuilder(backend_type='postgresql')
+        builder.add_advanced_filter(
+            MetadataFilter(key='note', operator=op, value='50%', case_sensitive=True),
+        )
+        clause, params = builder.build_where_clause()
+        assert 'LIKE' in clause
+        assert "ESCAPE '\\'" in clause, f'{op.value} missing ESCAPE clause: {clause}'
+        assert params == ['50\\%']
+
+    def test_sqlite_case_sensitive_contains_uses_instr_no_escape(self) -> None:
+        # SQLite case-sensitive contains uses INSTR (literal), so the raw value is
+        # bound unchanged and there is no LIKE/ESCAPE to add.
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(
+            MetadataFilter(key='note', operator=MetadataOperator.CONTAINS, value='50%', case_sensitive=True),
+        )
+        clause, params = builder.build_where_clause()
+        assert 'INSTR' in clause
+        assert 'LIKE' not in clause
+        assert params == ['50%']
+
+    @pytest.mark.parametrize(
+        ('op', 'expect_sql'),
+        [
+            (MetadataOperator.STARTS_WITH, "GLOB ? || '*'"),
+            (MetadataOperator.ENDS_WITH, "GLOB '*' || ?"),
+        ],
+        ids=['starts_with', 'ends_with'],
+    )
+    def test_sqlite_case_sensitive_glob_bracket_escapes_metacharacters(
+        self, op: MetadataOperator, expect_sql: str,
+    ) -> None:
+        """SQLite case-sensitive STARTS_WITH/ENDS_WITH bracket-escape GLOB specials.
+
+        Regression: SQLite GLOB has NO ESCAPE clause and treats backslash as a
+        literal, so the old backslash-escaping made a value containing ``* ? [``
+        silently mismatch. The value's GLOB metacharacters are now wrapped in
+        single-char bracket classes (``[*]`` etc.) so it matches literally while
+        GLOB stays case-sensitive.
+        """
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(
+            MetadataFilter(key='note', operator=op, value='a*b?[c', case_sensitive=True),
+        )
+        clause, params = builder.build_where_clause()
+        assert 'GLOB' in clause
+        assert expect_sql in clause
+        # *, ?, [ each wrapped in a single-char bracket class; other chars unchanged.
+        assert params == ['a[*]b[?][[]c']
+        # No backslash escaping (the broken mechanism) remains.
+        assert '\\' not in params[0]

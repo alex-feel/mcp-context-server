@@ -20,8 +20,10 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends import create_backend
+from app.migrations._pg_ddl import begin_migration
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.repositories.fts_repository import FtsRepository
+from app.repositories.fts_repository import desired_sqlite_fts_tokenizer
 from app.settings import get_settings
 
 if TYPE_CHECKING:
@@ -29,9 +31,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-# Database path for backward compatibility mode
-DB_PATH = settings.storage.db_path
 
 
 @dataclass
@@ -97,16 +96,28 @@ def estimate_migration_time(records_count: int) -> int:
     return 1200  # 20 minutes for very large datasets
 
 
-async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'RepositoryContainer | None' = None) -> None:
+async def apply_fts_migration(
+    backend: StorageBackend,
+    repos: 'RepositoryContainer | None' = None,
+    *,
+    force: bool = False,
+) -> None:
     """Apply full-text search migration if enabled, with language-aware tokenizer selection.
 
     Args:
-        backend: Optional backend to use. If None, creates temporary backend.
-        repos: Optional repository container. If None, creates temporary one.
+        backend: Storage backend instance.
+        repos: Optional repository container. If None, creates a transient
+            :class:`FtsRepository` around ``backend`` for migration use.
+        force: When True, provision FTS regardless of the ENABLE_FTS setting.
+            Used by the migration CLI's PostgreSQL target-init so a migrated
+            database gains the FTS schema whenever the SOURCE had it, decoupled
+            from the CLI process's ENABLE_FTS toggle (parity with the
+            semantic/chunking/index_tree migrations' force hooks and the SQLite
+            CLI target, which keys FTS on source-table presence).
 
     This function applies the FTS migration (FTS5 for SQLite, tsvector for PostgreSQL)
-    when ENABLE_FTS=true. For SQLite, it selects the appropriate tokenizer based on
-    FTS_LANGUAGE setting:
+    when ENABLE_FTS=true (or force=True). For SQLite, it selects the appropriate tokenizer
+    based on FTS_LANGUAGE setting:
     - english (or not set) -> 'porter unicode61' (English stemming)
     - other languages -> 'unicode61' (multilingual, no stemming)
 
@@ -114,21 +125,13 @@ async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'Rep
     """
     # Import here to avoid circular import (repos type hint uses string annotation above)
 
-    # Skip if FTS is not enabled
-    if not settings.fts.enabled:
+    # Skip if FTS is not enabled (unless the migration CLI forces provisioning)
+    if not force and not settings.fts.enabled:
         logger.debug('FTS disabled (ENABLE_FTS=false), skipping migration')
         return
 
-    # Determine backend type and get manager
-    own_backend = False
-    if backend is not None:
-        manager = backend
-        backend_type = backend.backend_type
-    else:
-        manager = create_backend(backend_type=None, db_path=DB_PATH)
-        await manager.initialize()
-        backend_type = manager.backend_type
-        own_backend = True
+    manager = backend
+    backend_type = backend.backend_type
 
     # Create repository if not provided
     fts_repo = repos.fts if repos else None
@@ -142,8 +145,6 @@ async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'Rep
         if fts_exists:
             # FTS exists - check if tokenizer/language matches current settings
             await _check_and_migrate_fts_if_needed(fts_repo, backend_type)
-            if own_backend:
-                await manager.shutdown()
             return
 
         # FTS doesn't exist - apply initial migration
@@ -152,9 +153,6 @@ async def apply_fts_migration(backend: StorageBackend | None = None, repos: 'Rep
     except Exception as e:
         # FTS migration failure should be logged but not fatal
         logger.warning(f'FTS migration may have already been applied or failed: {e}')
-    finally:
-        if own_backend:
-            await manager.shutdown()
 
 
 async def _check_and_migrate_fts_if_needed(fts_repo: FtsRepository, backend_type: str) -> None:
@@ -270,7 +268,7 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         # Determine tokenizer based on language setting
         # - 'porter unicode61' for English (enables stemming: "running" matches "run")
         # - 'unicode61' for other languages (multilingual support, no stemming)
-        tokenizer = 'porter unicode61' if settings.fts.language.lower() == 'english' else 'unicode61'
+        tokenizer = desired_sqlite_fts_tokenizer(settings.fts.language)
         migration_sql = migration_sql.replace('{TOKENIZER}', tokenizer)
 
         def _apply_fts_sqlite(conn: sqlite3.Connection) -> None:
@@ -290,11 +288,16 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
         migration_sql = migration_path.read_text(encoding='utf-8')
         migration_sql = migration_sql.replace('{FTS_LANGUAGE}', settings.fts.language)
 
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _apply_fts_pg(conn: asyncpg.Connection) -> None:
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction). This is the
+            # heaviest DDL of all: the GENERATED ALWAYS AS (...) STORED tsvector column is a full
+            # table rewrite, plus a GIN index build, so the pool's shorter command_timeout must
+            # not cancel it (or a lock wait on a peer pod's migration) on a large existing table.
+            await begin_migration(conn, migration_timeout_s)
 
             statements: list[str] = []
             current_stmt: list[str] = []
@@ -318,7 +321,7 @@ async def _apply_initial_fts_migration(manager: StorageBackend, backend_type: st
             for stmt in statements:
                 stmt = stmt.strip()
                 if stmt and not stmt.startswith('--'):
-                    await conn.execute(stmt)
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
         await manager.execute_write(cast(Any, _apply_fts_pg))
         logger.info(f'Applied FTS migration (PostgreSQL tsvector) with language: {settings.fts.language}')

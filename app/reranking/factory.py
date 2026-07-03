@@ -4,7 +4,6 @@ Factory for creating reranking provider instances.
 Follows the pattern from app/embeddings/factory.py for consistency.
 """
 
-from __future__ import annotations
 
 import importlib
 import logging
@@ -27,7 +26,7 @@ PROVIDER_CLASSES: dict[str, str] = {
 }
 
 
-def create_reranking_provider() -> RerankingProvider:
+def create_reranking_provider() -> 'RerankingProvider':
     """Create a reranking provider based on settings.
 
     Reads RERANKING_PROVIDER from settings and dynamically imports

@@ -9,8 +9,6 @@ Tests cover:
 - Sync mode behaviors (strict, auto, warn, additive)
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import sqlite3

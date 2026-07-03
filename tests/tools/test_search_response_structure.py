@@ -4,8 +4,6 @@ Validates that all search tools return consistent response structures
 matching their TypedDict definitions.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from app.server import search_context

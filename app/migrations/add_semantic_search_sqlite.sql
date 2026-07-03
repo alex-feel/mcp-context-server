@@ -9,8 +9,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_context_embeddings USING vec0(
 );
 
 -- Metadata table for tracking embeddings
+-- NOTE: context_id is the public UUIDv7 hex FK to context_entries(id) (TEXT, UNIQUE).
+-- The vec0 virtual table `vec_context_embeddings` uses INTEGER rowids
+-- internally because sqlite-vec requires INTEGER rowids for its virtual
+-- tables; the bridge from this TEXT context_id to that INTEGER rowid is
+-- provided by `embedding_chunks.vec_rowid` (defined in
+-- `add_chunking_sqlite.sql`).
 CREATE TABLE IF NOT EXISTS embedding_metadata (
-    context_id INTEGER PRIMARY KEY,
+    context_id TEXT NOT NULL PRIMARY KEY,
     model_name TEXT NOT NULL,
     dimensions INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

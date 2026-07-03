@@ -11,7 +11,6 @@ For uvx (combined with embeddings):
     uvx --python 3.12 --with "mcp-context-server[embeddings-ollama,langsmith]" mcp-context-server
 """
 
-from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable
@@ -105,7 +104,7 @@ def traced_embedding[**P, R](func: Callable[P, Awaitable[R]]) -> Callable[P, Awa
         # Apply traceable decorator with dynamic metadata at call time
         # This ensures metadata is passed when the run tree is created
         traced_func: Any = traceable(
-            name=func.__name__,
+            name=getattr(func, '__name__', '<callable>'),
             run_type='embedding',
             metadata=metadata or None,
         )(func)

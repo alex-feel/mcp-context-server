@@ -5,8 +5,6 @@ Tests all MCP tool implementations including store_context, search_context,
 get_context_by_ids, delete_context, list_threads, and get_statistics.
 """
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import sqlite3
@@ -25,6 +23,7 @@ from fastmcp.exceptions import ToolError
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
+import app.startup
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
@@ -62,7 +61,7 @@ class TestStoreContext:
         assert 'Context stored' in result['message']
 
         # Verify context.info was called
-        assert mock_context.info.called is True
+        assert cast(MagicMock, mock_context.info).called is True
 
     @pytest.mark.asyncio
     async def test_store_multimodal_context(
@@ -143,10 +142,12 @@ class TestStoreContext:
         sample_image_data: dict[str, str],
     ) -> None:
         """Test storing multiple images."""
+        import json as _json
+
         images = [
             sample_image_data,
-            {**sample_image_data, 'metadata': {'position': 1}},
-            {**sample_image_data, 'metadata': {'position': 2}},
+            {**sample_image_data, 'metadata': _json.dumps({'position': 1})},
+            {**sample_image_data, 'metadata': _json.dumps({'position': 2})},
         ]
 
         result = await store_context(
@@ -184,7 +185,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_all_contexts(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test searching without filters returns all contexts."""
         _ = multiple_context_entries  # Fixture ensures data exists
@@ -197,7 +198,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_by_thread(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test filtering by thread ID."""
         _ = multiple_context_entries  # Fixture ensures data exists
@@ -211,7 +212,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_by_source(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test filtering by source type."""
         _ = multiple_context_entries  # Fixture ensures data exists
@@ -225,7 +226,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_by_tags(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test filtering by tags."""
         _ = multiple_context_entries  # Fixture ensures data exists
@@ -238,7 +239,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_by_content_type(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test filtering by content type."""
         _ = multiple_context_entries  # Fixture ensures data exists
@@ -251,7 +252,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_with_pagination(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test pagination parameters."""
         _ = multiple_context_entries  # Fixture ensures data exists
@@ -302,7 +303,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_complex_filters(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test combining multiple filters."""
         _ = multiple_context_entries  # Fixture ensures data exists
@@ -322,7 +323,7 @@ class TestSearchContext:
     @pytest.mark.asyncio
     async def test_search_invalid_source(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test that Pydantic Literal validation handles invalid source.
 
@@ -539,7 +540,7 @@ class TestGetContextByIds:
     @pytest.mark.asyncio
     async def test_get_single_context(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test fetching a single context by ID."""
         context_id = multiple_context_entries[0]
@@ -552,7 +553,7 @@ class TestGetContextByIds:
     @pytest.mark.asyncio
     async def test_get_multiple_contexts(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test fetching multiple contexts by IDs."""
         ids_to_fetch = multiple_context_entries[:3]
@@ -565,6 +566,8 @@ class TestGetContextByIds:
     @pytest.mark.asyncio
     async def test_get_context_with_images(self) -> None:
         """Test fetching context with images included."""
+        import json as _json
+
         # Store context with image
         image_data = base64.b64encode(b'test_img').decode('utf-8')
         store_result = await store_context(
@@ -575,7 +578,7 @@ class TestGetContextByIds:
                 {
                     'data': image_data,
                     'mime_type': 'image/jpeg',
-                    'metadata': {'size': 100},
+                    'metadata': _json.dumps({'size': 100}),
                 },
             ],
         )
@@ -590,8 +593,10 @@ class TestGetContextByIds:
 
         assert len(results) == 1
         assert 'images' in results[0]
-        assert len(results[0]['images']) == 1
-        assert results[0]['images'][0]['mime_type'] == 'image/jpeg'
+        result_images = results[0]['images']
+        assert result_images is not None
+        assert len(result_images) == 1
+        assert result_images[0]['mime_type'] == 'image/jpeg'
 
     @pytest.mark.asyncio
     async def test_get_context_without_images(self) -> None:
@@ -616,7 +621,12 @@ class TestGetContextByIds:
     @pytest.mark.asyncio
     async def test_get_nonexistent_contexts(self) -> None:
         """Test fetching non-existent context IDs."""
-        results = await get_context_by_ids(context_ids=[9999, 10000])
+        results = await get_context_by_ids(
+            context_ids=[
+                '0190abcdef1234567890abcd0000270f',
+                '0190abcdef1234567890abcd00002710',
+            ],
+        )
         assert results == []
 
     @pytest.mark.asyncio
@@ -626,13 +636,13 @@ class TestGetContextByIds:
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
         # Test with valid non-empty list
-        result = await get_context_by_ids(context_ids=[1])
+        result = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'])
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
     async def test_get_context_with_tags(
         self,
-        multiple_context_entries: list[int],
+        multiple_context_entries: list[str],
     ) -> None:
         """Test that tags are included in fetched contexts."""
         # First entry has tags
@@ -714,7 +724,7 @@ class TestDeleteContext:
     @pytest.mark.asyncio
     async def test_delete_nonexistent_ids(self) -> None:
         """Test deleting non-existent IDs."""
-        result = await delete_context(context_ids=[9999, 10000])
+        result = await delete_context(context_ids=['0190abcdef1234567890abcd0000270f', '0190abcdef1234567890abcd00002710'])
 
         assert result['success'] is True
         assert result['deleted_count'] == 0
@@ -760,7 +770,7 @@ class TestListThreads:
     async def test_list_threads_with_data(self) -> None:
         """Test listing threads with multiple entries."""
         # Create test data
-        threads_data = [
+        threads_data: list[tuple[str, Literal['user', 'agent'], int]] = [
             ('thread_a', 'user', 3),
             ('thread_b', 'agent', 2),
             ('thread_c', 'user', 5),
@@ -930,9 +940,14 @@ class TestGetStatistics:
     @pytest.mark.asyncio
     async def test_statistics_summary_enabled_unavailable(self) -> None:
         """Test summary section when enabled but provider not initialized."""
+        from typing import Any
+        from typing import cast
+
         stats = await get_statistics()
         assert 'summary' in stats
-        summary_info = stats['summary']
+        # SummaryStatsDict declares all fields total=False; cast so per-key
+        # indexing reads as a runtime structural assertion.
+        summary_info = cast(dict[str, Any], stats['summary'])
         assert summary_info['enabled'] is True
         assert summary_info['available'] is False
         assert 'message' in summary_info
@@ -960,7 +975,7 @@ class TestContextParameter:
         await search_context(limit=50, thread_id='ctx_test', ctx=mock_ctx)
         assert mock_ctx.info.call_count == 2
 
-        await get_context_by_ids(context_ids=[1], ctx=mock_ctx)
+        await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'], ctx=mock_ctx)
         assert mock_ctx.info.call_count == 3
 
         await delete_context(thread_id='ctx_test', ctx=mock_ctx)
@@ -998,15 +1013,20 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_large_metadata(self) -> None:
         """Test handling of large metadata objects."""
-        large_metadata = {
-            'nested': {
-                'level': {
-                    'data': ['item'] * 100,
-                    'numbers': list(range(1000)),
+        from app.types import JsonValue
+
+        large_metadata = cast(
+            'dict[str, JsonValue]',
+            {
+                'nested': {
+                    'level': {
+                        'data': ['item'] * 100,
+                        'numbers': list(range(1000)),
+                    },
                 },
+                'description': 'x' * 10000,
             },
-            'description': 'x' * 10000,
-        }
+        )
 
         result = await store_context(
             thread_id='metadata_test',

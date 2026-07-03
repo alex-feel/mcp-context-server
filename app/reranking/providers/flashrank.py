@@ -5,16 +5,30 @@ This provider uses FlashRank for fast, lightweight cross-encoder reranking.
 FlashRank supports multiple models with different size/quality tradeoffs.
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging
 import operator
 from typing import Any
+from typing import TypedDict
 
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+class RankerKwargs(TypedDict, total=False):
+    """Keyword arguments accepted by flashrank.Ranker.__init__.
+
+    Mirrors the public signature of flashrank.Ranker.__init__
+    (model_name, cache_dir, max_length, log_level). All entries are optional
+    so callers can build the dict incrementally based on configuration.
+    """
+
+    model_name: str
+    cache_dir: str
+    max_length: int
+    log_level: str
 
 
 class FlashRankProvider:
@@ -91,9 +105,10 @@ class FlashRankProvider:
         Creates the FlashRank Ranker, then replaces its default ONNX InferenceSession
         with one configured for constrained resource usage:
 
-        - **Thread limiting:** intra-op threads set to a fixed count (default 2)
-          instead of ONNX Runtime's default of host physical core count, which
-          causes thread explosion in containers with lower CPU quotas.
+        - **Thread limiting:** intra-op threads set to ``RERANKING_INTRA_OP_THREADS``
+          (default ``0`` = ONNX Runtime's own all-host-cores auto mode, i.e. no extra
+          limiting). Set it to a small fixed count to cap intra-op parallelism and avoid
+          thread explosion in containers with lower CPU quotas.
         - **Arena disabled:** CPU memory arena (``enable_cpu_mem_arena``) set to
           ``False`` by default to prevent ONNX Runtime from permanently retaining
           multi-GiB intermediate tensor buffers after inference.
@@ -103,8 +118,11 @@ class FlashRankProvider:
         The Ranker constructor's default session is explicitly released before
         the replacement session is created, freeing its unconstrained resources.
 
-        Raises:
-            FileNotFoundError: If no .onnx model file exists in the model directory.
+        Non-ONNX models:
+            Some FlashRank models (e.g. gguf-backed listwise rerankers) are not
+            ONNX-based and contain no ``.onnx`` file. The constrained-session
+            optimization applies only to ONNX models, so for those FlashRank's
+            default backend is kept as-is rather than raising.
         """
         from typing import cast
 
@@ -116,7 +134,7 @@ class FlashRankProvider:
         logger.info(f'Loading FlashRank model: {self._model_name}')
 
         # Build kwargs conditionally - FlashRank doesn't accept None for cache_dir
-        ranker_kwargs: dict[str, str | int] = {
+        ranker_kwargs: RankerKwargs = {
             'model_name': self._model_name,
             'max_length': self._max_length,
         }
@@ -125,22 +143,29 @@ class FlashRankProvider:
 
         ranker: Any = cast(Any, Ranker(**ranker_kwargs))
 
-        # Release the unconstrained default session created by Ranker()
-        # before replacing it with our arena-disabled, thread-limited session.
+        # Resolve the ONNX model file BEFORE touching the default session. A FlashRank
+        # model directory normally contains exactly one .onnx file, but non-ONNX models
+        # (e.g. gguf-backed listwise rerankers) have none. For those the constrained
+        # session does not apply, so keep FlashRank's default backend as-is rather than
+        # nulling a session we cannot rebuild (the old code released the session first,
+        # then raised FileNotFoundError -- crashing the provider for gguf models).
+        model_onnx_files = list(ranker.model_dir.glob('*.onnx'))
+        if not model_onnx_files:
+            logger.info(
+                f'FlashRank model {self._model_name} has no .onnx file in {ranker.model_dir}; '
+                f'using FlashRank default backend (constrained ONNX session not applied).',
+            )
+            self._ranker = ranker
+            return
+        model_path = str(model_onnx_files[0])
+
+        # Release the unconstrained default session created by Ranker() before
+        # replacing it with our arena-disabled, thread-limited ONNX session.
+        # FlashRank's Ranker.__init__() creates ort.InferenceSession without
+        # SessionOptions, defaulting intra_op_num_threads to 0 (= all host cores).
         if hasattr(ranker, 'session') and ranker.session is not None:
             del ranker.session
             ranker.session = None
-
-        # Replace with a thread-limited, arena-disabled ONNX session.
-        # FlashRank's Ranker.__init__() creates ort.InferenceSession without
-        # SessionOptions, defaulting intra_op_num_threads to 0 (= all host cores).
-        # Resolve the ONNX model file from the Ranker's model directory.
-        # Each FlashRank model directory contains exactly one .onnx file.
-        model_onnx_files = list(ranker.model_dir.glob('*.onnx'))
-        if not model_onnx_files:
-            msg = f'No .onnx file found in {ranker.model_dir}'
-            raise FileNotFoundError(msg)
-        model_path = str(model_onnx_files[0])
 
         sess_options: Any = ort.SessionOptions()
         sess_options.intra_op_num_threads = self._intra_op_threads

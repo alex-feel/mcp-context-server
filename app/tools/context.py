@@ -9,13 +9,18 @@ This module contains the core context management tools:
 
 Generation-First Transactional Integrity:
 This module implements atomic generation + data storage. When embedding or summary
-generation is enabled:
-1. Embeddings and summaries are generated in PARALLEL via asyncio.gather(return_exceptions=True)
-   OUTSIDE any database transaction
-2. Each result is independently inspected -- if ANY generation fails, NO data is saved
-3. Retry budgets are fully managed by app/embeddings/retry.py and app/summary/retry.py;
-   no re-invocation occurs at the gather level
-4. If all generation succeeds, ALL database operations occur in a SINGLE atomic transaction
+generation is enabled, all generation runs OUTSIDE any database transaction via
+run_generation() (app.tools._shared), which drives three concurrent legs:
+1. embed_then_compress -- embedding followed by TurboQuant compression (abort-mandatory)
+2. the flat document summary (abort-mandatory)
+3. the index_tree per-node summaries (never-raise), started after the flat summary
+   completes and overlapped with the embedding leg
+If either abort-mandatory leg fails after exhausting its retries (managed by
+app/embeddings/retry.py and app/summary/retry.py), the failures are collected into a
+single deterministic ToolError and NO data is saved; the never-raise node leg is then
+cancelled and awaited before the transaction opens. A node-summary failure or timeout
+never aborts the store. Only when both abort-mandatory legs succeed do ALL database
+operations occur in a SINGLE atomic transaction.
 
 Infrastructure functions (embedding/summary generation, transaction heartbeat,
 connection error classification, image validation, response message builders) are
@@ -25,7 +30,6 @@ in app.tools._shared -- the single source of truth for logic shared with batch.p
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable
 from typing import Annotated
 from typing import Literal
 from typing import cast
@@ -35,18 +39,27 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from app.errors import format_exception_message
+from app.ids import resolve_or_normalize_id
+from app.ids import resolve_or_normalize_ids
+from app.repositories.base import canonical_timestamp
+from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
+from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
+from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
+from app.tools._shared import embed_then_compress
 from app.tools._shared import execute_store_in_transaction
 from app.tools._shared import execute_update_in_transaction
-from app.tools._shared import generate_embeddings_with_timeout
+from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
+from app.tools._shared import node_layer_active
+from app.tools._shared import run_generation
 from app.tools._shared import validate_and_normalize_images
 from app.types import ContextEntryDict
 from app.types import MetadataDict
@@ -129,18 +142,21 @@ async def store_context(
         # Determine content type and validate images
         validated_images, content_type, _ = validate_and_normalize_images(images, error_mode='raise')
 
-        # === PHASE 2: Generate Summary + Embedding in PARALLEL (Outside Transaction) ===
-        # CRITICAL: Both generation steps happen BEFORE any database operations.
-        # If either fails, NO data is saved - this is the core of transactional integrity.
+        # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
+        # All generation happens BEFORE any database operation: if an
+        # abort-mandatory step (embedding, compression, or the flat summary)
+        # fails, NO data is saved. The embedding->compression leg and the
+        # summary->nodes leg run CONCURRENTLY (disjoint resources); the flat
+        # summary precedes the never-raise node summaries on the shared
+        # summary-model budget, and a failure cancels the other leg cleanly
+        # (see run_generation).
 
         repos = await ensure_repositories()
-        chunk_embeddings: list[ChunkEmbedding] | None = None
-        embedding_generated = False
         summary_text: str | None = None
         summary_generated = False
 
         # Performance optimization: pre-check for likely duplicates (read-only)
-        likely_duplicate_id: int | None = None
+        likely_duplicate_id: str | None = None
 
         if get_embedding_provider() is not None or get_summary_provider() is not None:
             likely_duplicate_id = await repos.context.check_latest_is_duplicate(
@@ -149,33 +165,23 @@ async def store_context(
                 text_content=text,
             )
 
-        # Build parallel tasks
-        tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
-        task_names: list[str] = []
-
-        # Embedding task (existing logic with pre-check optimization)
+        # Decide which generation legs to run. The dedup pre-check lets a likely
+        # retransmit skip work it would only discard (embeddings already stored,
+        # summary reusable, node rows left untouched).
+        run_embedding = False
         if get_embedding_provider() is not None:
             if likely_duplicate_id is not None:
-                has_embeddings = await repos.embeddings.exists(likely_duplicate_id)
-                if has_embeddings:
+                run_embedding = not await repos.embeddings.exists(likely_duplicate_id)
+                if not run_embedding:
                     logger.debug(
                         'Pre-check: skipping embedding generation for likely duplicate '
-                        'of context %d in thread %s',
-                        likely_duplicate_id, thread_id,
+                        'of context %s in thread %s', likely_duplicate_id, thread_id,
                     )
-                else:
-                    logger.debug(
-                        'Pre-check: duplicate detected but no embeddings exist for context %d '
-                        'in thread %s, generating embeddings',
-                        likely_duplicate_id, thread_id,
-                    )
-                    tasks_to_run.append(generate_embeddings_with_timeout(text))
-                    task_names.append('embedding')
             else:
-                tasks_to_run.append(generate_embeddings_with_timeout(text))
-                task_names.append('embedding')
+                run_embedding = True
 
-        # Summary task (mirrors embedding pre-check pattern)
+        run_summary = False
+        summary_reused = False
         if get_summary_provider() is not None:
             min_content_length = settings.summary.min_content_length
             if min_content_length > 0 and len(text) < min_content_length:
@@ -186,51 +192,46 @@ async def store_context(
             elif likely_duplicate_id is not None:
                 existing_summary = await repos.context.get_summary(likely_duplicate_id)
                 if existing_summary is not None:
-                    summary_text = existing_summary
+                    summary_text = existing_summary  # reuse; no model call
+                    summary_reused = True
                     logger.debug(
                         'Pre-check: reusing existing summary for likely duplicate '
-                        'of context %d in thread %s',
-                        likely_duplicate_id, thread_id,
+                        'of context %s in thread %s', likely_duplicate_id, thread_id,
                     )
                 else:
-                    tasks_to_run.append(generate_summary_with_timeout(text, source))
-                    task_names.append('summary')
+                    run_summary = True
             else:
-                tasks_to_run.append(generate_summary_with_timeout(text, source))
-                task_names.append('summary')
+                run_summary = True
 
-        # Execute all tasks in parallel
-        if tasks_to_run:
-            results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+        # Node summaries are gated symmetrically with embeddings/summary: a likely
+        # retransmit re-issues none and leaves stored rows untouched (index_nodes
+        # stays None). On a reconcile-divergence INSERT below they are regenerated
+        # for the diverged text.
+        run_nodes = likely_duplicate_id is None
 
-            errors: list[tuple[str, BaseException]] = []
-            for name, result in zip(task_names, results, strict=True):
-                if isinstance(result, BaseException):
-                    errors.append((name, result))
-                    logger.error('Generation failed for %s (retries exhausted): %s', name, result)
-                elif name == 'embedding':
-                    chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
-                    embedding_generated = chunk_embeddings is not None
-                elif name == 'summary':
-                    summary_text = cast(str | None, result)
-                    summary_generated = bool(summary_text)
-
-            if errors:
-                error_details = '; '.join(
-                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
-                )
-                raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
+        chunk_embeddings, generated_summary, index_nodes = await run_generation(
+            text, source,
+            run_embedding=run_embedding,
+            run_summary=run_summary,
+            run_nodes=run_nodes,
+        )
+        if generated_summary is not None:
+            summary_text = generated_summary
+            summary_generated = True
+        embedding_generated = chunk_embeddings is not None
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
-        metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata is not None else None
 
         max_retries = 2
-        context_id = 0
+        context_id = ''
         was_updated = False
         embedding_stored = False
+        reconciled = False
+        attempt = 0
 
-        for attempt in range(max_retries + 1):
+        while True:
             try:
                 async with backend.begin_transaction() as txn:
                     context_id, was_updated, embedding_stored = await execute_store_in_transaction(
@@ -243,22 +244,70 @@ async def store_context(
                         summary=summary_text,
                         tags=tags,
                         validated_images=validated_images,
+                        images_provided=images is not None,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
+                        embedding_generation_enabled=get_embedding_provider() is not None,
+                        index_nodes=index_nodes,
+                        nodes_pending=node_layer_active() and likely_duplicate_id is not None,
+                        summary_pending=summary_reused and not summary_generated,
                     )
 
                 # Transaction committed successfully -- break retry loop
                 break
+
+            except EmbeddingsReconcileRequiredError:
+                # The read-only pre-check skipped embedding generation expecting a
+                # deduplication UPDATE, but the transaction inserted a new entry
+                # (a concurrent interleaving write flipped the decision).
+                # Regenerate embeddings OUTSIDE the transaction (preserving the
+                # generation-first invariant) and retry once.
+                if reconciled:
+                    raise ToolError(
+                        'Failed to reconcile embeddings after deduplication divergence',
+                    ) from None
+                reconciled = True
+                logger.info(
+                    'Deduplication pre-check/transaction divergence in thread %s; '
+                    'regenerating skipped embeddings before retry',
+                    thread_id,
+                )
+                # Only regenerate embeddings if they were actually skipped. A
+                # node-only reconcile (embeddings already present, nodes pending)
+                # must NOT re-run the provider: that would discard valid
+                # embeddings and let a transient provider failure abort the store.
+                if chunk_embeddings is None:
+                    chunk_embeddings = await embed_then_compress(text)
+                    embedding_generated = chunk_embeddings is not None
+                # A REUSED summary was read from the since-diverged candidate and
+                # may describe different text; regenerate it for THIS text so the
+                # divergence INSERT cannot persist a mismatched summary.
+                if summary_reused and not summary_generated:
+                    summary_text = await generate_summary_with_timeout(text, source)
+                    summary_generated = summary_text is not None
+                    summary_reused = False
+                # The divergence INSERTed a new entry, so its node summaries were
+                # never computed (gated off above as a likely duplicate). Regenerate
+                # for the diverged text so the new entry gets its index_tree nodes.
+                if index_nodes is None:
+                    # Total node-summary degradation returns None; coerce to []
+                    # so the reconcile gate clears on retry. The node layer is
+                    # never-raise: degradation must NOT abort the store, and a
+                    # divergence INSERT has no stale node rows to preserve, so []
+                    # (write no node rows now) is the correct value.
+                    index_nodes = await generate_index_nodes_with_timeout(text) or []
+                continue
 
             except ToolError:
                 raise  # ToolError is a logical error, not connection error -- do not retry
             except Exception as e:
                 if is_connection_error(e) and attempt < max_retries:
                     delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    attempt += 1
                     logger.warning(
                         'Transaction failed with connection error, retrying in %.1fs '
                         '(attempt %d/%d): %s',
-                        delay, attempt + 1, max_retries, e,
+                        delay, attempt, max_retries, e,
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -290,7 +339,7 @@ async def store_context(
 
 
 async def get_context_by_ids(
-    context_ids: Annotated[list[int], Field(min_length=1, description='List of context entry IDs to retrieve')],
+    context_ids: Annotated[list[str], Field(min_length=1, description='List of context entry IDs to retrieve')],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
     ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
@@ -303,25 +352,71 @@ async def get_context_by_ids(
 
     Returns:
         List of ContextEntryDict with id, thread_id, source, text_content, metadata,
-        tags, images, created_at, updated_at fields.
+        tags, images, created_at, updated_at fields. The summary field follows a
+        tri-state contract controlled by GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY:
+
+        - When disabled (the default), the summary key is omitted entirely; consumers
+          reading entry.get('summary') will receive None, which is the conventional
+          Python signal for "feature disabled, no value to surface".
+        - When enabled and the stored summary is a non-empty string, the value is
+          returned verbatim.
+        - When enabled but the stored summary is NULL or empty (e.g., generation was
+          skipped because text was shorter than SUMMARY_MIN_CONTENT_LENGTH, or no
+          provider is configured), the value is normalized to an empty string ''.
+          This mirrors the search-tool contract (search tools always emit summary as
+          a string, never None) and provides an explicit "feature on, no data yet"
+          signal distinct from the "feature disabled" None.
 
     Raises:
         ToolError: If fetching context entries fails.
     """
     try:
+        # Get repositories first; prefix resolution below needs the context repo.
+        repos = await ensure_repositories()
+
+        # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
+        # 8-31 char hex prefixes (uniform with update_context/delete_context).
+        try:
+            context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
+        except ValueError as e:
+            raise ToolError(f'Invalid context ID: {e}') from e
+
         if ctx:
             await ctx.info(f'Fetching context entries: {context_ids}')
-
-        # Get repositories
-        repos = await ensure_repositories()
 
         # Fetch context entries using repository
         rows = await repos.context.get_by_ids(context_ids)
         entries: list[ContextEntryDict] = []
+        include_summary = settings.retrieval.include_summary
 
         for row in rows:
             # Create entry dict with proper typing for dynamic fields
             entry = cast(ContextEntryDict, dict(row))
+
+            # Canonical timestamp wire format: identical across SQLite and PostgreSQL
+            # and to the search tools (text_content stays FULL here -- get_context_by_ids
+            # is never truncated). See app.repositories.base.canonical_timestamp.
+            created_at_val = entry.get('created_at')
+            if created_at_val is not None:
+                entry['created_at'] = cast(str, canonical_timestamp(created_at_val))
+            updated_at_val = entry.get('updated_at')
+            if updated_at_val is not None:
+                entry['updated_at'] = cast(str, canonical_timestamp(updated_at_val))
+
+            if include_summary:
+                # Mirror search-tool normalization (app/tools/search.py:140-145):
+                # surface an empty string for the "feature ON but no data yet" state.
+                # Tri-state contract:
+                #   include_summary=False (default)              -> key omitted (consumers see entry.get('summary') == None)
+                #   include_summary=True  + stored non-empty str -> verbatim stored string
+                #   include_summary=True  + DB NULL/empty        -> '' (explicit signal "feature on, no data yet")
+                summary = entry.get('summary')
+                if isinstance(summary, str) and summary.strip():
+                    entry['summary'] = summary
+                else:
+                    entry['summary'] = ''
+            else:
+                entry.pop('summary', None)
 
             # Parse JSON metadata - database stores as JSON string
             metadata_raw = entry.get('metadata')
@@ -336,7 +431,7 @@ async def get_context_by_ids(
             # Get normalized tags
             entry_id_raw = entry.get('id')
             if entry_id_raw is not None:
-                entry_id = int(entry_id_raw)
+                entry_id = str(entry_id_raw)
                 tags_result = await repos.tags.get_tags_for_context(entry_id)
                 entry['tags'] = tags_result
             else:
@@ -346,8 +441,8 @@ async def get_context_by_ids(
             if include_images and entry.get('content_type') == 'multimodal':
                 entry_id_img = entry.get('id')
                 if entry_id_img is not None:
-                    images_result = await repos.images.get_images_for_context(int(entry_id_img), include_data=True)
-                    entry['images'] = cast(list[dict[str, str]], images_result)
+                    images_result = await repos.images.get_images_for_context(str(entry_id_img), include_data=True)
+                    entry['images'] = images_result
                 else:
                     entry['images'] = []
 
@@ -363,7 +458,7 @@ async def get_context_by_ids(
 
 async def delete_context(
     context_ids: Annotated[
-        list[int] | None,
+        list[str] | None,
         Field(min_length=1, description='Specific context entry IDs to delete (mutually exclusive with thread_id)'),
     ] = None,
     thread_id: Annotated[
@@ -390,17 +485,33 @@ async def delete_context(
         if not context_ids and not thread_id:
             raise ToolError('Must provide either context_ids or thread_id')
 
+        # Get repositories first; prefix resolution below needs the context repo.
+        repos = await ensure_repositories()
+
+        # Resolve incoming IDs at the boundary: accept full 32/36-char IDs or
+        # 8-31 char hex prefixes (uniform with get_context_by_ids/update_context).
+        if context_ids:
+            try:
+                context_ids = await resolve_or_normalize_ids(context_ids, repos.context)
+            except ValueError as e:
+                raise ToolError(f'Invalid context ID: {e}') from e
+
         if ctx:
             await ctx.info(f'Deleting context: ids={context_ids}, thread={thread_id}')
-
-        # Get repositories
-        repos = await ensure_repositories()
 
         deleted = 0
 
         if context_ids:
-            # Delete embeddings first (explicit cleanup)
-            if settings.semantic_search.enabled:
+            # Delete embeddings first (explicit cleanup). Gate on whether the
+            # embedding tables were ever PROVISIONED (embedding_tables_exist),
+            # NOT on the runtime ENABLE_EMBEDDING_GENERATION/COMPRESSION toggles:
+            # a prior session may have written embeddings that a now-disabled
+            # toggle would skip cleaning. On SQLite the vec0 table has no FK and
+            # is reachable only through the embedding_chunks bridge, so once that
+            # bridge cascades away with the context row the vec0 vectors are
+            # orphaned permanently. Mirrors the stale-embedding cleanup on the
+            # update path (app/tools/_shared.py), which gates on the same signal.
+            if await repos.embeddings.embedding_tables_exist():
                 for context_id in context_ids:
                     try:
                         await repos.embeddings.delete(context_id)
@@ -412,29 +523,30 @@ async def delete_context(
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
-            # Get all context IDs in thread for embedding cleanup
-            if settings.semantic_search.enabled:
-                try:
-                    # Get all context IDs in this thread
-                    results = await repos.context.search_contexts(
-                        thread_id=thread_id,
-                        limit=10000,  # Large limit to get all
-                        offset=0,
-                        explain_query=False,
-                    )
-                    rows, _ = results
-
-                    # Delete embeddings for all contexts in thread
-                    for row in rows:
-                        context_id = row['id']  # sqlite3.Row supports __getitem__
-                        if context_id:
+            # Embedding cleanup for the whole thread. On PostgreSQL the embedding
+            # rows cascade-delete with the context rows, so explicit cleanup is
+            # SQLite-only (vec0 virtual tables lack CASCADE). Use the UNBOUNDED
+            # criteria query rather than a capped search so a thread with more than
+            # 10000 entries does not leave orphaned embeddings.
+            # Gate on table PRESENCE (embedding_tables_exist), not the runtime
+            # toggles: a prior session's embeddings must still be cleaned even
+            # after generation/compression are turned off, or the FK-less vec0
+            # rows orphan. Mirrors the context_ids branch above.
+            if await repos.embeddings.embedding_tables_exist():
+                backend = repos.context.backend
+                if backend.backend_type == 'sqlite':
+                    try:
+                        thread_ids_to_clean = await repos.context.get_ids_matching_batch_criteria(
+                            thread_ids=[thread_id],
+                        )
+                        for cid in thread_ids_to_clean:
                             try:
-                                await repos.embeddings.delete(int(context_id))
+                                await repos.embeddings.delete(cid)
                             except Exception as e:
-                                logger.warning(f'Failed to delete embedding for context {context_id}: {e}')
-                except Exception as e:
-                    logger.warning(f'Failed to cleanup embeddings for thread {thread_id}: {e}')
-                    # Non-blocking: continue with context deletion
+                                logger.warning(f'Failed to delete embedding for context {cid}: {e}')
+                    except Exception as e:
+                        logger.warning(f'Failed to cleanup embeddings for thread {thread_id}: {e}')
+                        # Non-blocking: continue with context deletion
 
             deleted = await repos.context.delete_by_thread(thread_id)
             logger.info(f'Deleted {deleted} entries from thread {thread_id}')
@@ -452,7 +564,14 @@ async def delete_context(
 
 
 async def update_context(
-    context_id: Annotated[int, Field(gt=0, description='ID of the context entry to update')],
+    context_id: Annotated[
+        str,
+        Field(
+            min_length=8,
+            description='ID (full 32-char hex, 36-char hyphenated, or 8-31 char hex prefix) '
+            'of the context entry to update',
+        ),
+    ],
     text: Annotated[str | None, Field(min_length=1, description='New text content (replaces existing)')] = None,
     metadata: Annotated[MetadataDict | None, Field(description='New metadata (FULL REPLACEMENT)')] = None,
     metadata_patch: Annotated[
@@ -512,39 +631,47 @@ async def update_context(
         if text is None and metadata is None and metadata_patch is None and tags is None and images is None:
             raise ToolError('At least one field must be provided for update')
 
-        if ctx:
-            await ctx.info(f'Updating context entry {context_id}')
-
         # Validate images early (before any operations)
         validated_images, _, _ = validate_and_normalize_images(images, error_mode='raise')
 
         # Get repositories
         repos = await ensure_repositories()
 
-        # Check if entry exists and retrieve source (read-only, outside transaction)
-        exists, entry_source = await repos.context.check_entry_exists(context_id)
+        # Boundary normalization: accept full hex (32 or 36 chars) or 8-31 char hex prefix
+        try:
+            context_id = await resolve_or_normalize_id(context_id, repos.context)
+        except ValueError as e:
+            raise ToolError(f'Invalid context ID: {e}') from e
+
+        if ctx:
+            await ctx.info(f'Updating context entry {context_id}')
+
+        # Check if entry exists; capture source and the optimistic-concurrency
+        # version BEFORE generation so a concurrent writer that commits during
+        # our (slow) generation is caught by the conditional write below.
+        exists, entry_source, expected_version = await repos.context.check_entry_exists(context_id)
         if not exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
         assert entry_source is not None  # guaranteed by exists=True
 
         # === PHASE 2: Generate Summary + Embedding FIRST (Outside Transaction) ===
-        # CRITICAL: Both generation steps happen BEFORE any database modifications.
-        # If either fails, NO data is modified - original data is preserved.
+        # CRITICAL: All generation happens BEFORE any database modification.
+        # If an abort-mandatory step fails, NO data is modified.
         chunk_embeddings: list[ChunkEmbedding] | None = None
         embedding_generated = False
         summary_text: str | None = None
         summary_generated = False
         clear_summary = False
+        # None leaves the index_tree node table untouched (feature off, or text
+        # unchanged); recomputed only when text changes (below).
+        index_nodes: list[IndexNodeRow] | None = None
 
         if text is not None:
-            # Text changed - regenerate both embedding and summary in parallel
-            tasks: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
-            task_names: list[str] = []
-
-            if get_embedding_provider() is not None:
-                tasks.append(generate_embeddings_with_timeout(text))
-                task_names.append('embedding')
-
+            # Text changed -> regenerate embeddings, summary, and node summaries.
+            # The embedding->compression leg overlaps the flat-summary->nodes leg
+            # (see run_generation); a node-summary failure never aborts the update.
+            run_embedding = get_embedding_provider() is not None
+            run_summary = False
             if get_summary_provider() is not None:
                 min_content_length = settings.summary.min_content_length
                 if min_content_length > 0 and len(text) < min_content_length:
@@ -555,36 +682,53 @@ async def update_context(
                         len(text), min_content_length,
                     )
                 else:
-                    tasks.append(generate_summary_with_timeout(text, entry_source))
-                    task_names.append('summary')
+                    run_summary = True
+            else:
+                # No summary provider at update time (summary generation disabled/absent).
+                # The stored summary describes the REPLACED text, so CLEAR it instead of
+                # leaving a stale summary (mirrors the too-short / empty-output branches
+                # and the stale-embedding cleanup on the same text-change path).
+                clear_summary = True
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            errors: list[tuple[str, BaseException]] = []
-            for name, result in zip(task_names, results, strict=True):
-                if isinstance(result, BaseException):
-                    errors.append((name, result))
-                    logger.error('Generation failed for %s (retries exhausted): %s', name, result)
-                elif name == 'embedding':
-                    chunk_embeddings = cast(list[ChunkEmbedding] | None, result)
-                    embedding_generated = chunk_embeddings is not None
-                elif name == 'summary':
-                    summary_text = cast(str | None, result)
-                    summary_generated = bool(summary_text)
-
-            if errors:
-                error_details = '; '.join(
-                    f'{name}: {type(exc).__name__}: {exc}' for name, exc in errors
-                )
-                raise ToolError(f'Generation failed after exhausting configured retries: {error_details}')
+            chunk_embeddings, summary_text, index_nodes = await run_generation(
+                text, entry_source,
+                run_embedding=run_embedding,
+                run_summary=run_summary,
+                run_nodes=True,
+            )
+            embedding_generated = chunk_embeddings is not None
+            summary_generated = bool(summary_text)
+            # If summary regeneration ran but produced nothing (empty/whitespace
+            # provider output normalized to None), the OLD summary describes the
+            # REPLACED text, so CLEAR it -- mirroring the too-short branch above and
+            # the node-layer clear below -- instead of preserving a stale summary.
+            if run_summary and summary_text is None:
+                clear_summary = True
+            # On a text change, a None node result must CLEAR the stored rows ([] replaces)
+            # because those rows describe the OLD text: any heading whose slug the edit
+            # retains would otherwise have its pre-edit summary mis-attached to the new
+            # section (node_id is a pure function of heading path). This covers total
+            # degradation (every section summary failed) AND the provider-removed case
+            # (generation returns None for lack of a provider). The clear is UNCONDITIONAL
+            # (not gated on node_summaries_enabled) so a disable/edit/re-enable cycle cannot
+            # resurface stale rows: while the feature is off the reader is also off, but the
+            # rows must not survive the edit and reappear when the toggle is turned back on.
+            # This mirrors the provider-independent stale-clear the embedding and flat-summary
+            # legs already perform on this same text-change path; replace_nodes_for_context
+            # pre-checks table existence, so clearing when the table is absent is a safe no-op.
+            if index_nodes is None:
+                index_nodes = []
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
         updated_fields: list[str] = []
 
         max_retries = 2
+        attempt = 0
+        version_conflicts = 0
+        max_version_conflicts = 5
 
-        for attempt in range(max_retries + 1):
+        while True:
             try:
                 async with backend.begin_transaction() as txn:
                     updated_fields, _ = await execute_update_in_transaction(
@@ -600,20 +744,61 @@ async def update_context(
                         validated_images=validated_images,
                         chunk_embeddings=chunk_embeddings,
                         embedding_model=settings.embedding.model,
+                        index_nodes=index_nodes,
+                        expected_version=expected_version,
                     )
 
                 # Transaction committed -- break retry loop
                 break
+
+            except VersionConflictError:
+                # A concurrent writer committed a newer version of this entry
+                # during our generation. Re-read the current version and retry
+                # the write with the SAME generated artifacts (they describe the
+                # text THIS call requested), so our update applies on top of the
+                # latest row instead of silently overwriting it.
+                if version_conflicts >= max_version_conflicts:
+                    raise ToolError(
+                        f'Concurrent modification of context {context_id}: the entry kept '
+                        f'changing during the update. Retry the request.',
+                    ) from None
+                version_conflicts += 1
+                try:
+                    exists, _src, current_version = await repos.context.check_entry_exists(context_id)
+                except Exception as reread_error:
+                    # A transient connection error during the conflict re-read must
+                    # get the same bounded backoff/retry as the rest of the loop,
+                    # not abort the whole update.
+                    if is_connection_error(reread_error) and attempt < max_retries:
+                        delay = 0.5 * (2 ** attempt)
+                        attempt += 1
+                        logger.warning(
+                            'Connection error during version-conflict re-read of %s; '
+                            'retrying in %.1fs (attempt %d/%d): %s',
+                            context_id, delay, attempt, max_retries, reread_error,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                if not exists:
+                    raise ToolError(f'Context entry with ID {context_id} not found') from None
+                expected_version = current_version
+                logger.info(
+                    'Version conflict updating context %s; retrying (%d/%d)',
+                    context_id, version_conflicts, max_version_conflicts,
+                )
+                continue
 
             except ToolError:
                 raise  # ToolError is a logical error, not connection error -- do not retry
             except Exception as e:
                 if is_connection_error(e) and attempt < max_retries:
                     delay = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    attempt += 1
                     logger.warning(
                         'Transaction failed with connection error, retrying in %.1fs '
                         '(attempt %d/%d): %s',
-                        delay, attempt + 1, max_retries, e,
+                        delay, attempt, max_retries, e,
                     )
                     await asyncio.sleep(delay)
                     continue

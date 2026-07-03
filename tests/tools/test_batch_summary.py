@@ -4,11 +4,10 @@ Covers store_context_batch and update_context_batch summary generation
 in both atomic and non-atomic modes.
 """
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Generator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -19,8 +18,28 @@ from fastmcp.exceptions import ToolError
 import app.server
 import app.startup
 
+if TYPE_CHECKING:
+    from app.settings import AppSettings
+
 store_context_batch = app.server.store_context_batch
 update_context_batch = app.server.update_context_batch
+
+
+def _settings_with_node_summaries(enabled: bool) -> 'AppSettings':
+    """Return an AppSettings copy with ``index_tree.node_summaries_enabled`` overridden.
+
+    CommonSettings is frozen, so the per-node toggle is flipped via ``model_copy`` and the
+    whole module-level ``settings`` binding is patched (the nested attribute cannot be set).
+
+    Returns:
+        An AppSettings copy identical to the cached settings except the per-node toggle.
+    """
+    from app.settings import get_settings
+
+    base = get_settings()
+    return base.model_copy(
+        update={'index_tree': base.index_tree.model_copy(update={'node_summaries_enabled': enabled})},
+    )
 
 
 def _create_mock_repositories() -> MagicMock:
@@ -43,7 +62,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.store_with_deduplication = AsyncMock(return_value=(100, False))
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.get_summary = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -63,6 +82,12 @@ def _create_mock_repositories() -> MagicMock:
     repos.embeddings.exists = AsyncMock(return_value=False)
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.delete_all_chunks = AsyncMock()
+    repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
+
+    repos.index_nodes = MagicMock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock()
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+    repos.index_nodes.count_all_nodes = AsyncMock(return_value=0)
 
     return repos
 
@@ -293,8 +318,8 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Updated batch summary')
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 500},
-            {'context_id': 2, 'text': 'y' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'y' * 500},
         ]
 
         with (
@@ -326,7 +351,7 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(return_value='Should not appear')
 
         updates = [
-            {'context_id': 1, 'metadata': {'key': 'value'}},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'metadata': {'key': 'value'}},
         ]
 
         with (
@@ -348,6 +373,40 @@ class TestUpdateContextBatchWithSummary:
         assert call_kwargs.get('summary') is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('atomic', [True, False])
+    async def test_update_batch_text_change_no_provider_clears_stale_summary(self, atomic: bool) -> None:
+        """A text-change batch update with NO summary provider clears the now-stale summary.
+
+        Mirrors the single-update contract (test_update_text_content_only): the stored summary
+        describes the REPLACED text, so update_context_batch must pass clear_summary=True /
+        summary=None to update_context_entry instead of leaving a stale summary that no longer
+        matches the entry's text. Parametrized over atomic to cover both the atomic and
+        non-atomic execute_update_in_transaction call sites, which both read the
+        update_clear_summaries set.
+        """
+        repos = _create_mock_repositories()
+
+        updates = [
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools.context.get_summary_provider', return_value=None),
+            patch('app.tools._shared.get_summary_provider', return_value=None),
+        ):
+            result = await update_context_batch(updates=updates, atomic=atomic)
+
+        assert result['success'] is True
+        # The stale summary is cleared (not preserved, not regenerated).
+        call_kwargs = repos.context.update_context_entry.call_args.kwargs
+        assert call_kwargs.get('clear_summary') is True
+        assert call_kwargs.get('summary') is None
+
+    @pytest.mark.asyncio
     async def test_update_batch_atomic_summary_failure(self) -> None:
         """Fail entire atomic batch when summary generation fails."""
         repos = _create_mock_repositories()
@@ -356,7 +415,7 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=RuntimeError('Provider down'))
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
         ]
 
         with (
@@ -392,8 +451,8 @@ class TestUpdateContextBatchWithSummary:
         mock_summary.summarize = AsyncMock(side_effect=selective_summary)
 
         updates = [
-            {'context_id': 1, 'text': 'x' * 500},
-            {'context_id': 2, 'text': 'y' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'y' * 500},
         ]
 
         with (
@@ -414,6 +473,71 @@ class TestUpdateContextBatchWithSummary:
         assert len(failed_results) == 1
         assert failed_results[0]['error'] is not None
         assert 'Generation failed' in failed_results[0]['error']
+
+    @pytest.mark.asyncio
+    async def test_update_batch_text_change_total_node_degradation_clears_stale_nodes(self) -> None:
+        """A text-change batch update whose per-node summaries return None while the per-node
+        layer is ENABLED clears the stale rows ([] -> replace), rather than preserving
+        summaries describing the OLD text. The clear is gated on
+        settings.index_tree.node_summaries_enabled (the gate navigate_context reads), NOT on
+        a provider being present.
+        """
+        repos = _create_mock_repositories()
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='flat ok')
+
+        updates = [{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.batch.settings', _settings_with_node_summaries(True)),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        # index_nodes passed positionally as (context_id, index_nodes, txn=...).
+        repos.index_nodes.replace_nodes_for_context.assert_awaited_once()
+        assert repos.index_nodes.replace_nodes_for_context.call_args.args[1] == []
+
+    @pytest.mark.asyncio
+    async def test_update_batch_text_change_feature_off_clears_stale_nodes(self) -> None:
+        """A text-change batch update CLEARS stale node rows even when the per-node layer is
+        DISABLED. The clear is UNCONDITIONAL (not gated on node_summaries_enabled), so a
+        disable/edit/re-enable cycle cannot resurface pre-edit rows that navigate_context would
+        mis-attach to a reused heading slug once the feature is turned back on.
+        replace_nodes_for_context pre-checks table existence, so clearing while the table is
+        absent is a safe no-op.
+        """
+        repos = _create_mock_repositories()
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='flat ok')
+
+        updates = [{'context_id': '0190abcdef1234567890abcd00000001', 'text': 'x' * 500}]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.tools.batch.generate_index_nodes_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools.batch.settings', _settings_with_node_summaries(False)),
+        ):
+            result = await update_context_batch(updates=updates, atomic=True)
+
+        assert result['success'] is True
+        # feature off + text change -> stale rows still cleared ([] -> replace).
+        repos.index_nodes.replace_nodes_for_context.assert_awaited_once()
+        assert repos.index_nodes.replace_nodes_for_context.call_args.args[1] == []
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -529,18 +653,69 @@ class TestBatchMessageAccuracy:
         mock_summary.summarize.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_store_batch_preserved_summary_not_counted_as_generated(self) -> None:
+        """A reused (preserved) summary is not also counted as 'generated'.
+
+        Regression: when a likely-duplicate entry reuses its existing summary AND
+        has absent embeddings, an embedding task is queued so the gather runs; the
+        success block then mis-counted the preserved summary as generated, so the
+        message claimed BOTH 'summaries generated' and 'summaries preserved' for the
+        same entry. The count is now gated on a summary task having actually run.
+        """
+        repos = _create_mock_repositories()
+        repos.context.store_with_deduplication = AsyncMock(return_value=(500, True))
+        # Likely-duplicate with an existing summary to REUSE, but absent embeddings
+        # (so an embedding task IS queued and the gather runs).
+        repos.context.check_latest_is_duplicate = AsyncMock(
+            return_value='0190abcdef1234567890abcd00000009',
+        )
+        repos.context.get_summary = AsyncMock(return_value='Existing preserved summary')
+        repos.embeddings.exists = AsyncMock(return_value=False)
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should NOT be generated')
+
+        entries = [
+            {'thread_id': 'preserve-sum', 'source': 'user', 'text': 'x' * 500},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.startup.get_chunking_service', return_value=None),
+            patch('app.tools._shared.get_chunking_service', return_value=None),
+        ):
+            result = await store_context_batch(entries=entries, atomic=True)
+
+        assert result['success'] is True
+        # The reused summary is reported as preserved, NEVER as generated.
+        assert 'summaries preserved' in result['message']
+        assert 'summaries generated' not in result['message']
+        # No summary model call ran for the reused summary.
+        mock_summary.summarize.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_update_batch_short_text_no_summary_message(self) -> None:
         """Message omits 'summaries regenerated' when all entries skip summary due to min_content_length."""
         repos = _create_mock_repositories()
-        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
         repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
 
         mock_summary = MagicMock()
         mock_summary.summarize = AsyncMock(return_value='Should not be called')
 
         updates = [
-            {'context_id': 1, 'text': 'Short text'},
-            {'context_id': 2, 'text': 'Also short'},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Short text'},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'text': 'Also short'},
         ]
 
         with (
@@ -563,7 +738,7 @@ class TestBatchMessageAccuracy:
     async def test_update_batch_no_text_change_no_regeneration_message(self) -> None:
         """Message omits generation info when only metadata is updated (no text changes)."""
         repos = _create_mock_repositories()
-        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+        repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
         repos.context.update_context_entry = AsyncMock(return_value=(True, ['metadata']))
 
         mock_summary = MagicMock()
@@ -573,8 +748,8 @@ class TestBatchMessageAccuracy:
         mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2])
 
         updates = [
-            {'context_id': 1, 'metadata': {'key': 'val1'}},
-            {'context_id': 2, 'metadata': {'key': 'val2'}},
+            {'context_id': '0190abcdef1234567890abcd00000001', 'metadata': {'key': 'val1'}},
+            {'context_id': '0190abcdef1234567890abcd00000002', 'metadata': {'key': 'val2'}},
         ]
 
         with (

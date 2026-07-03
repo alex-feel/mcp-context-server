@@ -15,7 +15,7 @@ SET search_path = pg_catalog, pg_temp;
 
 -- Main context storage table
 CREATE TABLE IF NOT EXISTS context_entries (
-    id BIGSERIAL PRIMARY KEY,
+    id UUID NOT NULL PRIMARY KEY,
     thread_id TEXT NOT NULL,
     source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
     content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS context_entries (
     metadata JSONB,
     summary TEXT,
     content_hash TEXT,
+    -- Monotonic optimistic-concurrency token. Bumped on every text/metadata
+    -- update (see ContextRepository.update_context_entry); a conditional
+    -- `WHERE id = ? AND version = ?` makes concurrent same-entry updates
+    -- last-writer-by-submission instead of last-writer-by-completion, so an
+    -- older-text update can never silently overwrite a newer one (and its
+    -- index_tree node rows can never describe stale text).
+    version BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
@@ -39,11 +46,15 @@ CREATE INDEX IF NOT EXISTS idx_thread_id ON context_entries(thread_id);
 CREATE INDEX IF NOT EXISTS idx_source ON context_entries(source);
 CREATE INDEX IF NOT EXISTS idx_created_at ON context_entries(created_at);
 CREATE INDEX IF NOT EXISTS idx_thread_source ON context_entries(thread_id, source);
+-- Deduplication lookup index (mirrors apply_content_hash_migration). Kept in the
+-- base schema so every initialization path -- server startup AND the migration CLI
+-- target init -- provisions it from inception, not only on a later server start.
+CREATE INDEX IF NOT EXISTS idx_context_entries_dedup_hash ON context_entries(thread_id, source, content_hash);
 
 -- Tags table (many-to-many relationship)
 CREATE TABLE IF NOT EXISTS tags (
     id BIGSERIAL PRIMARY KEY,
-    context_entry_id BIGINT NOT NULL,
+    context_entry_id UUID NOT NULL,
     tag TEXT NOT NULL,
     FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
 );
@@ -54,7 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 -- Image attachments table
 CREATE TABLE IF NOT EXISTS image_attachments (
     id BIGSERIAL PRIMARY KEY,
-    context_entry_id BIGINT NOT NULL,
+    context_entry_id UUID NOT NULL,
     image_data BYTEA NOT NULL,
     mime_type TEXT NOT NULL,
     image_metadata JSONB,

@@ -9,8 +9,6 @@ database state via repository methods and asserts field-by-field equality
 (except context_id and timestamps, which legitimately differ).
 """
 
-from __future__ import annotations
-
 import base64
 import json
 from typing import Any
@@ -27,6 +25,22 @@ from app.tools.batch import update_context_batch
 from app.tools.context import delete_context
 from app.tools.context import store_context
 from app.tools.context import update_context
+from app.types import JsonValue
+
+
+def _require_context_id(value: str | None) -> str:
+    """Return value as str, asserting it is non-None.
+
+    Batch store/update result items declare context_id as Optional because
+    failed entries omit the identifier, but successful conformance results
+    always carry a string ID.
+
+    Returns:
+        The non-None string identifier.
+    """
+    assert value is not None, 'batch result missing context_id'
+    return value
+
 
 # Minimal valid 1x1 PNG for conformance tests
 _CONFORMANCE_PNG_DATA = base64.b64encode(bytes([
@@ -44,7 +58,7 @@ _CONFORMANCE_PNG_DATA = base64.b64encode(bytes([
 _THREAD_PREFIX = 'conformance'
 
 
-async def _read_db_entry(context_id: int) -> dict[str, Any]:
+async def _read_db_entry(context_id: str) -> dict[str, Any]:
     """Read a context entry from the database and return a normalized dict for state comparison."""
     repos = await ensure_repositories()
     rows = await repos.context.get_by_ids([context_id])
@@ -127,7 +141,7 @@ class TestStoreConformance:
         assert b_result['success'] is True
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['content_type'] == 'text'
@@ -154,7 +168,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['tags'] == ['alpha', 'beta', 'gamma']
@@ -179,7 +193,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['content_type'] == 'multimodal'
@@ -190,7 +204,7 @@ class TestStoreConformance:
         """A4: Store with metadata produces identical metadata after round-trip."""
         thread_nb = f'{_THREAD_PREFIX}_store_meta_nb'
         thread_b = f'{_THREAD_PREFIX}_store_meta_b'
-        meta = {'key': 'value', 'priority': 42, 'nested': {'a': 1}}
+        meta: dict[str, JsonValue] = {'key': 'value', 'priority': 42, 'nested': {'a': 1}}
 
         nb_result = await store_context(
             thread_id=thread_nb, source='user', text='Metadata content',
@@ -205,7 +219,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         _assert_db_states_equal(nb_state, b_state)
         assert nb_state['metadata'] == meta
@@ -230,7 +244,7 @@ class TestStoreConformance:
         )
 
         nb_state = await _read_db_entry(nb_result['context_id'])
-        b_state = await _read_db_entry(b_result['results'][0]['context_id'])
+        b_state = await _read_db_entry(_require_context_id(b_result['results'][0]['context_id']))
 
         assert nb_state['content_type'] == 'multimodal'
         assert b_state['content_type'] == 'multimodal'
@@ -359,7 +373,7 @@ class TestStoreConformance:
 class TestUpdateConformance:
     """Verify update_context and update_context_batch([single]) produce identical DB state."""
 
-    async def _create_entry(self, thread_id: str) -> int:
+    async def _create_entry(self, thread_id: str) -> str:
         """Create a base entry for update testing."""
         result = await store_context(
             thread_id=thread_id, source='user', text='Original text',
@@ -391,7 +405,7 @@ class TestUpdateConformance:
         """B2: Full metadata replacement produces identical metadata."""
         nb_id = await self._create_entry(f'{_THREAD_PREFIX}_upd_meta_nb')
         b_id = await self._create_entry(f'{_THREAD_PREFIX}_upd_meta_b')
-        new_meta = {'new_key': 'new_value'}
+        new_meta: dict[str, JsonValue] = {'new_key': 'new_value'}
 
         await update_context(context_id=nb_id, metadata=new_meta)
         await update_context_batch(
@@ -483,7 +497,7 @@ class TestUpdateConformance:
             atomic=True,
         )
         nb_id = nb_r['context_id']
-        b_id = b_r['results'][0]['context_id']
+        b_id = _require_context_id(b_r['results'][0]['context_id'])
 
         await update_context(context_id=nb_id, images=[])
         await update_context_batch(
@@ -502,11 +516,11 @@ class TestUpdateConformance:
     async def test_update_conformance_nonexistent_entry(self) -> None:
         """B7: Both paths reject update for non-existent context_id."""
         with pytest.raises(ToolError, match='not found'):
-            await update_context(context_id=999999, text='Updated')
+            await update_context(context_id='0190abcdef1234567890abcd000f423f', text='Updated')
 
         with pytest.raises(ToolError, match='not found'):
             await update_context_batch(
-                updates=[{'context_id': 999999, 'text': 'Updated'}],
+                updates=[{'context_id': '0190abcdef1234567890abcd000f423f', 'text': 'Updated'}],
                 atomic=True,
             )
 
@@ -566,7 +580,9 @@ class TestDeleteConformance:
         )
 
         nb_del = await delete_context(context_ids=[nb_r['context_id']])
-        b_del = await delete_context_batch(context_ids=[b_r['results'][0]['context_id']])
+        b_del = await delete_context_batch(
+            context_ids=[_require_context_id(b_r['results'][0]['context_id'])],
+        )
 
         assert nb_del['deleted_count'] == 1
         assert b_del['deleted_count'] == 1
@@ -598,7 +614,7 @@ class TestDeleteConformance:
 
     @pytest.mark.asyncio
     async def test_delete_conformance_embedding_cleanup(self) -> None:
-        """C3: Both paths trigger embedding cleanup when semantic search is enabled."""
+        """C3: Both paths trigger embedding cleanup when the embedding tables exist."""
         thread_nb = f'{_THREAD_PREFIX}_del_embed_nb'
         thread_b = f'{_THREAD_PREFIX}_del_embed_b'
 
@@ -609,21 +625,20 @@ class TestDeleteConformance:
         )
 
         nb_id = nb_r['context_id']
-        b_id = b_r['results'][0]['context_id']
+        b_id = _require_context_id(b_r['results'][0]['context_id'])
 
         mock_delete = AsyncMock()
         repos = await ensure_repositories()
 
+        # The explicit cleanup is gated on whether the embedding tables were
+        # provisioned (embedding_tables_exist), not on the runtime toggles. Force
+        # that signal True for both paths and assert each calls delete().
         with (
             patch.object(repos.embeddings, 'delete', mock_delete),
-            patch('app.tools.context.settings') as mock_nb_settings,
-            patch('app.tools.batch.settings') as mock_b_settings,
+            patch.object(
+                repos.embeddings, 'embedding_tables_exist', AsyncMock(return_value=True),
+            ),
         ):
-            mock_nb_settings.semantic_search.enabled = True
-            mock_b_settings.semantic_search.enabled = True
-            mock_nb_settings.embedding.model = 'test-model'
-            mock_b_settings.embedding.model = 'test-model'
-
             await delete_context(context_ids=[nb_id])
             await delete_context_batch(context_ids=[b_id])
 
@@ -634,8 +649,8 @@ class TestDeleteConformance:
     @pytest.mark.asyncio
     async def test_delete_conformance_nonexistent_id(self) -> None:
         """C4: Both paths handle non-existent IDs gracefully with deleted_count=0."""
-        nb_del = await delete_context(context_ids=[999997])
-        b_del = await delete_context_batch(context_ids=[999996])
+        nb_del = await delete_context(context_ids=['0190abcdef1234567890abcd000f423d'])
+        b_del = await delete_context_batch(context_ids=['0190abcdef1234567890abcd000f423c'])
 
         assert nb_del['deleted_count'] == 0
         assert b_del['deleted_count'] == 0
@@ -729,7 +744,7 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.context.get_summary_provider', return_value=None),
-            patch('app.tools.context.generate_embeddings_with_timeout', mock_gen_embed),
+            patch('app.tools._shared.generate_embeddings_with_timeout', mock_gen_embed),
             patch('app.tools.batch.get_embedding_provider', return_value=mock_provider),
             patch('app.tools.batch.get_summary_provider', return_value=None),
             patch('app.tools.batch.generate_embeddings_with_timeout', mock_gen_embed),
@@ -777,7 +792,7 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools._shared.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
             patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),
@@ -821,7 +836,7 @@ class TestGenerationConformance:
         with (
             patch('app.tools.context.get_embedding_provider', return_value=None),
             patch('app.tools.context.get_summary_provider', return_value=mock_provider),
-            patch('app.tools.context.generate_summary_with_timeout', mock_gen_summary),
+            patch('app.tools._shared.generate_summary_with_timeout', mock_gen_summary),
             patch('app.tools.batch.get_embedding_provider', return_value=None),
             patch('app.tools.batch.get_summary_provider', return_value=mock_provider),
             patch('app.tools.batch.generate_summary_with_timeout', mock_gen_summary),

@@ -340,6 +340,14 @@ Replace `localhost` with your server's IP or hostname for remote connections:
 
 The `ollama-models` volume is shared across all Ollama configurations, so switching between SQLite and PostgreSQL does not re-download the embedding model. The `flashrank-model-cache` volume persists the FlashRank reranking model across container restarts.
 
+### Host Access to the Ollama Sidecar
+
+Every Ollama-bearing Docker Compose file publishes the sidecar's TCP port 11434 to the Docker host at the loopback address `127.0.0.1:11434`. Native Ollama clients, scripts, debugging tools, or observability tooling running on the same host can reach the sidecar directly at `http://127.0.0.1:11434` (for example, `curl http://127.0.0.1:11434/api/tags` lists the locally cached models).
+
+The binding is intentionally loopback-only (`127.0.0.1`), not all-interfaces (`0.0.0.0`). The sidecar is therefore NOT reachable from other machines on the host's network. Users who deliberately want to expose Ollama to a LAN can widen the host-ip portion of the mapping (for example, `"0.0.0.0:11434:11434"` to publish on every interface, or `"192.0.2.10:11434:11434"` to publish on one specific interface); the project does not recommend doing so without a deliberate security review.
+
+If port 11434 is already in use on the host (for example, a native Ollama install is already running), `docker compose up` fails with a port-binding error. Either stop the conflicting process or remap the host-side port in the `ports:` block (for example, `"127.0.0.1:11500:11434"`) and update any host-side clients to use the new host port.
+
 ### Automatic Model Download (Ollama Only)
 
 Each Ollama-based Docker Compose file declares an inline `entrypoint:` block on the `ollama` service that:
@@ -374,22 +382,22 @@ All Docker Compose files use environment variables for configuration. Key settin
 | `ENABLE_SUMMARY_GENERATION`  | `true`       | Enable automatic LLM-based summary generation                   |
 | `SUMMARY_PROVIDER`           | `ollama`     | Summary provider: `ollama`, `openai`, or `anthropic`            |
 | `SUMMARY_MODEL`              | `qwen3:0.6b` | Summary model name (provider-specific)                          |
-| `SUMMARY_MAX_TOKENS`         | `2000`       | Maximum output tokens for summary generation (50-5000)          |
+| `SUMMARY_MAX_TOKENS`         | `4000`       | Maximum output tokens for summary generation (50-16384)         |
 | `SUMMARY_TIMEOUT_S`          | `240.0`      | Timeout in seconds for summary generation API calls             |
 | `SUMMARY_RETRY_MAX_ATTEMPTS` | `5`          | Maximum retry attempts on transient errors                      |
-| `SUMMARY_RETRY_BASE_DELAY_S` | `1.0`        | Base delay in seconds between retries (exponential backoff)     |
-| `SUMMARY_MAX_CONCURRENT`     | `3`          | Maximum concurrent summary generation operations (1-20)         |
+| `SUMMARY_RETRY_BASE_DELAY_S` | `3.0`        | Base delay in seconds between retries (exponential backoff)     |
+| `SUMMARY_MAX_CONCURRENT`     | `2`          | Maximum concurrent summary generation operations (1-20)         |
 | `SUMMARY_PROMPT`             | (built-in)   | Custom system prompt; unset uses the optimized built-in default |
 
 **Search Features:**
 
-| Variable                 | Default | Description                           |
-|--------------------------|---------|---------------------------------------|
-| `ENABLE_SEMANTIC_SEARCH` | `true`  | Enable vector similarity search       |
-| `ENABLE_FTS`             | `true`  | Enable full-text search               |
-| `ENABLE_HYBRID_SEARCH`   | `true`  | Enable combined FTS + semantic search |
-| `ENABLE_CHUNKING`        | `true`  | Enable text chunking for embeddings   |
-| `ENABLE_RERANKING`       | `true`  | Enable cross-encoder reranking        |
+| Variable                 | Default | Description                                                                                                                           |
+|--------------------------|---------|---------------------------------------------------------------------------------------------------------------------------------------|
+| `ENABLE_SEMANTIC_SEARCH` | `auto`  | Register vector similarity search tool — auto: when an embedding provider is available; true: force on; false: force off              |
+| `ENABLE_FTS`             | `auto`  | Register full-text search tool — auto: register (built-in, no extra deps); true: force on; false: force off                           |
+| `ENABLE_HYBRID_SEARCH`   | `auto`  | Register combined FTS + semantic search tool — auto: register when >=1 of FTS/semantic is available; true: force on; false: force off |
+| `ENABLE_CHUNKING`        | `true`  | Enable text chunking for embeddings                                                                                                   |
+| `ENABLE_RERANKING`       | `true`  | Enable cross-encoder reranking                                                                                                        |
 
 **Embedding Settings (Ollama):**
 
@@ -633,7 +641,27 @@ ports:
 
 Then connect clients to `http://localhost:8001/mcp`
 
-### Issue 5: Semantic Search Not Available (Ollama)
+### Issue 5: Port 11434 Already in Use
+
+**Symptom:** The `ollama` container fails to start with a port-binding error (for example, "Bind for 127.0.0.1:11434 failed: port is already allocated").
+
+**Cause:** Another process on the host is already listening on TCP port 11434, most commonly a native Ollama installation running outside Docker.
+
+**Solutions:**
+
+1. Stop the conflicting host process (for example, stop the native Ollama service) and run `docker compose up -d` again.
+
+2. Or remap the host-side port to a free port while keeping the container-side port at 11434:
+
+```yaml
+ollama:
+  ports:
+    - "127.0.0.1:11500:11434"  # Use port 11500 on the host loopback
+```
+
+Then update any host-side clients to reach the sidecar at `http://127.0.0.1:11500` instead of `http://127.0.0.1:11434`. Containers inside the same Compose project continue to reach the sidecar via the internal `http://ollama:11434` URL regardless of the host-side mapping.
+
+### Issue 6: Semantic Search Not Available (Ollama)
 
 **Symptom:** `semantic_search_context` tool not listed
 
@@ -653,7 +681,7 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama oll
 docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml exec ollama ollama pull qwen3-embedding:0.6b
 ```
 
-### Issue 6: OpenAI API Key Missing
+### Issue 7: OpenAI API Key Missing
 
 **Symptom:** Server fails to start with OpenAI configuration
 
@@ -668,7 +696,7 @@ cp deploy/docker/.env-sqlite.openai.example deploy/docker/.env
 grep OPENAI_API_KEY deploy/docker/.env
 ```
 
-### Issue 7: Summary Generation Not Working (Ollama)
+### Issue 8: Summary Generation Not Working (Ollama)
 
 **Symptom:** `summary` field is an empty string in search results
 
@@ -690,7 +718,7 @@ docker compose -f deploy/docker/docker-compose.sqlite.ollama.yml logs mcp-contex
 
 **Note:** Summaries are generated before the database transaction during `store_context` and `update_context` operations (in parallel with embedding generation). The summary is available immediately in the response and in subsequent search results.
 
-### Issue 8: Mixed Provider (Ollama Embeddings + OpenAI Summary) Infinite Restart
+### Issue 9: Mixed Provider (Ollama Embeddings + OpenAI Summary) Infinite Restart
 
 **Symptom:** Ollama container enters infinite restart loop when using `SUMMARY_PROVIDER=openai` with an Ollama compose file
 

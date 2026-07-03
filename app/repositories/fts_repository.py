@@ -5,7 +5,6 @@ This module provides data access for full-text search functionality,
 handling search operations across both SQLite (FTS5) and PostgreSQL (tsvector) backends.
 """
 
-from __future__ import annotations
 
 import logging
 import re
@@ -21,6 +20,100 @@ from app.repositories.base import BaseRepository
 # Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
 # Matches word characters connected by one or more hyphens
 HYPHENATED_WORD_PATTERN = re.compile(r'\b(\w+(?:-\w+)+)\b')
+
+# Tokenizer for FTS5 sanitization: a "quoted phrase" OR a run of non-whitespace.
+_FTS_TOKEN_RE = re.compile(r'"[^"]*"|\S+')
+
+
+def sanitize_sqlite_fts_terms(tokens: list[str]) -> list[str]:
+    """Sanitize query tokens into crash-safe SQLite FTS5 terms.
+
+    SQLite FTS5 MATCH treats AND/OR/NOT/NEAR as case-sensitive operators and rejects bare
+    special characters, so an unsanitized token can raise ``fts5: syntax error`` in match,
+    prefix, or boolean-OR contexts. Each token is made safe and aligned with PostgreSQL's
+    plainto_tsquery (which drops operator stopwords and ANDs the remaining lexemes):
+
+    - A quoted-phrase token (``"..."``) is preserved as-is.
+    - An operator bareword (and/or/not, case-insensitive) is DROPPED.
+    - Every other bare term is wrapped as an FTS5 string literal (embedded quotes doubled), so
+      an operator-cased NEAR or a special char ( ( ) " : * ^ ) is a LITERAL term, never syntax.
+      A quoted single word is still tokenized/stemmed, so ordinary-word recall is unchanged.
+
+    Shared by the standalone FTS transform (``_transform_query_sqlite`` match/prefix modes) and
+    the hybrid adaptive query builder so the two never diverge.
+
+    Args:
+        tokens: Raw whitespace/quote tokens from the query.
+
+    Returns:
+        The list of safe FTS5 term strings (operator barewords removed).
+    """
+    terms: list[str] = []
+    for token in tokens:
+        # Require >= 2 chars: a LONE '"' satisfies both startswith AND endswith (they test the
+        # SAME character), so without the length check it would pass through as a "balanced
+        # phrase" and produce an unterminated FTS5 string literal (MATCH syntax error). With the
+        # check it falls through to the doubling path below -> '""""' (a balanced empty literal).
+        if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
+            terms.append(token)
+            continue
+        clean = token.replace('-', ' ').strip()
+        if not clean or clean.lower() in ('and', 'or', 'not'):
+            continue
+        terms.append('"' + clean.replace('"', '""') + '"')
+    return terms
+
+
+_FTS5_GRAMMAR_ERROR_FRAGMENTS = (
+    'fts5: syntax error',
+    'unterminated',
+    'no such column',
+    'malformed match expression',
+    'unknown special query',
+    'expected integer',
+)
+
+
+def _is_fts5_grammar_error(exc: sqlite3.OperationalError) -> bool:
+    """Return True if exc is an FTS5 MATCH query-grammar error (not an operational fault).
+
+    Boolean mode forwards the user's raw query to FTS5 MATCH to expose native FTS5 boolean
+    syntax. Malformed input (unbalanced parentheses, a leading/trailing/bare operator, a stray
+    ':' column filter, an unterminated string, a leading '*' that FTS5 reads as an unknown
+    special-query token, or a NEAR() clause whose distance argument is not an integer) makes
+    FTS5 raise one of a small set of grammar errors; those are the only cases the boolean search
+    path degrades to a safe term match. Any other OperationalError (locked database, disk I/O,
+    missing table) is an operational fault and MUST propagate unchanged.
+
+    Args:
+        exc: The OperationalError raised while executing a MATCH query.
+
+    Returns:
+        True if the error message identifies an FTS5 query-grammar error.
+    """
+    message = str(exc).lower()
+    return any(fragment in message for fragment in _FTS5_GRAMMAR_ERROR_FRAGMENTS)
+
+
+def desired_sqlite_fts_tokenizer(language: str) -> str:
+    """Map an FTS_LANGUAGE setting to the SQLite FTS5 tokenizer.
+
+    The single source of truth for the language->tokenizer rule, shared by the FTS
+    migration (server startup), FtsRepository.get_desired_tokenizer (the rebuild check),
+    and the migration CLI's SQLite target initialization, so they cannot drift:
+    English benefits from the Porter stemmer; other languages use plain unicode61
+    (proper Unicode tokenization, no English stemming).
+
+    Args:
+        language: The FTS_LANGUAGE setting value.
+
+    Returns:
+        The FTS5 tokenizer string ('porter unicode61' for English, else 'unicode61').
+    """
+    if language.lower() == 'english':
+        return 'porter unicode61'
+    return 'unicode61'
+
 
 if TYPE_CHECKING:
     import asyncpg
@@ -55,9 +148,12 @@ class FtsRepository(BaseRepository):
     depending on the configured storage backend.
 
     Supported backends:
-    - SQLite: Uses FTS5 with unicode61 tokenizer and BM25 ranking.
-      Note: unicode61 provides multilingual tokenization but NO stemming,
-      so "running" will NOT match "run". The language parameter is ignored.
+    - SQLite: Uses FTS5 with BM25 ranking and a language-aware tokenizer.
+      'english' (the default) uses 'porter unicode61' (Porter stemming, so
+      "running" matches "run"); any other language uses plain 'unicode61'
+      (multilingual tokenization, no stemming). The language parameter selects
+      between those two tokenizers at table creation; per-language stemming for
+      non-English values is not supported.
     - PostgreSQL: Uses tsvector with ts_rank_cd and language-specific stemming
       (supports 29 languages). Stemming means "running" WILL match "run".
     """
@@ -109,8 +205,9 @@ class FtsRepository(BaseRepository):
             highlight: Whether to include highlighted snippets in results
             language: Language for stemming (default: 'english').
                 PostgreSQL: Supports 29 languages with full stemming.
-                SQLite: This parameter is IGNORED - FTS5 uses unicode61 tokenizer
-                which provides multilingual tokenization but no stemming.
+                SQLite: 'english' uses the 'porter unicode61' tokenizer (Porter
+                stemming, so "running" matches "run"); any other value uses plain
+                'unicode61' (multilingual tokenization, no stemming).
             explain_query: If True, include query execution plan in stats
 
         Returns:
@@ -188,7 +285,9 @@ class FtsRepository(BaseRepository):
         def _search_sqlite_inner(conn: sqlite3.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             nonlocal metadata_filter_count
             start_time = time_module.time()
-            # Transform query based on mode
+            # Transform query based on mode. An empty transformed query (every token
+            # sanitized to an operator/stopword bareword) is short-circuited to an empty
+            # result set BELOW, AFTER metadata validation -- see the note at that guard.
             fts_query = self._transform_query_sqlite(query, mode)
 
             filter_conditions: list[str] = []
@@ -236,19 +335,21 @@ class FtsRepository(BaseRepository):
                 from app.metadata_types import MetadataFilter
                 from app.query_builder import MetadataQueryBuilder
 
-                metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+                metadata_builder = MetadataQueryBuilder(backend_type='sqlite', table_alias='ce')
+                validation_errors: list[str] = []
 
-                # Simple metadata filters (key=value equality)
+                # Simple metadata filters (key=value equality). An invalid KEY is reported
+                # as a structured validation error (NOT silently dropped, which would widen
+                # the result set), consistent with search_context and the advanced filters.
                 if metadata:
                     for key, value in metadata.items():
                         try:
                             metadata_builder.add_simple_filter(key, value)
                         except ValueError as e:
-                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+                            validation_errors.append(f'Invalid metadata key {key!r}: {e}')
 
                 # Advanced metadata filters with operators
                 if metadata_filters:
-                    validation_errors: list[str] = []
                     for filter_dict in metadata_filters:
                         try:
                             filter_spec = MetadataFilter(**filter_dict)
@@ -264,23 +365,62 @@ class FtsRepository(BaseRepository):
                             validation_errors.append(error_msg)
                             logger.error(f'Unexpected error processing metadata filter: {e}')
 
-                    # Raise exception if validation fails
-                    if validation_errors:
-                        raise FtsValidationError(
-                            'Metadata filter validation failed',
-                            validation_errors,
-                        )
+                # Raise if ANY (simple key or advanced filter) validation failed.
+                if validation_errors:
+                    raise FtsValidationError(
+                        'Metadata filter validation failed',
+                        validation_errors,
+                    )
 
-                # Add metadata conditions to filter
+                # The builder emits the metadata conditions already qualified with
+                # the 'ce.' table alias (table_alias='ce'), matching the
+                # context_entries JOIN target without rewriting the built SQL (a
+                # global str.replace would corrupt JSON keys that contain the
+                # substring 'metadata', e.g. 'metadata_version').
                 metadata_clause, metadata_params = metadata_builder.build_where_clause()
                 if metadata_clause:
-                    # Replace 'metadata' with 'ce.metadata' for table alias
-                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
-                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_conditions.append(metadata_clause)
                     filter_params.extend(metadata_params)
 
                 # Track metadata filter count for stats
                 metadata_filter_count = metadata_builder.get_filter_count()
+
+            # An empty transformed query means every token sanitized away (operator/stopword
+            # barewords). FTS5 `MATCH ''` is a syntax error and a literal-phrase fallback would
+            # over-match (FTS5 keeps stopwords as tokens), so short-circuit to an empty result
+            # set -- parity with PostgreSQL's empty tsquery, which @@-matches no rows. Only the
+            # all-bareword match/prefix paths yield ''; phrase/boolean modes never do.
+            #
+            # This guard runs AFTER metadata validation on purpose: an invalid metadata key/
+            # filter must raise FtsValidationError on BOTH backends (PostgreSQL has no early
+            # return and always validates first), never be silently dropped by the SQLite
+            # short-circuit. The empty stats also carry the same `filters_applied` count and,
+            # under explain_query, a `query_plan` key the PostgreSQL path emits, so the stats
+            # shape stays backend-consistent for the all-stopword case.
+            def _empty_result(plan_note: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                empty_filter_count = sum([
+                    1 if thread_id else 0,
+                    1 if source else 0,
+                    1 if content_type else 0,
+                    1 if tags else 0,
+                    1 if start_date else 0,
+                    1 if end_date else 0,
+                ]) + metadata_filter_count
+                empty_stats: dict[str, Any] = {
+                    'execution_time_ms': round((time_module.time() - start_time) * 1000, 2),
+                    'filters_applied': empty_filter_count,
+                    'rows_returned': 0,
+                    'backend': 'sqlite',
+                }
+                if explain_query:
+                    empty_stats['query_plan'] = plan_note
+                return [], empty_stats
+
+            if not fts_query.strip():
+                return _empty_result(
+                    'Query short-circuited: empty FTS query (all tokens were '
+                    'operators/stopwords); 0 rows, no SQL executed.',
+                )
 
             where_clause = f"WHERE {' AND '.join(filter_conditions)}" if filter_conditions else ''
 
@@ -307,7 +447,7 @@ class FtsRepository(BaseRepository):
                     -bm25(context_entries_fts) as score,
                     {highlight_expr}
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 {where_clause}
                 {'AND' if where_clause else 'WHERE'} fts.text_content MATCH ?
                 ORDER BY score DESC
@@ -317,8 +457,33 @@ class FtsRepository(BaseRepository):
             # Combine params: filter_params + fts_query + limit + offset
             params = [*filter_params, fts_query, limit, offset]
 
-            cursor = conn.execute(sql_query, params)
-            rows = cursor.fetchall()
+            try:
+                cursor = conn.execute(sql_query, params)
+                rows = cursor.fetchall()
+            except sqlite3.OperationalError as exc:
+                # Boolean mode forwards the raw query to FTS5 MATCH so native FTS5 boolean syntax
+                # (AND/OR/NOT, parentheses, quoted phrases) reaches the engine intact -- it is the
+                # one SQLite mode not pre-sanitized. A MALFORMED boolean query (unbalanced parens,
+                # a dangling operator, a stray ':' column filter) makes FTS5 raise a grammar error;
+                # PostgreSQL's websearch_to_tsquery never raises for the same input, so without
+                # this guard the identical fts_search_context(mode='boolean') call hard-errors on
+                # SQLite but succeeds on PostgreSQL and leaks the raw engine message to the client.
+                # Degrade a malformed boolean query to the crash-safe sanitized term match (the
+                # shared 'match' transform): a VALID boolean query executed above and never reaches
+                # here, while a malformed one returns best-effort results instead of erroring --
+                # matching PostgreSQL's tolerant contract without altering the documented native
+                # syntax. Any non-grammar OperationalError (locked DB, disk I/O) propagates.
+                if mode != 'boolean' or not _is_fts5_grammar_error(exc):
+                    raise
+                safe_query = self._transform_query_sqlite(query, 'match')
+                if not safe_query.strip():
+                    return _empty_result(
+                        'Query short-circuited: malformed boolean query reduced to no '
+                        'searchable terms; 0 rows.',
+                    )
+                params = [*filter_params, safe_query, limit, offset]
+                cursor = conn.execute(sql_query, params)
+                rows = cursor.fetchall()
 
             results = [dict(row) for row in rows]
 
@@ -388,7 +553,7 @@ class FtsRepository(BaseRepository):
         # Track metadata filter count for stats
         metadata_filter_count = 0
 
-        async def _search_postgresql_inner(conn: asyncpg.Connection) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        async def _search_postgresql_inner(conn: 'asyncpg.Connection') -> tuple[list[dict[str, Any]], dict[str, Any]]:
             nonlocal metadata_filter_count
             start_time = time_module.time()
             filter_conditions = ['1=1']  # Always true, makes building easier
@@ -448,19 +613,23 @@ class FtsRepository(BaseRepository):
                 metadata_builder = MetadataQueryBuilder(
                     backend_type='postgresql',
                     param_offset=len(filter_params),
+                    table_alias='ce',
                 )
 
-                # Simple metadata filters
+                validation_errors: list[str] = []
+
+                # Simple metadata filters (key=value equality). An invalid KEY is reported
+                # as a structured validation error (NOT silently dropped, which would widen
+                # the result set), consistent with search_context and the advanced filters.
                 if metadata:
                     for key, value in metadata.items():
                         try:
                             metadata_builder.add_simple_filter(key, value)
                         except ValueError as e:
-                            logger.warning(f'Invalid simple metadata filter key={key}: {e}')
+                            validation_errors.append(f'Invalid metadata key {key!r}: {e}')
 
                 # Advanced metadata filters
                 if metadata_filters:
-                    validation_errors: list[str] = []
                     for filter_dict in metadata_filters:
                         try:
                             filter_spec = MetadataFilter(**filter_dict)
@@ -476,16 +645,21 @@ class FtsRepository(BaseRepository):
                             validation_errors.append(error_msg)
                             logger.error(f'Unexpected error processing metadata filter: {e}')
 
-                    if validation_errors:
-                        raise FtsValidationError(
-                            'Metadata filter validation failed',
-                            validation_errors,
-                        )
+                # Raise if ANY (simple key or advanced filter) validation failed.
+                if validation_errors:
+                    raise FtsValidationError(
+                        'Metadata filter validation failed',
+                        validation_errors,
+                    )
 
+                # The builder emits the metadata conditions already qualified with
+                # the 'ce.' table alias (table_alias='ce'), matching the
+                # context_entries JOIN target without rewriting the built SQL (a
+                # global str.replace would corrupt JSON keys that contain the
+                # substring 'metadata', e.g. 'metadata_version').
                 metadata_clause, metadata_params = metadata_builder.build_where_clause()
                 if metadata_clause:
-                    metadata_clause_with_alias = metadata_clause.replace('metadata', 'ce.metadata')
-                    filter_conditions.append(metadata_clause_with_alias)
+                    filter_conditions.append(metadata_clause)
                     filter_params.extend(metadata_params)
                     param_position += len(metadata_params)
 
@@ -549,6 +723,7 @@ class FtsRepository(BaseRepository):
                     ORDER BY score DESC
                     LIMIT {self._placeholder(param_position)} OFFSET {self._placeholder(param_position + 1)}
                 ) sub
+                ORDER BY sub.score DESC
             '''
 
             # Transform query based on mode (for prefix mode, adds :* suffix)
@@ -639,15 +814,16 @@ class FtsRepository(BaseRepository):
         Returns:
             PostgreSQL prefix query fragment
         """
-        # Strip existing wildcards
-        clean_word = word.rstrip('*').removesuffix(':')
-
-        if '-' in clean_word:
-            # Split and create AND-ed prefix terms
-            parts = clean_word.split('-')
-            return ' & '.join(f'{part}:*' for part in parts if part)
-
-        return f'{clean_word}:*'
+        # to_tsquery() is STRICT: a bare tsquery operator (&, |, !, parens), a stray ':'
+        # or '*', or an unterminated quote raises "syntax error in tsquery" -- unlike
+        # plainto/phraseto/websearch_to_tsquery, which never raise. Extract only word
+        # characters (Unicode-aware) and emit each as an AND-ed prefix lexeme 'sub:*', so
+        # an adversarial token ('cat(', 'foo:bar', '"x') degrades to safe literal
+        # prefixes. A hyphenated/punctuated word splits into AND-ed prefixes
+        # ("full-text" -> "full:* & text:*"); a token with no word characters yields ''
+        # (dropped by the caller). A user trailing '*'/':' is naturally excluded.
+        parts = re.findall(r'\w+', word)
+        return ' & '.join(f'{part}:*' for part in parts)
 
     def _transform_query_sqlite(
         self,
@@ -673,28 +849,57 @@ class FtsRepository(BaseRepository):
             return f'"{escaped}"'
 
         if mode == 'prefix':
-            # Prefix matching - handle hyphenated words specially
-            # First quote hyphenated words, then add wildcards
-            quoted = self._quote_hyphenated_words_sqlite(query)
-            words = quoted.split()
-            result_words: list[str] = []
-            for word in words:
-                if word.startswith('"') and word.endswith('"'):
-                    # Hyphenated word already quoted, add wildcard after
-                    result_words.append(f'{word}*')
-                else:
-                    # Regular word, add wildcard
-                    result_words.append(f'{word.rstrip("*")}*')
-            return ' '.join(result_words)
+            # Prefix (autocomplete): wrap each token as a safe FTS5 string literal, then add the
+            # prefix wildcard ( "term"* matches terms starting with the token). Operator barewords
+            # are dropped and special chars neutralized (so 'cat(' / 'foo:bar' are literal
+            # prefixes, never an FTS5 syntax error); a user-supplied trailing '*' is stripped so
+            # it is not doubled. A quoted-phrase token keeps its phrase and gets the wildcard.
+            prefix_terms: list[str] = []
+            for token in _FTS_TOKEN_RE.findall(query):
+                # >= 2 chars so a lone '"' is not mistaken for a balanced phrase (see
+                # sanitize_sqlite_fts_terms) -- otherwise it yields an unterminated FTS5 string.
+                if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
+                    prefix_terms.append(f'{token}*')
+                    continue
+                clean = token.replace('-', ' ').rstrip('*').strip()
+                if not clean or clean.lower() in ('and', 'or', 'not'):
+                    continue
+                prefix_terms.append('"' + clean.replace('"', '""') + '"*')
+            if not prefix_terms:
+                # Every token was an operator bareword: match NOTHING (empty result), in
+                # parity with PostgreSQL's empty to_tsquery for the same input. '' is the
+                # caller's "match nothing" sentinel (see _search_sqlite). The earlier
+                # literal-phrase fallback ('"and"') was WRONG: FTS5's porter/unicode61
+                # tokenizer keeps stopwords as tokens, so it matched every document containing
+                # the dropped word while PostgreSQL returned zero -- a cross-backend divergence.
+                return ''
+            return ' '.join(prefix_terms)
 
         if mode == 'boolean':
-            # Boolean mode - pass through as-is (user provides AND/OR/NOT)
-            # User is responsible for quoting hyphenated words
+            # Boolean mode passes the query through UNCHANGED so the user's native FTS5 boolean
+            # syntax (AND/OR/NOT uppercase, parentheses, quoted phrases) reaches MATCH intact --
+            # the one SQLite mode that is NOT pre-sanitized here. A malformed boolean query would
+            # make FTS5 raise a grammar error; _search_sqlite catches that at execution and
+            # degrades to the safe sanitized term match, so a valid query is unaffected while a
+            # malformed one returns best-effort results instead of erroring (parity with
+            # PostgreSQL's tolerant websearch_to_tsquery). The user is responsible for quoting
+            # hyphenated words.
             return query
 
-        # 'match' - default
-        # Quote hyphenated words to prevent NOT operator interpretation
-        return self._quote_hyphenated_words_sqlite(query)
+        # 'match' - default (AND logic). Sanitize each token to a safe FTS5 string literal so a
+        # bare FTS5 operator (AND/OR/NOT, case-sensitive) or special char ((): "*^) becomes a
+        # LITERAL term -- never 'fts5: syntax error'. This matches PostgreSQL's plainto_tsquery
+        # (drops operator stopwords, ANDs the remaining lexemes); a quoted single word is still
+        # stemmed, so ordinary-word recall is unchanged. Shared with the hybrid query builder.
+        terms = sanitize_sqlite_fts_terms(_FTS_TOKEN_RE.findall(query))
+        if not terms:
+            # Every token was an operator/stopword bareword: match NOTHING (empty result), in
+            # parity with PostgreSQL's empty plainto_tsquery for the same input. '' is the
+            # caller's "match nothing" sentinel (see _search_sqlite). A literal-phrase fallback
+            # ('"and"') would instead MATCH every document containing the dropped word (FTS5
+            # porter/unicode61 keeps stopwords as tokens), diverging from PostgreSQL.
+            return ''
+        return ' '.join(terms)
 
     def _transform_query_postgresql(
         self,
@@ -717,9 +922,14 @@ class FtsRepository(BaseRepository):
         query = query.strip()
 
         if mode == 'prefix':
-            # Prefix matching - handle hyphenated words by splitting
+            # Prefix matching: sanitize each whitespace token into safe AND-ed prefix
+            # lexemes for the STRICT to_tsquery (the SQLite prefix path is already
+            # sanitized; this keeps PostgreSQL from RAISING on adversarial input rather
+            # than degrading gracefully). Drop tokens that sanitize to nothing; an
+            # all-punctuation query yields '' -- an empty tsquery that simply matches
+            # nothing, never a syntax error.
             words = query.split()
-            prefix_terms = [self._handle_hyphenated_prefix_postgresql(word) for word in words]
+            prefix_terms = [frag for word in words if (frag := self._handle_hyphenated_prefix_postgresql(word))]
             return ' & '.join(prefix_terms)
 
         # For other modes, return query as-is
@@ -781,12 +991,28 @@ class FtsRepository(BaseRepository):
             return await self.backend.execute_write(_rebuild_sqlite)
 
         # postgresql
-        async def _rebuild_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        # Import locally to avoid a repository->migrations import at module load.
+        from app.migrations._pg_ddl import begin_migration
+        from app.migrations._pg_ddl import execute_migration_ddl
+        from app.migrations._pg_ddl import fetchval_migration
+        from app.settings import get_settings
+
+        migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
+
+        async def _rebuild_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
+            # Raise the transaction-scoped statement_timeout to the migration budget and
+            # take the shared advisory lock BEFORE the rebuild. Reindexing the GIN index on
+            # a large table (and the COUNT(*) probe) can run far longer than the pool's
+            # command_timeout, so both must share the migration budget rather than be
+            # cancelled client-side as a non-retryable error. SET LOCAL auto-reverts on
+            # COMMIT/ROLLBACK.
+            await begin_migration(conn, migration_timeout_s)
+
             # Count entries
-            entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+            entry_count = await fetchval_migration(conn, 'SELECT COUNT(*) FROM context_entries', migration_timeout_s)
 
             # Reindex the GIN index
-            await conn.execute('REINDEX INDEX idx_text_search_gin')
+            await execute_migration_ddl(conn, 'REINDEX INDEX idx_text_search_gin', migration_timeout_s)
 
             return {
                 'success': True,
@@ -813,7 +1039,7 @@ class FtsRepository(BaseRepository):
                     cursor = conn.execute(
                         '''
                         SELECT COUNT(*) FROM context_entries_fts fts
-                        JOIN context_entries ce ON ce.id = fts.rowid
+                        JOIN context_entries ce ON ce.rowid_int = fts.rowid
                         WHERE ce.thread_id = ?
                         ''',
                         (thread_id,),
@@ -845,7 +1071,7 @@ class FtsRepository(BaseRepository):
             return await self.backend.execute_read(_get_stats_sqlite)
 
         # postgresql
-        async def _get_stats_postgresql(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _get_stats_postgresql(conn: 'asyncpg.Connection') -> dict[str, Any]:
             # Count entries with tsvector populated
             if thread_id:
                 indexed_count = await conn.fetchval(
@@ -896,7 +1122,7 @@ class FtsRepository(BaseRepository):
             return await self.backend.execute_read(_check_sqlite)
 
         # postgresql
-        async def _check_postgresql(conn: asyncpg.Connection) -> bool:
+        async def _check_postgresql(conn: 'asyncpg.Connection') -> bool:
             try:
                 # Check if text_search_vector column exists
                 result = await conn.fetchval(
@@ -967,7 +1193,7 @@ class FtsRepository(BaseRepository):
         if self.backend.backend_type != 'postgresql':
             return None
 
-        async def _get_language(conn: asyncpg.Connection) -> str | None:
+        async def _get_language(conn: 'asyncpg.Connection') -> str | None:
             # Query to get the generation expression for text_search_vector column
             result = await conn.fetchval(
                 '''
@@ -1008,11 +1234,7 @@ class FtsRepository(BaseRepository):
         Returns:
             The tokenizer string to use ('porter unicode61' or 'unicode61')
         """
-        # English (or not set) -> use Porter stemmer for English-language stemming
-        if language.lower() == 'english':
-            return 'porter unicode61'
-        # Other languages -> use unicode61 only (no stemming, but proper Unicode tokenization)
-        return 'unicode61'
+        return desired_sqlite_fts_tokenizer(language)
 
     async def migrate_tokenizer(self, new_tokenizer: str) -> dict[str, Any]:
         """Migrate SQLite FTS5 to a new tokenizer (SQLite only).
@@ -1046,23 +1268,27 @@ class FtsRepository(BaseRepository):
             conn.execute('DROP TRIGGER IF EXISTS context_fts_update')
             conn.execute('DROP TABLE IF EXISTS context_entries_fts')
 
-            # Recreate FTS5 table with new tokenizer
+            # Recreate FTS5 table with new tokenizer.
+            # The FTS5 ``content_rowid`` MUST point at an INTEGER PRIMARY KEY
+            # column; ``context_entries.rowid_int`` is the SQLite private
+            # surrogate used for this purpose, while ``context_entries.id`` is
+            # the public UUIDv7 hex value exchanged across the MCP boundary.
             create_sql = f'''
                 CREATE VIRTUAL TABLE context_entries_fts USING fts5(
                     text_content,
                     content='context_entries',
-                    content_rowid='id',
+                    content_rowid='rowid_int',
                     tokenize='{new_tokenizer}'
                 )
             '''
             conn.execute(create_sql)
 
-            # Recreate triggers
+            # Recreate triggers using ``rowid_int`` as the FTS5 rowid alias.
             conn.execute('''
                 CREATE TRIGGER context_fts_insert AFTER INSERT ON context_entries
                 BEGIN
                     INSERT INTO context_entries_fts(rowid, text_content)
-                    VALUES (new.id, new.text_content);
+                    VALUES (new.rowid_int, new.text_content);
                 END
             ''')
 
@@ -1070,7 +1296,7 @@ class FtsRepository(BaseRepository):
                 CREATE TRIGGER context_fts_delete AFTER DELETE ON context_entries
                 BEGIN
                     INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
-                    VALUES('delete', old.id, old.text_content);
+                    VALUES('delete', old.rowid_int, old.text_content);
                 END
             ''')
 
@@ -1078,9 +1304,9 @@ class FtsRepository(BaseRepository):
                 CREATE TRIGGER context_fts_update AFTER UPDATE OF text_content ON context_entries
                 BEGIN
                     INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
-                    VALUES('delete', old.id, old.text_content);
+                    VALUES('delete', old.rowid_int, old.text_content);
                     INSERT INTO context_entries_fts(rowid, text_content)
-                    VALUES (new.id, new.text_content);
+                    VALUES (new.rowid_int, new.text_content);
                 END
             ''')
 
@@ -1116,27 +1342,56 @@ class FtsRepository(BaseRepository):
         if self.backend.backend_type != 'postgresql':
             raise RuntimeError('migrate_language is only supported for PostgreSQL backend')
 
+        # Import locally to avoid a repository->migrations import at module load.
+        from app.migrations._pg_ddl import begin_migration
+        from app.migrations._pg_ddl import execute_migration_ddl
+        from app.migrations._pg_ddl import fetchval_migration
+        from app.settings import get_settings
+
+        migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
         old_language = await self.get_current_language()
 
-        async def _migrate_language(conn: asyncpg.Connection) -> dict[str, Any]:
+        async def _migrate_language(conn: 'asyncpg.Connection') -> dict[str, Any]:
+            # Raise the transaction-scoped statement_timeout to the migration budget and
+            # take the shared advisory lock under it BEFORE the rewrite. Recreating the
+            # GENERATED ALWAYS AS (...) STORED tsvector column is the heaviest DDL of all
+            # -- a full table rewrite plus a GIN index build -- so on a large existing
+            # table it (and a lock wait on a peer pod's migration) must not be cancelled
+            # at the pool's shorter command_timeout. SET LOCAL auto-reverts on
+            # COMMIT/ROLLBACK, so no finally-restore (which would raise 25P02 in an
+            # aborted transaction and mask the real DDL error) is used.
+            await begin_migration(conn, migration_timeout_s)
+
             # Count entries for statistics
-            entry_count = await conn.fetchval('SELECT COUNT(*) FROM context_entries')
+            entry_count = await fetchval_migration(conn, 'SELECT COUNT(*) FROM context_entries', migration_timeout_s)
 
             # Drop existing column (also drops dependent GIN index)
-            await conn.execute('ALTER TABLE context_entries DROP COLUMN IF EXISTS text_search_vector')
+            await execute_migration_ddl(
+                conn,
+                'ALTER TABLE context_entries DROP COLUMN IF EXISTS text_search_vector',
+                migration_timeout_s,
+            )
 
             # Recreate column with new language
-            await conn.execute(f'''
+            await execute_migration_ddl(
+                conn,
+                f'''
                 ALTER TABLE context_entries
                 ADD COLUMN text_search_vector tsvector
                 GENERATED ALWAYS AS (to_tsvector('{new_language}', COALESCE(text_content, ''))) STORED
-            ''')
+            ''',
+                migration_timeout_s,
+            )
 
             # Recreate GIN index
-            await conn.execute('''
+            await execute_migration_ddl(
+                conn,
+                '''
                 CREATE INDEX IF NOT EXISTS idx_text_search_gin
                 ON context_entries USING GIN(text_search_vector)
-            ''')
+            ''',
+                migration_timeout_s,
+            )
 
             return {
                 'success': True,

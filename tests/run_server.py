@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 """Wrapper to run the MCP server with proper Python path and environment."""
 
-from __future__ import annotations
-
 import os
 import sys
 from pathlib import Path

@@ -540,7 +540,7 @@ async def check_summary_provider_dependencies(
     if provider not in check_functions:
         return ProviderCheckResult(
             available=False,
-            reason=f"Unknown summary provider: '{provider}'",
+            reason=f"Unknown provider: '{provider}'",
             install_instructions=None,
         )
 

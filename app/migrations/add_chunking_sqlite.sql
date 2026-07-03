@@ -8,9 +8,18 @@
 -- This table maps context_id to vec_context_embeddings.rowid
 -- Multiple rows per context_id enables chunking
 -- start_index/end_index track character boundaries in original document
+--
+-- Column types (dual-key bridge between TEXT context IDs and INTEGER vec0 rowids):
+--   - context_id is TEXT (UUIDv7 hex FK to context_entries(id)).
+--   - vec_rowid is INTEGER because the sqlite-vec virtual table
+--     vec_context_embeddings uses INTEGER rowids internally; the bridge
+--     between the public TEXT context_id and that INTEGER rowid lives in
+--     this column.
+--   - id is INTEGER PRIMARY KEY AUTOINCREMENT because SQLite
+--     AUTOINCREMENT requires INTEGER.
 CREATE TABLE IF NOT EXISTS embedding_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    context_id INTEGER NOT NULL,
+    context_id TEXT NOT NULL,
     vec_rowid INTEGER NOT NULL,  -- Links to vec_context_embeddings.rowid
     start_index INTEGER NOT NULL DEFAULT 0,  -- Character offset where chunk starts in original text
     end_index INTEGER NOT NULL DEFAULT 0,    -- Character offset where chunk ends in original text
@@ -26,17 +35,6 @@ CREATE INDEX IF NOT EXISTS idx_embedding_chunks_context
 CREATE INDEX IF NOT EXISTS idx_embedding_chunks_vec_rowid
     ON embedding_chunks(vec_rowid);
 
--- Step 4: Migrate existing data from embedding_metadata to embedding_chunks
--- Existing embeddings have rowid = context_id (1:1 relationship from old schema)
--- They become single-chunk entries in the new 1:N relationship
--- start_index=0 and end_index=0 indicates legacy data without boundaries
-INSERT OR IGNORE INTO embedding_chunks (context_id, vec_rowid, start_index, end_index)
-SELECT context_id, context_id, 0, 0
-FROM embedding_metadata
-WHERE NOT EXISTS (
-    SELECT 1 FROM embedding_chunks ec
-    WHERE ec.context_id = embedding_metadata.context_id
-);
-
 -- NOTE: chunk_count column is added to embedding_metadata in Python
 -- because SQLite doesn't support ADD COLUMN IF NOT EXISTS
+-- (see app/migrations/chunking.py)

@@ -39,7 +39,7 @@ def mock_repos():
 
     repos = MagicMock(spec=RepositoryContainer)
 
-    # Mock backend with begin_transaction() support (Phase 3)
+    # Mock backend exposing begin_transaction() as an async context manager
     mock_backend = Mock()
 
     @asynccontextmanager
@@ -55,7 +55,7 @@ def mock_repos():
     repos.context = AsyncMock()
     repos.context.backend = mock_backend
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.search_contexts = AsyncMock(return_value=([], {}))
     repos.context.get_by_ids = AsyncMock(return_value=[])
@@ -79,11 +79,16 @@ def mock_repos():
     repos.statistics.get_thread_list = AsyncMock(return_value=[])
     repos.statistics.get_database_statistics = AsyncMock(return_value={'total_entries': 0})
 
-    # Mock embeddings repository (Phase 3)
+    # Mock embeddings repository for generation-first transactional writes
     repos.embeddings = AsyncMock()
     repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.store_chunked = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
+
+    # Mock index_tree node-summary repository (text-change updates clear stale node rows).
+    repos.index_nodes = AsyncMock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock(return_value=None)
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
 
     return repos
 
@@ -203,7 +208,7 @@ class TestUpdateContextValidation:
             # Test empty string
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=1,
+                    context_id='0190abcdef1234567890abcd00000001',
                     text='',
                 )
             assert 'text' in str(exc_info.value).lower()
@@ -211,7 +216,7 @@ class TestUpdateContextValidation:
             # Test whitespace only
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=1,
+                    context_id='0190abcdef1234567890abcd00000001',
                     text='   ',
                 )
             assert 'text' in str(exc_info.value).lower()
@@ -221,18 +226,18 @@ class TestUpdateContextValidation:
         """Test that updating with no fields raises ToolError."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             with pytest.raises(ToolError) as exc_info:
-                await update_context(context_id=1)
+                await update_context(context_id='0190abcdef1234567890abcd00000001')
             assert 'at least one' in str(exc_info.value).lower() or 'field' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_nonexistent_context(self, mock_repos):
         """Test that updating non-existent context raises ToolError."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(False, None))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(False, None, None))
 
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=999,
+                    context_id='0190abcdef1234567890abcd000003e7',
                     text='New text',
                 )
             assert '999' in str(exc_info.value) or 'not found' in str(exc_info.value).lower()
@@ -244,7 +249,7 @@ class TestUpdateContextValidation:
             invalid_images = cast(Any, [{'invalid': 'structure'}])
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=1,
+                    context_id='0190abcdef1234567890abcd00000001',
                     images=invalid_images,
                 )
             error_msg = str(exc_info.value).lower()
@@ -266,7 +271,7 @@ class TestUpdateContextValidation:
 
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=1,
+                    context_id='0190abcdef1234567890abcd00000001',
                     images=[large_image],
                 )
             assert 'exceeds' in str(exc_info.value).lower() or 'size' in str(exc_info.value).lower()
@@ -351,7 +356,7 @@ class TestGetContextByIdsValidation:
         with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             mock_repos.context.get_by_ids.return_value = []
             # Valid non-empty list works fine
-            result = await get_context_by_ids(context_ids=[1])
+            result = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'])
             assert isinstance(result, list)
 
     @pytest.mark.asyncio
@@ -359,7 +364,7 @@ class TestGetContextByIdsValidation:
         """Test that invalid context IDs are handled gracefully."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
             # Non-existent IDs should return empty list, not error
-            result = await get_context_by_ids(context_ids=[999999])
+            result = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd000f423f'])
             assert result == []
 
     @pytest.mark.asyncio
@@ -380,7 +385,7 @@ class TestGetContextByIdsValidation:
                 ],
             )
 
-            result = await get_context_by_ids(context_ids=[1])
+            result = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'])
             assert len(result) == 1
 
 
@@ -399,7 +404,13 @@ class TestDeleteContextValidation:
     async def test_successful_deletion_by_ids(self, mock_repos):
         """Test successful deletion by context IDs."""
         with patch('app.tools.context.ensure_repositories', return_value=mock_repos):
-            result = await delete_context(context_ids=[1, 2, 3])
+            result = await delete_context(
+                context_ids=[
+                    '0190abcdef1234567890abcd00000001',
+                    '0190abcdef1234567890abcd00000002',
+                    '0190abcdef1234567890abcd00000003',
+                ],
+            )
             assert result['deleted_count'] == 1
             assert result['success'] is True
 
@@ -418,7 +429,7 @@ class TestDeleteContextValidation:
             mock_repos.context.delete_by_ids.side_effect = Exception('Database error')
 
             with pytest.raises(ToolError) as exc_info:
-                await delete_context(context_ids=[1])
+                await delete_context(context_ids=['0190abcdef1234567890abcd00000001'])
             assert 'failed' in str(exc_info.value).lower() or 'error' in str(exc_info.value).lower()
 
 
@@ -480,7 +491,7 @@ class TestEdgeCasesAndCombinations:
 
             # None/null for optional fields should work
             result = await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='Valid text',
                 metadata=None,  # Explicitly None
             )
@@ -528,7 +539,7 @@ class TestExceptionHandling:
 
             with pytest.raises(ToolError) as exc_info:
                 await update_context(
-                    context_id=1,
+                    context_id='0190abcdef1234567890abcd00000001',
                     text='New text',
                 )
             assert 'update' in str(exc_info.value).lower()
@@ -550,5 +561,11 @@ class TestExceptionHandling:
             mock_repos.context.get_by_ids.side_effect = Exception('Fetch failed')
 
             with pytest.raises(ToolError) as exc_info:
-                await get_context_by_ids(context_ids=[1, 2, 3])
+                await get_context_by_ids(
+                    context_ids=[
+                        '0190abcdef1234567890abcd00000001',
+                        '0190abcdef1234567890abcd00000002',
+                        '0190abcdef1234567890abcd00000003',
+                    ],
+                )
             assert 'fetch' in str(exc_info.value).lower()

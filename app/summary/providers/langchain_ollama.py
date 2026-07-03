@@ -12,7 +12,6 @@ Qwen3 Family Model Recommendations:
     - qwen3:32b   - Frontier-level, requires GPU with >20GB VRAM
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any
@@ -35,7 +34,7 @@ class OllamaSummaryProvider:
         SUMMARY_PROVIDER: Must be 'ollama' (default)
         OLLAMA_HOST: Ollama server URL (default: http://localhost:11434)
         SUMMARY_MODEL: Model name (default: qwen3:0.6b)
-        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
+        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 4000)
         SUMMARY_OLLAMA_NUM_CTX: Context length in tokens (default: 32768)
         SUMMARY_OLLAMA_TRUNCATE: Control truncation behavior (default: false = error on exceed)
     """
@@ -143,6 +142,49 @@ class OllamaSummaryProvider:
 
         return await with_summary_retry_and_timeout(
             _summarize, f'{self.provider_name}_summarize',
+        )
+
+    async def summarize_with_prompt(self, text: str, system_prompt: str) -> str:
+        """Generate a summary using an explicit system prompt (index_tree node abstracts).
+
+        Reuses the same ChatOllama client and retry/timeout machinery as
+        :meth:`summarize` but with a caller-supplied system prompt.
+
+        Args:
+            text: Text content to summarize.
+            system_prompt: System prompt controlling the summary.
+
+        Returns:
+            Summary string (may be empty if the model returns nothing).
+
+        Raises:
+            RuntimeError: If the provider is not initialized or output is empty
+                due to the num_predict budget being fully consumed.
+        """
+        if self._chat_model is None:
+            raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import SystemMessage
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=text),
+        ]
+
+        async def _summarize() -> str:
+            response = await self._chat_model.ainvoke(messages)
+            result = str(response.content).strip()
+            done_reason = response.response_metadata.get('done_reason')
+            if done_reason == 'length' and not result:
+                raise RuntimeError(
+                    'Ollama node summary produced empty output (done_reason=length); '
+                    'the num_predict budget was consumed. Fix: increase SUMMARY_MAX_TOKENS.',
+                )
+            return result
+
+        return await with_summary_retry_and_timeout(
+            _summarize, f'{self.provider_name}_summarize_node',
         )
 
     def _validate_text_length(self, text: str, source: str) -> None:

@@ -9,13 +9,15 @@ Tests verify:
 - Model metadata (ls_provider, ls_model_name, ls_invocation_params) is populated
 """
 
-from __future__ import annotations
-
 import os
 from collections.abc import Generator
 from contextlib import contextmanager
+from typing import Any
+from typing import cast
 from unittest.mock import MagicMock
 from unittest.mock import patch
+
+import pytest
 
 
 @contextmanager
@@ -142,7 +144,7 @@ class TestTracedEmbeddingWrapperBehavior:
             import app.embeddings.tracing as tracing_module
 
             tracing_module._warned_missing_package = False
-            tracing_module = importlib.reload(tracing_module)
+            importlib.reload(tracing_module)
 
             # Patch get_settings AFTER reload so the module-level reference is replaced
             mock_settings_obj = MagicMock()
@@ -157,9 +159,9 @@ class TestTracedEmbeddingWrapperBehavior:
                 # When tracing enabled + langsmith available, decorator returns a wrapper
                 assert decorated is not original_func
 
-    def test_wrapper_extracts_provider_metadata(self) -> None:
+    @pytest.mark.asyncio
+    async def test_wrapper_extracts_provider_metadata(self) -> None:
         """Verify wrapper extracts ls_provider and ls_model_name from provider instance."""
-        import asyncio
         import importlib
         import sys
 
@@ -180,7 +182,7 @@ class TestTracedEmbeddingWrapperBehavior:
             import app.embeddings.tracing as tracing_module
 
             tracing_module._warned_missing_package = False
-            tracing_module = importlib.reload(tracing_module)
+            importlib.reload(tracing_module)
 
             # Patch get_settings AFTER reload
             mock_settings_obj = MagicMock()
@@ -198,14 +200,13 @@ class TestTracedEmbeddingWrapperBehavior:
                 mock_provider._model = 'text-embedding-3-small'
 
                 # Call the wrapper to trigger traceable() invocation with metadata
-                asyncio.get_event_loop().run_until_complete(
-                    decorated(mock_provider, 'test text'),
-                )
+                await decorated(mock_provider, 'test text')
 
         # Verify traceable was called with correct metadata
         assert captured_kwargs.get('run_type') == 'embedding'
-        metadata = captured_kwargs.get('metadata')
-        assert isinstance(metadata, dict)
+        metadata_raw = captured_kwargs.get('metadata')
+        assert isinstance(metadata_raw, dict)
+        metadata = cast(dict[str, Any], metadata_raw)
         assert metadata['ls_provider'] == 'openai'
         assert metadata['ls_model_name'] == 'text-embedding-3-small'
 
@@ -374,8 +375,9 @@ class TestModelMetadataPopulation:
         # Verify metadata structure
         assert metadata['ls_provider'] == 'ollama'
         assert metadata['ls_model_name'] == 'qwen3-embedding:0.6b'
-        invocation_params = metadata.get('ls_invocation_params')
-        assert isinstance(invocation_params, dict)
+        invocation_params_raw = metadata.get('ls_invocation_params')
+        assert isinstance(invocation_params_raw, dict)
+        invocation_params = cast(dict[str, Any], invocation_params_raw)
         assert invocation_params.get('model') == 'qwen3-embedding:0.6b'
 
     def test_metadata_extraction_for_azure_style_provider(self) -> None:
@@ -449,7 +451,7 @@ class TestModelMetadataPopulation:
 
             import app.embeddings.tracing as tracing_module
 
-            tracing_module = importlib.reload(tracing_module)
+            importlib.reload(tracing_module)
 
             async def sample_func(_text: str) -> list[float]:
                 return [0.1, 0.2, 0.3]

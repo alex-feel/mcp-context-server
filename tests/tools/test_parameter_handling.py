@@ -12,8 +12,6 @@ The issue being tested:
 - These tests ensure complex parameters work as expected
 """
 
-from __future__ import annotations
-
 import base64
 import json
 from typing import Any
@@ -24,12 +22,16 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import app.server
+from app.types import JsonValue
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 store_context = app.server.store_context
 search_context = app.server.search_context
 get_context_by_ids = app.server.get_context_by_ids
 delete_context = app.server.delete_context
+
+# Type alias anchored to a usage site so ruff cannot strip the JsonValue import.
+_MetadataDict = dict[str, JsonValue]
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -77,7 +79,7 @@ class TestParameterHandling:
     async def test_store_context_metadata_as_dict(self) -> None:
         """Test that metadata parameter accepts a proper Python dict[str, Any]."""
         # Test with a complex nested dictionary
-        metadata_dict = {
+        metadata_dict: _MetadataDict = {
             'version': '1.0.0',
             'timestamp': 1234567890,
             'nested': {
@@ -163,10 +165,12 @@ class TestParameterHandling:
         )
         assert len(fetched) == 1
         assert 'images' in fetched[0]
-        assert len(fetched[0]['images']) == 3
+        fetched_images = fetched[0]['images']
+        assert fetched_images is not None
+        assert len(fetched_images) == 3
 
         # Check mime types are preserved
-        mime_types = [img['mime_type'] for img in fetched[0]['images']]
+        mime_types = [img['mime_type'] for img in fetched_images]
         assert set(mime_types) == {'image/png', 'image/jpeg', 'image/gif'}
 
     @pytest.mark.asyncio
@@ -186,7 +190,7 @@ class TestParameterHandling:
     async def test_store_context_all_complex_params_together(self) -> None:
         """Test all complex parameters (tags, metadata, images) together."""
         tags = ['comprehensive', 'test', 'all-params']
-        metadata = {
+        metadata: _MetadataDict = {
             'test_type': 'comprehensive',
             'params_tested': ['tags', 'metadata', 'images'],
             'test_id': 12345,
@@ -215,7 +219,7 @@ class TestParameterHandling:
             include_images=True,
         )
         assert len(fetched) == 1
-        entry: dict[str, Any] = dict(fetched[0])
+        entry: dict[str, Any] = {**fetched[0]}
 
         assert set(entry['tags']) == set(tags)
         assert entry['metadata'] == metadata
@@ -317,7 +321,7 @@ class TestParameterHandling:
         Note: Pydantic validates at FastMCP level. This test verifies normal operation.
         """
         # Test with valid non-empty list
-        result = await get_context_by_ids(context_ids=[1])
+        result = await get_context_by_ids(context_ids=['0190abcdef1234567890abcd00000001'])
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
@@ -464,7 +468,7 @@ class TestParameterTypeCoercion:
     async def test_metadata_json_serialization(self) -> None:
         """Test that metadata is properly JSON serialized/deserialized."""
         # Complex metadata with various types
-        metadata = {
+        metadata: _MetadataDict = {
             'string': 'value',
             'number': 123.45,
             'boolean': True,
@@ -540,7 +544,7 @@ class TestEdgeCasesForParameters:
     async def test_very_large_metadata(self) -> None:
         """Test handling of very large metadata dictionary."""
         # Create a large metadata structure
-        large_metadata = {
+        large_metadata: _MetadataDict = {
             f'key_{i}': {
                 'data': 'x' * 1000,  # 1KB per entry
                 'index': i,
@@ -589,7 +593,7 @@ class TestEdgeCasesForParameters:
     @pytest.mark.asyncio
     async def test_special_characters_in_metadata_keys(self) -> None:
         """Test metadata with special characters in keys."""
-        special_metadata = {
+        special_metadata: _MetadataDict = {
             'normal_key': 'value1',
             'key-with-dash': 'value2',
             'key.with.dots': 'value3',
@@ -889,7 +893,7 @@ class TestParameterInteractions:
     @pytest.mark.asyncio
     async def test_metadata_with_images(self) -> None:
         """Test that metadata and images work together correctly."""
-        metadata = {
+        metadata: _MetadataDict = {
             'image_count': 2,
             'total_size': 2048,
             'processing': {
@@ -924,7 +928,7 @@ class TestParameterInteractions:
             context_ids=[result['context_id']],
             include_images=True,
         )
-        entry = dict(fetched[0])
+        entry: dict[str, Any] = {**fetched[0]}
         assert entry['metadata'] == metadata
         assert len(entry['images']) == 2
 

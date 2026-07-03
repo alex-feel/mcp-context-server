@@ -9,8 +9,6 @@ Tests verify:
 - SummarySettings integration with AppSettings
 """
 
-from __future__ import annotations
-
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -184,6 +182,40 @@ class TestSummarySettings:
         monkeypatch.setenv('SUMMARY_OPENAI_REASONING_EFFORT', 'high')
         settings = SummarySettings()
         assert settings.openai_reasoning_effort == 'high'
+
+    def test_openai_reasoning_effort_empty_env_coerces_to_none(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty SUMMARY_OPENAI_REASONING_EFFORT is folded to None, not ''.
+
+        Regression: the documented "set to empty to omit" idiom must yield None
+        so the provider omits reasoning_effort entirely. Without coercion the
+        empty string reaches ChatOpenAI as reasoning_effort='' (rejected by the
+        OpenAI API).
+        """
+        monkeypatch.setenv('SUMMARY_OPENAI_REASONING_EFFORT', '')
+        settings = SummarySettings()
+        assert settings.openai_reasoning_effort is None
+
+    def test_openai_reasoning_effort_whitespace_env_coerces_to_none(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A whitespace-only SUMMARY_OPENAI_REASONING_EFFORT is folded to None."""
+        monkeypatch.setenv('SUMMARY_OPENAI_REASONING_EFFORT', '   ')
+        settings = SummarySettings()
+        assert settings.openai_reasoning_effort is None
+
+    def test_anthropic_effort_empty_env_coerces_to_none(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty SUMMARY_ANTHROPIC_EFFORT is folded to None instead of failing.
+
+        Symmetric with the OpenAI field: the empty-omit idiom must produce None
+        rather than tripping the Anthropic Literal validation at startup.
+        """
+        monkeypatch.setenv('SUMMARY_ANTHROPIC_EFFORT', '')
+        settings = SummarySettings()
+        assert settings.anthropic_effort is None
 
     def test_summary_prompt_default_none(self) -> None:
         """Verify SUMMARY_PROMPT defaults to None."""

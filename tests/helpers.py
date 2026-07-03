@@ -4,8 +4,6 @@ Provides utility functions used across multiple test infrastructure files
 (conftest.py, run_server.py) to avoid code duplication.
 """
 
-from __future__ import annotations
-
 
 def is_ollama_model_available(
     model: str | None = None,

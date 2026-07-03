@@ -1,6 +1,6 @@
-from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -319,12 +319,7 @@ class EmbeddingSettings(CommonSettings):
     @field_validator('dim')
     @classmethod
     def validate_embedding_dim(cls, v: int) -> int:
-        """Validate embedding dimension is reasonable and warn about non-standard values."""
-        if v > 4096:
-            raise ValueError(
-                'EMBEDDING_DIM exceeds reasonable limit (4096). '
-                'Most embedding models use dimensions between 128-4096.',
-            )
+        """Warn when the dimension is not a multiple of 64 (the Field's ``le=4096`` already enforces the ceiling)."""
         if v % 64 != 0:
             logger.warning(
                 f'EMBEDDING_DIM={v} is not a multiple of 64. '
@@ -510,17 +505,78 @@ class FtsPassageSettings(CommonSettings):
     )
 
 
-class SemanticSearchSettings(CommonSettings):
-    """Semantic search feature configuration.
+def _normalize_feature_toggle(value: object) -> object:
+    """Normalize a search feature-toggle value to 'auto' | 'true' | 'false'.
 
-    Controls whether semantic_search_context tool is registered.
-    Requires embedding provider to be available.
+    Accepts the tri-state strings plus the conventional boolean spellings, so an
+    existing ENABLE_*=true/false/1/0/yes/no configuration keeps working. 'auto'
+    (the default) defers the decision to runtime capability detection. Unknown
+    values fall through to Literal validation, which rejects them with a clear
+    error.
+
+    Returns:
+        The normalized token; 'auto', 'true', or 'false' for recognized inputs,
+        otherwise the lowercased text unchanged for Literal validation to reject.
+    """
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    text = str(value).strip().lower()
+    if text in {'true', '1', 'yes', 'on', 'enabled'}:
+        return 'true'
+    if text in {'false', '0', 'no', 'off', 'disabled'}:
+        return 'false'
+    if text in {'auto', ''}:
+        return 'auto'
+    return text
+
+
+class FeatureToggleSettings(CommonSettings):
+    """Base for the search feature toggles, which are tri-state by design.
+
+    The three search tools default to 'auto' rather than being opt-in: a
+    deployment whose prerequisites are already present (an embedding provider for
+    semantic search; nothing extra for full-text search, which uses built-in
+    database capabilities) exposes the corresponding tool with no configuration,
+    while a deployment that lacks the prerequisites silently skips it. The
+    explicit 'true'/'false' values let operators force a tool on (warning when its
+    prerequisites are missing) or off (minimal tool surface). Embedding storage is
+    provisioned from ENABLE_EMBEDDING_GENERATION independently of these toggles,
+    so enabling a search tool later never requires re-embedding.
+
+    Subclasses declare ``mode`` with the feature-specific env alias.
     """
 
-    enabled: bool = Field(
-        default=False,
+    mode: Literal['auto', 'true', 'false'] = 'auto'
+
+    @field_validator('mode', mode='before')
+    @classmethod
+    def _coerce_mode(cls, value: object) -> object:
+        return _normalize_feature_toggle(value)
+
+    @property
+    def enabled(self) -> bool:
+        """True unless the feature is force-disabled (``mode == 'false'``).
+
+        'auto' and 'true' both report enabled; the runtime decides whether the
+        prerequisites are actually present before exposing the tool.
+        """
+        return self.mode != 'false'
+
+
+class SemanticSearchSettings(FeatureToggleSettings):
+    """Semantic search feature configuration.
+
+    Controls whether the semantic_search_context tool is registered. Requires an
+    embedding provider, which is initialized whenever ENABLE_EMBEDDING_GENERATION
+    resolves on.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
         alias='ENABLE_SEMANTIC_SEARCH',
-        description='Enable semantic search tool registration',
+        description='Semantic search tool registration: auto (register when an '
+                    'embedding provider is available), true (force on, warn if '
+                    'unavailable), false (force off).',
     )
 
 
@@ -596,7 +652,9 @@ class SummarySettings(CommonSettings):
         alias='SUMMARY_MAX_CONCURRENT',
         ge=1,
         le=20,
-        description='Maximum concurrent summary generation operations.',
+        description='Maximum concurrent calls against the summary model; one shared '
+                    'budget covering both the flat document summary and every '
+                    'index_tree per-node summary.',
     )
 
     prompt: str | None = Field(
@@ -679,17 +737,43 @@ class SummarySettings(CommonSettings):
                     'When set, passed directly as effort= to ChatAnthropic constructor.',
     )
 
+    @field_validator('openai_reasoning_effort', 'anthropic_effort', mode='before')
+    @classmethod
+    def _empty_effort_to_none(cls, value: object) -> object:
+        """Fold an empty/whitespace-only effort string to None.
 
-class FtsSettings(CommonSettings):
+        Environment variables cannot express Python ``None``, so the documented
+        way to omit the effort parameter is an empty value (e.g.
+        ``SUMMARY_OPENAI_REASONING_EFFORT=``). Without this coercion the empty
+        string reaches the provider verbatim: ``ChatOpenAI`` would be handed
+        ``reasoning_effort=''`` (rejected by the OpenAI API), and the Anthropic
+        ``Literal`` would reject ``''`` at startup. Folding the empty string to
+        ``None`` makes the documented "set to empty to omit" idiom work for both
+        fields while leaving every non-empty value to its own validation.
+
+        Returns:
+            ``None`` when ``value`` is an empty or whitespace-only string,
+            otherwise ``value`` unchanged.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
+class FtsSettings(FeatureToggleSettings):
     """Full-text search feature configuration.
 
-    Controls FTS tool registration and language/tokenizer settings.
+    Controls FTS tool registration and language/tokenizer settings. Full-text
+    search uses built-in database capabilities and needs no extra dependencies,
+    so 'auto' registers it by default.
     """
 
-    enabled: bool = Field(
-        default=False,
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
         alias='ENABLE_FTS',
-        description='Enable full-text search functionality',
+        description='Full-text search tool registration: auto (register; uses '
+                    'built-in database FTS, no extra dependencies), true (force '
+                    'on), false (force off).',
     )
 
     language: str = Field(
@@ -731,16 +815,19 @@ class FtsSettings(CommonSettings):
         return v_lower
 
 
-class HybridSearchSettings(CommonSettings):
+class HybridSearchSettings(FeatureToggleSettings):
     """Hybrid search configuration using Reciprocal Rank Fusion (RRF).
 
     Combines FTS and semantic search results for improved relevance.
     """
 
-    enabled: bool = Field(
-        default=False,
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
         alias='ENABLE_HYBRID_SEARCH',
-        description='Enable hybrid search combining FTS and semantic search',
+        description='Hybrid search tool registration: auto and true both register the '
+                    'tool when at least one of full-text or semantic search is available '
+                    '(a warning is logged when neither is, since hybrid has no underlying '
+                    'mode to fuse), false (force off).',
     )
 
     rrf_k: int = Field(
@@ -789,6 +876,29 @@ class SearchSettings(CommonSettings):
     )
 
 
+class RetrievalSettings(CommonSettings):
+    """Retrieval-tool response-shape configuration.
+
+    Settings that govern the response shape of by-ID retrieval tools
+    (currently `get_context_by_ids`). Distinct from SearchSettings,
+    which governs search tools' truncation and ranking behavior.
+
+    This class is the home for future per-tool response-shape toggles
+    targeting retrieval-by-ID tools.
+    """
+
+    include_summary: bool = Field(
+        default=False,
+        alias='GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY',
+        description='Whether get_context_by_ids includes the summary field in each '
+                    'returned entry. Default false: the tool already returns the full '
+                    'text_content, so the AI-generated summary is redundant and inflates '
+                    'token usage. Set true to include the summary anyway. Does not affect '
+                    'search tools, which always return summary because they truncate '
+                    'text_content.',
+    )
+
+
 class StorageSettings(BaseSettings):
     """Storage-related settings with environment variable mapping."""
 
@@ -806,13 +916,13 @@ class StorageSettings(BaseSettings):
         alias='STORAGE_BACKEND',
     )
     # General storage
-    max_image_size_mb: int = Field(default=10, alias='MAX_IMAGE_SIZE_MB')
-    max_total_size_mb: int = Field(default=100, alias='MAX_TOTAL_SIZE_MB')
+    max_image_size_mb: int = Field(default=10, alias='MAX_IMAGE_SIZE_MB', ge=1)
+    max_total_size_mb: int = Field(default=100, alias='MAX_TOTAL_SIZE_MB', ge=1)
     db_path: Path | None = Field(default_factory=lambda: Path.home() / '.mcp' / 'context_storage.db', alias='DB_PATH')
 
     # Connection pool settings for StorageBackend
-    pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS')
-    pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS')
+    pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS', ge=1)
+    pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS', ge=1)
     pool_connection_timeout_s: float = Field(default=10.0, alias='POOL_CONNECTION_TIMEOUT_S')
     pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S')
     pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S')
@@ -856,9 +966,25 @@ class StorageSettings(BaseSettings):
     postgresql_password: SecretStr = Field(default=SecretStr('postgres'), alias='POSTGRESQL_PASSWORD')
     postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
 
-    # PostgreSQL connection pool settings
-    postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN')
-    postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX')
+    # PostgreSQL connection pool settings. ge bounds mirror the SQLite pool
+    # fields: a zero or negative size passes pydantic but only fails later at
+    # asyncpg pool creation with a plain ValueError, which the backend's broad
+    # exception handler would misclassify as a retryable DependencyError
+    # (exit 69, supervisor restart loop) instead of a permanent
+    # ConfigurationError. min stays ge=0 (an empty warm pool is valid).
+    postgresql_pool_min: int = Field(default=2, alias='POSTGRESQL_POOL_MIN', ge=0)
+    postgresql_pool_max: int = Field(default=20, alias='POSTGRESQL_POOL_MAX', ge=1)
+    postgresql_session_pooler_max_clients: int = Field(
+        default=15,
+        alias='POSTGRESQL_SESSION_POOLER_MAX_CLIENTS',
+        ge=1,
+        description='Per-session client cap of an external session-mode pooler '
+        '(Supabase Session Pooler / Supavisor). Advisory only: when a Supabase '
+        'session-pooler endpoint is detected at startup and POSTGRESQL_POOL_MAX '
+        'exceeds this value, the server logs a WARNING about MaxClientsInSessionMode. '
+        'Default 15 matches Supabase Free/Pro tiers; raise it on larger tiers to '
+        'silence false advisories. Never clamps the pool.',
+    )
     postgresql_pool_timeout_s: float = Field(default=120.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
     postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
     postgresql_migration_timeout_s: float = Field(
@@ -1008,6 +1134,239 @@ class StorageSettings(BaseSettings):
         return int(self.pool_connection_timeout_s * 1000)
 
 
+class CompressionSettings(CommonSettings):
+    """Embedding compression settings.
+
+    Carries configuration for the TurboQuant embedding compression
+    subsystem. The runtime storage and search paths consult these
+    settings when ``ENABLE_EMBEDDING_COMPRESSION`` is true; a startup
+    validator enforces the seed-locked invariant against the
+    ``compression_metadata`` table.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        alias='ENABLE_EMBEDDING_COMPRESSION',
+        description='Enable TurboQuant embedding compression at storage time. '
+                    'Default true. fp32 embeddings are replaced with bit-packed '
+                    'compressed payloads (~8x storage reduction at the default '
+                    'bits=4). Set ENABLE_EMBEDDING_COMPRESSION=false to disable '
+                    'compression and keep fp32 storage.',
+    )
+
+    provider: Literal['turboquant'] = Field(
+        default='turboquant',
+        alias='COMPRESSION_PROVIDER',
+        description='Compression provider. v3.0.0 supports only turboquant.',
+    )
+
+    bits: int = Field(
+        default=4,
+        ge=2,
+        le=4,
+        alias='COMPRESSION_BITS',
+        description='Bits per coordinate. 2 = 16x compression, 3 = ~11x, 4 = 8x. '
+                    'Default 4 = ~8x with high recall. The lower bound of 2 is '
+                    "required by variant='ip' (the inner-product variant reserves "
+                    'one bit for the QJL sign).',
+    )
+
+    variant: Literal['mse', 'ip'] = Field(
+        default='ip',
+        alias='COMPRESSION_VARIANT',
+        description="'ip' (default): Algorithm 2 with QJL, unbiased inner-product "
+                    "estimator. 'mse': Algorithm 1, L2-optimal reconstruction.",
+    )
+
+    seed: int = Field(
+        default=0,
+        ge=0,
+        le=4294967295,
+        alias='COMPRESSION_SEED',
+        description='Rotation matrix seed. Load-bearing invariant: rotations are '
+                    'deterministic given the seed; changing the seed AFTER any '
+                    'compressed data has been stored will corrupt all decode/search '
+                    'operations. Default 0. Pick any stable integer in the range '
+                    '[0, 4294967295] (the seed is packed into the compressed payload '
+                    'as an unsigned 32-bit field) and keep it constant for the '
+                    'lifetime of the database; the value is persisted in '
+                    'compression_metadata at first startup and validated on each '
+                    'subsequent start (exit 78 on mismatch).',
+    )
+
+    max_concurrent: int = Field(
+        default_factory=lambda: min(os.cpu_count() or 4, 4),
+        ge=1,
+        le=32,
+        alias='COMPRESSION_MAX_CONCURRENT',
+        description='Max concurrent CPU-bound compression operations. Separate '
+                    'from I/O-bound EMBEDDING_MAX_CONCURRENT and '
+                    'SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4) keeps GIL '
+                    'contention bounded.',
+    )
+
+
+class GrepContextSettings(FeatureToggleSettings):
+    """Server-side grep tool configuration.
+
+    Controls registration of the grep_context tool plus the safety bounds that
+    keep an unranked, line-oriented scan from flooding an agent's context window
+    or exhausting memory. Matching itself runs in Python (re), so there are no
+    extra dependencies and 'auto' registers the tool by default.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
+        alias='ENABLE_GREP_CONTEXT',
+        description='grep_context tool registration: auto (register; matching is '
+                    'pure-Python, no extra dependencies), true (force on), false '
+                    '(force off).',
+    )
+
+    max_matches_cap: int = Field(
+        default=1000,
+        alias='GREP_MAX_MATCHES_CAP',
+        ge=1,
+        description='Hard ceiling applied to grep_context max_matches per request.',
+    )
+
+    max_context_lines: int = Field(
+        default=20,
+        alias='GREP_MAX_CONTEXT_LINES',
+        ge=0,
+        description='Hard ceiling applied to grep_context context_lines per request.',
+    )
+
+    max_entries_scanned: int = Field(
+        default=1000,
+        alias='GREP_MAX_ENTRIES_SCANNED',
+        ge=1,
+        description='Hard ceiling on the number of entries the grep scan visits.',
+    )
+
+    aggregate_bytes_budget: int = Field(
+        default=67108864,
+        alias='GREP_AGGREGATE_BYTES_BUDGET',
+        ge=1,
+        description='Approximate resident-memory cap (summed code-point length of '
+                    'fetched text) before a grep scan stops; the first entry that '
+                    'crosses the budget is still scanned.',
+    )
+
+    regex_timeout_s: float = Field(
+        default=5.0,
+        alias='GREP_REGEX_TIMEOUT_S',
+        gt=0,
+        description='Per-entry timeout for is_regex=True matching (ReDoS guard); a '
+                    'timeout skips that entry, never aborts the read.',
+    )
+
+    regex_total_timeout_s: float = Field(
+        default=30.0,
+        alias='GREP_REGEX_TOTAL_TIMEOUT_S',
+        gt=0,
+        description='Aggregate wall-clock budget across an entire is_regex=True scan. '
+                    'GREP_REGEX_TIMEOUT_S bounds ONE entry; this bounds the cumulative '
+                    'scan so a pathological pattern over many entries cannot hold one '
+                    'request open for max_entries_scanned * the per-entry timeout. When '
+                    'exceeded the scan stops and returns the matches collected so far '
+                    'with truncated=True, never aborting the read.',
+    )
+
+
+class ContextRangeSettings(FeatureToggleSettings):
+    """Partial-read tool configuration.
+
+    Controls registration of the read_context_range tool, which slices full
+    text_content by character or line range. Backend-agnostic and dependency-free,
+    so 'auto' registers it by default.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
+        alias='ENABLE_CONTEXT_RANGE',
+        description='read_context_range tool registration: auto (register; slices '
+                    'stored text, no extra dependencies), true (force on), false '
+                    '(force off).',
+    )
+
+
+class ContextNavigationSettings(FeatureToggleSettings):
+    """Record-navigation tool configuration.
+
+    Controls registration of the navigate_context tool, which builds a
+    code-derived Markdown outline (index_tree) on demand. Pure-Python and
+    dependency-free, so 'auto' registers it by default.
+    """
+
+    mode: Literal['auto', 'true', 'false'] = Field(
+        default='auto',
+        alias='ENABLE_CONTEXT_NAVIGATION',
+        description='navigate_context tool registration: auto (register; builds a '
+                    'code-derived Markdown outline, no extra dependencies), true '
+                    '(force on), false (force off).',
+    )
+
+
+class IndexTreeNodeSummarySettings(CommonSettings):
+    """Optional per-node LLM summaries for the navigate_context index_tree.
+
+    The code-derived heading outline is always free; this OPTIONAL layer enriches
+    each section with an LLM-written abstract. It reuses the existing summary
+    provider instance (no second client) with a dedicated SHORT prompt, runs in a
+    fenced never-raise pass that can never abort a store, and is the ONLY thing
+    that provisions the context_index_nodes table. Default ON per the chosen
+    design.
+    """
+
+    node_summaries_enabled: bool = Field(
+        default=True,
+        alias='ENABLE_INDEX_TREE_NODE_SUMMARIES',
+        description='Generate per-node LLM summaries for the index_tree and provision '
+                    'the context_index_nodes table. Additive/never-raise: a node-summary '
+                    'failure never aborts a store. Set false to keep navigation purely '
+                    'code-derived with no table and no per-store LLM cost.',
+    )
+
+    prompt: str | None = Field(
+        default=None,
+        alias='INDEX_TREE_NODE_SUMMARY_PROMPT',
+        description='Override the per-node summary system prompt. None/empty resolves to '
+                    'a dedicated SHORT prompt (one-sentence section abstract), distinct '
+                    'from the 100-250-word entry-summary prompt.',
+    )
+
+    min_content_length: int = Field(
+        default=500,
+        alias='INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH',
+        ge=0,
+        le=100000,
+        description='Heading sections shorter than this (characters) skip node-summary '
+                    'generation (0 = always summarize).',
+    )
+
+    timeout_s: float = Field(
+        default=240.0,
+        alias='INDEX_TREE_NODE_SUMMARY_TIMEOUT_S',
+        gt=0,
+        le=600,
+        description='Per-node summary timeout in seconds; a timeout omits that node, '
+                    'never aborts the store.',
+    )
+
+    max_concurrent: int = Field(
+        default_factory=lambda: min(os.cpu_count() or 4, 4),
+        alias='INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT',
+        ge=1,
+        le=32,
+        description='Node-task fan-out cap: the maximum number of per-node index_tree summary '
+                    'coroutines in flight at once. This is NOT a second model budget -- the actual '
+                    'summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT (one shared '
+                    'budget acquired by both the flat document summary and every per-node summary). '
+                    'Default min(cpu_count, 4).',
+    )
+
+
 class AppSettings(CommonSettings):
     # Core settings
     logging: LoggingSettings = Field(default_factory=lambda: LoggingSettings())
@@ -1020,12 +1379,20 @@ class AppSettings(CommonSettings):
     fts: FtsSettings = Field(default_factory=lambda: FtsSettings())
     hybrid_search: HybridSearchSettings = Field(default_factory=lambda: HybridSearchSettings())
     fts_passage: FtsPassageSettings = Field(default_factory=lambda: FtsPassageSettings())
+    retrieval: RetrievalSettings = Field(default_factory=lambda: RetrievalSettings())
+    grep_context: GrepContextSettings = Field(default_factory=lambda: GrepContextSettings())
+    context_range: ContextRangeSettings = Field(default_factory=lambda: ContextRangeSettings())
+    context_navigation: ContextNavigationSettings = Field(default_factory=lambda: ContextNavigationSettings())
+    index_tree: IndexTreeNodeSummarySettings = Field(default_factory=lambda: IndexTreeNodeSummarySettings())
 
     # Embedding and processing settings
     embedding: EmbeddingSettings = Field(default_factory=lambda: EmbeddingSettings())
     summary: SummarySettings = Field(default_factory=lambda: SummarySettings())
     chunking: ChunkingSettings = Field(default_factory=lambda: ChunkingSettings())
     reranking: RerankingSettings = Field(default_factory=lambda: RerankingSettings())
+
+    # Embedding compression settings
+    compression: CompressionSettings = Field(default_factory=lambda: CompressionSettings())
 
     # Shared Ollama settings
     ollama: OllamaSettings = Field(default_factory=lambda: OllamaSettings())

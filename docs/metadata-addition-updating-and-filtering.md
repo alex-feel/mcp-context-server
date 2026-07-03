@@ -119,7 +119,7 @@ store_context(
         "project": "backend-api",     # Indexed - project filtering
         "report_type": "implementation",  # Indexed - report categorization
         "technologies": ["python", "fastapi"],  # GIN indexed in PostgreSQL
-        "references": {"context_ids": [100, 101]},  # GIN indexed in PostgreSQL
+        "references": {"context_ids": ["0190abcdef1234567890abcdef100abc", "0190abcdef1234567890abcdef101abc"]},  # GIN indexed in PostgreSQL
         "assignee": "alice@example.com",  # Not indexed but still queryable
         "due_date": "2025-10-20"          # Not indexed but still queryable
     }
@@ -247,7 +247,7 @@ Use the `metadata` parameter to completely replace all metadata:
 ```python
 # Replace all metadata
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     metadata={
         "status": "completed",
         "priority": 10,
@@ -271,20 +271,20 @@ The `metadata_patch` parameter implements RFC 7396 JSON Merge Patch semantics:
 # Original metadata: {"status": "pending", "priority": 5, "assignee": "alice"}
 
 # Add a new field
-update_context(context_id=123, metadata_patch={"category": "backend"})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"category": "backend"})
 # Result: {"status": "pending", "priority": 5, "assignee": "alice", "category": "backend"}
 
 # Update existing field
-update_context(context_id=123, metadata_patch={"status": "completed"})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"status": "completed"})
 # Result: {"status": "completed", "priority": 5, "assignee": "alice", "category": "backend"}
 
 # Delete a field using null
-update_context(context_id=123, metadata_patch={"assignee": None})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"assignee": None})
 # Result: {"status": "completed", "priority": 5, "category": "backend"}
 
 # Multiple operations in one call
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     metadata_patch={
         "status": "archived",      # Update existing
         "archived_at": "2025-10",  # Add new
@@ -301,14 +301,14 @@ The `metadata_patch` can be combined with other update fields:
 ```python
 # Update text and patch metadata in one operation
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     text="Updated analysis results",
     metadata_patch={"status": "reviewed", "reviewer": "bob"}
 )
 
 # Update tags and patch metadata
 update_context(
-    context_id=123,
+    context_id="0190abcdef1234567890abcdef123456",
     tags=["completed", "verified"],
     metadata_patch={"completed": True}
 )
@@ -322,14 +322,14 @@ Using `null` in the patch always DELETES the key. If you need to store a null va
 
 ```python
 # This DELETES the field, not sets it to null
-update_context(context_id=123, metadata_patch={"optional_field": None})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"optional_field": None})
 # Result: field is removed
 
 # To store null, use full replacement
-current = get_context_by_ids(context_ids=[123])
+current = get_context_by_ids(context_ids=["0190abcdef1234567890abcdef123456"])
 new_metadata = current[0]["metadata"]
 new_metadata["optional_field"] = None
-update_context(context_id=123, metadata=new_metadata)
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata=new_metadata)
 ```
 
 **2. Arrays are Replaced Entirely**
@@ -340,14 +340,14 @@ Array operations are replace-only - no element-wise add/remove:
 # Original: {"tags": ["a", "b", "c"]}
 
 # This replaces the entire array
-update_context(context_id=123, metadata_patch={"tags": ["x", "y"]})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"tags": ["x", "y"]})
 # Result: {"tags": ["x", "y"]}  (not ["a", "b", "c", "x", "y"])
 
 # To append, read current array first
-current = get_context_by_ids(context_ids=[123])
+current = get_context_by_ids(context_ids=["0190abcdef1234567890abcdef123456"])
 tags = current[0]["metadata"]["tags"]
 tags.append("new_tag")
-update_context(context_id=123, metadata_patch={"tags": tags})
+update_context(context_id="0190abcdef1234567890abcdef123456", metadata_patch={"tags": tags})
 ```
 
 ## Filtering by Metadata
@@ -523,6 +523,12 @@ Match all values except the specified one.
 
 ### Comparison Operators
 
+The comparison operators (`gt`, `gte`, `lt`, `lte`) -- and numeric `eq`/`ne` with a numeric value -- match **JSON-number-typed values only**, identically on SQLite and PostgreSQL. A stored value that is not a JSON number for the filtered key (a string such as `"12abc"`, a boolean, JSON `null`, or an absent key) never matches a numeric operator on either backend; the query is not aborted and the value is not coerced. So `{"key": "score", "operator": "gt", "value": 5}` returns only entries whose `score` is a number greater than 5, never an entry whose `score` is the string `"12abc"`. Float values are compared at IEEE double precision on both backends, so `{"key": "score", "operator": "eq", "value": 0.3}` matches a stored `0.3` (and `gt 0.3` excludes a stored `0.3`) identically on SQLite and PostgreSQL.
+
+The same type-restriction applies to booleans: a boolean value in `eq`/`ne`, as an `in`/`not_in` member, or in `array_contains` matches **JSON-boolean-typed values only** on both backends. A stored numeric `0`/`1` or a string `"true"`/`"false"` never matches a boolean filter (and a boolean `array_contains` matches only a JSON-boolean array element, never a numeric `1`/`0`); only a real JSON `true`/`false` does. Use `{"key": "flag", "operator": "eq", "value": true}` to match entries whose `flag` is the JSON boolean `true`.
+
+The string operators complete the same contract: `eq`/`ne` with a string value, the ordered comparisons (`gt`/`gte`/`lt`/`lte`) with a string value, `contains`/`starts_with`/`ends_with`, and string members of `in`/`not_in` match **JSON-string-typed values only** on both backends. A stored JSON number is never compared as text, because SQLite renders a JSON number through a 64-bit integer / IEEE double (losing the exact text for an out-of-int64 or high-precision value) while PostgreSQL `->>` returns the exact original number text -- a text comparison would otherwise diverge across backends. To match a stored number use a numeric value (`{"key": "count", "operator": "eq", "value": 5}`), not its string form (`"5"`); to match a stored string use a string value. Numeric members of `in`/`not_in` still match stored numbers numerically (`{"key": "priority", "operator": "in", "value": [1, 2, 3]}` matches a stored number `2`), so only the text-vs-number cross-type comparison is removed.
+
 #### `gt` - Greater Than
 
 Numeric comparison, exclusive.
@@ -691,7 +697,7 @@ Check if a JSON array field contains a specific element value.
 {"key": "technologies", "operator": "array_contains", "value": "PYTHON", "case_sensitive": False}
 
 # Nested array path
-{"key": "references.context_ids", "operator": "array_contains", "value": 200}
+{"key": "references.context_ids", "operator": "array_contains", "value": "0190abcdef1234567890abcdef200abc"}
 ```
 
 **Value Requirements:**
@@ -702,7 +708,7 @@ Check if a JSON array field contains a specific element value.
 - Filter by technology stack: `{"key": "technologies", "operator": "array_contains", "value": "python"}`
 - Filter by tag in array: `{"key": "tags", "operator": "array_contains", "value": "urgent"}`
 - Filter by numeric value in array: `{"key": "priority_levels", "operator": "array_contains", "value": 5}`
-- Filter nested arrays: `{"key": "references.context_ids", "operator": "array_contains", "value": 2322}`
+- Filter nested arrays: `{"key": "references.context_ids", "operator": "array_contains", "value": "0190abcdef1234567890abcdef200abc"}`
 
 **Example:**
 
@@ -724,10 +730,10 @@ search_context(
 )
 
 # Nested path example
-# metadata = {"references": {"context_ids": [100, 200, 300]}}
+# metadata = {"references": {"context_ids": ["0190abcdef1234567890abcdef100abc", "0190abcdef1234567890abcdef200abc", "0190abcdef1234567890abcdef300abc"]}}
 search_context(
     metadata_filters=[
-        {"key": "references.context_ids", "operator": "array_contains", "value": 200}
+        {"key": "references.context_ids", "operator": "array_contains", "value": "0190abcdef1234567890abcdef200abc"}
     ]
 )
 ```
@@ -736,6 +742,7 @@ search_context(
 - Returns empty results (not error) if the field is not an array or doesn't exist
 - Supports case-insensitive matching for string values (set `case_sensitive: false`)
 - Works with nested paths using dot notation
+- Type-aware (cross-backend parity): a string member matches only JSON-string array elements, a numeric member only JSON-number elements, and a boolean member only JSON-boolean elements. A string member never matches a numeric or boolean element (and vice versa), so results are identical on SQLite and PostgreSQL. This mirrors the type-aware contract of the scalar operators and avoids divergence from SQLite's numeric-to-text rendering of out-of-int64 / high-precision numbers.
 
 ## Real-World Use Cases
 
@@ -1152,6 +1159,8 @@ String operations are case-insensitive by default:
 # Matches "Active", "active", "ACTIVE"
 {"key": "status", "operator": "eq", "value": "active"}
 ```
+
+Case-insensitive matching folds **ASCII letters (A-Z) only** -- this is identical on SQLite and PostgreSQL so the two backends always return the same result set. Non-ASCII letters are NOT case-folded: `"café"` and `"CAFÉ"` do NOT match case-insensitively (the `É`/`é` differ), though `"cafe"` and `"CAFE"` do. (SQLite's built-in `LOWER()` is ASCII-only and cannot fold Unicode without an ICU extension, so ASCII-only folding is the portable cross-backend contract; use `case_sensitive: true` when you need exact, byte-for-byte matching.)
 
 ### Case-Sensitive Matching
 

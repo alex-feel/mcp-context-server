@@ -52,27 +52,27 @@ helm install mcp ./deploy/helm/mcp-context-server \
 
 ### Key Values
 
-| Parameter                          | Description                                    | Default                                |
-|------------------------------------|------------------------------------------------|----------------------------------------|
-| `image.repository`                 | Image repository                               | `ghcr.io/alex-feel/mcp-context-server` |
-| `image.tag`                        | Image tag                                      | `Chart.appVersion`                     |
-| `replicaCount`                     | Number of replicas                             | `1`                                    |
-| `env.FASTMCP_STATELESS_HTTP`       | Stateless HTTP mode (enabled by default)       | `"true"`                               |
-| `env.FASTMCP_ENABLE_RICH_LOGGING`  | Rich log formatting (disable for containers)   | `"false"`                              |
-| `service.type`                     | Kubernetes service type                        | `ClusterIP`                            |
-| `service.port`                     | Service port                                   | `8000`                                 |
-| `storage.backend`                  | Storage backend (sqlite/postgresql)            | `sqlite`                               |
-| `search.fts.enabled`               | Enable full-text search                        | `true`                                 |
-| `search.semantic.enabled`          | Enable semantic search                         | `false`                                |
-| `search.hybrid.enabled`            | Enable hybrid search                           | `false`                                |
-| `search.chunking.enabled`          | Enable text chunking for embeddings            | `true`                                 |
-| `search.chunking.size`             | Chunk size in characters                       | `1500`                                 |
-| `search.reranking.enabled`         | Enable cross-encoder reranking                 | `true`                                 |
-| `search.reranking.model`           | Reranking model name                           | `ms-marco-MiniLM-L-12-v2`              |
-| `search.summary.enabled`           | Enable LLM-based summary generation            | `true`                                 |
-| `search.summary.provider`          | Summary provider (ollama/openai/anthropic)     | `"ollama"`                             |
-| `search.summary.model`             | Summary generation model                       | `"qwen3:0.6b"`                         |
-| `ollama.enabled`                   | Enable Ollama sidecar                          | `false`                                |
+| Parameter                         | Description                                                      | Default                                |
+|-----------------------------------|------------------------------------------------------------------|----------------------------------------|
+| `image.repository`                | Image repository                                                 | `ghcr.io/alex-feel/mcp-context-server` |
+| `image.tag`                       | Image tag                                                        | `Chart.appVersion`                     |
+| `replicaCount`                    | Number of replicas                                               | `1`                                    |
+| `env.FASTMCP_STATELESS_HTTP`      | Stateless HTTP mode (enabled by default)                         | `"true"`                               |
+| `env.FASTMCP_ENABLE_RICH_LOGGING` | Rich log formatting (disable for containers)                     | `"false"`                              |
+| `service.type`                    | Kubernetes service type                                          | `ClusterIP`                            |
+| `service.port`                    | Service port                                                     | `8000`                                 |
+| `storage.backend`                 | Storage backend (sqlite/postgresql)                              | `sqlite`                               |
+| `search.fts.enabled`              | Full-text search tool (`true`=auto-register, `false`=off)        | `true`                                 |
+| `search.semantic.enabled`         | Semantic search + embedding subsystem (`true`=auto, `false`=off) | `false`                                |
+| `search.hybrid.enabled`           | Hybrid search tool (`true`=auto-register, `false`=off)           | `true`                                 |
+| `search.chunking.enabled`         | Enable text chunking for embeddings                              | `true`                                 |
+| `search.chunking.size`            | Chunk size in characters                                         | `1500`                                 |
+| `search.reranking.enabled`        | Enable cross-encoder reranking                                   | `true`                                 |
+| `search.reranking.model`          | Reranking model name                                             | `ms-marco-MiniLM-L-12-v2`              |
+| `search.summary.enabled`          | Enable LLM-based summary generation (opt-in; needs a provider)   | `false`                                |
+| `search.summary.provider`         | Summary provider (ollama/openai/anthropic)                       | `"ollama"`                             |
+| `search.summary.model`            | Summary generation model                                         | `"qwen3:0.6b"`                         |
+| `ollama.enabled`                  | Enable Ollama sidecar                                            | `false`                                |
 
 ### Storage Configuration
 
@@ -171,15 +171,15 @@ search:
 
 ### Summary Generation
 
-LLM-based summary generation creates concise summaries of stored context entries. Enabled by default with Ollama.
+LLM-based summary generation creates concise summaries of stored context entries. Opt-in in the Helm chart (default `search.summary.enabled: false`): enable it together with a summary provider -- set `ollama.enabled: true` for `provider: ollama`, or configure an API key under `summarySecrets` for openai/anthropic. Enabling it without a reachable provider fails startup, mirroring `search.semantic.enabled`.
 
 ```yaml
 search:
   summary:
-    enabled: true
+    enabled: false           # opt-in; set true together with a provider (and ollama.enabled)
     provider: ollama         # ollama, openai, or anthropic
     model: "qwen3:0.6b"     # Summary model
-    maxTokens: 2000          # Max output tokens (50-5000)
+    maxTokens: 4000          # Max output tokens (50-16384)
     minContentLength: 500    # Min chars to trigger summary (0=always)
 ```
 
@@ -190,7 +190,10 @@ summarySecrets:
   openaiApiKey: "sk-..."       # For provider=openai
   anthropicApiKey: "sk-ant-..."  # For provider=anthropic
   existingSecret: ""           # Use pre-existing secret
+  existingSecretKey: ""        # Override the key name inside existingSecret
 ```
+
+When `existingSecret` is set, the chart reads the API key from a fixed data key inside that secret unless you override it with `existingSecretKey`. The default key name matches the active provider: `openai-api-key`, `azure-openai-api-key`, `huggingface-api-token`, or `voyage-api-key` for `embeddingSecrets`, and `openai-api-key` or `anthropic-api-key` for `summarySecrets`. Set `existingSecretKey` when your secret stores the key under a different name (otherwise the pod fails to start with `CreateContainerConfigError`). The same `existingSecret` / `existingSecretKey` pair is available under `embeddingSecrets` for the semantic-search provider keys.
 
 ### Ingress
 

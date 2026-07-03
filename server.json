@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.alex-feel/mcp-context-server",
-  "description": "An MCP server that provides persistent multimodal context storage for LLM agents.",
+  "description": "MCP server providing persistent multimodal context storage for LLM agents.",
   "repository": {
     "url": "https://github.com/alex-feel/mcp-context-server",
     "source": "github"
@@ -298,7 +298,14 @@
           "name": "POSTGRESQL_POOL_MAX"
         },
         {
-          "description": "PostgreSQL connection pool timeout in seconds",
+          "description": "Per-session client cap of an external session-mode pooler (Supabase Session Pooler / Supavisor); advisory threshold for a startup MaxClientsInSessionMode warning when POSTGRESQL_POOL_MAX exceeds it (default 15)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
+        },
+        {
+          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0). This is the maximum time a request waits to acquire a connection from the pool, not the query execution timeout. For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -389,11 +396,12 @@
           "name": "POSTGRESQL_SCHEMA"
         },
         {
-          "description": "Enable semantic search functionality",
+          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it and logs a warning when no provider is available; false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_SEMANTIC_SEARCH"
+          "name": "ENABLE_SEMANTIC_SEARCH",
+          "default": "auto"
         },
         {
           "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
@@ -529,7 +537,7 @@
           "name": "SUMMARY_RETRY_BASE_DELAY_S"
         },
         {
-          "description": "Maximum concurrent summary generation operations (default: 3, range: 1-20)",
+          "description": "Maximum concurrent summary generation operations (default: 2, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -571,7 +579,7 @@
           "name": "SUMMARY_OPENAI_REASONING_EFFORT"
         },
         {
-          "description": "Effort level for Anthropic Claude models (default: none). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
+          "description": "Effort level for Anthropic Claude models (default: not sent / omitted). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -585,11 +593,12 @@
           "name": "ANTHROPIC_API_KEY"
         },
         {
-          "description": "Enable full-text search functionality",
+          "description": "Full-text search tool registration. Tri-state: auto (default), true, or false. auto registers full-text search by default (FTS needs no extra dependencies); true forces registration; false skips it.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_FTS"
+          "name": "ENABLE_FTS",
+          "default": "auto"
         },
         {
           "description": "Language for FTS stemming (e.g., english, german, french)",
@@ -613,11 +622,114 @@
           "name": "FTS_RERANK_GAP_MERGE"
         },
         {
-          "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
+          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto registers hybrid search when at least one of FTS or semantic search is available; true forces registration; false skips it.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_HYBRID_SEARCH",
+          "default": "auto"
+        },
+        {
+          "description": "grep_context tool registration (server-side literal/regex line-oriented search). Tri-state: auto (default; pure-Python matching, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_GREP_CONTEXT",
+          "default": "auto"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context max_matches per request (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_MATCHES_CAP"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context context_lines per request (default 20).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_CONTEXT_LINES"
+        },
+        {
+          "description": "Hard ceiling on the number of entries the grep scan visits (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_ENTRIES_SCANNED"
+        },
+        {
+          "description": "Approximate resident-memory cap (summed code-point length of fetched text) before a grep scan stops; the first entry that crosses the budget is still scanned (default 67108864).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_AGGREGATE_BYTES_BUDGET"
+        },
+        {
+          "description": "Per-entry timeout in seconds for is_regex=true matching (ReDoS guard; a timeout skips that entry, never aborts the read; default 5.0).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TIMEOUT_S"
+        },
+        {
+          "description": "Aggregate wall-clock budget in seconds across an entire is_regex=true scan (GREP_REGEX_TIMEOUT_S bounds one entry; this bounds the cumulative scan). When exceeded the scan stops and returns partial results with truncated=true, never aborting the read; default 30.0.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TOTAL_TIMEOUT_S"
+        },
+        {
+          "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_RANGE",
+          "default": "auto"
+        },
+        {
+          "description": "navigate_context tool registration (code-derived Markdown outline / index_tree). Tri-state: auto (default; pure-Python, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_NAVIGATION",
+          "default": "auto"
+        },
+        {
+          "description": "Generate per-node LLM summaries for the navigate_context index_tree and provision the context_index_nodes table. Additive/never-raise: a node-summary failure never aborts a store. Default true.",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
-          "name": "ENABLE_HYBRID_SEARCH"
+          "name": "ENABLE_INDEX_TREE_NODE_SUMMARIES",
+          "default": "true"
+        },
+        {
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_PROMPT"
+        },
+        {
+          "description": "Heading sections shorter than this (characters) skip per-node summary generation (0 = always). Default 500.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
+          "description": "Per-node summary timeout in seconds; a timeout omits that node, never aborts the store. Default 240.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",
@@ -653,6 +765,13 @@
           "format": "number",
           "isSecret": false,
           "name": "SEARCH_TRUNCATION_LENGTH"
+        },
+        {
+          "description": "Whether get_context_by_ids includes the summary field in each returned entry. Tri-state: when false (default), the summary key is omitted entirely (consumers reading entry.get('summary') receive None -- the conventional Python signal for 'feature disabled'); when true with a stored non-empty summary, the value is returned verbatim; when true but the stored summary is NULL or empty, the value is normalized to an empty string '' (signaling 'feature on, no data yet'). The text_content field always contains the full untruncated text regardless of this toggle. Does not affect search tools, which always emit summary as a string.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY"
         },
         {
           "description": "Enable text chunking for embedding generation (default: true)",
@@ -947,6 +1066,50 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_SERVER_INSTRUCTIONS"
+        },
+        {
+          "description": "Enable TurboQuant embedding compression at storage time. Default true. When true (default), fp32 embeddings are replaced with bit-packed compressed payloads (~8x storage reduction at default bits=4). Set to false to opt out and keep fp32 storage.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_COMPRESSION",
+          "default": "true"
+        },
+        {
+          "description": "Compression provider. Currently only 'turboquant' is supported.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_PROVIDER"
+        },
+        {
+          "description": "Bits per coordinate for compression: 2 (16x), 3 (~11x), 4 (8x). Default 4. Lower bound 2 required by the inner-product variant.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_BITS"
+        },
+        {
+          "description": "Compression variant. 'ip' (default) uses Algorithm 2 with QJL for unbiased inner-product estimation. 'mse' uses Algorithm 1 (L2-optimal reconstruction).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_VARIANT"
+        },
+        {
+          "description": "Rotation matrix seed. Default 0. Pick any stable integer in [0, 4294967295] (the seed is packed into the compressed payload as an unsigned 32-bit field); the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_SEED",
+          "default": "0"
+        },
+        {
+          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_MAX_CONCURRENT"
         }
       ]
     },
@@ -1240,7 +1403,14 @@
           "name": "POSTGRESQL_POOL_MAX"
         },
         {
-          "description": "PostgreSQL connection pool timeout in seconds",
+          "description": "Per-session client cap of an external session-mode pooler (Supabase Session Pooler / Supavisor); advisory threshold for a startup MaxClientsInSessionMode warning when POSTGRESQL_POOL_MAX exceeds it (default 15)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
+        },
+        {
+          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0). This is the maximum time a request waits to acquire a connection from the pool, not the query execution timeout. For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1331,11 +1501,12 @@
           "name": "POSTGRESQL_SCHEMA"
         },
         {
-          "description": "Enable semantic search functionality",
+          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it and logs a warning when no provider is available; false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_SEMANTIC_SEARCH"
+          "name": "ENABLE_SEMANTIC_SEARCH",
+          "default": "auto"
         },
         {
           "description": "Enable embedding generation for stored context. Default true - server fails if dependencies not met. Set false to disable embeddings.",
@@ -1471,7 +1642,7 @@
           "name": "SUMMARY_RETRY_BASE_DELAY_S"
         },
         {
-          "description": "Maximum concurrent summary generation operations (default: 3, range: 1-20)",
+          "description": "Maximum concurrent summary generation operations (default: 2, range: 1-20)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1513,7 +1684,7 @@
           "name": "SUMMARY_OPENAI_REASONING_EFFORT"
         },
         {
-          "description": "Effort level for Anthropic Claude models (default: none). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
+          "description": "Effort level for Anthropic Claude models (default: not sent / omitted). Valid values: max, high, medium, low. Controls inference effort (adaptive thinking)",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1527,11 +1698,12 @@
           "name": "ANTHROPIC_API_KEY"
         },
         {
-          "description": "Enable full-text search functionality",
+          "description": "Full-text search tool registration. Tri-state: auto (default), true, or false. auto registers full-text search by default (FTS needs no extra dependencies); true forces registration; false skips it.",
           "isRequired": false,
-          "format": "boolean",
+          "format": "string",
           "isSecret": false,
-          "name": "ENABLE_FTS"
+          "name": "ENABLE_FTS",
+          "default": "auto"
         },
         {
           "description": "Language for FTS stemming (e.g., english, german, french)",
@@ -1555,11 +1727,114 @@
           "name": "FTS_RERANK_GAP_MERGE"
         },
         {
-          "description": "Enable hybrid search combining FTS and semantic search with RRF fusion",
+          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto registers hybrid search when at least one of FTS or semantic search is available; true forces registration; false skips it.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_HYBRID_SEARCH",
+          "default": "auto"
+        },
+        {
+          "description": "grep_context tool registration (server-side literal/regex line-oriented search). Tri-state: auto (default; pure-Python matching, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_GREP_CONTEXT",
+          "default": "auto"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context max_matches per request (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_MATCHES_CAP"
+        },
+        {
+          "description": "Hard ceiling applied to grep_context context_lines per request (default 20).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_CONTEXT_LINES"
+        },
+        {
+          "description": "Hard ceiling on the number of entries the grep scan visits (default 1000).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_ENTRIES_SCANNED"
+        },
+        {
+          "description": "Approximate resident-memory cap (summed code-point length of fetched text) before a grep scan stops; the first entry that crosses the budget is still scanned (default 67108864).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_AGGREGATE_BYTES_BUDGET"
+        },
+        {
+          "description": "Per-entry timeout in seconds for is_regex=true matching (ReDoS guard; a timeout skips that entry, never aborts the read; default 5.0).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TIMEOUT_S"
+        },
+        {
+          "description": "Aggregate wall-clock budget in seconds across an entire is_regex=true scan (GREP_REGEX_TIMEOUT_S bounds one entry; this bounds the cumulative scan). When exceeded the scan stops and returns partial results with truncated=true, never aborting the read; default 30.0.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_REGEX_TOTAL_TIMEOUT_S"
+        },
+        {
+          "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_RANGE",
+          "default": "auto"
+        },
+        {
+          "description": "navigate_context tool registration (code-derived Markdown outline / index_tree). Tri-state: auto (default; pure-Python, no extra dependencies), true, or false.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "ENABLE_CONTEXT_NAVIGATION",
+          "default": "auto"
+        },
+        {
+          "description": "Generate per-node LLM summaries for the navigate_context index_tree and provision the context_index_nodes table. Additive/never-raise: a node-summary failure never aborts a store. Default true.",
           "isRequired": false,
           "format": "boolean",
           "isSecret": false,
-          "name": "ENABLE_HYBRID_SEARCH"
+          "name": "ENABLE_INDEX_TREE_NODE_SUMMARIES",
+          "default": "true"
+        },
+        {
+          "description": "Override the per-node index_tree summary system prompt. Empty resolves to a dedicated short one-sentence-abstract prompt.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_PROMPT"
+        },
+        {
+          "description": "Heading sections shorter than this (characters) skip per-node summary generation (0 = always). Default 500.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MIN_CONTENT_LENGTH"
+        },
+        {
+          "description": "Per-node summary timeout in seconds; a timeout omits that node, never aborts the store. Default 240.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_TIMEOUT_S"
+        },
+        {
+          "description": "Node-task fan-out cap for per-node index_tree summary coroutines; NOT a second model budget (summary-model concurrency is governed by SUMMARY_MAX_CONCURRENT). Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "INDEX_TREE_NODE_SUMMARY_MAX_CONCURRENT"
         },
         {
           "description": "RRF smoothing constant for hybrid search (default 60)",
@@ -1595,6 +1870,13 @@
           "format": "number",
           "isSecret": false,
           "name": "SEARCH_TRUNCATION_LENGTH"
+        },
+        {
+          "description": "Whether get_context_by_ids includes the summary field in each returned entry. Tri-state: when false (default), the summary key is omitted entirely (consumers reading entry.get('summary') receive None -- the conventional Python signal for 'feature disabled'); when true with a stored non-empty summary, the value is returned verbatim; when true but the stored summary is NULL or empty, the value is normalized to an empty string '' (signaling 'feature on, no data yet'). The text_content field always contains the full untruncated text regardless of this toggle. Does not affect search tools, which always emit summary as a string.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY"
         },
         {
           "description": "Enable text chunking for embedding generation (default: true)",
@@ -1889,6 +2171,50 @@
           "format": "string",
           "isSecret": false,
           "name": "MCP_SERVER_INSTRUCTIONS"
+        },
+        {
+          "description": "Enable TurboQuant embedding compression at storage time. Default true. When true (default), fp32 embeddings are replaced with bit-packed compressed payloads (~8x storage reduction at default bits=4). Set to false to opt out and keep fp32 storage.",
+          "isRequired": false,
+          "format": "boolean",
+          "isSecret": false,
+          "name": "ENABLE_EMBEDDING_COMPRESSION",
+          "default": "true"
+        },
+        {
+          "description": "Compression provider. Currently only 'turboquant' is supported.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_PROVIDER"
+        },
+        {
+          "description": "Bits per coordinate for compression: 2 (16x), 3 (~11x), 4 (8x). Default 4. Lower bound 2 required by the inner-product variant.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_BITS"
+        },
+        {
+          "description": "Compression variant. 'ip' (default) uses Algorithm 2 with QJL for unbiased inner-product estimation. 'mse' uses Algorithm 1 (L2-optimal reconstruction).",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "COMPRESSION_VARIANT"
+        },
+        {
+          "description": "Rotation matrix seed. Default 0. Pick any stable integer in [0, 4294967295] (the seed is packed into the compressed payload as an unsigned 32-bit field); the value is persisted in compression_metadata at first startup and treated as load-bearing thereafter (mismatching env vs DB raises ConfigurationError(78)).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_SEED",
+          "default": "0"
+        },
+        {
+          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "COMPRESSION_MAX_CONCURRENT"
         }
       ]
     }

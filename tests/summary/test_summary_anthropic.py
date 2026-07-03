@@ -15,8 +15,6 @@ Tests verify:
 - provider_name returns 'anthropic'
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -105,8 +103,26 @@ class TestAnthropicSummaryProviderInitialize:
                 temperature=0,
                 max_tokens=1800,
                 api_key='sk-ant-test',
+                max_retries=0,
+                timeout=None,
             )
             assert provider._chat_model is not None
+
+    @pytest.mark.asyncio
+    async def test_initialize_disables_sdk_internal_retry_and_timeout(self) -> None:
+        """initialize() passes max_retries=0 and timeout=None so the tenacity wrapper is the sole retry/timeout authority."""
+        from app.summary.providers.langchain_anthropic import AnthropicSummaryProvider
+
+        mock_chat_cls = MagicMock()
+        mock_module = MagicMock()
+        mock_module.ChatAnthropic = mock_chat_cls
+        with patch.dict('sys.modules', {'langchain_anthropic': mock_module}):
+            provider = AnthropicSummaryProvider()
+            await provider.initialize()
+
+        call_kwargs = mock_chat_cls.call_args[1]
+        assert call_kwargs['max_retries'] == 0
+        assert call_kwargs['timeout'] is None
 
     @pytest.mark.asyncio
     async def test_initialize_passes_effort_when_set(self) -> None:
@@ -137,6 +153,8 @@ class TestAnthropicSummaryProviderInitialize:
                 temperature=0,
                 max_tokens=1800,
                 api_key='sk-ant-test',
+                max_retries=0,
+                timeout=None,
                 effort='low',
             )
 

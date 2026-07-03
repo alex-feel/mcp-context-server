@@ -259,3 +259,91 @@ class TestTransportStatelessHttp:
         with env_var('FASTMCP_STATELESS_HTTP', 'false'):
             settings = TransportSettings()
             assert settings.stateless_http is False
+
+
+class TestStorageImageSizeLimits:
+    """MAX_IMAGE_SIZE_MB / MAX_TOTAL_SIZE_MB must be at least 1 megabyte."""
+
+    def test_defaults_are_positive(self) -> None:
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert settings.max_image_size_mb == 10
+        assert settings.max_total_size_mb == 100
+
+    def test_zero_image_size_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('MAX_IMAGE_SIZE_MB', '0'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_negative_total_size_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('MAX_TOTAL_SIZE_MB', '-5'), pytest.raises(ValidationError):
+            StorageSettings()
+
+
+class TestStoragePoolLimits:
+    """POOL_MAX_READERS / POOL_MAX_WRITERS must be at least 1.
+
+    POOL_MAX_READERS sizes an asyncio.Semaphore: a value of 0 would start it
+    locked (every reader blocks forever, a silent deadlock) and a negative value
+    raises an opaque ValueError deep in pool init, so both must be rejected
+    cleanly at the configuration boundary like every peer concurrency cap.
+    """
+
+    def test_defaults_are_positive(self) -> None:
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert settings.pool_max_readers == 8
+        assert settings.pool_max_writers == 1
+
+    def test_zero_readers_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POOL_MAX_READERS', '0'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_negative_writers_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POOL_MAX_WRITERS', '-1'), pytest.raises(ValidationError):
+            StorageSettings()
+
+
+class TestPostgresqlPoolLimits:
+    """POSTGRESQL_POOL_MIN / POSTGRESQL_POOL_MAX bounds at the config boundary.
+
+    A zero or negative max passes pydantic without bounds but only fails later
+    at asyncpg pool creation with a plain ValueError, which the backend's broad
+    exception handler misclassifies as a retryable DependencyError (supervisor
+    restart loop) instead of a permanent configuration error. min may be 0 (an
+    empty warm pool is valid) but never negative.
+    """
+
+    def test_defaults_are_valid(self) -> None:
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert settings.postgresql_pool_min == 2
+        assert settings.postgresql_pool_max == 20
+
+    def test_zero_pool_max_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_POOL_MAX', '0'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_negative_pool_min_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_POOL_MIN', '-1'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_zero_pool_min_accepted(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_POOL_MIN', '0'):
+            assert StorageSettings().postgresql_pool_min == 0

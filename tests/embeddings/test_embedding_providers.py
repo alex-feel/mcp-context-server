@@ -5,8 +5,6 @@ Integration tests with real providers should be in a separate test file
 and marked with appropriate skip markers.
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -204,6 +202,61 @@ class TestOllamaEmbeddingProvider:
 
             result = await provider.is_available()
 
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(
+        self,
+        mock_settings: MagicMock,
+    ) -> None:
+        """is_available raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating an HTTP client error."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=FakeClientError('invalid model', status_code=400),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_ollama.get_settings',
+            return_value=mock_settings,
+        ):
+            from app.embeddings.providers.langchain_ollama import OllamaEmbeddingProvider
+
+            provider = OllamaEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            with pytest.raises(ConfigurationError, match='client error'):
+                await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(
+        self,
+        mock_settings: MagicMock,
+    ) -> None:
+        """is_available returns False for transient errors (no status_code)."""
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=TimeoutError('Connection timed out'),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_ollama.get_settings',
+            return_value=mock_settings,
+        ):
+            from app.embeddings.providers.langchain_ollama import OllamaEmbeddingProvider
+
+            provider = OllamaEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            result = await provider.is_available()
             assert result is False
 
     def test_get_dimension_returns_configured_value(
@@ -470,6 +523,61 @@ class TestOpenAIEmbeddingProvider:
 
             assert provider.provider_name == 'openai'
 
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(
+        self,
+        mock_settings_with_key: MagicMock,
+    ) -> None:
+        """is_available raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating an HTTP client error."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=FakeClientError('invalid api key', status_code=401),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_openai.get_settings',
+            return_value=mock_settings_with_key,
+        ):
+            from app.embeddings.providers.langchain_openai import OpenAIEmbeddingProvider
+
+            provider = OpenAIEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            with pytest.raises(ConfigurationError, match='client error'):
+                await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(
+        self,
+        mock_settings_with_key: MagicMock,
+    ) -> None:
+        """is_available returns False for transient errors (no status_code)."""
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=TimeoutError('Connection timed out'),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_openai.get_settings',
+            return_value=mock_settings_with_key,
+        ):
+            from app.embeddings.providers.langchain_openai import OpenAIEmbeddingProvider
+
+            provider = OpenAIEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            result = await provider.is_available()
+            assert result is False
+
 
 class TestAzureEmbeddingProvider:
     """Tests for AzureEmbeddingProvider."""
@@ -568,6 +676,61 @@ class TestAzureEmbeddingProvider:
             assert provider._embeddings is not None
             assert provider.provider_name == 'azure'
 
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(
+        self,
+        mock_settings_complete: MagicMock,
+    ) -> None:
+        """is_available raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating an HTTP client error."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=FakeClientError('deployment not found', status_code=404),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_azure.get_settings',
+            return_value=mock_settings_complete,
+        ):
+            from app.embeddings.providers.langchain_azure import AzureEmbeddingProvider
+
+            provider = AzureEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            with pytest.raises(ConfigurationError, match='client error'):
+                await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(
+        self,
+        mock_settings_complete: MagicMock,
+    ) -> None:
+        """is_available returns False for transient errors (no status_code)."""
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=TimeoutError('Connection timed out'),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_azure.get_settings',
+            return_value=mock_settings_complete,
+        ):
+            from app.embeddings.providers.langchain_azure import AzureEmbeddingProvider
+
+            provider = AzureEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            result = await provider.is_available()
+            assert result is False
+
 
 class TestHuggingFaceEmbeddingProvider:
     """Tests for HuggingFaceEmbeddingProvider."""
@@ -637,6 +800,61 @@ class TestHuggingFaceEmbeddingProvider:
 
             assert provider._embeddings is not None
             assert provider.provider_name == 'huggingface'
+
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(
+        self,
+        mock_settings_with_token: MagicMock,
+    ) -> None:
+        """is_available raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating an HTTP client error."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=FakeClientError('invalid token', status_code=401),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_huggingface.get_settings',
+            return_value=mock_settings_with_token,
+        ):
+            from app.embeddings.providers.langchain_huggingface import HuggingFaceEmbeddingProvider
+
+            provider = HuggingFaceEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            with pytest.raises(ConfigurationError, match='client error'):
+                await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(
+        self,
+        mock_settings_with_token: MagicMock,
+    ) -> None:
+        """is_available returns False for transient errors (no status_code)."""
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=TimeoutError('Connection timed out'),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_huggingface.get_settings',
+            return_value=mock_settings_with_token,
+        ):
+            from app.embeddings.providers.langchain_huggingface import HuggingFaceEmbeddingProvider
+
+            provider = HuggingFaceEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            result = await provider.is_available()
+            assert result is False
 
 
 class TestVoyageEmbeddingProvider:
@@ -871,3 +1089,58 @@ class TestVoyageEmbeddingProvider:
             call_kwargs = mock_langchain.VoyageAIEmbeddings.call_args[1]
             assert 'truncation' in call_kwargs
             assert call_kwargs['truncation'] is True
+
+    @pytest.mark.asyncio
+    async def test_is_available_raises_configuration_error_on_4xx(
+        self,
+        mock_settings_with_key: MagicMock,
+    ) -> None:
+        """is_available raises ConfigurationError on HTTP 4xx client errors."""
+        from app.errors import ConfigurationError
+
+        class FakeClientError(Exception):
+            """Exception with status_code attribute simulating an HTTP client error."""
+
+            def __init__(self, message: str, status_code: int) -> None:
+                super().__init__(message)
+                self.status_code = status_code
+
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=FakeClientError('invalid api key', status_code=401),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_voyage.get_settings',
+            return_value=mock_settings_with_key,
+        ):
+            from app.embeddings.providers.langchain_voyage import VoyageEmbeddingProvider
+
+            provider = VoyageEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            with pytest.raises(ConfigurationError, match='client error'):
+                await provider.is_available()
+
+    @pytest.mark.asyncio
+    async def test_is_available_returns_false_on_transient_error(
+        self,
+        mock_settings_with_key: MagicMock,
+    ) -> None:
+        """is_available returns False for transient errors (no status_code)."""
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(
+            side_effect=TimeoutError('Connection timed out'),
+        )
+
+        with patch(
+            'app.embeddings.providers.langchain_voyage.get_settings',
+            return_value=mock_settings_with_key,
+        ):
+            from app.embeddings.providers.langchain_voyage import VoyageEmbeddingProvider
+
+            provider = VoyageEmbeddingProvider()
+            provider._embeddings = mock_embeddings
+
+            result = await provider.is_available()
+            assert result is False

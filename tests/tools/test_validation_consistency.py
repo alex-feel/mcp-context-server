@@ -107,13 +107,13 @@ class TestValidationConsistency:
         context_id = result['context_id']
 
         # Update with only metadata (text=None is OK)
-        result = await update_context(
+        update_result = await update_context(
             context_id=context_id,
             metadata={'status': 'updated'},
         )
 
-        assert result['success'] is True
-        assert 'Successfully updated' in result['message']
+        assert update_result['success'] is True
+        assert 'Successfully updated' in update_result['message']
 
     @pytest.mark.asyncio
     async def test_validation_consistency_thread_id(
@@ -164,11 +164,11 @@ class TestValidationConsistency:
             context_id = result['context_id']
 
             # Test update_context
-            result = await update_context(
+            update_result = await update_context(
                 context_id=context_id,
                 text=text + ' updated',
             )
-            assert result['success'] is True, f'update_context failed for: {text!r}'
+            assert update_result['success'] is True, f'update_context failed for: {text!r}'
 
     @pytest.mark.asyncio
     async def test_validation_error_format_consistency(
@@ -260,12 +260,12 @@ class TestValidationConsistency:
         context_id = result['context_id']
 
         # Update with None text (omitted) - should succeed
-        result = await update_context(
+        update_result = await update_context(
             context_id=context_id,
             metadata={'status': 'test'},
             # text is omitted (None)
         )
-        assert result['success'] is True
+        assert update_result['success'] is True
 
         # Update with empty string - should fail
         with pytest.raises(ToolError) as exc_info:
@@ -301,8 +301,8 @@ class TestValidationConsistency:
             context_id = result['context_id']
 
             # Should succeed for update_context
-            result = await update_context(
+            update_result = await update_context(
                 context_id=context_id,
                 text=text + 'x',  # Add something to make it different
             )
-            assert result['success'] is True, f'Update failed for: {text!r}'
+            assert update_result['success'] is True, f'Update failed for: {text!r}'

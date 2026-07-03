@@ -13,6 +13,8 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.migrations._pg_ddl import begin_migration
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -187,13 +189,17 @@ async def _create_metadata_index(backend: StorageBackend, field: str, type_hint:
 
     else:  # postgresql
         sql = _generate_create_index_postgresql(field, type_hint)
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
         async def _create_postgresql_index(conn: asyncpg.Connection) -> None:
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
-            await conn.execute(sql)
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction and mask the
+            # real error). CREATE INDEX on a large context_entries table can exceed the regular
+            # per-query budget, so the lock acquire and the DDL both run under the migration
+            # timeout, mirroring the schema migrations.
+            await begin_migration(conn, migration_timeout_s)
+            await execute_migration_ddl(conn, sql, migration_timeout_s)
 
         await backend.execute_write(cast(Any, _create_postgresql_index))
 
@@ -222,16 +228,25 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
     else:  # postgresql
         # Use schema-qualified DROP to ensure correct index is dropped
         # This handles multi-schema environments like Supabase
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _drop_postgresql_index(conn: asyncpg.Connection) -> None:
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
-            # Use configured schema for qualified drop.
-            # This ensures correct schema is used in Supabase environments.
-            schema = settings.storage.postgresql_schema
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction and mask the
+            # real error). The lock wait, or a DROP blocked on a concurrent ACCESS EXCLUSIVE
+            # lock, can exceed the regular per-query budget, so both run under the migration
+            # timeout, mirroring the schema migrations and the create path.
+            await begin_migration(conn, migration_timeout_s)
+            # Quote the configured schema via the shared quote_pg_identifier helper so the
+            # qualified DROP targets the schema the index actually lives in. PostgreSQL folds an
+            # unquoted mixed-case or reserved schema name to lowercase, which would resolve to the
+            # wrong (or a nonexistent) schema and let IF EXISTS silently skip the real orphan index.
+            from app.backends.postgresql_backend import quote_pg_identifier
+
+            schema = quote_pg_identifier(settings.storage.postgresql_schema)
             sql = f'DROP INDEX IF EXISTS {schema}.{index_name};'
-            await conn.execute(sql)
+            await execute_migration_ddl(conn, sql, migration_timeout_s)
 
         await backend.execute_write(cast(Any, _drop_postgresql_index))
 

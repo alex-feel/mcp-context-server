@@ -3,13 +3,13 @@
 Tests the full-text search functionality with real SQLite FTS5 tables.
 """
 
-from __future__ import annotations
-
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+
+from app.ids import generate_id
 
 
 @pytest.fixture
@@ -40,26 +40,26 @@ def fts_enabled_db(tmp_path: Path) -> Path:
         # Insert test data
         conn.execute(
             '''
-            INSERT INTO context_entries (thread_id, source, content_type, text_content)
-            VALUES ('test-thread', 'agent', 'text', 'Python programming language tutorial')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+            VALUES ('0190abcdef1234567890abcd00000001', 'test-thread', 'agent', 'text', 'Python programming language tutorial')
         ''',
         )
         conn.execute(
             '''
-            INSERT INTO context_entries (thread_id, source, content_type, text_content)
-            VALUES ('test-thread', 'user', 'text', 'How to learn JavaScript quickly')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+            VALUES ('0190abcdef1234567890abcd00000002', 'test-thread', 'user', 'text', 'How to learn JavaScript quickly')
         ''',
         )
         conn.execute(
             '''
-            INSERT INTO context_entries (thread_id, source, content_type, text_content)
-            VALUES ('test-thread', 'agent', 'text', 'Running Python scripts on Linux')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+            VALUES ('0190abcdef1234567890abcd00000003', 'test-thread', 'agent', 'text', 'Running Python scripts on Linux')
         ''',
         )
         conn.execute(
             '''
-            INSERT INTO context_entries (thread_id, source, content_type, text_content)
-            VALUES ('other-thread', 'user', 'text', 'Database indexing strategies')
+            INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+            VALUES ('0190abcdef1234567890abcd00000004', 'other-thread', 'user', 'text', 'Database indexing strategies')
         ''',
         )
         conn.commit()
@@ -78,7 +78,7 @@ class TestFtsSQLiteIntegration:
                 '''
                 SELECT ce.*, -bm25(context_entries_fts) as score
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'python'
                 ORDER BY score DESC
             ''',
@@ -96,7 +96,7 @@ class TestFtsSQLiteIntegration:
                 '''
                 SELECT ce.*
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH '"programming language"'
             ''',
             )
@@ -118,7 +118,7 @@ class TestFtsSQLiteIntegration:
                 '''
                 SELECT ce.*
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'run'
             ''',
             )
@@ -136,7 +136,7 @@ class TestFtsSQLiteIntegration:
                 '''
                 SELECT ce.*
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'Running'
             ''',
             )
@@ -154,7 +154,7 @@ class TestFtsSQLiteIntegration:
                 '''
                 SELECT ce.*
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'prog*'
             ''',
             )
@@ -188,7 +188,7 @@ class TestFtsSQLiteIntegration:
                 '''
                 SELECT ce.*
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'nonexistentword123456'
             ''',
             )
@@ -204,7 +204,7 @@ class TestFtsSQLiteIntegration:
                 '''
                 SELECT ce.*, -bm25(context_entries_fts) as score
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'python'
                 ORDER BY score DESC
             ''',
@@ -229,8 +229,8 @@ class TestFtsTriggerSync:
             # Insert new entry
             conn.execute(
                 '''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                VALUES ('test-thread', 'agent', 'text', 'Unique searchable content XYZ123')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                VALUES ('0190abcdef1234567890abcd00000005', 'test-thread', 'agent', 'text', 'Unique searchable content XYZ123')
             ''',
             )
             conn.commit()
@@ -259,7 +259,7 @@ class TestFtsTriggerSync:
             entry_id = cursor.fetchone()[0]
 
             # Delete it
-            conn.execute(f'DELETE FROM context_entries WHERE id = {entry_id}')
+            conn.execute('DELETE FROM context_entries WHERE id = ?', (entry_id,))
             conn.commit()
 
             # Verify FTS count decreased
@@ -308,7 +308,7 @@ class TestFtsWithFilters:
                 '''
                 SELECT ce.*
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'language'
                 AND ce.thread_id = 'test-thread'
             ''',
@@ -329,7 +329,7 @@ class TestFtsWithFilters:
                 '''
                 SELECT ce.*
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'python'
                 AND ce.source = 'agent'
             ''',
@@ -357,7 +357,7 @@ class TestFtsWithFilters:
                 '''
                 SELECT COUNT(*)
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'python'
             ''',
             )
@@ -373,13 +373,14 @@ class TestFtsWithFilters:
             conn.row_factory = sqlite3.Row
 
             # First, insert an entry with tags
-            cursor = conn.execute(
+            entry_id = '0190abcdef1234567890abcd00000006'
+            conn.execute(
                 '''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                VALUES ('tag-thread', 'agent', 'text', 'Python programming with tags')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                VALUES (?, 'tag-thread', 'agent', 'text', 'Python programming with tags')
                 ''',
+                (entry_id,),
             )
-            entry_id = cursor.lastrowid
 
             # Add tags
             conn.execute(
@@ -397,7 +398,7 @@ class TestFtsWithFilters:
                 '''
                 SELECT DISTINCT ce.*, -bm25(context_entries_fts) as score
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 JOIN tags t ON t.context_entry_id = ce.id
                 WHERE fts.text_content MATCH 'python'
                 AND t.tag IN ('python', 'programming')
@@ -420,8 +421,8 @@ class TestFtsWithFilters:
             # Insert multimodal entry
             conn.execute(
                 '''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                VALUES ('type-thread', 'agent', 'multimodal', 'Python with image')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                VALUES ('0190abcdef1234567890abcd00000007', 'type-thread', 'agent', 'multimodal', 'Python with image')
                 ''',
             )
             conn.commit()
@@ -431,7 +432,7 @@ class TestFtsWithFilters:
                 '''
                 SELECT ce.*, -bm25(context_entries_fts) as score
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'python'
                 AND ce.content_type = 'text'
                 ORDER BY score DESC
@@ -454,14 +455,28 @@ class TestFtsWithFilters:
             # Insert entry with metadata
             conn.execute(
                 '''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content, metadata)
-                VALUES ('meta-thread', 'agent', 'text', 'Python data processing', '{"priority": 5}')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata)
+                VALUES (
+                    '0190abcdef1234567890abcd00000008',
+                    'meta-thread',
+                    'agent',
+                    'text',
+                    'Python data processing',
+                    '{"priority": 5}'
+                )
                 ''',
             )
             conn.execute(
                 '''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content, metadata)
-                VALUES ('meta-thread', 'agent', 'text', 'Python web development', '{"priority": 3}')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content, metadata)
+                VALUES (
+                    '0190abcdef1234567890abcd00000009',
+                    'meta-thread',
+                    'agent',
+                    'text',
+                    'Python web development',
+                    '{"priority": 3}'
+                )
                 ''',
             )
             conn.commit()
@@ -471,7 +486,7 @@ class TestFtsWithFilters:
                 '''
                 SELECT ce.*, -bm25(context_entries_fts) as score
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'python'
                 AND json_extract(ce.metadata, '$.priority') > 4
                 ORDER BY score DESC
@@ -494,7 +509,7 @@ class TestFtsWithFilters:
             sql_query = '''
                 SELECT ce.*, -bm25(context_entries_fts) as score
                 FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH ?
                 ORDER BY score DESC
                 LIMIT ? OFFSET ?
@@ -565,10 +580,9 @@ class TestFtsMultilingualUnicode61:
             for thread_id, source, content_type, text_content in test_entries:
                 conn.execute(
                     '''
-                    INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO context_entries (id, thread_id, source, content_type, text_content) VALUES (?, ?, ?, ?, ?)
                     ''',
-                    (thread_id, source, content_type, text_content),
+                    (generate_id(), thread_id, source, content_type, text_content),
                 )
             conn.commit()
 
@@ -581,7 +595,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'Programmierung'
             ''',
             )
@@ -597,7 +611,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'developpement'
             ''',
             )
@@ -613,7 +627,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'programacion'
             ''',
             )
@@ -629,7 +643,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'Программирование'
             ''',
             )
@@ -650,7 +664,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'Python'
             ''',
             )
@@ -705,7 +719,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'البرمجة'
             ''',
             )
@@ -725,7 +739,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'Cafe'
             ''',
             )
@@ -743,7 +757,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'programmierung'
             ''',
             )
@@ -753,7 +767,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'PROGRAMMIERUNG'
             ''',
             )
@@ -771,7 +785,7 @@ class TestFtsMultilingualUnicode61:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'Program*'
             ''',
             )
@@ -1133,8 +1147,14 @@ class TestInternalColumnsNotExposed:
             # Insert test data
             conn.execute(
                 '''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                VALUES ('test-thread', 'agent', 'text', 'Test content for column exposure test')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                VALUES (
+                    '0190abcdef1234567890abcd0000000a',
+                    'test-thread',
+                    'agent',
+                    'text',
+                    'Test content for column exposure test'
+                )
             ''',
             )
             conn.commit()
@@ -1318,10 +1338,9 @@ class TestFtsHyphenatedQueries:
             for thread_id, source, content_type, text_content in test_entries:
                 conn.execute(
                     '''
-                    INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO context_entries (id, thread_id, source, content_type, text_content) VALUES (?, ?, ?, ?, ?)
                     ''',
-                    (thread_id, source, content_type, text_content),
+                    (generate_id(), thread_id, source, content_type, text_content),
                 )
             conn.commit()
 
@@ -1336,7 +1355,7 @@ class TestFtsHyphenatedQueries:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH '"full-text"'
                 ''',
             )
@@ -1354,7 +1373,7 @@ class TestFtsHyphenatedQueries:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH '"pre-commit"*'
                 ''',
             )
@@ -1372,7 +1391,7 @@ class TestFtsHyphenatedQueries:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH '"full-text search"'
                 ''',
             )
@@ -1397,7 +1416,7 @@ class TestFtsHyphenatedQueries:
                 cursor = conn.execute(
                     f'''
                     SELECT ce.* FROM context_entries ce
-                    JOIN context_entries_fts fts ON ce.id = fts.rowid
+                    JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                     WHERE fts.text_content MATCH '"{term}"'
                     ''',
                 )
@@ -1417,7 +1436,7 @@ class TestFtsHyphenatedQueries:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH '"full-text" search'
                 ''',
             )
@@ -1436,7 +1455,7 @@ class TestFtsHyphenatedQueries:
             cursor = conn.execute(
                 '''
                 SELECT ce.* FROM context_entries ce
-                JOIN context_entries_fts fts ON ce.id = fts.rowid
+                JOIN context_entries_fts fts ON ce.rowid_int = fts.rowid
                 WHERE fts.text_content MATCH 'Regular search'
                 ''',
             )

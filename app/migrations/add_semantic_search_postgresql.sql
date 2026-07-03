@@ -5,15 +5,20 @@
 -- NOTE: pgvector extension is created during backend initialization (postgresql_backend.py)
 
 -- Table for vector embeddings using native vector type
+-- NOTE: This initial PRIMARY KEY on context_id is later restructured by
+-- `add_chunking_postgresql.sql`, which DROPs this constraint and ADDs a
+-- BIGSERIAL `id` column as the new PK to support 1:N chunking. The
+-- BIGSERIAL key type is required by the pgvector index, which operates
+-- on integer keys.
 CREATE TABLE IF NOT EXISTS vec_context_embeddings (
-    context_id BIGINT PRIMARY KEY,
+    context_id UUID NOT NULL PRIMARY KEY,
     embedding vector({EMBEDDING_DIM}),
     FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
 );
 
 -- Metadata table for tracking embeddings
 CREATE TABLE IF NOT EXISTS embedding_metadata (
-    context_id BIGINT PRIMARY KEY,
+    context_id UUID NOT NULL PRIMARY KEY,
     model_name TEXT NOT NULL,
     dimensions INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -33,9 +38,11 @@ WITH (m = 16, ef_construction = 64);
 CREATE INDEX IF NOT EXISTS idx_embedding_metadata_model
 ON embedding_metadata(model_name);
 
--- Trigger to automatically update updated_at timestamp
--- SET search_path for security (CVE-2018-1058 mitigation)
--- NOTE: Schema is templated and replaced during migration (see server.py)
+-- Trigger to automatically update updated_at timestamp.
+-- Function definition and trigger's EXECUTE FUNCTION reference remain
+-- schema-qualified for CVE-2018-1058 mitigation (function search-path
+-- hardening). Table and index DDL above is BARE; the migration loader
+-- substitutes {SCHEMA} only for the FUNCTION sites in this file.
 CREATE OR REPLACE FUNCTION {SCHEMA}.update_embedding_metadata_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN

@@ -6,9 +6,8 @@ for proper database initialization during server startup.
 P0 Priority: These functions have ZERO test coverage but are critical paths.
 """
 
-from __future__ import annotations
-
 import contextlib
+import importlib.util
 import os
 import sqlite3
 from pathlib import Path
@@ -18,13 +17,27 @@ from unittest.mock import patch
 
 import pytest
 
+# Conditional skip marker for tests requiring the sqlite-vec package.
+# Defined locally (mirroring tests/repositories/test_embedding_repository.py) so
+# the regression test that actually creates the vec0 virtual table self-skips on
+# platforms where the extension is not loadable.
+requires_sqlite_vec = pytest.mark.skipif(
+    importlib.util.find_spec('sqlite_vec') is None,
+    reason='sqlite-vec package not installed',
+)
+
 
 class TestApplySemanticSearchMigration:
     """Tests for apply_semantic_search_migration()."""
 
     @pytest.mark.asyncio
     async def test_migration_skipped_when_disabled(self) -> None:
-        """Verify no-op when ENABLE_SEMANTIC_SEARCH=false."""
+        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false.
+
+        The semantic-search vector-storage migration is provisioned from embedding
+        GENERATION (settings.embedding.generation_enabled), not from the search TOOL
+        toggle. It skips only when embedding generation is off.
+        """
         from app.migrations import apply_semantic_search_migration
 
         # Create mock backend
@@ -33,7 +46,7 @@ class TestApplySemanticSearchMigration:
 
         # Mock settings directly since it's already loaded at import time
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = False
+        mock_settings.embedding.generation_enabled = False
 
         with patch('app.migrations.semantic.settings', mock_settings):
             # Call should return early without doing anything
@@ -183,8 +196,8 @@ class TestApplySemanticSearchMigration:
             ''')
             # Insert metadata with dimension 384 (different from configured 768)
             conn.execute('''
-                INSERT INTO context_entries (thread_id, source, content_type, text_content)
-                VALUES ('test', 'user', 'text', 'test content')
+                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                VALUES ('0190abcdef1234567890abcd00000001', 'test', 'user', 'text', 'test content')
             ''')
             conn.execute('''
                 INSERT INTO embedding_metadata (context_id, model_name, dimensions)
@@ -192,12 +205,14 @@ class TestApplySemanticSearchMigration:
             ''')
             conn.commit()
 
-        # Create mock settings with semantic search enabled and dimension mismatch
+        # Create mock settings with embedding generation enabled and dimension mismatch.
+        # The migration gates on settings.embedding.generation_enabled (the search TOOL
+        # toggle no longer controls whether the vector-storage migration runs).
         # NOTE: Patching os.environ has NO EFFECT because get_settings() is cached
-        # via @lru_cache at conftest.py import time with semantic_search.enabled=False.
-        # We must patch the settings object directly in the migration module.
+        # via @lru_cache at conftest.py import time. We must patch the settings object
+        # directly in the migration module.
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = True
+        mock_settings.embedding.generation_enabled = True
         mock_settings.embedding.dim = 768  # Different from stored 384
         mock_settings.storage.db_path = db_path
         mock_settings.storage.postgresql_schema = 'public'
@@ -215,6 +230,46 @@ class TestApplySemanticSearchMigration:
                     await apply_semantic_search_migration(backend=backend)
             finally:
                 await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_migration_dimension_mismatch_postgresql_message(self) -> None:
+        """On PostgreSQL the dimension-mismatch error gives schema/pg_dump guidance, not SQLite file steps.
+
+        The dimension guard is backend-agnostic, but its remediation text must branch on the
+        backend: a PostgreSQL deployment has no database file to delete, so the message must
+        reference the embedding tables in the configured schema and a pg_dump backup instead
+        of the SQLite db_path file-deletion steps.
+        """
+        mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.embedding.dim = 768  # Configured dimension
+        mock_settings.storage.db_path = Path('/var/lib/should-not-appear/context_storage.db')
+        mock_settings.storage.postgresql_schema = 'public'
+
+        mock_backend = MagicMock()
+        mock_backend.backend_type = 'postgresql'
+        # The dimension probe returns (table_exists=True, existing_dim=384): a mismatch vs 768.
+        mock_backend.execute_read = AsyncMock(return_value=(True, 384))
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations import apply_semantic_search_migration
+
+            with pytest.raises(RuntimeError, match='dimension mismatch') as exc_info:
+                await apply_semantic_search_migration(backend=mock_backend)
+
+        message = str(exc_info.value)
+        assert 'public' in message  # references the configured PostgreSQL schema
+        assert 'pg_dump' in message  # PostgreSQL-appropriate backup guidance
+        # The SQLite-only remediation must NOT appear on PostgreSQL:
+        assert 'Delete or rename the database file' not in message
+        assert 'should-not-appear' not in message  # the SQLite db_path must not leak
+        # The remediation must list the REAL PostgreSQL embedding tables and must NOT
+        # name embedding_chunks, which is a SQLite-only construct (PostgreSQL keeps the
+        # chunk identity/boundaries as columns on vec_context_embeddings).
+        assert 'vec_context_embeddings' in message
+        assert 'embedding_metadata' in message
+        assert 'compression_metadata' in message
+        assert 'embedding_chunks' not in message
 
     @pytest.mark.asyncio
     async def test_migration_file_not_found_raises(self, tmp_path: Path) -> None:
@@ -418,6 +473,53 @@ class TestApplyFtsMigration:
                 assert fts_available_after is True
             finally:
                 await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_force_provisions_fts_when_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """force=True provisions FTS even when ENABLE_FTS=false.
+
+        This is the migration-CLI parity path: the PostgreSQL target-init must be
+        able to provision FTS on the target whenever the source had it, decoupled
+        from the CLI process's ENABLE_FTS toggle.
+        """
+        from app.settings import get_settings
+
+        db_path = tmp_path / 'test_fts_forced.db'
+
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.executescript(schema_sql)
+
+        monkeypatch.setenv('ENABLE_FTS', 'false')
+        monkeypatch.setenv('STORAGE_BACKEND', 'sqlite')
+        monkeypatch.setenv('DB_PATH', str(db_path))
+        get_settings.cache_clear()
+        import app.migrations.fts as fts_module
+
+        monkeypatch.setattr(fts_module, 'settings', get_settings())
+
+        from app.backends.sqlite_backend import SQLiteBackend
+        from app.repositories.fts_repository import FtsRepository
+
+        backend = SQLiteBackend(db_path=str(db_path))
+        await backend.initialize()
+        try:
+            fts_repo = FtsRepository(backend)
+            assert await fts_repo.is_available() is False
+
+            # ENABLE_FTS=false: a normal migration is a no-op.
+            await fts_module.apply_fts_migration(backend=backend)
+            assert await fts_repo.is_available() is False
+
+            # force=True provisions FTS regardless of the disabled toggle.
+            await fts_module.apply_fts_migration(backend=backend, force=True)
+            assert await fts_repo.is_available() is True
+        finally:
+            await backend.shutdown()
 
     @pytest.mark.asyncio
     async def test_migration_file_not_found_logged(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -688,7 +790,7 @@ class TestAdvisoryLockFix:
         mock_backend.execute_read = mock_execute_read
 
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = True
+        mock_settings.embedding.generation_enabled = True
         mock_settings.embedding.dim = 768
         mock_settings.storage.db_path = '/tmp/test.db'
         mock_settings.storage.postgresql_schema = 'public'
@@ -727,6 +829,7 @@ class TestAdvisoryLockFix:
         mock_backend.execute_read = AsyncMock(return_value=False)
 
         mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
         mock_settings.embedding.dim = 768
         mock_settings.storage.db_path = '/tmp/test.db'
         mock_settings.storage.postgresql_schema = 'public'
@@ -824,6 +927,47 @@ class TestAdvisoryLockFix:
         )
 
     @pytest.mark.asyncio
+    async def test_metadata_index_drop_quotes_mixed_case_schema(self) -> None:
+        """A mixed-case POSTGRESQL_SCHEMA is quoted in the qualified DROP so it is not folded.
+
+        PostgreSQL case-folds an unquoted identifier to lowercase, so an unquoted ``MyApp.``
+        qualifier would resolve to schema ``myapp`` and make ``DROP INDEX IF EXISTS`` silently
+        skip the orphan index that actually lives in ``MyApp``. The DROP must route the schema
+        through quote_pg_identifier, matching the search_path, CREATE SCHEMA, and target-probe sites.
+        """
+        mock_backend = MagicMock()
+        mock_backend.backend_type = 'postgresql'
+
+        executed_statements: list[str] = []
+
+        async def mock_execute_write(operation, *_args, **_kwargs):
+            mock_conn = AsyncMock()
+
+            async def record_execute(stmt, *_a, **_kw):
+                executed_statements.append(stmt)
+
+            mock_conn.execute = record_execute
+            await operation(mock_conn)
+
+        mock_backend.execute_write = mock_execute_write
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_schema = 'MyApp'
+
+        with patch('app.migrations.metadata.settings', mock_settings):
+            from app.migrations.metadata import _drop_metadata_index
+
+            await _drop_metadata_index(
+                backend=mock_backend,
+                field='test_field',
+            )
+
+        drop_sql = next(s for s in executed_statements if 'DROP INDEX' in s)
+        assert '"MyApp".idx_metadata_test_field' in drop_sql
+        # The unquoted form would be case-folded by PostgreSQL and silently miss the real index.
+        assert 'MyApp.idx_metadata_test_field' not in drop_sql
+
+    @pytest.mark.asyncio
     async def test_no_session_scoped_locks_in_migration_source(self) -> None:
         """Verify migration source files contain no session-scoped advisory locks.
 
@@ -851,3 +995,611 @@ class TestAdvisoryLockFix:
                         f'{filename}:{i} contains pg_advisory_unlock '
                         f'(not needed with pg_advisory_xact_lock): {line.strip()}',
                     )
+
+
+class TestEmbeddingStorageDecoupledFromSearchTool:
+    """Regression: embedding storage is provisioned by GENERATION, not the search TOOL.
+
+    Previously the vec0 storage migrations were gated on the semantic-search tool
+    toggle. With the toggle OFF but embedding generation ON, the fp32 vector table
+    and chunk columns were silently never created, so embedding writes failed for a
+    missing-table reason. The gate now keys on ``settings.embedding.generation_enabled``,
+    so storage exists regardless of whether the search tool is exposed.
+    """
+
+    @requires_sqlite_vec
+    @pytest.mark.asyncio
+    async def test_fp32_storage_created_with_generation_on_and_search_off(self, tmp_path: Path) -> None:
+        """vec_context_embeddings + chunk columns are created and writable.
+
+        Configuration under test (the previously-latent fp32 edge):
+        - embedding generation ON (settings.embedding.generation_enabled = True)
+        - semantic-search TOOL forced OFF (mode='false', so the .enabled property is False)
+        - embedding compression OFF (fp32 vec0 layout, not the compressed table)
+        """
+        from app.settings import get_settings
+
+        db_path = tmp_path / 'test_storage_decoupled.db'
+
+        # Create the base schema first (mirrors the other SQLite migration tests).
+        from app.schemas import load_schema
+
+        schema_sql = load_schema('sqlite')
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.executescript(schema_sql)
+
+        env = {
+            'DB_PATH': str(db_path),
+            'MCP_TEST_MODE': '1',
+            'STORAGE_BACKEND': 'sqlite',
+            # Generation ON: provisions embedding storage and loads sqlite-vec.
+            'ENABLE_EMBEDDING_GENERATION': 'true',
+            # Search TOOL OFF: the previously-coupled gate. Storage MUST still be built.
+            'ENABLE_SEMANTIC_SEARCH': 'false',
+            # Compression OFF: assert the fp32 vec0 layout, not the compressed table.
+            'ENABLE_EMBEDDING_COMPRESSION': 'false',
+            'EMBEDDING_DIM': '4',
+        }
+
+        # Build a fresh settings singleton under the env above and route every
+        # module-level ``settings`` binding involved (backend + both migrations) to
+        # it, so the backend loads sqlite-vec (generation ON) and the migrations run
+        # (generation ON) even though the search tool is off. Restore the cache after.
+        with patch.dict(os.environ, env, clear=False):
+            get_settings.cache_clear()
+            fresh_settings = get_settings()
+
+            # Sanity-check the edge configuration is exactly what we intend to exercise.
+            assert fresh_settings.embedding.generation_enabled is True
+            assert fresh_settings.semantic_search.mode == 'false'
+            assert fresh_settings.semantic_search.enabled is False
+            assert fresh_settings.compression.enabled is False
+
+            try:
+                from app.backends import sqlite_backend as sqlite_backend_module
+                from app.migrations import chunking as chunking_module
+                from app.migrations import semantic as semantic_module
+
+                with (
+                    patch.object(sqlite_backend_module, 'settings', fresh_settings),
+                    patch.object(semantic_module, 'settings', fresh_settings),
+                    patch.object(chunking_module, 'settings', fresh_settings),
+                ):
+                    from app.backends.sqlite_backend import SQLiteBackend
+
+                    backend = SQLiteBackend(db_path=str(db_path))
+                    await backend.initialize()
+
+                    try:
+                        from app.migrations import apply_chunking_migration
+                        from app.migrations import apply_semantic_search_migration
+
+                        # Storage is provisioned by GENERATION, so both migrations run
+                        # to completion even though the search TOOL is off.
+                        await apply_semantic_search_migration(backend=backend)
+                        await apply_chunking_migration(backend=backend)
+
+                        def _inspect(conn: sqlite3.Connection) -> tuple[bool, bool, list[str], list[str]]:
+                            cursor = conn.execute(
+                                "SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name='vec_context_embeddings'",
+                            )
+                            vec_table = cursor.fetchone() is not None
+
+                            cursor = conn.execute(
+                                "SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name='embedding_chunks'",
+                            )
+                            chunks_table = cursor.fetchone() is not None
+
+                            cursor = conn.execute('PRAGMA table_info(embedding_chunks)')
+                            chunk_columns = [row[1] for row in cursor.fetchall()]
+
+                            cursor = conn.execute('PRAGMA table_info(embedding_metadata)')
+                            metadata_columns = [row[1] for row in cursor.fetchall()]
+
+                            return vec_table, chunks_table, chunk_columns, metadata_columns
+
+                        vec_table, chunks_table, chunk_columns, metadata_columns = await backend.execute_read(_inspect)
+
+                        # The fp32 vector table exists despite the search tool being off.
+                        assert vec_table, 'vec_context_embeddings must exist when embedding generation is on'
+                        # The chunking layer (1:N bridge) is provisioned too.
+                        assert chunks_table, 'embedding_chunks must exist when embedding generation is on'
+                        assert 'context_id' in chunk_columns
+                        assert 'vec_rowid' in chunk_columns
+                        assert 'start_index' in chunk_columns
+                        assert 'end_index' in chunk_columns
+                        assert 'chunk_count' in metadata_columns
+
+                        # A write into the vec table must NOT fail for a missing-table reason.
+                        def _store_embedding(conn: sqlite3.Connection) -> int:
+                            embedding = bytes([1, 2, 3, 4] * 4)  # 16 bytes = 4 float32 values
+                            conn.execute(
+                                'INSERT INTO vec_context_embeddings(rowid, embedding) VALUES (1, ?)',
+                                (embedding,),
+                            )
+                            cursor = conn.execute('SELECT COUNT(*) FROM vec_context_embeddings')
+                            return int(cursor.fetchone()[0])
+
+                        stored_count = await backend.execute_write(_store_embedding)
+                        assert stored_count == 1, 'store into vec_context_embeddings should succeed'
+                    finally:
+                        await backend.shutdown()
+            finally:
+                # Restore the process-wide settings singleton to the cached default so
+                # this test does not leak its env-driven configuration into others.
+                get_settings.cache_clear()
+
+
+class TestMigrationDdlTimeout:
+    """PostgreSQL migration DDL must run under POSTGRESQL_MIGRATION_TIMEOUT_S.
+
+    asyncpg applies the pool's ``command_timeout`` (default 60s) as the per-call
+    CLIENT-side deadline for every ``conn.execute`` that passes no explicit
+    ``timeout``. Migration DDL raises the SERVER-side ``statement_timeout`` to
+    POSTGRESQL_MIGRATION_TIMEOUT_S (default 300s) via ``SET LOCAL`` -- which is
+    transaction-scoped, so PostgreSQL auto-reverts it on COMMIT or ROLLBACK and no
+    ``finally`` restore is needed. A plain ``SET`` + a ``finally`` restore must NOT be
+    used: a failed DDL aborts the transaction and the restore ``SET`` would then raise
+    InFailedSQLTransactionError (25P02), masking the real error and defeating the
+    QueryCanceledError retry. The DDL and the advisory-lock acquire carry the migration
+    budget PLUS a small client-side margin so an overrun is cancelled server-side (a
+    retryable QueryCanceledError) rather than client-side (a non-retryable
+    asyncio.TimeoutError). These tests pin all of that; the existing advisory-lock
+    tests record only the SQL string and cannot catch it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_migration_ddl_passes_timeout(self) -> None:
+        """The shared helper forwards ``timeout_s`` plus the client margin as the per-call timeout."""
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
+        from app.migrations._pg_ddl import execute_migration_ddl
+
+        mock_conn = AsyncMock()
+        await execute_migration_ddl(mock_conn, 'CREATE TABLE x (id int)', 300.0)
+        mock_conn.execute.assert_awaited_once_with(
+            'CREATE TABLE x (id int)',
+            timeout=300.0 + _CLIENT_TIMEOUT_MARGIN_S,
+        )
+
+    @pytest.mark.asyncio
+    async def test_begin_migration_uses_set_local_then_locks_under_budget(self) -> None:
+        """begin_migration issues SET LOCAL (transaction-scoped, no finally) then the lock under budget."""
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
+        from app.migrations._pg_ddl import begin_migration
+
+        recorded: list[tuple[str, float | None]] = []
+
+        async def record_execute(stmt, *_a, **kw):
+            recorded.append((stmt, kw.get('timeout')))
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = record_execute
+        await begin_migration(mock_conn, 300.0)
+
+        # First statement raises the budget transaction-scoped (no per-call timeout needed).
+        assert recorded[0] == ('SET LOCAL statement_timeout = 300000', None)
+        # Then the advisory-lock acquire carries the budget + client margin.
+        assert any(
+            'advisory' in stmt.lower() and t == 300.0 + _CLIENT_TIMEOUT_MARGIN_S
+            for stmt, t in recorded
+        )
+
+    @staticmethod
+    def _recording_pg_backend(executed: list[tuple[str, float | None]]) -> MagicMock:
+        """A PostgreSQL backend whose execute_write records (statement, timeout) pairs."""
+        mock_backend = MagicMock()
+        mock_backend.backend_type = 'postgresql'
+
+        async def mock_execute_write(operation, *_args, **_kwargs):
+            mock_conn = AsyncMock()
+
+            async def record_execute(stmt, *_a, **kw):
+                executed.append((stmt, kw.get('timeout')))
+
+            async def record_fetchval(stmt, *_a, **kw):
+                executed.append((stmt, kw.get('timeout')))
+                return MagicMock()
+
+            mock_conn.execute = record_execute
+            mock_conn.fetchval = record_fetchval
+            mock_conn.fetchrow = AsyncMock(return_value=None)
+            await operation(mock_conn)
+
+        mock_backend.execute_write = mock_execute_write
+        return mock_backend
+
+    @staticmethod
+    def _assert_ddl_carries_timeout(
+        executed: list[tuple[str, float | None]],
+        *,
+        migration_timeout: float,
+    ) -> None:
+        """Assert advisory-lock / CREATE / ALTER / DROP / DO statements carry the budget + client margin."""
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
+
+        expected = migration_timeout + _CLIENT_TIMEOUT_MARGIN_S
+        ddl = [
+            (stmt, t)
+            for stmt, t in executed
+            if 'advisory' in stmt.lower()
+            or stmt.strip().upper().startswith(('CREATE', 'ALTER', 'DROP', 'DO', 'REINDEX'))
+        ]
+        assert ddl, f'no migration DDL was recorded: {executed}'
+        offenders = [(stmt, t) for stmt, t in ddl if t != expected]
+        assert not offenders, (
+            f'migration DDL must carry the {expected}s per-call asyncpg timeout '
+            f'(migration budget {migration_timeout}s + client margin); offenders: {offenders}'
+        )
+
+    @staticmethod
+    def _assert_set_local_no_finally_restore(executed: list[tuple[str, float | None]]) -> None:
+        """The budget is raised via SET LOCAL, and no finally-restore SET statement_timeout is issued.
+
+        A plain ``SET statement_timeout = <default>`` in a ``finally`` would raise
+        InFailedSQLTransactionError (25P02) when a DDL failure has aborted the
+        transaction -- masking the real error and defeating the QueryCanceledError
+        retry. ``SET LOCAL`` is transaction-scoped and auto-reverts, so no restore runs.
+        """
+        set_locals = [stmt for stmt, _ in executed if 'set local statement_timeout' in stmt.lower()]
+        assert set_locals, f'migration must raise the budget via SET LOCAL; executed: {executed}'
+        bare_restores = [
+            stmt
+            for stmt, _ in executed
+            if stmt.strip().lower().startswith('set ')
+            and 'statement_timeout' in stmt.lower()
+            and 'set local' not in stmt.lower()
+        ]
+        assert not bare_restores, (
+            f'migration must not issue a plain SET statement_timeout (a finally-restore that '
+            f'raises 25P02 in an aborted transaction and masks the real error); found: {bare_restores}'
+        )
+
+    @staticmethod
+    def _assert_count_probe_carries_timeout(
+        executed: list[tuple[str, float | None]],
+        *,
+        migration_timeout: float,
+    ) -> None:
+        """Assert a COUNT(*) probe issued inside the migration transaction carries the budget.
+
+        A bare ``conn.fetchval`` would inherit the pool's shorter command_timeout and be
+        cancelled client-side on a large table (a non-retryable asyncio.TimeoutError)
+        before the budgeted DDL runs, so the probe must share the migration deadline too.
+        """
+        from app.migrations._pg_ddl import _CLIENT_TIMEOUT_MARGIN_S
+
+        expected = migration_timeout + _CLIENT_TIMEOUT_MARGIN_S
+        probes = [(stmt, t) for stmt, t in executed if 'count(*)' in stmt.lower()]
+        assert probes, f'no COUNT(*) probe was recorded: {executed}'
+        offenders = [(stmt, t) for stmt, t in probes if t != expected]
+        assert not offenders, (
+            f'COUNT(*) probe inside the migration transaction must carry the {expected}s '
+            f'per-call asyncpg timeout; offenders: {offenders}'
+        )
+
+    @pytest.mark.asyncio
+    async def test_fts_migrate_language_count_probe_uses_migration_timeout(self) -> None:
+        """The COUNT(*) probe inside the FTS language migration carries the migration budget.
+
+        It runs inside the same transaction as the heavy DDL (after begin_migration raises
+        the server-side budget), so a bare fetchval inheriting the pool's command_timeout
+        would be cancelled client-side on a large table before the rewrite ever runs.
+        """
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        from app.repositories.fts_repository import FtsRepository
+
+        repo = FtsRepository(mock_backend)
+        with (
+            patch('app.settings.get_settings', return_value=mock_settings),
+            patch.object(FtsRepository, 'get_current_language', AsyncMock(return_value='english')),
+        ):
+            await repo.migrate_language('german')
+
+        self._assert_count_probe_carries_timeout(executed, migration_timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_fts_rebuild_index_ddl_uses_migration_timeout(self) -> None:
+        """FtsRepository.rebuild_index runs its REINDEX and COUNT(*) under the migration budget.
+
+        Reindexing the GIN index on a large table can far exceed the pool's command_timeout,
+        so rebuild_index must raise the budget via begin_migration and route both the COUNT(*)
+        probe and the REINDEX through the migration deadline (same invariant as migrate_language).
+        """
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        from app.repositories.fts_repository import FtsRepository
+
+        repo = FtsRepository(mock_backend)
+        with patch('app.settings.get_settings', return_value=mock_settings):
+            await repo.rebuild_index()
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+        self._assert_count_probe_carries_timeout(executed, migration_timeout=300.0)
+
+    @pytest.mark.asyncio
+    async def test_index_tree_migration_ddl_uses_migration_timeout(self) -> None:
+        """index_tree CREATE TABLE/INDEX + advisory lock carry the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.index_tree.settings', mock_settings):
+            from app.migrations.index_tree import apply_index_tree_migration
+
+            await apply_index_tree_migration(backend=mock_backend, force=True)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_chunking_migration_ddl_uses_migration_timeout(self) -> None:
+        """chunking migration DDL loop carries the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+        mock_backend.execute_read = AsyncMock(return_value=False)  # not already applied
+
+        mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.compression.enabled = False
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.chunking.settings', mock_settings):
+            from app.migrations.chunking import apply_chunking_migration
+
+            await apply_chunking_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_semantic_migration_ddl_uses_migration_timeout(self) -> None:
+        """semantic migration (heaviest DDL: fp32 vec table + HNSW) carries the timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        async def mock_execute_read(operation, *_args, **_kwargs):
+            mock_conn = AsyncMock()
+            mock_conn.fetchrow = AsyncMock(return_value=None)
+            return await operation(mock_conn)
+
+        mock_backend.execute_read = mock_execute_read
+
+        mock_settings = MagicMock()
+        mock_settings.embedding.generation_enabled = True
+        mock_settings.embedding.dim = 768
+        mock_settings.compression.enabled = False
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations.semantic import apply_semantic_search_migration
+
+            await apply_semantic_search_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_fts_migrate_language_ddl_uses_migration_timeout(self) -> None:
+        """The PostgreSQL FTS language-change rewrite carries the migration timeout.
+
+        This heaviest-DDL path (DROP + ADD GENERATED ALWAYS AS (...) STORED tsvector
+        full-table rewrite + GIN index build) lives in the repository layer
+        (FtsRepository.migrate_language), not app/migrations, and by definition runs on
+        an already-populated table -- so it must raise the budget via begin_migration the
+        same way the initial FTS migration does, or a slow rewrite is cancelled at the
+        pool's shorter command_timeout and the language change silently never applies.
+        """
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        from app.repositories.fts_repository import FtsRepository
+
+        repo = FtsRepository(mock_backend)
+        with (
+            patch('app.settings.get_settings', return_value=mock_settings),
+            patch.object(FtsRepository, 'get_current_language', AsyncMock(return_value='english')),
+        ):
+            await repo.migrate_language('german')
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_compression_migration_ddl_uses_migration_timeout(self) -> None:
+        """compression migration DDL loop carries the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+        # Reads in order: the enable-guard's provenance read (None = no sealed
+        # row) and its fp32 data probe (False = no populated fp32 table, guard
+        # passes), then the already-applied check (False = first-time).
+        mock_backend.execute_read = AsyncMock(side_effect=[None, False, False])
+
+        mock_settings = MagicMock()
+        mock_settings.compression.enabled = True
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.compression.settings', mock_settings):
+            from app.migrations.compression import apply_compression_migration
+
+            await apply_compression_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_metadata_index_create_ddl_uses_migration_timeout(self) -> None:
+        """metadata index CREATE + advisory lock carry the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.metadata.settings', mock_settings):
+            from app.migrations.metadata import _create_metadata_index
+
+            await _create_metadata_index(backend=mock_backend, field='test_field', type_hint='string')
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_metadata_index_drop_ddl_uses_migration_timeout(self) -> None:
+        """metadata index DROP + advisory lock carry the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.metadata.settings', mock_settings):
+            from app.migrations.metadata import _drop_metadata_index
+
+            await _drop_metadata_index(backend=mock_backend, field='test_field')
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_fts_initial_migration_ddl_uses_migration_timeout(self) -> None:
+        """FTS initial PG migration (heaviest DDL: STORED tsvector rewrite + GIN) carries the timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.fts.language = 'english'
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.fts.settings', mock_settings):
+            from app.migrations.fts import _apply_initial_fts_migration
+
+            await _apply_initial_fts_migration(mock_backend, 'postgresql')
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_version_migration_ddl_uses_migration_timeout(self) -> None:
+        """version-column PG migration takes the shared lock + ADD COLUMN under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.version.settings', mock_settings):
+            from app.migrations.version import apply_version_migration
+
+            await apply_version_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_content_hash_migration_ddl_uses_migration_timeout(self) -> None:
+        """content_hash PG migration takes the shared lock + ADD COLUMN/INDEX under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.content_hash.settings', mock_settings):
+            from app.migrations.content_hash import apply_content_hash_migration
+
+            await apply_content_hash_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_summary_migration_ddl_uses_migration_timeout(self) -> None:
+        """summary-column PG migration takes the shared lock + ADD COLUMN under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.summary.settings', mock_settings):
+            from app.migrations.summary import apply_summary_migration
+
+            await apply_summary_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_jsonb_merge_patch_migration_ddl_uses_migration_timeout(self) -> None:
+        """jsonb_merge_patch PG function migration takes the shared lock + DDL under the timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+        # function_exists check + post-migration verification both read True
+        mock_backend.execute_read = AsyncMock(return_value=True)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_schema = 'public'
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations.semantic import apply_jsonb_merge_patch_migration
+
+            await apply_jsonb_merge_patch_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)
+
+    @pytest.mark.asyncio
+    async def test_function_search_path_migration_ddl_uses_migration_timeout(self) -> None:
+        """function search_path PG migration takes the shared lock + DDL under the migration timeout."""
+        executed: list[tuple[str, float | None]] = []
+        mock_backend = self._recording_pg_backend(executed)
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_schema = 'public'
+        mock_settings.storage.postgresql_migration_timeout_s = 300.0
+        mock_settings.storage.postgresql_command_timeout_s = 60.0
+
+        with patch('app.migrations.semantic.settings', mock_settings):
+            from app.migrations.semantic import apply_function_search_path_migration
+
+            await apply_function_search_path_migration(backend=mock_backend)
+
+        self._assert_ddl_carries_timeout(executed, migration_timeout=300.0)
+        self._assert_set_local_no_finally_restore(executed)

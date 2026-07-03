@@ -5,12 +5,7 @@ simulated embedding failures, verifying:
 1. No orphaned entries exist after concurrent operations
 2. Atomic transactions work correctly under concurrent access
 3. Partial failures do not corrupt database state
-
-Phase 5 of the Transactional Integrity Fix:
-- Testing and Validation
 """
-
-from __future__ import annotations
 
 import asyncio
 import sqlite3
@@ -25,6 +20,7 @@ import pytest
 import pytest_asyncio
 
 from app.backends.sqlite_backend import SQLiteBackend
+from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.schemas import load_schema
 
@@ -263,9 +259,9 @@ class TestConcurrentEmbeddingOperations:
             for i in range(entry_count):
                 conn.execute(
                     '''INSERT INTO context_entries
-                       (thread_id, source, text_content, content_type)
-                       VALUES (?, ?, ?, ?)''',
-                    (f'update-test-{i}', 'agent', f'Original {i}', 'text'),
+                       (id, thread_id, source, text_content, content_type)
+                       VALUES (?, ?, ?, ?, ?)''',
+                    (generate_id(), f'update-test-{i}', 'agent', f'Original {i}', 'text'),
                 )
             conn.commit()
 
@@ -430,9 +426,9 @@ class TestTransactionRollbackComprehensive:
             for i in range(5):
                 conn.execute(
                     '''INSERT INTO context_entries
-                       (thread_id, source, text_content, content_type)
-                       VALUES (?, ?, ?, ?)''',
-                    (f'mixed-update-{i}', 'agent', f'Original {i}', 'text'),
+                       (id, thread_id, source, text_content, content_type)
+                       VALUES (?, ?, ?, ?, ?)''',
+                    (generate_id(), f'mixed-update-{i}', 'agent', f'Original {i}', 'text'),
                 )
             conn.commit()
             cursor = conn.execute(

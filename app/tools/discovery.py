@@ -7,10 +7,12 @@ This module contains tools for discovering and analyzing stored context:
 """
 
 import logging
-from typing import Any
+from typing import Annotated
+from typing import cast
 
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
+from pydantic import Field
 
 from app.errors import format_exception_message
 from app.settings import get_settings
@@ -18,37 +20,60 @@ from app.startup import DB_PATH
 from app.startup import ensure_backend
 from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
+from app.types import StatisticsResponseDict
 from app.types import ThreadListDict
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-async def list_threads(ctx: Context | None = None) -> ThreadListDict:
-    """List all threads with entry statistics. Use for thread discovery and overview.
+async def list_threads(
+    limit: Annotated[
+        int | None,
+        Field(ge=1, le=100, description='Maximum threads to return (1-100); omit for all threads (default)'),
+    ] = None,
+    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    ctx: Context | None = None,
+) -> ThreadListDict:
+    """List threads with entry statistics. Use for thread discovery and overview.
+
+    Pagination is optional and backward-compatible: with no arguments ALL threads
+    are returned. Supply `limit` to bound the result and `offset` to skip rows.
+    Threads are ordered by most-recent activity first (last_entry DESC, then by
+    latest entry id DESC); pagination applies AFTER this ordering.
+
+    Args:
+        limit: Maximum threads to return (1-100). When omitted (None), all
+            threads are returned (no limit).
+        offset: Number of leading threads to skip for pagination (default 0).
+            Ignored when `limit` is omitted.
+        ctx: FastMCP context (injected; hidden from clients).
 
     Fields explained:
     - entry_count: Total context entries in thread
     - source_types: Number of distinct sources (1=user only or agent only, 2=both)
     - multimodal_count: Entries containing images
     - first_entry/last_entry: ISO timestamps of earliest/latest entries
-    - last_id: ID of most recent entry (useful for pagination)
+    - last_id: ID of most recent entry (a hint for keyset pagination; not yet
+      consumed as a cursor -- limit/offset is the supported pagination today)
 
     Returns:
-        ThreadListDict with threads (list of thread info dicts) and total_threads (int).
+        ThreadListDict with threads (list of thread info dicts for the requested
+        page) and total_threads (count of threads in THIS response, not the whole
+        database).
 
     Raises:
         ToolError: If listing threads fails.
     """
     try:
         if ctx:
-            await ctx.info('Listing all threads')
+            await ctx.info('Listing threads')
 
         # Get repositories
         repos = await ensure_repositories()
 
-        # Use statistics repository to get thread list
-        threads = await repos.statistics.get_thread_list()
+        # Use statistics repository to get thread list (optionally paginated).
+        threads = await repos.statistics.get_thread_list(limit=limit, offset=offset)
 
         return {
             'threads': threads,
@@ -61,20 +86,25 @@ async def list_threads(ctx: Context | None = None) -> ThreadListDict:
         raise ToolError(f'Failed to list threads: {format_exception_message(e)}') from e
 
 
-async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
+async def get_statistics(ctx: Context | None = None) -> StatisticsResponseDict:
     """Get server statistics for monitoring and debugging.
 
     Use for: capacity planning, debugging performance issues, verifying search status.
 
     Returns:
-        Dict with total_contexts (int), total_threads (int), total_images (int),
-        total_tags (int), database_size_mb (float), connection_metrics (dict),
-        semantic_search (dict with enabled, available, model, dimensions, embedding_count,
-        coverage_percentage), fts (dict with enabled, available, language, backend,
-        engine, indexed_entries, coverage_percentage), chunking (dict with enabled,
-        chunk_size, chunk_overlap, aggregation), reranking (dict with enabled,
-        available, provider, model), summary (dict with enabled, available,
-        provider, model, summary_count, coverage_percentage, min_content_length).
+        StatisticsResponseDict with total_entries (int), total_threads (int),
+        total_images (int), unique_tags (int), database_size_mb (float),
+        connection_metrics (dict), semantic_search (dict with enabled,
+        available, backend, model, dimensions, context_count, embedding_count,
+        average_chunks_per_entry, coverage_percentage),
+        fts (dict with enabled, available, language, backend, engine,
+        indexed_entries, coverage_percentage), chunking (dict with enabled,
+        chunk_size, chunk_overlap, aggregation), reranking (dict with
+        enabled, available, provider, model), summary (dict with enabled,
+        available, provider, model, summary_count, coverage_percentage,
+        min_content_length), compression (dict with enabled, available,
+        provider, bits, variant, seed, dim, max_concurrent), index_tree
+        (dict with enabled, node_count).
 
     Raises:
         ToolError: If retrieving statistics fails.
@@ -88,6 +118,20 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
 
         # Use statistics repository to get database stats
         stats = await repos.statistics.get_database_statistics(DB_PATH)
+
+        # Add embeddings storage size immediately after total database size.
+        # Gated on embedding generation OR compression (NOT semantic_search.enabled),
+        # so the field still appears in compression-on / semantic-search-off
+        # deployments. Degrades to 0.0 if the sub-block computation fails.
+        if settings.embedding.generation_enabled or settings.compression.enabled:
+            try:
+                embeddings_size_mb, embeddings_size_estimated = await repos.embeddings.get_embeddings_size()
+                stats['embeddings_size_mb'] = embeddings_size_mb
+                stats['embeddings_size_estimated'] = embeddings_size_estimated
+            except Exception as e:
+                logger.warning(f'Failed to get embeddings size: {e}')
+                stats['embeddings_size_mb'] = 0.0
+                stats['embeddings_size_estimated'] = False
 
         # Ensure backend for metrics
         manager = await ensure_backend()
@@ -212,7 +256,70 @@ async def get_statistics(ctx: Context | None = None) -> dict[str, Any]:
                 'available': False,
             }
 
-        return stats
+        # Add compression configuration block. Sources provider/bits/variant/
+        # seed/dim from the singleton compression_metadata row (DB-truth);
+        # max_concurrent from runtime settings. read_compression_metadata
+        # returns None gracefully when the table is absent (pre-bootstrap)
+        # on both backends, so the call is safe unconditionally.
+        try:
+            from app.compression.provenance import read_compression_metadata
+
+            if settings.compression.enabled:
+                db_meta = await read_compression_metadata(manager)
+                if db_meta is not None:
+                    stats['compression'] = {
+                        'enabled': True,
+                        'available': True,
+                        'provider': db_meta.provider,
+                        'bits': db_meta.bits,
+                        'variant': db_meta.variant,
+                        'seed': db_meta.seed,
+                        'dim': db_meta.dim,
+                        'max_concurrent': settings.compression.max_concurrent,
+                    }
+                else:
+                    stats['compression'] = {
+                        'enabled': True,
+                        'available': False,
+                        'message': 'Compression enabled but provenance not bootstrapped',
+                    }
+            else:
+                stats['compression'] = {
+                    'enabled': False,
+                    'available': False,
+                }
+        except Exception as e:  # pragma: no cover -- defensive fallback
+            logger.warning(f'Failed to read compression metadata for statistics: {e}')
+            stats['compression'] = {
+                'enabled': settings.compression.enabled,
+                'available': False,
+                'message': 'Failed to read compression metadata',
+            }
+
+        # Add index_tree node-summary block. Gated on the per-node summary
+        # toggle; node_count is the total stored per-node summaries (0 when the
+        # table is absent, e.g. the feature was never enabled).
+        if settings.index_tree.node_summaries_enabled:
+            try:
+                node_count = await repos.index_nodes.count_all_nodes()
+            except Exception as e:  # pragma: no cover -- defensive fallback
+                logger.warning(f'Failed to read index_tree node count for statistics: {e}')
+                node_count = 0
+            stats['index_tree'] = {
+                'enabled': True,
+                'node_count': node_count,
+            }
+        else:
+            stats['index_tree'] = {
+                'enabled': False,
+                'node_count': 0,
+            }
+
+        # stats is built incrementally as a plain dict so each sub-block
+        # assignment stays readable; StatisticsResponseDict declares the
+        # contract consumers see. The cast at the boundary applies the
+        # typed contract without forcing per-block TypedDict locals.
+        return cast(StatisticsResponseDict, stats)
     except ToolError:
         raise  # Re-raise ToolError as-is for FastMCP to handle
     except Exception as e:

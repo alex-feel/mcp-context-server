@@ -31,6 +31,9 @@ from app.tools.context import update_context
 from app.tools.descriptions import generate_fts_description
 from app.tools.discovery import get_statistics
 from app.tools.discovery import list_threads
+from app.tools.navigation import grep_context
+from app.tools.navigation import navigate_context
+from app.tools.navigation import read_context_range
 from app.tools.search import fts_search_context
 from app.tools.search import hybrid_search_context
 from app.tools.search import search_context
@@ -83,6 +86,18 @@ TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
     },
     'hybrid_search_context': {
         'title': 'Hybrid Search Context',
+        'readOnlyHint': True,
+    },
+    'grep_context': {
+        'title': 'Grep Context',
+        'readOnlyHint': True,
+    },
+    'navigate_context': {
+        'title': 'Navigate Context',
+        'readOnlyHint': True,
+    },
+    'read_context_range': {
+        'title': 'Read Context Range',
         'readOnlyHint': True,
     },
     # Update tools (destructive, not idempotent)
@@ -143,7 +158,8 @@ def register_tool(
     Returns:
         True if tool was registered, False if disabled
     """
-    tool_name = name or func.__name__
+    func_name: str = getattr(func, '__name__', '<callable>')
+    tool_name: str = name or func_name
 
     if is_tool_disabled(tool_name):
         logger.info(f'{tool_name} not registered (in DISABLED_TOOLS)')
@@ -152,11 +168,15 @@ def register_tool(
     # Get annotations from centralized mapping
     annotations = TOOL_ANNOTATIONS.get(tool_name, {})
 
-    # Pass description if provided (overrides docstring in FastMCP)
+    # Pass description if provided (overrides docstring in FastMCP).
+    # Forward name=tool_name so an explicit name argument actually renames the
+    # registration (FastMCP otherwise derives the name from func.__name__); this
+    # keeps the DISABLED_TOOLS check, the TOOL_ANNOTATIONS lookup, and the served
+    # tool name in agreement for a caller that passes name != func.__name__.
     if description:
-        mcp_instance.tool(description=description, annotations=annotations)(func)
+        mcp_instance.tool(name=tool_name, description=description, annotations=annotations)(func)
     else:
-        mcp_instance.tool(annotations=annotations)(func)
+        mcp_instance.tool(name=tool_name, annotations=annotations)(func)
 
     logger.info(f'{tool_name} registered')
     return True
@@ -179,6 +199,10 @@ __all__ = [
     'hybrid_search_context',
     'search_context',
     'semantic_search_context',
+    # Navigation tools (locate / navigate / extract)
+    'grep_context',
+    'navigate_context',
+    'read_context_range',
     # Discovery tools
     'get_statistics',
     'list_threads',

@@ -55,24 +55,55 @@ class DependencyError(Exception):
     EXIT_CODE = 69  # BSD sysexits.h EX_UNAVAILABLE
 
 
+class ControlFlowError(Exception):
+    """Base for internal control-flow signals that are NOT database faults.
+
+    A storage backend's transaction wrapper records a circuit-breaker failure on
+    any exception escaping the transaction body. But some exceptions are NORMAL
+    control flow -- an optimistic-concurrency conflict or a post-deduplication
+    embedding reconciliation -- raised intentionally to roll back and retry, not
+    because the database is unhealthy. ``begin_transaction`` catches subclasses of
+    this marker, rolls the transaction back, and re-raises WITHOUT tripping the
+    circuit breaker, so sustained-but-normal write contention cannot open the
+    breaker and start rejecting healthy writes. It is deliberately neither a
+    ``ToolError`` (so an ``except ToolError`` fast-path does not swallow it) nor a
+    connection error (so it is not treated as a transient retry).
+    """
+
+
 def is_client_error(exc: Exception) -> bool:
     """Detect HTTP 4xx client errors from API provider exceptions.
 
-    Checks for status_code attribute (openai.APIStatusError, anthropic.APIStatusError)
-    in the exception or its cause chain. Client errors (400-499) indicate permanent
-    configuration problems that will not resolve with retries.
+    Checks for a 4xx status code in the exception or its __cause__/__context__
+    chain, resolved two ways per candidate: a top-level ``status_code`` attribute
+    (openai/anthropic ``APIStatusError``, ``ollama.ResponseError``) OR a nested
+    ``response.status_code`` (``requests.exceptions.HTTPError`` /
+    ``huggingface_hub.HfHubHTTPError`` / ``httpx.HTTPStatusError``, which expose
+    the status only on the response object). Client errors (400-499, except the
+    transient 408 and 429) indicate permanent configuration problems that will not
+    resolve with retries.
 
     Args:
         exc: The exception to inspect.
 
     Returns:
-        True if the exception or its cause has an HTTP 4xx status_code.
+        True if the exception or its cause/context has an HTTP 4xx status code.
     """
     for candidate in (exc, exc.__cause__, exc.__context__):
         if candidate is None:
             continue
+        # Direct status_code: openai/anthropic APIStatusError, ollama.ResponseError.
         status_code = getattr(candidate, 'status_code', None)
-        if isinstance(status_code, int) and 400 <= status_code < 500:
+        if not isinstance(status_code, int):
+            # Nested response object: requests.HTTPError / huggingface_hub.HfHubHTTPError
+            # / httpx.HTTPStatusError expose the status only at .response.status_code.
+            status_code = getattr(getattr(candidate, 'response', None), 'status_code', None)
+        # 408 (Request Timeout) and 429 (Too Many Requests) are transient and recoverable,
+        # not permanent configuration problems: exclude them so the caller classifies them
+        # as a retryable DependencyError (exit 69) rather than a never-retry
+        # ConfigurationError (exit 78), consistent with the embedding retry layer (which
+        # treats RateLimitError / 429 as retryable).
+        if isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in (408, 429):
             return True
     return False
 
@@ -114,14 +145,24 @@ def classify_provider_error(reason: str) -> type[ConfigurationError] | type[Depe
         'not found',  # Catches "model 'x' not found", "API not found", etc.
         'does not exist',
         'model not available',  # Explicit model availability
-        # HTTP 404 errors indicate resource doesn't exist (won't auto-appear)
-        '404',
+        # HTTP 404 (resource missing) / HTTP 400 (bad request) are configuration
+        # problems that will not auto-resolve. Anchor to HTTP-status phrasings: a BARE
+        # '404'/'400' substring also matches unrelated TRANSIENT text (a retry "attempt
+        # 400", a port, a dim like "1404", a model name), which would misclassify a
+        # RETRYABLE failure as a never-retry ConfigurationError (exit 78).
         'status code: 404',
+        'status code: 400',
+        'error code: 404',
+        'error code: 400',
+        'http 404',
+        'http 400',
+        '404 not found',
+        '404 page not found',
+        '400 bad request',
         # HTTP 400 Bad Request -- invalid API parameters (e.g., unsupported reasoning_effort value)
         'unsupported value',
         'unsupported_value',
         'invalid_request_error',
-        '400',
         'bad request',
     ]
 

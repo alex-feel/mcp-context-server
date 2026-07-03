@@ -4,7 +4,6 @@ This module provides a production-grade PostgreSQL backend implementing the Stor
 protocol with asyncpg connection pooling, circuit breaker pattern, retry logic, and health monitoring.
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -20,12 +19,16 @@ from enum import Enum
 from typing import Any
 from typing import TypeVar
 from typing import cast
+from typing import overload
 from urllib.parse import quote
+from urllib.parse import urlsplit
 
 import asyncpg
 
 from app.errors import ConfigurationError
+from app.errors import ControlFlowError
 from app.errors import DependencyError
+from app.settings import AppSettings
 from app.settings import get_settings
 
 # Get settings (used for connection configuration)
@@ -35,6 +38,82 @@ logger = logging.getLogger(__name__)
 
 # Type definitions
 T = TypeVar('T')
+
+
+def quote_pg_identifier(name: str) -> str:
+    """Return ``name`` as a PostgreSQL quoted identifier, doubling embedded quotes.
+
+    The single source of truth for quoting a configured PostgreSQL identifier
+    (currently the schema name) so the connection ``search_path`` and any
+    schema-qualified DDL (e.g. the migration CLI's ``CREATE SCHEMA``) escape it
+    IDENTICALLY and cannot drift: a name containing a double quote yields a valid
+    quoted identifier rather than a malformed / identifier-injecting string.
+
+    Args:
+        name: The raw identifier (e.g. ``POSTGRESQL_SCHEMA``).
+
+    Returns:
+        The identifier wrapped in double quotes with embedded quotes doubled.
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dict[str, Any]:
+    """Build the asyncpg connection kwargs shared by the pool and the migration CLI.
+
+    Returns a dict suitable for spreading into ``asyncpg.connect(dsn, **kwargs)``
+    or merging into ``asyncpg.create_pool(dsn, **kwargs)``. This is the single
+    source of truth for the two connection parameters that BOTH the long-lived
+    server pool (``PostgreSQLBackend.initialize``) and the short-lived migration
+    CLI (``app.cli.migrate``) must apply identically:
+
+    - ``server_settings['search_path']``: always populated as
+      ``"<POSTGRESQL_SCHEMA>", public`` (the schema double-quoted so mixed-case
+      and reserved identifiers are safe) so bare table names resolve to the
+      configured schema. With the default ``POSTGRESQL_SCHEMA=public`` this is
+      the benign no-op ``"public", public``.
+    - ``server_settings`` TCP keepalive GUCs: added only when their setting is
+      > 0. These are SECONDARY (silently ignored by Supavisor/PgBouncer); the
+      pool also installs the PRIMARY client-side ``setsockopt`` keepalive via its
+      ``init`` callback, which short-lived CLI connections do not need.
+    - ``statement_cache_size``: ``POSTGRESQL_STATEMENT_CACHE_SIZE`` (default 100;
+      set 0 to disable prepared statements for transaction-mode poolers such as
+      PgBouncer transaction mode, Pgpool-II, AWS RDS Proxy, or the Supabase
+      Transaction Pooler).
+
+    SSL is intentionally NOT included: asyncpg parses ``sslmode`` natively from
+    the DSN query string, so SSL is carried by the connection URL itself.
+
+    Args:
+        app_settings: Resolved application settings. Defaults to
+            ``get_settings()`` so callers in a different process (the CLI)
+            pick up that process's environment.
+
+    Returns:
+        Mapping with ``server_settings`` and ``statement_cache_size`` keys.
+    """
+    resolved = app_settings if app_settings is not None else get_settings()
+    storage = resolved.storage
+    # Quote the schema via the shared quote_pg_identifier helper so the connection
+    # search_path and any schema-qualified DDL (the migration CLI's CREATE SCHEMA)
+    # escape it identically and cannot drift -- a schema name containing a double
+    # quote yields a valid quoted identifier rather than a malformed search_path.
+    server_settings: dict[str, str] = {
+        'search_path': f'{quote_pg_identifier(storage.postgresql_schema)}, public',
+    }
+    tcp_idle_guc = storage.postgresql_tcp_keepalives_idle_s
+    tcp_interval_guc = storage.postgresql_tcp_keepalives_interval_s
+    tcp_count_guc = storage.postgresql_tcp_keepalives_count
+    if tcp_idle_guc > 0:
+        server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
+    if tcp_interval_guc > 0:
+        server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
+    if tcp_count_guc > 0:
+        server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
+    return {
+        'server_settings': server_settings,
+        'statement_cache_size': storage.postgresql_statement_cache_size,
+    }
 
 
 class ConnectionState(Enum):
@@ -85,10 +164,10 @@ class PostgreSQLTransactionContext:
         _connection: The asyncpg connection proxy for this transaction
     """
 
-    _connection: asyncpg.pool.PoolConnectionProxy[asyncpg.Record]
+    _connection: 'asyncpg.pool.PoolConnectionProxy[asyncpg.Record]'
 
     @property
-    def connection(self) -> asyncpg.pool.PoolConnectionProxy[asyncpg.Record]:
+    def connection(self) -> 'asyncpg.pool.PoolConnectionProxy[asyncpg.Record]':
         """Get the asyncpg connection proxy."""
         return self._connection
 
@@ -169,6 +248,27 @@ class CircuitBreaker:
                     self.half_open_calls = 0
             return self.state
 
+    def peek_state(self) -> ConnectionState:
+        """Recovery-aware circuit state for synchronous, advisory reads.
+
+        Mirrors the FAILED -> DEGRADED recovery transition that get_state() and
+        is_open() apply once recovery_timeout elapses, WITHOUT acquiring the async
+        lock or mutating state (a single-attribute read is safe for an advisory
+        metric). Used by get_metrics() so the reported state matches live recovery
+        behavior and stays consistent with the SQLite backend's reported state.
+
+        Returns:
+            DEGRADED when a FAILED breaker's recovery window has elapsed, else the
+            current state.
+        """
+        if (
+            self.state == ConnectionState.FAILED
+            and self.last_failure_time
+            and (time.time() - self.last_failure_time) > self.recovery_timeout
+        ):
+            return ConnectionState.DEGRADED
+        return self.state
+
 
 class PostgreSQLBackend:
     """Production-grade PostgreSQL storage backend implementing the StorageBackend protocol.
@@ -186,6 +286,10 @@ class PostgreSQLBackend:
 
     # Pgpool-II detection result (set during initialize() by _detect_pgpool_ii())
     _pgpool_version: str | None
+    # Session-mode pooler detection result (set during initialize() by
+    # _detect_session_mode_pooler()); True when a Supabase Session Pooler
+    # endpoint (host *.pooler.supabase.com on port 5432) is in use.
+    _session_mode_pooler: bool
 
     def __init__(
         self,
@@ -342,9 +446,10 @@ class PostgreSQLBackend:
         logger.info(f'Initializing PostgreSQL backend: {self.backend_type}')
 
         try:
-            # Pre-create pgvector extension if semantic search enabled
-            # This prevents "unknown type: public.vector" warnings during pool initialization
-            if settings.semantic_search.enabled:
+            # Pre-create pgvector extension when embedding generation is enabled (the
+            # vector storage exists independently of the semantic search tool). This
+            # prevents "unknown type: public.vector" warnings during pool initialization.
+            if settings.embedding.generation_enabled:
                 await self._ensure_pgvector_extension()
 
             # Define connection initialization function for TCP keepalive and pgvector support
@@ -391,49 +496,81 @@ class PostgreSQLBackend:
                         logger.warning('Failed to configure TCP keepalive: %s', e)
 
                 # === pgvector Type Registration ===
-                try:
-                    from pgvector.asyncpg import register_vector
+                # Only when embedding generation is enabled: vector storage is provisioned
+                # from ENABLE_EMBEDDING_GENERATION (no vec tables exist when it is off), so
+                # the vector type codec is never needed and a missing pgvector extension must
+                # NOT fail connection setup -- mirroring the gated _ensure_pgvector_extension
+                # call in initialize(). (The SQLite _load_sqlite_vec_extension load is NOT an
+                # analogue: it is unconditional -- see its docstring -- because the vec0 module
+                # must stay reachable for durable stale-embedding cleanup when generation is off.)
+                if settings.embedding.generation_enabled:
+                    try:
+                        from pgvector.asyncpg import register_vector
 
-                    # AUTO-DETECT: Query where pgvector extension is installed
-                    # Works for ALL PostgreSQL variants (local, Supabase, AWS RDS, etc.)
-                    result = await conn.fetchrow('''
-                        SELECT n.nspname
-                        FROM pg_extension e
-                        JOIN pg_namespace n ON e.extnamespace = n.oid
-                        WHERE e.extname = 'vector'
-                    ''')
+                        # AUTO-DETECT: Query where pgvector extension is installed
+                        # Works for ALL PostgreSQL variants (local, Supabase, AWS RDS, etc.)
+                        result = await conn.fetchrow('''
+                            SELECT n.nspname
+                            FROM pg_extension e
+                            JOIN pg_namespace n ON e.extnamespace = n.oid
+                            WHERE e.extname = 'vector'
+                        ''')
 
-                    if not result:
-                        # Extension not installed - fail fast with clear instructions
-                        raise ConfigurationError(
-                            'pgvector extension is not installed. '
-                            'Enable it via: CREATE EXTENSION vector; (PostgreSQL) '
-                            'or Dashboard → Extensions → vector (Supabase)',
-                        )
+                        if not result:
+                            # Extension not installed - fail fast with clear instructions
+                            raise ConfigurationError(
+                                'pgvector extension is not installed. '
+                                'Enable it via: CREATE EXTENSION vector; (PostgreSQL) '
+                                'or Dashboard → Extensions → vector (Supabase)',
+                            )
 
-                    schema = result['nspname']
+                        schema = result['nspname']
 
-                    # Register vector types using detected schema
-                    # Note: Type stubs for register_vector are incomplete (missing schema parameter)
-                    # Actual function signature: async def register_vector(conn, schema='public')
-                    # Using cast to work around incomplete type stubs
-                    register_func = cast(Callable[..., Awaitable[None]], register_vector)
-                    await register_func(conn, schema)
-                    logger.debug(f'Registered pgvector types from schema: {schema}')
+                        # Register vector types using detected schema
+                        # Note: Type stubs for register_vector are incomplete (missing schema parameter)
+                        # Actual function signature: async def register_vector(conn, schema='public')
+                        # Using cast to work around incomplete type stubs
+                        register_func = cast(Callable[..., Awaitable[None]], register_vector)
+                        await register_func(conn, schema)
+                        logger.debug(f'Registered pgvector types from schema: {schema}')
 
-                except ImportError:
-                    # ImportError is OK - semantic search is optional
-                    logger.debug('pgvector not installed, skipping vector type registration')
+                    except ImportError:
+                        # ImportError is OK - semantic search is optional
+                        logger.debug('pgvector not installed, skipping vector type registration')
 
-                except ConfigurationError:
-                    # Re-raise ConfigurationError as-is (from "extension not installed" check above)
-                    raise
+                    except ConfigurationError:
+                        # Re-raise ConfigurationError as-is (from "extension not installed" check above)
+                        raise
 
-                except Exception as e:
-                    # STRICT: All other errors are FATAL
-                    logger.error(f'Failed to register pgvector type codec: {e}')
-                    logger.error('Ensure pgvector extension is enabled and accessible')
-                    raise ConfigurationError(f'pgvector codec registration failed: {e}') from e
+                    except Exception as e:
+                        # STRICT: All other errors are FATAL
+                        logger.error(f'Failed to register pgvector type codec: {e}')
+                        logger.error('Ensure pgvector extension is enabled and accessible')
+                        raise ConfigurationError(f'pgvector codec registration failed: {e}') from e
+
+                # === UUID Type Codec Registration ===
+                # asyncpg's default codec maps the PostgreSQL ``uuid`` type to
+                # ``asyncpg.pgproto.pgproto.UUID``, a fast subclass that
+                # ``isinstance``-tests as ``uuid.UUID`` but is not a literal
+                # ``str``. The repository layer exchanges identifiers as
+                # canonical 32-char lowercase hex strings, so this codec
+                # round-trips both directions through ``str``.
+                #
+                # Encoder: pass the string through verbatim. PostgreSQL's
+                # native UUID input parser accepts both 32-char hex and
+                # 36-char hyphenated forms (case-insensitive).
+                # Decoder: normalize the 36-char hyphenated text returned by
+                # PostgreSQL into the 32-char lowercase hex canonical form.
+                from app.ids import normalize_id
+
+                await conn.set_type_codec(
+                    'uuid',
+                    schema='pg_catalog',
+                    encoder=lambda v: v,
+                    decoder=normalize_id,
+                    format='text',
+                )
+                logger.debug('Registered uuid->str type codec')
 
             async def _reset_connection(conn: asyncpg.Connection) -> None:
                 """Validate and reset connection before returning to pool.
@@ -485,10 +622,10 @@ class PostgreSQLBackend:
                 'max_size': settings.storage.postgresql_pool_max,
                 'command_timeout': settings.storage.postgresql_command_timeout_s,
                 'timeout': settings.storage.postgresql_pool_timeout_s,
-                # Prepared statement cache configuration
-                # Set POSTGRESQL_STATEMENT_CACHE_SIZE=0 for external pooler compatibility
-                # (PgBouncer transaction mode, Pgpool-II, AWS RDS Proxy, etc.)
-                'statement_cache_size': settings.storage.postgresql_statement_cache_size,
+                # statement_cache_size and server_settings (search_path + TCP
+                # keepalive GUCs) are merged below via
+                # build_asyncpg_connect_kwargs() so the pool and the migration
+                # CLI share one source of truth.
                 'max_cached_statement_lifetime': settings.storage.postgresql_max_cached_statement_lifetime_s,
                 'max_cacheable_statement_size': settings.storage.postgresql_max_cacheable_statement_size,
                 # Connection lifecycle callbacks
@@ -497,22 +634,22 @@ class PostgreSQLBackend:
                 'reset': _reset_connection,  # Health check before pool return
             }
 
-            # Add server-side TCP keepalive via GUC parameters (SECONDARY mechanism)
-            # These are effective for direct PostgreSQL connections but silently ignored
-            # by Supavisor/PgBouncer. The PRIMARY mechanism is client-side setsockopt
-            # configured in _init_connection above.
-            tcp_idle_guc = settings.storage.postgresql_tcp_keepalives_idle_s
-            tcp_interval_guc = settings.storage.postgresql_tcp_keepalives_interval_s
-            tcp_count_guc = settings.storage.postgresql_tcp_keepalives_count
-            if tcp_idle_guc > 0 or tcp_interval_guc > 0 or tcp_count_guc > 0:
-                server_settings: dict[str, str] = {}
-                if tcp_idle_guc > 0:
-                    server_settings['tcp_keepalives_idle'] = str(tcp_idle_guc)
-                if tcp_interval_guc > 0:
-                    server_settings['tcp_keepalives_interval'] = str(tcp_interval_guc)
-                if tcp_count_guc > 0:
-                    server_settings['tcp_keepalives_count'] = str(tcp_count_guc)
-                pool_kwargs['server_settings'] = server_settings
+            # Merge the shared connection kwargs (statement_cache_size +
+            # server_settings) sent in the PostgreSQL startup packet so
+            # session-level parameters are set in a single round-trip and
+            # persist for the connection's lifetime (asyncpg-recommended over
+            # per-connection ``SET`` callbacks).
+            #
+            # build_asyncpg_connect_kwargs() is the single source of truth shared
+            # with the migration CLI: it always populates search_path
+            # (``"POSTGRESQL_SCHEMA", public``, a benign no-op for the default
+            # ``public``; double-quoted for mixed-case / reserved identifiers),
+            # adds the SECONDARY TCP keepalive GUCs when > 0 (the PRIMARY
+            # mechanism is the client-side setsockopt in _init_connection above,
+            # since Supavisor/PgBouncer ignore these GUCs), and forwards
+            # statement_cache_size (0 disables prepared statements for
+            # transaction-mode poolers).
+            pool_kwargs.update(build_asyncpg_connect_kwargs(settings))
 
             # Add connection recycling settings if configured (0 means disabled)
             if settings.storage.postgresql_max_inactive_lifetime_s > 0:
@@ -530,6 +667,9 @@ class PostgreSQLBackend:
 
             # Detect Pgpool-II and log result
             await self._detect_pgpool_ii()
+
+            # Detect Supabase Session Pooler endpoint and warn on oversized pool
+            self._detect_session_mode_pooler()
 
             logger.info('PostgreSQL backend initialized successfully')
 
@@ -607,6 +747,69 @@ class PostgreSQLBackend:
             logger.warning(f'Pgpool-II detection check failed: {e}')
             self._pgpool_version = None
 
+    def _detect_session_mode_pooler(self) -> None:
+        """Detect a Supabase Session Pooler endpoint and warn if pool too large.
+
+        Inspects the connection string host/port (the authoritative endpoint the
+        pool actually dials, including the POSTGRESQL_CONNECTION_STRING form).
+        When a Supabase Session Pooler (host contains ``pooler.supabase.com`` on
+        port 5432) is detected AND POSTGRESQL_POOL_MAX exceeds the conservative
+        default per-session client cap, logs a targeted WARNING naming the
+        symptom (MaxClientsInSessionMode) and the fix.
+
+        Defense-in-depth only: does NOT modify pool size. Non-fatal -- any
+        parsing failure is logged and treated as "not a session pooler".
+
+        Mirrors _detect_pgpool_ii() in level, message shape, and resilience.
+        """
+        from app.startup.validation import is_supabase_session_pooler
+
+        try:
+            parsed = urlsplit(self.connection_string)
+            host = (parsed.hostname or '').lower()
+            port = parsed.port if parsed.port is not None else 5432
+            if not host and '://' not in self.connection_string:
+                # libpq key-value DSN form ("host=... port=..."), which asyncpg
+                # also accepts: urlsplit yields no hostname, so parse the
+                # whitespace-separated key=value tokens directly so the advisory
+                # fires for this spelling too.
+                kv = dict(
+                    token.split('=', 1)
+                    for token in self.connection_string.split()
+                    if '=' in token
+                )
+                host = kv.get('host', '').lower()
+                port = int(kv['port']) if kv.get('port') else 5432
+        except Exception as e:
+            # Malformed connection string is non-fatal for this advisory;
+            # the pool creation above already succeeded with this string.
+            logger.warning(f'Session-mode pooler detection check failed: {e}')
+            self._session_mode_pooler = False
+            return
+
+        if not is_supabase_session_pooler(host, port):
+            self._session_mode_pooler = False
+            return
+
+        self._session_mode_pooler = True
+
+        pool_max = settings.storage.postgresql_pool_max
+        cap = settings.storage.postgresql_session_pooler_max_clients
+        if pool_max > cap:
+            logger.warning(
+                f'Supabase Session Pooler detected ({host}:{port}) with '
+                f'POSTGRESQL_POOL_MAX={pool_max}, which exceeds '
+                f'POSTGRESQL_SESSION_POOLER_MAX_CLIENTS={cap} (the session-mode '
+                f'per-session client cap; default 15 on Supabase Free/Pro tiers). '
+                f'This can intermittently fail with "MaxClientsInSessionMode: '
+                f'max clients reached - in Session mode max clients are limited '
+                f'to pool_size". Lower POSTGRESQL_POOL_MAX to fit your pooler '
+                f'capacity (or raise POSTGRESQL_SESSION_POOLER_MAX_CLIENTS if your '
+                f'tier allows more), or use the Transaction-mode pooler (port 6543) '
+                f'or a Direct Connection. See docs/database-backends.md '
+                f'"Session Pooler Connection Limits".',
+            )
+
     async def shutdown(self) -> None:
         """Gracefully shut down the PostgreSQL backend."""
         logger.info('Shutting down PostgreSQL backend')
@@ -630,12 +833,18 @@ class PostgreSQLBackend:
         self,
         readonly: bool = False,
         allow_write: bool = False,
+        record_breaker: bool = True,
     ) -> AsyncGenerator[Any, None]:
         """Get a database connection from the pool.
 
         Args:
             readonly: Advisory flag (PostgreSQL handles via transactions)
             allow_write: Advisory flag (PostgreSQL handles via transactions)
+            record_breaker: When True (default), record a circuit-breaker success
+                on a clean exit and a failure on an exception. execute_write sets
+                this False so its retry loop records at most ONE breaker outcome
+                per logical write (matching the SQLite backend) instead of one per
+                retry attempt.
 
         Yields:
             asyncpg.Connection from the pool
@@ -663,9 +872,11 @@ class PostgreSQLBackend:
         async with self._pool.acquire() as conn:
             try:
                 yield conn
-                await self.circuit_breaker.record_success()
+                if record_breaker:
+                    await self.circuit_breaker.record_success()
             except Exception:
-                await self.circuit_breaker.record_failure()
+                if record_breaker:
+                    await self.circuit_breaker.record_failure()
                 raise
 
     async def _validate_connection_state(self, conn: asyncpg.Connection) -> bool:
@@ -686,9 +897,29 @@ class PostgreSQLBackend:
             await conn.fetchval('SELECT 1')
             return True
         except Exception as e:
+            # Do not record a breaker failure here: execute_write (the only caller)
+            # records exactly one breaker outcome per logical write on its final
+            # result, so per-attempt accounting would over-count under retries.
             logger.warning(f'Connection validation failed: {e}')
-            await self.circuit_breaker.record_failure()
             return False
+
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        validate_connection: bool = False,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        validate_connection: bool = False,
+        **kwargs: Any,
+    ) -> T: ...
 
     async def execute_write(
         self,
@@ -721,11 +952,20 @@ class PostgreSQLBackend:
         if self._shutdown:
             raise RuntimeError('PostgreSQL backend is shutting down')
 
+        # Reject up-front when the breaker is already open (mirrors begin_transaction).
+        # Doing this BEFORE the retry loop means a rejection is never seen by the loop's
+        # generic handler, so it cannot record a spurious breaker failure that would
+        # reset last_failure_time and perpetuate the open state (self-lockout).
+        if await self.circuit_breaker.is_open():
+            raise RuntimeError(
+                f'Database circuit breaker is open after {self.circuit_breaker.failures} failures',
+            )
+
         last_error: Exception | None = None
 
         for attempt in range(self.retry_config.max_retries):
             try:
-                async with self.get_connection(readonly=False) as conn:
+                async with self.get_connection(readonly=False, record_breaker=False) as conn:
                     # Validate connection state before critical operations
                     if validate_connection and not await self._validate_connection_state(conn):
                         raise asyncpg.exceptions.ConnectionDoesNotExistError(
@@ -737,7 +977,11 @@ class PostgreSQLBackend:
                         async_operation = cast(Callable[..., Awaitable[T]], operation)
                         result = await async_operation(conn, *args, **kwargs)
                         self.metrics.total_queries += 1
-                        return result
+                    # Record exactly ONE breaker success per logical write, AFTER the
+                    # transaction commits (record_breaker=False above suppresses the
+                    # per-attempt accounting so a retried write is not counted N times).
+                    await self.circuit_breaker.record_success()
+                    return result
 
             except asyncpg.exceptions.SerializationError as e:
                 # Transient error - retry with backoff
@@ -790,18 +1034,79 @@ class PostgreSQLBackend:
                 )
                 await asyncio.sleep(delay)
 
+            except asyncpg.exceptions.QueryCanceledError as e:
+                # Statement / lock-wait timeout (SQLSTATE 57014): PostgreSQL
+                # cancelled the statement after it exceeded statement_timeout
+                # (~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S, set in _setup_connection).
+                # Retry on a fresh connection with bounded backoff. This helps
+                # only a TRANSIENT lock-WAIT that has since cleared; a write
+                # fundamentally slower than the ceiling (e.g. fp32 in-transaction
+                # HNSW maintenance with ENABLE_EMBEDDING_COMPRESSION=false) needs
+                # a higher POSTGRESQL_COMMAND_TIMEOUT_S or compression left ON.
+                # Safe to retry: every write operation reaching execute_write is
+                # idempotent (deduplicating store / keyed update) and all
+                # generation completed outside the transaction.
+                last_error = e
+                delay = min(
+                    self.retry_config.base_delay * (self.retry_config.backoff_factor**attempt),
+                    self.retry_config.max_delay,
+                )
+
+                if self.retry_config.jitter:
+                    delay += random.uniform(0, delay * 0.3)
+
+                logger.warning(
+                    f'Statement timeout on write, retrying in {delay:.2f}s '
+                    f'(attempt {attempt + 1}/{self.retry_config.max_retries}): {e}',
+                )
+                await asyncio.sleep(delay)
+
             except Exception as e:
-                # Non-retryable error
+                # A circuit-breaker rejection raised by get_connection mid-loop (e.g.
+                # a concurrent writer opened the breaker after the up-front check) is
+                # NOT a write attempt. Recording a breaker failure for it would reset
+                # last_failure_time and perpetuate the open state (self-lockout), so
+                # re-raise that control-flow RuntimeError WITHOUT recording -- is_open()
+                # matches get_connection's own recovery-aware gate.
+                if isinstance(e, RuntimeError) and await self.circuit_breaker.is_open():
+                    raise
+                # Control-flow signals (optimistic-concurrency VersionConflictError,
+                # post-dedup EmbeddingsReconcileRequiredError) are normal write contention,
+                # NOT a database fault: roll back and propagate WITHOUT tripping the breaker,
+                # mirroring begin_transaction's exemption (else routine contention could open
+                # the breaker and lock out writes).
+                if isinstance(e, ControlFlowError):
+                    raise
+                # Non-retryable write failure -- record the single breaker failure for
+                # this logical write (get_connection's per-attempt accounting is off).
                 self.metrics.failed_queries += 1
                 self.metrics.last_error = str(e)
                 self.metrics.last_error_time = time.time()
+                await self.circuit_breaker.record_failure()
                 raise
 
-        # Max retries exceeded
+        # Max retries exceeded -- record exactly one breaker failure for the write.
         self.metrics.failed_queries += 1
         self.metrics.last_error = str(last_error)
         self.metrics.last_error_time = time.time()
+        await self.circuit_breaker.record_failure()
         raise last_error or Exception('Max retries exceeded for write operation')
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
 
     async def execute_read(
         self,
@@ -881,20 +1186,36 @@ class PostgreSQLBackend:
 
         assert self._pool is not None, 'Backend not initialized, call initialize() first'
 
-        # Acquire connection from pool and begin transaction
-        async with self._pool.acquire() as conn, conn.transaction():
+        # Acquire the connection, then begin the transaction in an INNER context so we
+        # observe the COMMIT result. asyncpg issues the COMMIT when the
+        # `conn.transaction()` context EXITS; recording success before that exit (the old
+        # `async with ..., conn.transaction():` form) credited a circuit-breaker SUCCESS
+        # to a transaction whose COMMIT could still fail -- and that COMMIT failure,
+        # raised on the context exit, landed OUTSIDE the try and was never recorded as a
+        # failure (it could even leave the breaker mislearning health). Record success
+        # only AFTER the inner context exits cleanly (COMMIT succeeded); a COMMIT failure
+        # now flows through the same except as a body failure.
+        async with self._pool.acquire() as conn:
             # Create transaction context
             txn_context = PostgreSQLTransactionContext(_connection=conn)
 
             try:
-                yield txn_context
-                # Transaction commits automatically on successful exit
+                async with conn.transaction():
+                    yield txn_context
+                    # Body succeeded; asyncpg COMMITs on exiting this inner context.
+                # Reaching here means the COMMIT itself also succeeded.
                 await self.circuit_breaker.record_success()
                 logger.debug('Transaction committed successfully')
 
             except Exception as e:
-                # Transaction rolls back automatically on exception
-                logger.warning(f'Transaction failed, rolling back: {e}')
+                # Rolled back automatically on a body error, OR the COMMIT failed on exit.
+                if isinstance(e, ControlFlowError):
+                    # Normal control flow (optimistic-concurrency conflict / post-dedup
+                    # embedding reconciliation), NOT a database fault: rolled back
+                    # automatically, but do NOT record a circuit-breaker failure, so
+                    # normal write contention cannot open the breaker.
+                    raise
+                logger.warning(f'Transaction failed or commit failed, rolling back: {e}')
                 await self.circuit_breaker.record_failure()
                 raise
 
@@ -921,15 +1242,20 @@ class PostgreSQLBackend:
                 'pool_max_size': self._pool.get_max_size(),
             })
 
-        # Add circuit breaker state
-        # Note: get_state() is async but we need sync here
-        # We'll use the last known state from metrics
-        pool_metrics['circuit_state'] = self.metrics.circuit_state.value
+        # Add circuit breaker state. peek_state() is a sync, recovery-aware read
+        # (applies the FAILED->DEGRADED transition once recovery_timeout elapses,
+        # like get_state/is_open) so the reported state matches live behavior and
+        # the SQLite backend; self.metrics.circuit_state is never updated here.
+        pool_metrics['circuit_state'] = self.circuit_breaker.peek_state().value
         pool_metrics['consecutive_failures'] = self.circuit_breaker.failures
 
         # Add Pgpool-II detection info (only if detection has run)
         if hasattr(self, '_pgpool_version'):
             pool_metrics['pgpool_detected'] = self._pgpool_version is not None
             pool_metrics['pgpool_version'] = self._pgpool_version
+
+        # Add session-mode pooler detection info (only if detection has run)
+        if hasattr(self, '_session_mode_pooler'):
+            pool_metrics['session_mode_pooler_detected'] = self._session_mode_pooler
 
         return pool_metrics

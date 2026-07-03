@@ -9,8 +9,6 @@ Migration creates:
 - Both: chunk_count column in embedding_metadata
 """
 
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -19,22 +17,29 @@ from unittest.mock import patch
 
 import pytest
 
+from app.ids import generate_id
+
 
 class TestApplyChunkingMigration:
     """Tests for apply_chunking_migration()."""
 
     @pytest.mark.asyncio
-    async def test_migration_skipped_when_semantic_search_disabled(self) -> None:
-        """Verify no-op when ENABLE_SEMANTIC_SEARCH=false."""
+    async def test_migration_skipped_when_embedding_generation_disabled(self) -> None:
+        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false.
+
+        The chunking migration provisions the 1:N embedding-storage layer from
+        embedding GENERATION (settings.embedding.generation_enabled), not from the
+        semantic-search TOOL toggle. It skips only when embedding generation is off.
+        """
         from app.migrations import apply_chunking_migration
 
         # Create mock backend
         mock_backend = MagicMock()
         mock_backend.backend_type = 'sqlite'
 
-        # Mock settings with semantic search disabled
+        # Mock settings with embedding generation disabled
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = False
+        mock_settings.embedding.generation_enabled = False
 
         with patch('app.migrations.chunking.settings', mock_settings):
             # Call should return early without doing anything
@@ -375,23 +380,31 @@ class TestApplyChunkingMigration:
                 await backend.shutdown()
 
     @pytest.mark.asyncio
-    async def test_existing_embeddings_migrated_sqlite(self, tmp_path: Path) -> None:
-        """Verify existing embeddings are migrated to embedding_chunks."""
+    async def test_chunking_migration_applies_cleanly_with_existing_metadata_sqlite(
+        self, tmp_path: Path,
+    ) -> None:
+        """The chunking migration creates embedding_chunks and adds chunk_count without backfilling.
+
+        Verifies the migration adds the embedding_chunks table and the chunk_count column
+        on embedding_metadata, but does NOT copy existing rows: embedding_chunks stays
+        empty until embeddings are written through the regular write path.
+        """
         db_path = tmp_path / 'test_data_migration.db'
 
-        # Create base schema with existing data
         from app.schemas import load_schema
 
         schema_sql = load_schema('sqlite')
 
+        ctx_id_a = generate_id()
+        ctx_id_b = generate_id()
+
         with sqlite3.connect(str(db_path)) as conn:
             conn.executescript(schema_sql)
 
-            # Create embedding_metadata with existing entries
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS embedding_metadata (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    context_id INTEGER NOT NULL UNIQUE,
+                    context_id TEXT NOT NULL UNIQUE,
                     provider TEXT NOT NULL,
                     model TEXT NOT NULL,
                     dimensions INTEGER NOT NULL,
@@ -400,25 +413,27 @@ class TestApplyChunkingMigration:
                 )
             ''')
 
-            # Insert test context entries
-            conn.execute('''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES (1, 'thread-1', 'user', 'text', 'Test content 1')
-            ''')
-            conn.execute('''
-                INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
-                VALUES (2, 'thread-1', 'agent', 'text', 'Test content 2')
-            ''')
+            conn.execute(
+                '''INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (ctx_id_a, 'thread-1', 'user', 'text', 'Test content 1'),
+            )
+            conn.execute(
+                '''INSERT INTO context_entries (id, thread_id, source, content_type, text_content)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (ctx_id_b, 'thread-1', 'agent', 'text', 'Test content 2'),
+            )
 
-            # Insert embedding metadata (simulating existing 1:1 embeddings)
-            conn.execute('''
-                INSERT INTO embedding_metadata (context_id, provider, model, dimensions)
-                VALUES (1, 'test-provider', 'test-model', 768)
-            ''')
-            conn.execute('''
-                INSERT INTO embedding_metadata (context_id, provider, model, dimensions)
-                VALUES (2, 'test-provider', 'test-model', 768)
-            ''')
+            conn.execute(
+                '''INSERT INTO embedding_metadata (context_id, provider, model, dimensions)
+                   VALUES (?, ?, ?, ?)''',
+                (ctx_id_a, 'test-provider', 'test-model', 768),
+            )
+            conn.execute(
+                '''INSERT INTO embedding_metadata (context_id, provider, model, dimensions)
+                   VALUES (?, ?, ?, ?)''',
+                (ctx_id_b, 'test-provider', 'test-model', 768),
+            )
             conn.commit()
 
         env = {
@@ -441,17 +456,21 @@ class TestApplyChunkingMigration:
 
                 await apply_chunking_migration(backend=backend)
 
-                # Verify existing embeddings are migrated to embedding_chunks
-                def _check_migration(conn: sqlite3.Connection) -> list[tuple[int, int]]:
-                    cursor = conn.execute('''
-                        SELECT context_id, vec_rowid FROM embedding_chunks ORDER BY context_id
-                    ''')
-                    return [(row[0], row[1]) for row in cursor.fetchall()]
+                def _check_migration(
+                    conn: sqlite3.Connection,
+                ) -> tuple[list[tuple[str, int]], list[str]]:
+                    cursor = conn.execute(
+                        '''SELECT context_id, vec_rowid FROM embedding_chunks ORDER BY context_id''',
+                    )
+                    chunks = [(row[0], row[1]) for row in cursor.fetchall()]
+                    cursor = conn.execute('PRAGMA table_info(embedding_metadata)')
+                    metadata_columns = [row[1] for row in cursor.fetchall()]
+                    return chunks, metadata_columns
 
-                chunks = await backend.execute_read(_check_migration)
-                assert len(chunks) == 2, 'Should have 2 entries in embedding_chunks'
-                assert chunks[0] == (1, 1), 'First entry: context_id=1, vec_rowid=1 (1:1 mapping)'
-                assert chunks[1] == (2, 2), 'Second entry: context_id=2, vec_rowid=2 (1:1 mapping)'
+                chunks, metadata_columns = await backend.execute_read(_check_migration)
+
+                assert chunks == []
+                assert 'chunk_count' in metadata_columns
 
             finally:
                 await backend.shutdown()
@@ -636,7 +655,7 @@ class TestChunkingMigrationSQLFiles:
         sql_content = migration_path.read_text(encoding='utf-8')
 
         assert 'CREATE TABLE IF NOT EXISTS embedding_chunks' in sql_content
-        assert 'context_id INTEGER NOT NULL' in sql_content
+        assert 'context_id TEXT NOT NULL' in sql_content
         assert 'vec_rowid INTEGER NOT NULL' in sql_content
 
     def test_sqlite_sql_no_forbidden_columns(self) -> None:
@@ -648,12 +667,41 @@ class TestChunkingMigrationSQLFiles:
         assert 'chunk_start' not in sql_content.lower(), 'chunk_start should NOT be in SQLite migration'
         assert 'chunk_end' not in sql_content.lower(), 'chunk_end should NOT be in SQLite migration'
 
-    def test_postgresql_sql_schema_templating(self) -> None:
-        """Verify PostgreSQL SQL uses {SCHEMA} templating."""
-        migration_path = Path(__file__).parent.parent.parent / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+    def test_postgresql_sql_uses_bare_tables_and_current_schema(self) -> None:
+        """Verify PostgreSQL chunking SQL uses BARE table names and
+        ``current_schema()`` for catalog filters.
+
+        BARE table/index DDL relies on the operator's ``search_path``
+        configuration (``$POSTGRESQL_SCHEMA, public``). Idempotency-
+        check filters against ``information_schema`` and ``pg_indexes``
+        use ``current_schema()`` so the check inspects the same schema
+        the migration writes to. This matches the BARE-table convention
+        established by ``app/schemas/postgresql_schema.sql`` and the
+        read path in ``app/repositories/embedding_repository.py``.
+        """
+        migration_path = (
+            Path(__file__).parent.parent.parent
+            / 'app' / 'migrations' / 'add_chunking_postgresql.sql'
+        )
         sql_content = migration_path.read_text(encoding='utf-8')
 
-        assert '{SCHEMA}' in sql_content, 'PostgreSQL migration should use {SCHEMA} templating'
+        # Strip SQL comments before asserting absence of {SCHEMA}: the
+        # header comment legitimately references the placeholder in
+        # prose explaining the BARE-DDL convention. Only active DDL
+        # lines are part of the contract.
+        sql_no_comments = '\n'.join(
+            line for line in sql_content.splitlines()
+            if not line.strip().startswith('--')
+        )
+        assert '{SCHEMA}' not in sql_no_comments, (
+            'Chunking migration must use BARE table names; '
+            '{SCHEMA} substitution was dropped to align with the '
+            'project-wide bare-DDL convention.'
+        )
+        assert 'current_schema()' in sql_content, (
+            'Chunking migration idempotency-check filters must use '
+            'current_schema() to introspect the resolved schema.'
+        )
 
     def test_both_sql_files_are_idempotent(self) -> None:
         """Verify both SQL files use IF NOT EXISTS / IF EXISTS patterns."""
@@ -728,7 +776,7 @@ class TestChunkingMigrationIntegration:
 
                 # Insert multiple chunks for the same context_id
                 def _insert_multiple_chunks(conn: sqlite3.Connection) -> None:
-                    # Simulate 3 chunks for context_id=1
+                    # Simulate 3 chunks for context_id='0190abcdef1234567890abcd00000001'
                     conn.execute('''
                         INSERT INTO embedding_chunks (context_id, vec_rowid)
                         VALUES (1, 100), (1, 101), (1, 102)
@@ -802,7 +850,7 @@ class TestChunkingMigrationIntegration:
 
                 await apply_chunking_migration(backend=backend)
 
-                # Insert chunks for context_id=1
+                # Insert chunks for context_id='0190abcdef1234567890abcd00000001'
                 def _insert_chunks(conn: sqlite3.Connection) -> None:
                     conn.execute('PRAGMA foreign_keys = ON')
                     conn.execute('''

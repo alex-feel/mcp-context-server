@@ -1,7 +1,5 @@
 """Unit tests for the passage_extraction module."""
 
-from __future__ import annotations
-
 import pytest
 
 from app.services.passage_extraction_service import DEFAULT_SEPARATORS

@@ -11,19 +11,15 @@ Fix: Skip embedding storage when entry was deduplicated AND embeddings
 already exist. UPSERT defense-in-depth in store_chunked().
 """
 
-from __future__ import annotations
-
 import importlib.util
 import sqlite3
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
 
-if TYPE_CHECKING:
-    from app.backends import StorageBackend
+from app.backends import StorageBackend
 
 # Conditional skip marker for tests requiring sqlite-vec package
 requires_sqlite_vec = pytest.mark.skipif(

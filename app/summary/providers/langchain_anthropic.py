@@ -5,7 +5,6 @@ Uses ChatAnthropic for LLM-based abstractive summarization via Anthropic API.
 Requires ANTHROPIC_API_KEY environment variable (read from SummarySettings, passed explicitly).
 """
 
-from __future__ import annotations
 
 import logging
 from typing import Any
@@ -28,7 +27,7 @@ class AnthropicSummaryProvider:
         SUMMARY_PROVIDER: Must be 'anthropic'
         ANTHROPIC_API_KEY: Anthropic API key (read from SummarySettings, passed explicitly)
         SUMMARY_MODEL: Model name (e.g., 'claude-haiku-4-5-20251001')
-        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 2000)
+        SUMMARY_MAX_TOKENS: Maximum output tokens for summary generation (default: 4000)
     """
 
     def __init__(self) -> None:
@@ -63,12 +62,18 @@ class AnthropicSummaryProvider:
                 'Set the environment variable or use a different provider.',
             )
 
-        # Build kwargs to avoid pyright complaints about dynamically-loaded constructor
+        # Build kwargs to avoid pyright complaints about dynamically-loaded constructor.
+        # Disable internal SDK retry (max_retries=0) and timeout (timeout=None) so the
+        # tenacity wrapper is the sole retry/timeout authority, matching the embedding
+        # providers; otherwise each tenacity attempt would perform the SDK's own default
+        # retries on top, multiplying call volume and inflating the per-attempt budget.
         kwargs: dict[str, Any] = {
             'model': self._model,
             'temperature': 0,
             'max_tokens': self._max_tokens,
             'api_key': self._api_key.get_secret_value(),
+            'max_retries': 0,
+            'timeout': None,
         }
         if self._effort is not None:
             kwargs['effort'] = self._effort
@@ -135,6 +140,50 @@ class AnthropicSummaryProvider:
 
         return await with_summary_retry_and_timeout(
             _summarize, f'{self.provider_name}_summarize',
+        )
+
+    async def summarize_with_prompt(self, text: str, system_prompt: str) -> str:
+        """Generate a summary using an explicit system prompt (index_tree node abstracts).
+
+        Reuses the same ChatAnthropic client and retry/timeout machinery as
+        :meth:`summarize` but with a caller-supplied system prompt.
+
+        Args:
+            text: Text content to summarize.
+            system_prompt: System prompt controlling the summary.
+
+        Returns:
+            Summary string (may be empty if the model returns nothing).
+
+        Raises:
+            RuntimeError: If the provider is not initialized or output is empty
+                due to the max_tokens budget being fully consumed.
+        """
+        if self._chat_model is None:
+            raise RuntimeError('Provider not initialized. Call initialize() first.')
+
+        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import SystemMessage
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=text),
+        ]
+
+        async def _summarize() -> str:
+            response = await self._chat_model.ainvoke(messages)
+            result = str(response.content).strip()
+            stop_reason = response.response_metadata.get('stop_reason')
+            if stop_reason == 'max_tokens' and not result:
+                raise RuntimeError(
+                    'Anthropic node summary produced empty output (stop_reason=max_tokens); '
+                    f'the max_tokens budget ({self._max_tokens}) was consumed. '
+                    'Fix: increase SUMMARY_MAX_TOKENS.',
+                )
+            return result
+
+        return await with_summary_retry_and_timeout(
+            _summarize, f'{self.provider_name}_summarize_node',
         )
 
     async def is_available(self) -> bool:

@@ -16,8 +16,6 @@ Tests verify:
 - provider_name returns 'openai'
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -107,6 +105,8 @@ class TestOpenAISummaryProviderInitialize:
                 temperature=0,
                 max_tokens=1500,
                 api_key='sk-test-key',
+                max_retries=0,
+                timeout=None,
                 reasoning_effort='low',
             )
             assert provider._chat_model is not None
@@ -141,6 +141,8 @@ class TestOpenAISummaryProviderInitialize:
                 temperature=0,
                 max_tokens=1500,
                 api_key='sk-test-key',
+                max_retries=0,
+                timeout=None,
             )
             # reasoning_effort should NOT be in the kwargs
             call_kwargs = mock_chat_cls.call_args[1]
@@ -217,8 +219,26 @@ class TestOpenAISummaryProviderInitialize:
                 temperature=0,
                 max_tokens=1500,
                 api_key='sk-test-key',
+                max_retries=0,
+                timeout=None,
                 base_url='https://custom.api.com/v1',
             )
+
+    @pytest.mark.asyncio
+    async def test_initialize_disables_sdk_internal_retry_and_timeout(self) -> None:
+        """initialize() passes max_retries=0 and timeout=None so the tenacity wrapper is the sole retry/timeout authority."""
+        from app.summary.providers.langchain_openai import OpenAISummaryProvider
+
+        mock_chat_cls = MagicMock()
+        mock_module = MagicMock()
+        mock_module.ChatOpenAI = mock_chat_cls
+        with patch.dict('sys.modules', {'langchain_openai': mock_module}):
+            provider = OpenAISummaryProvider()
+            await provider.initialize()
+
+        call_kwargs = mock_chat_cls.call_args[1]
+        assert call_kwargs['max_retries'] == 0
+        assert call_kwargs['timeout'] is None
 
 
 @pytest.mark.usefixtures('mock_openai_settings', 'mock_openai_retry')

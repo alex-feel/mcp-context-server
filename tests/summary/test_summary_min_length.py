@@ -13,8 +13,6 @@ Tests verify:
 - clear_summary parameter in update_context_entry
 """
 
-from __future__ import annotations
-
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
@@ -107,7 +105,7 @@ def _make_mock_repos() -> MagicMock:
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
     repos.context.get_summary = AsyncMock(return_value=None)
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -127,6 +125,12 @@ def _make_mock_repos() -> MagicMock:
     repos.embeddings.exists = AsyncMock(return_value=False)
     repos.embeddings.store = AsyncMock(return_value=None)
     repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
+    repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
+
+    repos.index_nodes = MagicMock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock()
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+    repos.index_nodes.count_all_nodes = AsyncMock(return_value=0)
 
     return repos
 
@@ -192,7 +196,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='generated summary',
             ),
@@ -226,7 +230,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='boundary summary',
             ) as mock_gen_summary,
@@ -287,7 +291,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='above-boundary summary',
             ) as mock_gen_summary,
@@ -330,7 +334,7 @@ class TestStoreContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='short summary',
             ) as mock_gen_summary,
@@ -362,10 +366,10 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.ensure_repositories', return_value=mock_repos),
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
-            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools._shared.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text=short_text,
                 ctx=mock_ctx,
             )
@@ -394,14 +398,14 @@ class TestUpdateContextMinContentLength:
             patch('app.tools.context.get_summary_provider', return_value=Mock()),
             patch('app.tools._shared.get_summary_provider', return_value=Mock()),
             patch(
-                'app.tools.context.generate_summary_with_timeout',
+                'app.tools._shared.generate_summary_with_timeout',
                 new_callable=AsyncMock,
                 return_value='updated summary',
             ),
-            patch('app.tools.context.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
+            patch('app.tools._shared.generate_embeddings_with_timeout', new_callable=AsyncMock, return_value=None),
         ):
             result = await update_context(
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text=long_text,
                 ctx=mock_ctx,
             )

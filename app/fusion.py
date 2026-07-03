@@ -4,7 +4,6 @@ This module provides implementations of result fusion algorithms
 for combining results from multiple search methods (FTS, semantic).
 """
 
-from __future__ import annotations
 
 import operator
 from typing import TYPE_CHECKING
@@ -20,7 +19,7 @@ def reciprocal_rank_fusion(
     semantic_results: list[dict[str, Any]],
     k: int = 60,
     limit: int = 50,
-) -> list[HybridSearchResultDict]:
+) -> 'list[HybridSearchResultDict]':
     """Combine FTS and semantic search results using Reciprocal Rank Fusion (RRF).
 
     RRF Formula: score(d) = sum(1 / (k + rank_i(d))) for each result list i
@@ -40,13 +39,14 @@ def reciprocal_rank_fusion(
         Combined results sorted by RRF score (descending), with scores breakdown.
 
     Example:
-        >>> fts = [{'id': 1, 'score': 2.5}, {'id': 2, 'score': 1.8}]
-        >>> semantic = [{'id': 2, 'distance': 0.3}, {'id': 3, 'distance': 0.5}]
+        >>> fts = [{'id': '0190abcdef1234567890abcdef123401', 'score': 2.5}]
+        >>> semantic = [{'id': '0190abcdef1234567890abcdef123401', 'distance': 0.3}]
         >>> results = reciprocal_rank_fusion(fts, semantic, k=60)
-        >>> # Document 2 appears in both, so it ranks higher
+        >>> # The document appears in both sources, so it ranks higher
     """
-    # Build document registry with scores from each source
-    doc_registry: dict[int, dict[str, Any]] = {}
+    # Build document registry with scores from each source, keyed by the
+    # 32-char lowercase hex UUIDv7 context id.
+    doc_registry: dict[str, dict[str, Any]] = {}
 
     # Process FTS results (rank 1 = best score, highest relevance)
     for rank, result in enumerate(fts_results, start=1):
@@ -108,7 +108,7 @@ def reciprocal_rank_fusion(
     for doc in sorted_docs:
         data = doc['data']
 
-        # Build scores object (rerank_score added by _apply_reranking if enabled)
+        # Build scores object (includes rerank_score when reranking is enabled)
         scores: HybridScoresDict = {
             'rrf': doc['rrf_score'],
             'fts_rank': doc['fts_rank'],

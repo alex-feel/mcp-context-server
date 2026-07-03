@@ -9,8 +9,6 @@ Tests cover:
 - Backward compatibility with pre-migration rows (NULL hash fallback)
 """
 
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import json
@@ -23,9 +21,13 @@ import pytest_asyncio
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.ids import generate_id
 from app.migrations.content_hash import apply_content_hash_migration
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import compute_content_hash
+
+# Module-level alias keeps `generate_id` reachable for ruff once test methods reference it.
+_make_id = generate_id
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -68,13 +70,15 @@ async def backend_pre_migration(tmp_path: Path) -> AsyncGenerator[StorageBackend
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute('''
             CREATE TABLE context_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rowid_int INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
                 thread_id TEXT NOT NULL,
                 source TEXT NOT NULL CHECK(source IN ('user', 'agent')),
                 content_type TEXT NOT NULL CHECK(content_type IN ('text', 'multimodal')),
                 text_content TEXT,
                 metadata JSON,
                 summary TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -87,7 +91,7 @@ async def backend_pre_migration(tmp_path: Path) -> AsyncGenerator[StorageBackend
         conn.execute('''
             CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                context_entry_id INTEGER NOT NULL,
+                context_entry_id TEXT NOT NULL,
                 tag TEXT NOT NULL,
                 FOREIGN KEY (context_entry_id) REFERENCES context_entries(id) ON DELETE CASCADE
             )
@@ -282,6 +286,22 @@ class TestContentHashMigration:
         columns = await backend.execute_read(_check)
         assert 'content_hash' in columns
 
+    @pytest.mark.asyncio
+    async def test_base_schema_provisions_dedup_index_sqlite(self, backend: StorageBackend) -> None:
+        """The base schema alone provisions the dedup index (no migration applied).
+
+        The ``backend`` fixture loads only ``load_schema('sqlite')`` and never calls
+        apply_content_hash_migration, so the index existing here proves a target
+        initialized purely from the base schema -- including the migration CLI's
+        target init -- has it from inception, not only after a later server start.
+        """
+        def _check_index(conn: sqlite3.Connection) -> list[str]:
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+            return [row[0] for row in cursor.fetchall()]
+
+        indexes = await backend.execute_read(_check_index)
+        assert 'idx_context_entries_dedup_hash' in indexes
+
 
 # ===========================================================================
 # Hash stored on insert
@@ -397,16 +417,19 @@ class TestNullHashFallback:
         # Apply the migration so the column exists (needed for INSERT to include content_hash)
         await apply_content_hash_migration(backend=backend_pre_migration)
 
-        # Manually insert a row WITHOUT content_hash (simulating pre-migration data)
-        def _insert_without_hash(conn: sqlite3.Connection) -> int:
-            cursor = conn.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('t1', 'user', 'text', 'Legacy text')",
-            )
-            return cursor.lastrowid or 0
+        legacy_id = _make_id()
 
-        legacy_id = await backend_pre_migration.execute_write(_insert_without_hash)
-        assert legacy_id > 0
+        # Manually insert a row WITHOUT content_hash (legacy data shape)
+        def _insert_without_hash(conn: sqlite3.Connection) -> str:
+            conn.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 't1', 'user', 'text', 'Legacy text')",
+                (legacy_id,),
+            )
+            return legacy_id
+
+        await backend_pre_migration.execute_write(_insert_without_hash)
+        assert len(legacy_id) == 32
 
         # Verify the row has NULL content_hash
         def _check_null(conn: sqlite3.Connection) -> bool:
@@ -432,15 +455,18 @@ class TestNullHashFallback:
         """check_latest_is_duplicate falls back to text comparison for NULL hash rows."""
         await apply_content_hash_migration(backend=backend_pre_migration)
 
-        # Insert row without hash
-        def _insert_without_hash(conn: sqlite3.Connection) -> int:
-            cursor = conn.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('t1', 'agent', 'text', 'Old agent text')",
-            )
-            return cursor.lastrowid or 0
+        legacy_id = _make_id()
 
-        legacy_id = await backend_pre_migration.execute_write(_insert_without_hash)
+        # Insert row without hash
+        def _insert_without_hash(conn: sqlite3.Connection) -> str:
+            conn.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 't1', 'agent', 'text', 'Old agent text')",
+                (legacy_id,),
+            )
+            return legacy_id
+
+        await backend_pre_migration.execute_write(_insert_without_hash)
 
         # check_latest_is_duplicate should find the match via text fallback
         result = await repos_pre_migration.context.check_latest_is_duplicate(
@@ -454,10 +480,13 @@ class TestNullHashFallback:
         """NULL hash row with different text correctly returns None."""
         await apply_content_hash_migration(backend=backend_pre_migration)
 
+        legacy_id = _make_id()
+
         def _insert_without_hash(conn: sqlite3.Connection) -> None:
             conn.execute(
-                "INSERT INTO context_entries (thread_id, source, content_type, text_content) "
-                "VALUES ('t1', 'user', 'text', 'Original text')",
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                "VALUES (?, 't1', 'user', 'text', 'Original text')",
+                (legacy_id,),
             )
 
         await backend_pre_migration.execute_write(_insert_without_hash)

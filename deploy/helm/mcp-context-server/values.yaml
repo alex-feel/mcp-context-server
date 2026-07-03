@@ -99,12 +99,20 @@ storage:
     existingSecret: ""
     existingSecretKey: "postgresql-password"
 
-# Search features
+# Search features. The fts/semantic/hybrid `enabled` flags map to the server's
+# tri-state search toggles: true renders ENABLE_*="auto" (register the tool when
+# its prerequisites are present), false renders "false" (force off). Full-text
+# search needs no extra dependencies, so it is on by default; hybrid search builds
+# on whichever of full-text/semantic is available.
 search:
   fts:
     enabled: true
     language: "english"
   semantic:
+    # Enables the embedding subsystem: drives ENABLE_EMBEDDING_GENERATION and
+    # registers the semantic search tool (ENABLE_SEMANTIC_SEARCH=auto). Requires an
+    # embedding provider (set ollama.enabled=true or configure an API key below);
+    # keep false when no provider is available.
     enabled: false
     # Embedding provider: ollama (default), openai, azure, huggingface, voyage
     provider: "ollama"
@@ -117,7 +125,7 @@ search:
     # Concurrency control
     maxConcurrent: 3     # Maximum parallel embedding requests (1-20)
   hybrid:
-    enabled: false
+    enabled: true
     rrfK: 60
     rrfOverfetch: 2  # Multiplier for over-fetching before RRF fusion
   # Text chunking for improved semantic search on long documents
@@ -135,22 +143,40 @@ search:
     maxLength: 512   # Maximum input length in tokens
     overfetch: 4     # Multiplier for over-fetching before reranking
     cacheDir: ""     # Custom cache directory for model files (empty = system default)
-  # LLM-based summary generation
+  # LLM-based summary generation. Opt-in like semantic search: it requires a summary
+  # provider (set ollama.enabled=true for provider "ollama", or configure an API key
+  # under summarySecrets for openai/anthropic). Keep false when no provider is available
+  # -- enabling it without a reachable provider fails startup, mirroring
+  # search.semantic.enabled.
   summary:
-    enabled: true
+    enabled: false
     provider: "ollama"       # ollama (default), openai, or anthropic
     model: "qwen3:0.6b"     # Summary model
-    maxTokens: 2000          # Max output tokens (50-5000)
+    maxTokens: 4000          # Max output tokens (50-16384)
     minContentLength: 500    # Min chars to trigger summary (0=always)
     prompt: ""               # Custom prompt (empty = built-in default)
     # Timeout and retry settings
     timeout: 240.0
     retryMaxAttempts: 5
-    retryBaseDelay: 1.0
+    retryBaseDelay: 3.0
     # Concurrency control
-    maxConcurrent: 3         # Maximum parallel summary requests (1-20)
+    maxConcurrent: 2         # Shared summary-model budget: flat + per-node summaries (1-20)
   # Default sort order for search results
   defaultSortBy: relevance  # Only 'relevance' supported in current version
+
+# Embedding compression (default ON; ~8x storage reduction).
+# COMPRESSION_SEED is load-bearing and IMMUTABLE after the first server start.
+# Pick a non-negative integer and keep it stable for the lifetime of this
+# database; mismatching env vs DB seed refuses startup with exit 78.
+# Set compression.enabled: false to opt out and use fp32 storage.
+# See docs/embedding-compression.md for the full reference.
+compression:
+  enabled: true
+  provider: turboquant
+  bits: 4
+  variant: ip
+  seed: 0
+  maxConcurrent: 4
 
 # Ollama sidecar configuration (used when search.semantic.provider=ollama or search.summary.provider=ollama)
 ollama:
@@ -212,6 +238,10 @@ embeddingSecrets:
   voyageApiKey: ""
   # Use existing secret for all provider keys
   existingSecret: ""
+  # Override the data key name inside existingSecret. Empty uses the active
+  # embedding provider's default key name: openai-api-key / azure-openai-api-key
+  # / huggingface-api-token / voyage-api-key.
+  existingSecretKey: ""
 
 # Summary provider API keys (for openai/anthropic providers)
 summarySecrets:
@@ -221,6 +251,10 @@ summarySecrets:
   anthropicApiKey: ""
   # Use existing secret for summary provider keys
   existingSecret: ""
+  # Override the data key name inside existingSecret. Empty uses the active
+  # summary provider's default key name: openai-api-key (summary.provider=openai)
+  # / anthropic-api-key (summary.provider=anthropic).
+  existingSecretKey: ""
 
 # Pod security context
 podSecurityContext:

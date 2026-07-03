@@ -26,6 +26,8 @@ from pydantic import Field
 
 from app.errors import format_exception_message
 from app.migrations import get_fts_migration_status
+from app.repositories.base import canonical_timestamp
+from app.repositories.fts_repository import sanitize_sqlite_fts_terms
 from app.services.passage_extraction_service import extract_rerank_passage
 from app.settings import get_settings
 from app.startup import ensure_repositories
@@ -94,16 +96,16 @@ async def _apply_reranking(
         )
 
         # Build result lookup by ID for fast access
-        result_by_id: dict[int, dict[str, Any]] = {
-            int(r.get('id', 0)): r for r in results if r.get('id') is not None
+        result_by_id: dict[str, dict[str, Any]] = {
+            str(r.get('id', '')): r for r in results if r.get('id') is not None
         }
 
         # Merge rerank scores back into original results (inject into scores object)
         final_results: list[dict[str, Any]] = []
         for reranked_item in reranked:
             item_id = reranked_item.get('id')
-            if item_id is not None and int(item_id) in result_by_id:
-                merged = result_by_id[int(item_id)].copy()
+            if item_id is not None and str(item_id) in result_by_id:
+                merged = result_by_id[str(item_id)].copy()
                 # Inject rerank_score into scores object
                 if 'scores' in merged and isinstance(merged['scores'], dict):
                     merged['scores'] = merged['scores'].copy()
@@ -149,6 +151,13 @@ def _apply_search_display_format(entry: dict[str, Any]) -> None:
     truncated_text, is_truncated = truncate_text(text_content, max_length=settings.search.truncation_length)
     entry['text_content'] = truncated_text
     entry['is_text_content_truncated'] = is_truncated
+
+    # Canonical timestamp wire format -- identical across SQLite and PostgreSQL for
+    # every search tool (search/fts/semantic/hybrid all route through here). See
+    # app.repositories.base.canonical_timestamp.
+    for ts_key in ('created_at', 'updated_at'):
+        if entry.get(ts_key) is not None:
+            entry[ts_key] = canonical_timestamp(entry[ts_key])
 
 
 async def _semantic_search_raw(
@@ -269,9 +278,33 @@ async def _semantic_search_raw(
                     f'({len(result["rerank_text"])} chars)',
                 )
 
-            # Remove internal boundary fields from result
-            result.pop('matched_chunk_start', None)
-            result.pop('matched_chunk_end', None)
+    # matched_chunk_start/matched_chunk_end are internal chunk boundaries that
+    # exist only to feed the chunk-aware reranking above. Strip them from EVERY
+    # result unconditionally so this shared helper never returns implementation-only
+    # keys: the result contract declares no such fields, and the tools return
+    # dict[str, Any] (no FastMCP output-schema filtering), so leaving them in leaks
+    # them to the client whenever reranking did not run (provider disabled,
+    # unavailable, or failed). The rerank branch above already consumed the
+    # boundaries before this scrub, so removing them here is safe for every caller.
+    for result in search_results:
+        result.pop('matched_chunk_start', None)
+        result.pop('matched_chunk_end', None)
+
+    # Parse JSON metadata to a dict for EVERY semantic result so this shared
+    # helper returns the same metadata shape as search_context/fts_search_context.
+    # The repository returns metadata as a JSON string on BOTH backends (SQLite
+    # TEXT; PostgreSQL JSONB decoded as str because asyncpg registers no jsonb
+    # codec), so without this both semantic_search_context and the semantic leg
+    # of hybrid_search_context would emit a string where the result contract
+    # types metadata as a dict. The hasattr(..., 'strip') guard makes this
+    # idempotent: an already-parsed dict has no 'strip' and is left untouched.
+    for result in search_results:
+        metadata_raw = result.get('metadata')
+        if metadata_raw is not None and hasattr(metadata_raw, 'strip'):
+            try:
+                result['metadata'] = json.loads(str(metadata_raw))
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                result['metadata'] = None
 
     return search_results, search_stats
 
@@ -328,7 +361,7 @@ async def _fts_search_raw(
     if not settings.fts.enabled:
         raise ToolError(
             'Full-text search is not available. '
-            'Set ENABLE_FTS=true to enable this feature.',
+            'Set ENABLE_FTS to auto (default) or true to enable this feature.',
         )
 
     # Check if migration is in progress
@@ -521,7 +554,7 @@ async def search_context(
             # Get normalized tags
             entry_id_raw = entry.get('id')
             if entry_id_raw is not None:
-                entry_id = int(entry_id_raw)
+                entry_id = str(entry_id_raw)
                 tags_result = await repos.tags.get_tags_for_context(entry_id)
                 entry['tags'] = tags_result
             else:
@@ -532,9 +565,9 @@ async def search_context(
 
             # Fetch images if requested and applicable
             if include_images and entry.get('content_type') == 'multimodal':
-                entry_id = int(entry.get('id', 0))
+                entry_id = str(entry.get('id', ''))
                 images_result = await repos.images.get_images_for_context(entry_id, include_data=True)
-                entry['images'] = cast(list[dict[str, str]], images_result)
+                entry['images'] = images_result
 
             entries.append(entry)
 
@@ -607,11 +640,13 @@ async def semantic_search_context(
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
     The `scores` object contains:
-    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - semantic_distance: LOWER = more similar. The metric depends on embedding storage:
+      Euclidean L2 (>= 0) for uncompressed/mse storage, or a negated inner product
+      (~ -1..0 for normalized embeddings, where more negative = more similar) when the
+      default ip compression variant is active. Compare values within one result set
+      rather than against fixed thresholds, since the range differs by storage variant.
     - semantic_rank: Always null for standalone semantic search
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
-
-    Typical distance interpretation: <0.5 very similar, 0.5-1.0 related, >1.0 less related.
 
     Returns:
         Dict with query (str), results (list with id, thread_id, source,
@@ -707,11 +742,11 @@ async def semantic_search_context(
         for result in final_results:
             context_id = result.get('id')
             if context_id:
-                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                tags_result = await repos.tags.get_tags_for_context(str(context_id))
                 result['tags'] = tags_result
                 # Fetch images if requested and applicable
                 if include_images and result.get('content_type') == 'multimodal':
-                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True)
                     result['images'] = images_result
             else:
                 result['tags'] = []
@@ -952,11 +987,11 @@ async def fts_search_context(
             # Get normalized tags
             context_id = result.get('id')
             if context_id:
-                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                tags_result = await repos.tags.get_tags_for_context(str(context_id))
                 result['tags'] = tags_result
                 # Fetch images if requested and applicable
                 if include_images and result.get('content_type') == 'multimodal':
-                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True)
                     result['images'] = images_result
             else:
                 result['tags'] = []
@@ -1015,28 +1050,52 @@ def _prepare_hybrid_fts_query(
     """
     tokens = re.findall(r'"[^"]*"|\S+', query.strip())
     significant = [t for t in tokens if len(t.strip('"')) > 1]
+    use_or = len(significant) >= or_threshold
 
-    if len(significant) < or_threshold:
+    if backend_type == 'sqlite':
+        # Short ('match') queries return the RAW query so the single canonical 'match'
+        # transform in _transform_query_sqlite sanitizes them EXACTLY ONCE -- identically to
+        # standalone fts_search_context. Long ('OR') queries are sanitized HERE because
+        # boolean mode is passed through _transform_query_sqlite unchanged; a bare FTS5
+        # operator/special char left on that path raises 'fts5: syntax error' (the recurring
+        # crash), so the surviving significant terms are OR-joined for partial-match recall.
+        #
+        # The match case must NOT pre-sanitize: _transform_query_sqlite('match') re-runs
+        # sanitize_sqlite_fts_terms, and the two passes are NOT idempotent for a token with an
+        # embedded double-quote -- the first pass escapes `ab"cd` into the single phrase
+        # `"ab""cd"`, which _FTS_TOKEN_RE then re-tokenizes into two phrases `"ab" "cd"`, so a
+        # pre-sanitized match query would make hybrid recall diverge from standalone for the
+        # same input. Returning the raw query defers all escaping to the one downstream pass.
+        if not use_or:
+            return query, 'match'
+        terms = sanitize_sqlite_fts_terms(significant)
+        if not terms:
+            # Every term was an operator/stopword bareword: return the '' match-nothing
+            # sentinel (re-transformed by _search_sqlite to an empty result), in parity with
+            # PostgreSQL's empty tsquery. A literal-phrase fallback ('"and"') would instead
+            # MATCH every document containing the dropped word on SQLite (FTS5 keeps stopwords
+            # as tokens) while PostgreSQL returns zero -- a cross-backend divergence.
+            return '', 'match'
+        return ' OR '.join(terms), 'boolean'  # FTS5 OR is uppercase (case-sensitive)
+
+    # PostgreSQL: plainto_tsquery / websearch_to_tsquery sanitize operators and stopwords
+    # server-side, so a raw query never raises -- only the OR-mode join needs building. Hyphens
+    # are replaced to prevent websearch_to_tsquery NOT interpretation; quoted phrases preserved.
+    if not use_or:
         return query, 'match'
-
-    # Sanitize: replace hyphens to prevent websearch_to_tsquery NOT interpretation
-    # Preserve quoted phrases intact
     sanitized: list[str] = []
     for token in significant:
-        if token.startswith('"') and token.endswith('"'):
+        # >= 2 chars so a lone '"' is never treated as a balanced phrase (consistent with the
+        # shared SQLite sanitizer; the `significant` filter already excludes it here too).
+        if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
             sanitized.append(token)
         else:
             clean = token.replace('-', ' ').strip()
             if clean:
                 sanitized.append(clean)
-
     if not sanitized:
         return query, 'match'
-
-    # SQLite FTS5: OR must be uppercase (case-sensitive operators)
-    # PostgreSQL websearch_to_tsquery: or must be lowercase
-    or_keyword = 'OR' if backend_type == 'sqlite' else 'or'
-    return f' {or_keyword} '.join(sanitized), 'boolean'
+    return ' or '.join(sanitized), 'boolean'  # websearch_to_tsquery 'or' is lowercase
 
 
 async def hybrid_search_context(
@@ -1113,7 +1172,7 @@ async def hybrid_search_context(
     - fts_rank: Rank in full-text results (LOWER = better, 1 = best)
     - semantic_rank: Rank in semantic results (LOWER = better, 1 = best)
     - fts_score: BM25/ts_rank relevance (HIGHER = better match)
-    - semantic_distance: L2 Euclidean distance (LOWER = more similar)
+    - semantic_distance: LOWER = more similar (L2 for fp32/mse storage, negated inner product for the ip compression variant)
     - rerank_score: Cross-encoder relevance (HIGHER = better), present when reranking enabled
 
     When explain_query=True, the `stats` field contains:
@@ -1140,8 +1199,8 @@ async def hybrid_search_context(
     if not settings.hybrid_search.enabled:
         raise ToolError(
             'Hybrid search is not available. '
-            'Set ENABLE_HYBRID_SEARCH=true to enable this feature. '
-            'Also ensure ENABLE_FTS=true and/or ENABLE_SEMANTIC_SEARCH=true.',
+            'Set ENABLE_HYBRID_SEARCH to auto (default) or true to enable this feature. '
+            'Also ensure ENABLE_FTS and/or ENABLE_SEMANTIC_SEARCH are not force-disabled.',
         )
 
     # Use settings default if rrf_k not specified
@@ -1161,10 +1220,10 @@ async def hybrid_search_context(
     if not available_modes:
         unavailable_reasons: list[str] = []
         if not fts_available:
-            unavailable_reasons.append('FTS requires ENABLE_FTS=true')
+            unavailable_reasons.append('FTS requires ENABLE_FTS not force-disabled (auto/true)')
         if not semantic_available:
             unavailable_reasons.append(
-                f'Semantic search requires ENABLE_SEMANTIC_SEARCH=true and '
+                f'Semantic search requires ENABLE_SEMANTIC_SEARCH not force-disabled (auto/true) and '
                 f'{settings.embedding.provider} provider properly configured',
             )
         raise ToolError(
@@ -1212,10 +1271,19 @@ async def hybrid_search_context(
         semantic_results: list[dict[str, Any]] = []
         fts_error: str | None = None
         semantic_error: str | None = None
+        # Structured validation details captured from FtsValidationError /
+        # MetadataFilterValidationError, so the all-modes-failed response can
+        # carry the same validation_errors key the sibling search tools return
+        # instead of flattening them into an opaque string.
+        fts_validation_errors: list[str] | None = None
+        semantic_validation_errors: list[str] | None = None
 
         # Stats collection for explain_query
         fts_stats: dict[str, Any] | None = None
         semantic_stats: dict[str, Any] | None = None
+
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.fts_repository import FtsValidationError
 
         # Determine adaptive FTS mode for hybrid search
         adaptive_query, adaptive_mode = _prepare_hybrid_fts_query(
@@ -1225,7 +1293,7 @@ async def hybrid_search_context(
         )
 
         async def run_fts_search() -> None:
-            nonlocal fts_results, fts_error, fts_stats
+            nonlocal fts_results, fts_error, fts_stats, fts_validation_errors
             try:
                 results, stats = await _fts_search_raw(
                     query=adaptive_query,
@@ -1247,13 +1315,16 @@ async def hybrid_search_context(
                 fts_results = results
                 if explain_query:
                     fts_stats = stats
+            except FtsValidationError as e:
+                fts_error = e.message
+                fts_validation_errors = e.validation_errors
             except ToolError as e:
                 fts_error = format_exception_message(e)
             except Exception as e:
                 fts_error = format_exception_message(e)
 
         async def run_semantic_search() -> None:
-            nonlocal semantic_results, semantic_error, semantic_stats
+            nonlocal semantic_results, semantic_error, semantic_stats, semantic_validation_errors
             try:
                 results, stats = await _semantic_search_raw(
                     query=query,
@@ -1273,6 +1344,9 @@ async def hybrid_search_context(
                 semantic_results = results
                 if explain_query:
                     semantic_stats = stats
+            except MetadataFilterValidationError as e:
+                semantic_error = e.message
+                semantic_validation_errors = e.validation_errors
             except ToolError as e:
                 semantic_error = format_exception_message(e)
             except Exception as e:
@@ -1312,18 +1386,43 @@ async def hybrid_search_context(
                 'Semantic sub-search failed; results may be based on FTS only',
             )
 
-        # Check if both searches failed
-        if fts_error and semantic_error:
-            raise ToolError(
-                f'All search modes failed. FTS: {fts_error}. Semantic: {semantic_error}',
-            )
-
-        # Determine which modes executed successfully (not errored)
+        # Determine which available modes executed successfully (not errored).
         modes_used: list[str] = []
         if 'fts' in available_modes and not fts_error:
             modes_used.append('fts')
         if 'semantic' in available_modes and not semantic_error:
             modes_used.append('semantic')
+
+        # If NO available mode succeeded, surface the error instead of returning
+        # an empty success. The old `fts_error and semantic_error` guard missed a
+        # single-mode deployment whose only available mode errored (e.g. an
+        # invalid metadata_filters), masking the failure as zero results.
+        if not modes_used:
+            details = '. '.join(
+                part for part in (
+                    f'FTS: {fts_error}' if fts_error else '',
+                    f'Semantic: {semantic_error}' if semantic_error else '',
+                ) if part
+            )
+            # When a sub-search failed on FILTER VALIDATION, return the same
+            # structured error response the sibling search tools produce (error
+            # + validation_errors, count 0) instead of an opaque raised
+            # ToolError: the caller needs the per-filter details to correct the
+            # query rather than retry a permanently-invalid request.
+            combined_validation_errors = [
+                *(fts_validation_errors or []),
+                *(semantic_validation_errors or []),
+            ]
+            if combined_validation_errors:
+                return {
+                    'query': query,
+                    'results': [],
+                    'count': 0,
+                    'modes_used': [],
+                    'error': f'All available search modes failed. {details}',
+                    'validation_errors': combined_validation_errors,
+                }
+            raise ToolError(f'All available search modes failed. {details}')
 
         # Parse FTS metadata (returned as JSON strings from DB)
         for result in fts_results:
@@ -1365,11 +1464,11 @@ async def hybrid_search_context(
         for result in final_results:
             context_id = result.get('id')
             if context_id:
-                tags_result = await repos.tags.get_tags_for_context(int(context_id))
+                tags_result = await repos.tags.get_tags_for_context(str(context_id))
                 result['tags'] = tags_result
                 # Fetch images if requested and applicable
                 if include_images and result.get('content_type') == 'multimodal':
-                    images_result = await repos.images.get_images_for_context(int(context_id), include_data=True)
+                    images_result = await repos.images.get_images_for_context(str(context_id), include_data=True)
                     result['images'] = images_result
             else:
                 result['tags'] = []

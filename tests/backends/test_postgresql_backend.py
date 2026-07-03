@@ -6,9 +6,13 @@ configuration, connection string handling, advisory locks, and
 connection reset behavior.
 """
 
+import contextlib
 import unittest.mock
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
 
+import asyncpg
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
@@ -53,6 +57,131 @@ class TestConnectionStringBuilding:
         pooler_conn = 'postgresql://postgres.project:password@aws-0-us-west-1.pooler.supabase.com:5432/postgres'
         backend = PostgreSQLBackend(connection_string=pooler_conn)
         assert backend.connection_string == pooler_conn
+
+
+class TestBuildAsyncpgConnectKwargs:
+    """Unit tests for the shared asyncpg connect-kwargs builder.
+
+    The same helper feeds both the connection pool and the migration CLI, so
+    its output is the single source of truth for search_path / statement cache
+    behavior. These tests are DB-free.
+    """
+
+    def test_search_path_quotes_non_default_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-default schema is double-quoted and followed by public."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_SCHEMA', 'My.Schema')
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['server_settings']['search_path'] == '"My.Schema", public'
+
+    def test_search_path_public_is_benign_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default public schema resolves to the benign no-op form."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.delenv('POSTGRESQL_SCHEMA', raising=False)
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['server_settings']['search_path'] == '"public", public'
+
+    def test_search_path_escapes_embedded_double_quote(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A schema name containing a double quote is escaped by doubling it.
+
+        Regression: the unescaped ``f'"{schema}", public'`` produced a malformed
+        quoted identifier (and thus a malformed startup search_path parameter) for
+        a schema like ``my"schema``. PostgreSQL escapes an embedded double quote by
+        doubling it.
+        """
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_SCHEMA', 'my"schema')
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['server_settings']['search_path'] == '"my""schema", public'
+
+    def test_statement_cache_zero_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """statement_cache_size=0 (transaction-pooler mode) propagates verbatim."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_STATEMENT_CACHE_SIZE', '0')
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['statement_cache_size'] == 0
+
+    def test_statement_cache_default_passthrough(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default prepared-statement cache size is forwarded unchanged."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.delenv('POSTGRESQL_STATEMENT_CACHE_SIZE', raising=False)
+        kwargs = build_asyncpg_connect_kwargs(AppSettings())
+        assert kwargs['statement_cache_size'] == 100
+
+    def test_tcp_keepalive_gucs_present_when_positive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TCP keepalive GUCs appear in server_settings when their value is > 0."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_IDLE_S', '15')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S', '5')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_COUNT', '3')
+        server_settings = build_asyncpg_connect_kwargs(AppSettings())['server_settings']
+        assert server_settings['tcp_keepalives_idle'] == '15'
+        assert server_settings['tcp_keepalives_interval'] == '5'
+        assert server_settings['tcp_keepalives_count'] == '3'
+
+    def test_tcp_keepalive_gucs_absent_when_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TCP keepalive GUCs are omitted entirely when set to 0 (disabled)."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_IDLE_S', '0')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_INTERVAL_S', '0')
+        monkeypatch.setenv('POSTGRESQL_TCP_KEEPALIVES_COUNT', '0')
+        server_settings = build_asyncpg_connect_kwargs(AppSettings())['server_settings']
+        assert 'tcp_keepalives_idle' not in server_settings
+        assert 'tcp_keepalives_interval' not in server_settings
+        assert 'tcp_keepalives_count' not in server_settings
+
+
+class TestQuotePgIdentifier:
+    """Unit tests for the shared PostgreSQL quoted-identifier helper.
+
+    The same helper quotes the schema for BOTH the connection search_path and the
+    migration CLI's CREATE SCHEMA DDL, so they cannot drift on an embedded double
+    quote. These tests are DB-free.
+    """
+
+    def test_plain_identifier_quoted(self) -> None:
+        """A plain identifier is wrapped in double quotes."""
+        from app.backends.postgresql_backend import quote_pg_identifier
+
+        assert quote_pg_identifier('public') == '"public"'
+
+    def test_mixed_case_and_dot_preserved(self) -> None:
+        """Mixed case and dots are preserved verbatim inside the quotes."""
+        from app.backends.postgresql_backend import quote_pg_identifier
+
+        assert quote_pg_identifier('My.Schema') == '"My.Schema"'
+
+    def test_embedded_double_quote_doubled(self) -> None:
+        """An embedded double quote is escaped by doubling it (a valid quoted identifier)."""
+        from app.backends.postgresql_backend import quote_pg_identifier
+
+        assert quote_pg_identifier('we"ird') == '"we""ird"'
+
+    def test_search_path_uses_the_same_quoting(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """build_asyncpg_connect_kwargs quotes the schema via quote_pg_identifier, so the
+        connection search_path and any schema-qualified DDL escape it identically."""
+        from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
+        from app.backends.postgresql_backend import quote_pg_identifier
+        from app.settings import AppSettings
+
+        monkeypatch.setenv('POSTGRESQL_SCHEMA', 'we"ird')
+        search_path = build_asyncpg_connect_kwargs(AppSettings())['server_settings']['search_path']
+        assert search_path == f'{quote_pg_identifier("we\"ird")}, public'
+        assert search_path == '"we""ird", public'
 
 
 class TestPoolHardeningSettings:
@@ -125,7 +254,8 @@ class TestResetConnectionRollback:
     before other reset operations to ensure transaction cleanup on connection return.
     """
 
-    def test_reset_connection_issues_rollback_first(self) -> None:
+    @pytest.mark.asyncio
+    async def test_reset_connection_issues_rollback_first(self) -> None:
         """Verify _reset_connection issues ROLLBACK before SELECT 1 and RESET ALL.
 
         The callback should execute operations in this order:
@@ -150,16 +280,14 @@ class TestResetConnectionRollback:
 
         # The test validates the expected order when the callback runs
         # Since we can't easily extract the nested callback, we test the expected behavior
-        import asyncio
-
-        async def simulate_reset_callback():
+        async def simulate_reset_callback() -> None:
             """Simulate what _reset_connection should do."""
             # Based on the implemented code in postgresql_backend.py
             await mock_conn.execute('ROLLBACK')
             await mock_conn.fetchval('SELECT 1')
             await mock_conn.execute('RESET ALL')
 
-        asyncio.get_event_loop().run_until_complete(simulate_reset_callback())
+        await simulate_reset_callback()
 
         # Verify call order: ROLLBACK first, then SELECT 1, then RESET ALL
         mock_conn.execute.assert_has_calls([
@@ -361,8 +489,6 @@ class TestInitializeErrorClassification:
     @pytest.mark.asyncio
     async def test_too_many_connections_raises_dependency_error(self) -> None:
         """TooManyConnectionsError during pool creation raises DependencyError."""
-        import asyncpg
-
         from app.errors import DependencyError
 
         backend = PostgreSQLBackend(
@@ -382,8 +508,6 @@ class TestInitializeErrorClassification:
     @pytest.mark.asyncio
     async def test_invalid_password_raises_configuration_error(self) -> None:
         """InvalidPasswordError during pool creation raises ConfigurationError."""
-        import asyncpg
-
         from app.errors import ConfigurationError
 
         backend = PostgreSQLBackend(
@@ -403,8 +527,6 @@ class TestInitializeErrorClassification:
     @pytest.mark.asyncio
     async def test_invalid_catalog_name_raises_configuration_error(self) -> None:
         """InvalidCatalogNameError during pool creation raises ConfigurationError."""
-        import asyncpg
-
         from app.errors import ConfigurationError
 
         backend = PostgreSQLBackend(
@@ -480,3 +602,92 @@ class TestInitializeErrorClassification:
             pytest.raises(DependencyError, match='PostgreSQL connection failed'),
         ):
             await backend.initialize()
+
+
+class TestExecuteWriteStatementTimeoutRetry:
+    """execute_write retries QueryCanceledError (SQLSTATE 57014) then succeeds."""
+
+    @staticmethod
+    def _make_backend() -> PostgreSQLBackend:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        # Tight, deterministic retry config: enough attempts, no real sleeping.
+        backend.retry_config.max_retries = 3
+        backend.retry_config.base_delay = 0.0
+        backend.retry_config.max_delay = 0.0
+        backend.retry_config.jitter = False
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_execute_write_retries_query_canceled_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A single QueryCanceledError is retried; the second attempt commits once.
+
+        Asserts NO duplicate write: the operation callable is invoked exactly
+        twice total (one cancelled attempt + one successful attempt), and the
+        successful attempt returns its value exactly once.
+        """
+        backend = self._make_backend()
+        backend._shutdown = False
+
+        # Fake transaction context manager (no real DB).
+        @contextlib.asynccontextmanager
+        async def _fake_transaction() -> AsyncIterator[None]:
+            yield None
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
+
+        # get_connection is an async context manager yielding mock_conn.
+        @contextlib.asynccontextmanager
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
+
+        call_count = {'n': 0}
+
+        async def operation(_conn: object, value: str) -> str:
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                raise asyncpg.exceptions.QueryCanceledError(
+                    'canceling statement due to statement timeout',
+                )
+            return value
+
+        result = await backend.execute_write(operation, 'committed-once')
+
+        assert result == 'committed-once'
+        # Exactly two invocations: one cancelled, one successful. No third
+        # invocation => no duplicate write.
+        assert call_count['n'] == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_write_query_canceled_exhausts_then_raises(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Persistent QueryCanceledError exhausts retries and re-raises it."""
+        backend = self._make_backend()
+        backend.retry_config.max_retries = 2
+        backend._shutdown = False
+
+        @contextlib.asynccontextmanager
+        async def _fake_transaction() -> AsyncIterator[None]:
+            yield None
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
+
+        @contextlib.asynccontextmanager
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
+
+        async def operation(_conn: object) -> None:
+            raise asyncpg.exceptions.QueryCanceledError('still timing out')
+
+        with pytest.raises(asyncpg.exceptions.QueryCanceledError):
+            await backend.execute_write(operation)

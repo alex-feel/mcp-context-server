@@ -9,8 +9,6 @@ Covers:
 - Response message parity (summaries preserved, embedding stored vs generated, summaries cleared)
 """
 
-from __future__ import annotations
-
 import base64
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -60,6 +58,7 @@ class TestUpdateContextImageValidation:
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
         )
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         with pytest.raises(ToolError, match='Image 0 has empty "data" field'):
             await update_context(context_id=cid, images=[{'data': ''}])
@@ -74,6 +73,7 @@ class TestUpdateContextImageValidation:
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
         )
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         with pytest.raises(ToolError, match='Image 0 has empty "data" field'):
             await update_context(context_id=cid, images=[{'data': '   '}])
@@ -88,6 +88,7 @@ class TestUpdateContextImageValidation:
             entries=[{'thread_id': 't', 'source': 'user', 'text': 'hello'}],
         )
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         valid_image = base64.b64encode(b'\x89PNG\r\n').decode()
         with pytest.raises(ToolError, match='Image 1') as exc_info:
@@ -166,10 +167,11 @@ class TestBatchImageValidation:
         )
         assert store_result['results'][0]['success'] is True
         cid = store_result['results'][0]['context_id']
+        assert cid is not None
 
         # get_context_by_ids returns list[ContextEntryDict]
         entries = await get_context_by_ids(context_ids=[cid], include_images=True)
-        images = entries[0].get('images', [])
+        images = entries[0].get('images') or []
         assert len(images) >= 1
         assert images[0]['mime_type'] == 'image/png'
 
@@ -189,6 +191,7 @@ class TestBatchImageValidation:
             }],
         )
         context_id = store_result['results'][0]['context_id']
+        assert context_id is not None
 
         # Update with image lacking mime_type
         valid_image = base64.b64encode(b'\x89PNG\r\n\x1a\n').decode()
@@ -202,7 +205,7 @@ class TestBatchImageValidation:
 
         # get_context_by_ids returns list[ContextEntryDict]
         entries = await get_context_by_ids(context_ids=[context_id], include_images=True)
-        images = entries[0].get('images', [])
+        images = entries[0].get('images') or []
         assert len(images) >= 1
         assert images[0]['mime_type'] == 'image/png'
 
@@ -245,7 +248,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(False, []))
 
@@ -283,7 +286,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.patch_metadata = AsyncMock(return_value=(False, []))
 
@@ -321,7 +324,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(False, []))
 
@@ -362,7 +365,7 @@ class TestUpdateBatchFailureHandling:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.patch_metadata = AsyncMock(return_value=(False, []))
 
@@ -462,7 +465,7 @@ class TestNonAtomicBatchRetry:
         with patch('app.tools.batch.ensure_repositories') as mock_repos_fn:
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(True, ['text']))
             mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
@@ -592,8 +595,10 @@ class TestBatchStoreResponseParity:
             mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
             mock_repos.context.get_summary = AsyncMock(return_value=None)
 
-            # For entry 2 (deduplicated), embeddings already exist
-            async def mock_embedding_exists(context_id):
+            # For entry 2 (deduplicated), embeddings already exist.
+            # Accept the optional txn kwarg the store path now passes.
+            async def mock_embedding_exists(context_id, txn=None):
+                _ = txn
                 return context_id == 101  # entry 2 has existing embeddings
 
             mock_repos.embeddings.exists = AsyncMock(side_effect=mock_embedding_exists)
@@ -657,7 +662,7 @@ class TestBatchUpdateResponseParity:
         ):
             mock_repos = AsyncMock()
             mock_repos_fn.return_value = mock_repos
-            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user'))
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
             mock_repos.context.get_content_type = AsyncMock(return_value='text')
             mock_repos.context.update_context_entry = AsyncMock(return_value=(True, ['text']))
             mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
@@ -723,11 +728,14 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos.embeddings.delete.assert_any_call(20)
             mock_repos.embeddings.delete.assert_any_call(30)
 
-            # Verify get_ids_matching_batch_criteria was called with correct args
+            # Verify get_ids_matching_batch_criteria was called with correct args. No
+            # older_than_days, so older_than_cutoff is None (only resolved for an age filter).
             mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
+                context_ids=None,
                 thread_ids=['thread-abc'],
                 source=None,
                 older_than_days=None,
+                older_than_cutoff=None,
             )
 
     @pytest.mark.asyncio
@@ -768,9 +776,96 @@ class TestBatchDeleteEmbeddingCleanup:
             mock_repos.embeddings.delete.assert_any_call(5)
             mock_repos.embeddings.delete.assert_any_call(15)
 
-            # Verify get_ids_matching_batch_criteria was called with correct args
-            mock_repos.context.get_ids_matching_batch_criteria.assert_called_once_with(
-                thread_ids=None,
-                source=None,
-                older_than_days=30,
+            # The age filter is resolved to ONE absolute older_than_cutoff that is SHARED by
+            # the embedding-cleanup pre-query AND the row delete, so SQLite cannot orphan vec0
+            # rows via a moving datetime('now'). Verify the same resolved cutoff reaches both.
+            select_kwargs = mock_repos.context.get_ids_matching_batch_criteria.call_args.kwargs
+            assert select_kwargs['context_ids'] is None
+            assert select_kwargs['thread_ids'] is None
+            assert select_kwargs['source'] is None
+            assert select_kwargs['older_than_days'] == 30
+            cutoff = select_kwargs['older_than_cutoff']
+            assert isinstance(cutoff, str)
+            assert cutoff
+            assert mock_repos.context.delete_contexts_batch.call_args.kwargs['older_than_cutoff'] == cutoff
+
+
+# Non-atomic update sibling-drop fix (filter by index, not by context_id)
+@pytest.mark.usefixtures('initialized_server')
+class TestUpdateBatchSiblingNotDropped:
+    """A sibling update sharing a context_id with a failed one must NOT be dropped."""
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_failed_generation_keeps_sibling_same_context_id(self):
+        """Two non-atomic updates target the same context_id; only the failing one is dropped.
+
+        index 0 (text update) fails embedding generation; index 1 (metadata-only,
+        no generation) shares the same context_id. The non-atomic filter must drop
+        only index 0 by ORIGINAL INDEX, leaving index 1 to be applied. The previous
+        context_id-set filter dropped both and silently lost index 1.
+        """
+        from app.tools.batch import store_context_batch
+        from app.tools.batch import update_context_batch
+
+        store_result = await store_context_batch(
+            entries=[{
+                'thread_id': 'sibling-drop-thread',
+                'source': 'user',
+                'text': 'A' * 600,
+            }],
+        )
+        cid = store_result['results'][0]['context_id']
+        assert cid is not None
+
+        _, mock_begin_transaction = _make_mock_txn()
+
+        async def emb_side_effect(text):
+            if 'FAILING' in text:
+                raise ToolError('boom: embedding generation failed')
+            return [('chunk-0', [0.1, 0.2, 0.3])]
+
+        with (
+            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch(
+                'app.tools.batch.generate_embeddings_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=emb_side_effect,
+            ),
+            patch(
+                'app.tools.batch.generate_compression_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=lambda emb: emb,
+            ),
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+            mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'user', 0))
+            mock_repos.context.get_content_type = AsyncMock(return_value='text')
+            # index 1 is a metadata-only update -> patch_metadata applies it.
+            mock_repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
+            mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
+
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+
+            result = await update_context_batch(
+                updates=[
+                    {'context_id': cid, 'text': 'FAILING update text content'},
+                    {'context_id': cid, 'metadata_patch': {'reviewed': True}},
+                ],
+                atomic=False,
             )
+
+        by_index = {r['index']: r for r in result['results']}
+        # Failing text update is reported as failed...
+        assert by_index[0]['success'] is False
+        assert by_index[0]['error'] is not None
+        # ...but its same-context_id sibling is NOT dropped -- it is applied.
+        assert by_index[1]['success'] is True
+        assert result['total'] == 2
+        assert result['succeeded'] == 1
+        assert result['failed'] == 1

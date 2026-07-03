@@ -5,8 +5,6 @@ including DISABLED_TOOLS environment variable handling and tool annotations.
 
 """
 
-from __future__ import annotations
-
 import importlib.util
 from pathlib import Path
 from typing import Any
@@ -158,6 +156,44 @@ class TestRegisterTool:
             result = register_tool(mock_mcp, my_func, name='explicit_name')
 
             assert result is False
+
+    def test_forwards_explicit_name_to_registration(self) -> None:
+        """An explicit name is forwarded to mcp_instance.tool(name=...).
+
+        FastMCP derives the tool name from func.__name__ when no name kwarg is passed, so
+        without forwarding, an explicit name would rename nothing (and would strip annotations
+        by looking them up under the wrong key). Guards the documented name parameter.
+        """
+        mock_mcp = MagicMock()
+        mock_settings = MagicMock()
+        mock_settings.tools.disabled = set()
+
+        async def my_func() -> dict[str, Any]:
+            return {'success': True}
+
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
+
+            result = register_tool(mock_mcp, my_func, name='renamed_tool')
+
+            assert result is True
+            assert mock_mcp.tool.call_args.kwargs.get('name') == 'renamed_tool'
+
+    def test_forwards_function_name_to_registration_by_default(self) -> None:
+        """When no explicit name is given, the function name is still forwarded as name=."""
+        mock_mcp = MagicMock()
+        mock_settings = MagicMock()
+        mock_settings.tools.disabled = set()
+
+        async def my_default_tool() -> dict[str, Any]:
+            return {'success': True}
+
+        with patch('app.tools.settings', mock_settings):
+            from app.tools import register_tool
+
+            register_tool(mock_mcp, my_default_tool)
+
+            assert mock_mcp.tool.call_args.kwargs.get('name') == 'my_default_tool'
 
     def test_applies_annotations_from_tool_annotations(self) -> None:
         """Test annotations are fetched from TOOL_ANNOTATIONS."""

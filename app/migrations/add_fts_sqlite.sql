@@ -7,10 +7,17 @@
 --   - 'unicode61' for other languages (multilingual support, no stemming)
 
 -- Create FTS5 virtual table with external content
+-- NOTE: content_rowid points to `rowid_int` (the private INTEGER PRIMARY KEY
+-- AUTOINCREMENT alias on context_entries) rather than the public TEXT `id`.
+-- FTS5 external-content rowids MUST be INTEGER per
+-- https://www.sqlite.org/fts5.html, so the public UUIDv7 hex `id` (TEXT)
+-- cannot serve as content_rowid. The `rowid_int` surrogate column exists
+-- specifically for this purpose; see app/schemas/sqlite_schema.sql for the
+-- dual-key design rationale.
 CREATE VIRTUAL TABLE IF NOT EXISTS context_entries_fts USING fts5(
     text_content,
     content='context_entries',
-    content_rowid='id',
+    content_rowid='rowid_int',
     tokenize='{TOKENIZER}'
 );
 
@@ -18,14 +25,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS context_entries_fts USING fts5(
 CREATE TRIGGER IF NOT EXISTS context_fts_insert AFTER INSERT ON context_entries
 BEGIN
     INSERT INTO context_entries_fts(rowid, text_content)
-    VALUES (new.id, new.text_content);
+    VALUES (new.rowid_int, new.text_content);
 END;
 
 -- Trigger to keep FTS in sync: DELETE
 CREATE TRIGGER IF NOT EXISTS context_fts_delete AFTER DELETE ON context_entries
 BEGIN
     INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
-    VALUES('delete', old.id, old.text_content);
+    VALUES('delete', old.rowid_int, old.text_content);
 END;
 
 -- Trigger to keep FTS in sync: UPDATE
@@ -33,9 +40,9 @@ END;
 CREATE TRIGGER IF NOT EXISTS context_fts_update AFTER UPDATE OF text_content ON context_entries
 BEGIN
     INSERT INTO context_entries_fts(context_entries_fts, rowid, text_content)
-    VALUES('delete', old.id, old.text_content);
+    VALUES('delete', old.rowid_int, old.text_content);
     INSERT INTO context_entries_fts(rowid, text_content)
-    VALUES (new.id, new.text_content);
+    VALUES (new.rowid_int, new.text_content);
 END;
 
 -- Populate FTS index with existing data

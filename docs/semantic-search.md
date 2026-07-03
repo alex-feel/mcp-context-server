@@ -9,7 +9,19 @@ Semantic search enables finding context entries based on meaning rather than exa
 - Concept-based retrieval from large context collections
 - Cross-agent knowledge discovery
 
-This feature is **optional** and supports multiple embedding providers via LangChain integration.
+Semantic search is **auto-enabled by default** and supports multiple embedding providers via LangChain integration.
+
+## Enablement
+
+The `semantic_search_context` tool is controlled by the tri-state `ENABLE_SEMANTIC_SEARCH` variable:
+
+- `auto` (default): the tool registers automatically whenever an embedding provider is available. When installed with an embedding provider extra (as in the examples below), a provider is present and semantic search registers automatically. With the bare package and no provider, set `ENABLE_EMBEDDING_GENERATION=false` (otherwise the server exits because the configured provider is unavailable).
+- `true`: force the tool on. If no embedding provider is available, the server logs a warning and the tool is not registered.
+- `false`: force the tool off, for the minimal tool surface.
+
+The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted (`true` maps to force-on, `false` to force-off).
+
+You still need the provider prerequisites below (an embedding provider plus its dependencies, and `sqlite-vec`/`pgvector` for vector storage) for semantic search to function; `auto` only governs whether the tool is exposed once those prerequisites are met. Embedding storage (the vector tables and chunk columns) is provisioned from `ENABLE_EMBEDDING_GENERATION`, decoupled from this toggle, so turning semantic search on later never requires re-embedding.
 
 ## Embedding Providers
 
@@ -123,7 +135,6 @@ Ollama runs embedding models locally with no API costs.
       "command": "uvx",
       "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-ollama,reranking]", "mcp-context-server"],
       "env": {
-        "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "ollama",
         "EMBEDDING_MODEL": "qwen3-embedding:0.6b",
         "EMBEDDING_DIM": "1024",
@@ -181,7 +192,6 @@ OpenAI provides high-quality embeddings via API.
       "command": "uvx",
       "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai,reranking]", "mcp-context-server"],
       "env": {
-        "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "openai",
         "EMBEDDING_MODEL": "text-embedding-3-small",
         "EMBEDDING_DIM": "1536",
@@ -243,7 +253,6 @@ Azure OpenAI provides enterprise-grade embeddings with compliance features.
       "command": "uvx",
       "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-azure,reranking]", "mcp-context-server"],
       "env": {
-        "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "azure",
         "EMBEDDING_MODEL": "text-embedding-ada-002",
         "EMBEDDING_DIM": "1536",
@@ -294,7 +303,6 @@ HuggingFace provides access to open-source embedding models.
       "command": "uvx",
       "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-huggingface,reranking]", "mcp-context-server"],
       "env": {
-        "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "huggingface",
         "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
         "EMBEDDING_DIM": "384",
@@ -348,7 +356,6 @@ Voyage AI specializes in RAG-optimized embeddings with long context support.
       "command": "uvx",
       "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-voyage,reranking]", "mcp-context-server"],
       "env": {
-        "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "voyage",
         "EMBEDDING_MODEL": "voyage-3",
         "EMBEDDING_DIM": "1024",
@@ -623,7 +630,6 @@ All providers support these settings:
       "command": "uvx",
       "args": ["--python", "3.12", "--with", "mcp-context-server[embeddings-openai,reranking]", "mcp-context-server"],
       "env": {
-        "ENABLE_SEMANTIC_SEARCH": "true",
         "EMBEDDING_PROVIDER": "openai",
         "EMBEDDING_MODEL": "text-embedding-3-small",
         "EMBEDDING_DIM": "1536",
@@ -654,9 +660,8 @@ docker run --name pgvector18 \
   -p 5432:5432 \
   -d pgvector/pgvector:pg18-trixie
 
-# Configure and run
+# Configure and run (semantic search auto-registers once the provider is ready)
 export STORAGE_BACKEND=postgresql
-export ENABLE_SEMANTIC_SEARCH=true
 uv run mcp-context-server
 ```
 
@@ -734,7 +739,7 @@ RuntimeError: Embedding dimension mismatch detected!
 
 ### semantic_search_context Tool
 
-When enabled, the `semantic_search_context` MCP tool becomes available.
+When registered (by default, whenever an embedding provider is available), the `semantic_search_context` MCP tool becomes available.
 
 **Parameters**:
 - `query` (str, required): Natural language search query
@@ -783,7 +788,7 @@ When enabled, the `semantic_search_context` MCP tool becomes available.
 ```
 
 **Scores Object**:
-- `semantic_distance`: L2 Euclidean distance (LOWER = more similar)
+- `semantic_distance`: LOWER = more similar. The underlying metric depends on embedding storage: Euclidean L2 (>= 0) for uncompressed/`mse` storage, or a negated inner product (~ -1..0 for normalized embeddings, where more negative = more similar) when the default `ip` compression variant is active. Compare values within a single result set rather than against fixed thresholds, since the numeric range differs by storage variant.
 - `semantic_rank`: Always null for standalone semantic search (no ranking)
 - `rerank_score`: Cross-encoder relevance score (HIGHER = better, 0.0-1.0), present when reranking is enabled
 
@@ -867,7 +872,8 @@ This ensures data consistency: you never have context entries without their corr
 
 3. **Start server**:
    ```bash
-   export ENABLE_SEMANTIC_SEARCH=true
+   # ENABLE_SEMANTIC_SEARCH defaults to auto; the tool registers automatically
+   # once the provider is available. Set it explicitly only to force on/off.
    export EMBEDDING_PROVIDER=openai
    export OPENAI_API_KEY=sk-...
    uv run mcp-context-server
@@ -875,8 +881,8 @@ This ensures data consistency: you never have context entries without their corr
 
 4. **Check logs** for:
    ```text
-   [OK] Embedding provider initialized: openai
-   [OK] Semantic search enabled
+   Embedding generation enabled with provider: openai (model: text-embedding-3-small)
+   semantic_search_context registered
    ```
 
 5. **Test functionality**:

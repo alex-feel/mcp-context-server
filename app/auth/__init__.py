@@ -22,12 +22,12 @@ See also:
     - FastMCP authentication docs: https://gofastmcp.com/servers/auth
 """
 
-from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
 from app.auth.simple_token import SimpleTokenVerifier
+from app.errors import ConfigurationError
 from app.settings import AuthSettings
 from app.settings import get_settings
 
@@ -43,11 +43,19 @@ __all__ = [
 ]
 
 
-def create_auth_provider() -> AuthProvider | None:
+def create_auth_provider() -> 'AuthProvider | None':
     """Create an authentication provider based on MCP_AUTH_PROVIDER setting.
 
     Returns:
         An auth provider instance for FastMCP's auth= parameter, or None for no auth.
+
+    Raises:
+        ConfigurationError: When MCP_AUTH_PROVIDER=simple_token but MCP_AUTH_TOKEN
+            is missing or empty. This is a startup misconfiguration (a missing
+            required environment variable), so it is classified as a
+            ConfigurationError (exit 78) rather than letting the underlying
+            ValueError reach the generic handler and exit 1 -- exit 78 tells a
+            supervisor NOT to crash-loop on a restart that cannot fix the config.
     """
     settings = get_settings()
     provider = settings.auth.provider
@@ -56,7 +64,13 @@ def create_auth_provider() -> AuthProvider | None:
         logger.info('Authentication: disabled (MCP_AUTH_PROVIDER=none)')
         return None
 
-    # provider == 'simple_token'
-    verifier = SimpleTokenVerifier()
+    # provider == 'simple_token'. SimpleTokenVerifier raises ValueError when the
+    # token is missing/empty; translate that into a ConfigurationError at this
+    # configuration boundary so the server exits 78 (EX_CONFIG) per its documented
+    # exit-code contract instead of the generic exit 1.
+    try:
+        verifier = SimpleTokenVerifier()
+    except ValueError as e:
+        raise ConfigurationError(str(e)) from e
     logger.info('Authentication: SimpleTokenVerifier (bearer token)')
     return verifier

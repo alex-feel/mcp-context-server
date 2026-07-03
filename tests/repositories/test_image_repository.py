@@ -5,16 +5,13 @@ Tests the ImageRepository class for storing, retrieving, and managing
 image attachments associated with context entries.
 """
 
-from __future__ import annotations
-
 import base64
-from typing import TYPE_CHECKING
 from typing import Any
 
 import pytest
 
-if TYPE_CHECKING:
-    from app.backends import StorageBackend
+from app.backends import StorageBackend
+from app.ids import generate_id
 
 
 @pytest.mark.asyncio
@@ -246,11 +243,13 @@ class TestImageRepository:
         backend = async_db_initialized
         repos = RepositoryContainer(backend)
 
-        result = await repos.images.get_images_for_contexts([99999, 99998])
-        assert 99999 in result
-        assert 99998 in result
-        assert result[99999] == []
-        assert result[99998] == []
+        missing_id_a = generate_id()
+        missing_id_b = generate_id()
+        result = await repos.images.get_images_for_contexts([missing_id_a, missing_id_b])
+        assert missing_id_a in result
+        assert missing_id_b in result
+        assert result[missing_id_a] == []
+        assert result[missing_id_b] == []
 
     async def test_count_images_for_context(
         self, async_db_initialized: StorageBackend,
@@ -292,7 +291,7 @@ class TestImageRepository:
         backend = async_db_initialized
         repos = RepositoryContainer(backend)
 
-        count = await repos.images.count_images_for_context(99999)
+        count = await repos.images.count_images_for_context(generate_id())
         assert count == 0
 
     async def test_replace_images_for_context(

@@ -9,14 +9,18 @@ authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
-    "fastmcp==3.1.0",
-    "pydantic-settings==2.12.0",
+    "fastmcp==3.2.4",  # CVE-2026-32871, CVE-2026-27124, CVE-2025-64340 fixes
+    "pydantic-settings==2.14.2",  # GHSA-4xgf-cpjx-pc3j fix
     "pydantic==2.12.5",
-    "python-dotenv==1.2.1",
+    "python-dotenv==1.2.2",  # CVE-2026-28684 fix
     "typing_extensions==4.15.0",
     "asyncpg==0.31.0",
     "anyio==4.12.1",
     "tenacity==9.1.2",
+    "uuid_utils>=0.14.1,<0.15.0",
+    "numpy>=2.4.1",
+    "threadpoolctl>=3.5",
+    "regex>=2024.11.6",
 ]
 
 [build-system]
@@ -26,6 +30,7 @@ build-backend = "hatchling.build"
 [project.scripts]
 mcp-context-server = "app.server:main"
 mcp-context = "app.server:main"
+mcp-context-server-migrate = "app.cli.migrate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
@@ -33,15 +38,24 @@ packages = ["app"]
 [tool.uv]
 package = true
 constraint-dependencies = [
-    "python-multipart>=0.0.22",  # CVE-2026-24486 fix
-    "cryptography>=46.0.5",  # CVE-2026-26007 fix
-    "pillow>=12.1.1",  # CVE-2026-25990 fix
-    "langsmith>=0.6.3",  # CVE-2026-25528 fix
-    "langchain-core>=1.2.11",  # CVE-2026-26013 fix
-    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
-    "authlib>=1.6.7",  # CVE-2026-28802 fix
-    "pyjwt>=2.12.0",  # CVE-2026-32597 fix
+    "python-multipart>=0.0.31",  # CVE-2026-24486, CVE-2026-42561, CVE-2026-53539, CVE-2026-53540 fixes
+    "cryptography>=48.0.1",  # CVE-2026-26007, GHSA-537c-gmf6-5ccf fixes
+    "pillow>=12.2.0",  # CVE-2026-25990, CVE-2026-40192, CVE-2026-42311 fixes
+    "langsmith>=0.8.18",  # CVE-2026-25528, CVE-2026-45134, GHSA-f4xh-w4cj-qxq8 fixes
+    "langchain-core>=1.3.3",  # CVE-2026-26013, CVE-2026-34070, CVE-2026-44843 fixes
+    "langchain-openai>=1.1.14",  # CVE-2026-26013, CVE-2026-41488 fixes
+    "langchain-anthropic>=1.4.6",  # GHSA-gr75-jv2w-4656 fix
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
+    "authlib>=1.7.1",  # CVE-2026-28802, CVE-2026-41425, CVE-2026-41479, CVE-2026-44681 fixes
+    "pyjwt>=2.13.0",  # CVE-2026-32597, CVE-2026-48526 fixes
     "orjson>=3.11.6",  # CVE-2025-67221 fix
+    "aiohttp>=3.14.1",  # CVE-2026-34520 fix plus the remaining aiohttp 3.13/3.14-line CVE set
+    "starlette>=1.3.1",  # CVE-2026-48818, CVE-2026-54283 fixes
+    "urllib3>=2.7.0",  # CVE-2026-44431, CVE-2026-44432 fixes
+    "requests>=2.33.0",  # CVE-2026-25645 fix
+    "idna>=3.15",  # CVE-2026-45409 fix
+    "protobuf>=6.33.5",  # CVE-2026-0994 fix
+    "pygments>=2.20.0",  # CVE-2026-4539 fix
 ]
 
 [project.optional-dependencies]
@@ -52,35 +66,35 @@ embeddings-ollama = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-ollama>=0.3.0",
-    "langchain-text-splitters>=0.3.0",
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-openai = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
-    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
-    "langchain-text-splitters>=0.3.0",
+    "langchain-openai>=1.1.14",  # CVE-2026-26013, CVE-2026-41488 fixes
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-azure = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
-    "langchain-openai>=1.1.9",  # Azure uses same package as OpenAI; CVE-2026-26013 fix
-    "langchain-text-splitters>=0.3.0",
+    "langchain-openai>=1.1.14",  # Azure uses same package as OpenAI; CVE-2026-26013, CVE-2026-41488 fixes
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-huggingface = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-huggingface>=0.2.0",
-    "langchain-text-splitters>=0.3.0",
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 embeddings-voyage = [
     "numpy>=2.4.1",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-voyageai>=0.3.0",
-    "langchain-text-splitters>=0.3.0",
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 
 # Convenience: all embedding providers (for testing/development)
@@ -89,10 +103,10 @@ embeddings-all = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.0",
     "langchain-ollama>=0.3.0",
-    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
+    "langchain-openai>=1.1.14",  # CVE-2026-26013, CVE-2026-41488 fixes
     "langchain-huggingface>=0.2.0",
     "langchain-voyageai>=0.3.0",
-    "langchain-text-splitters>=0.3.0",
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
 ]
 
 # Reranking providers
@@ -102,13 +116,13 @@ reranking = [
 
 # Convenience: all search quality improvements
 search-quality = [
-    "langchain-text-splitters>=0.3.0",
+    "langchain-text-splitters>=1.1.2",  # CVE-2026-41481 fix
     "flashrank>=0.2.0",
 ]
 
 # LangSmith tracing (optional observability)
 langsmith = [
-    "langsmith>=0.6.3",  # CVE-2026-25528 fix
+    "langsmith>=0.8.18",  # CVE-2026-25528, CVE-2026-45134, GHSA-f4xh-w4cj-qxq8 fixes
 ]
 
 # Summary providers - install ONE based on SUMMARY_PROVIDER setting
@@ -116,17 +130,17 @@ summary-ollama = [
     "langchain-ollama>=0.3.0",
 ]
 summary-openai = [
-    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
+    "langchain-openai>=1.1.14",  # CVE-2026-26013, CVE-2026-41488 fixes
 ]
 summary-anthropic = [
-    "langchain-anthropic>=0.3.0",
+    "langchain-anthropic>=1.4.6",  # GHSA-gr75-jv2w-4656 fix
 ]
 
 # Convenience: all summary providers (for testing/development)
 summary-all = [
     "langchain-ollama>=0.3.0",
-    "langchain-openai>=1.1.9",  # CVE-2026-26013 fix
-    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=1.1.14",  # CVE-2026-26013, CVE-2026-41488 fixes
+    "langchain-anthropic>=1.4.6",  # GHSA-gr75-jv2w-4656 fix
 ]
 
 [dependency-groups]
@@ -151,6 +165,10 @@ src = ["app"]
 target-version = "py312"
 line-length = 127
 extend-include = ["tests/**/*.py"]
+
+[tool.ruff.lint]
+# Ignore specific rules
+ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Per-file ignores:
 # - app/server.py: DOC201, DOC501 required - FastMCP tools use inline JSON structures instead of formal docstring sections.
 #   app/server.py: E402 required - config_logger() MUST be called BEFORE importing app.backends (which triggers
@@ -164,10 +182,6 @@ extend-include = ["tests/**/*.py"]
 # - tests/run_server.py: E402 required - sys.path setup MUST precede project imports
 #   (from tests.helpers) since run_server.py is executed as a subprocess.
 extend-per-file-ignores = { "app/server.py" = ["DOC201", "DOC501", "E402"], "tests/conftest.py" = ["E402"], "tests/run_server.py" = ["E402"], "app/instructions.py" = ["E501", "W293"], "app/summary/instructions.py" = ["E501", "W293"] }
-
-[tool.ruff.lint]
-# Ignore specific rules
-ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Enable rule groups
 select = [
     "FAST",  # FastAPI
@@ -234,7 +248,7 @@ ignore-one-line-docstrings = true
 [tool.mypy]
 # Core safety, balanced for production
 python_version = '3.12'
-files = ['app']
+files = ['app', 'tests']
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_calls = true
@@ -320,6 +334,8 @@ module = [
   'langsmith.*',
   'onnxruntime',
   'onnxruntime.*',
+  'threadpoolctl',
+  'regex',
 ]
 ignore_missing_imports = true
 follow_imports = 'skip'
@@ -405,12 +421,19 @@ reportAttributeAccessIssue = false
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# Default per-test timeout (pytest-timeout). A generous ceiling that no legitimate
+# unit or integration test approaches; it converts an accidental un-mocked network
+# call (e.g. to a real Ollama host) from an indefinite hang into a fast, stack-traced
+# failure. timeout_method="thread" is required on Windows (the signal method is POSIX-only).
+timeout = 600
+timeout_method = "thread"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "slow: marks tests as slow tests (deselect with '-m \"not slow\"')",
     "performance: marks tests as performance tests",
     "requires_chunking: marks tests requiring langchain-text-splitters",
     "requires_flashrank: marks tests requiring flashrank",
+    "requires_docker_postgres: marks tests requiring a docker-compose PostgreSQL container (skipped when docker is unavailable)",
 ]
 
 [tool.coverage.run]

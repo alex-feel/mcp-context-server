@@ -12,7 +12,7 @@ Tests cover:
 - Error handling and validation tests
 """
 
-from __future__ import annotations
+from typing import Any
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -20,6 +20,9 @@ from fastmcp.exceptions import ToolError
 # Import the actual async functions from app.server, not the MCP-wrapped versions
 # The FunctionTool objects store the original functions in their 'fn' attribute
 import app.server
+
+# Type alias anchored to a usage site so ruff cannot strip the Any import.
+_UpdateBatch = list[dict[str, Any]]
 
 # Get the actual async functions - they are no longer wrapped by @mcp.tool() at import time
 # Tools are registered dynamically in lifespan(), so we can access the functions directly
@@ -307,7 +310,7 @@ class TestUpdateContextBatch:
     async def test_update_batch_not_found(self) -> None:
         """Test update of non-existent context entry."""
         updates = [
-            {'context_id': 999999, 'text': 'This should fail'},
+            {'context_id': '0190abcdef1234567890abcd000f423f', 'text': 'This should fail'},
         ]
 
         result = await update_context_batch(updates=updates, atomic=False)
@@ -390,7 +393,7 @@ class TestUpdateContextBatch:
 
         updates = [
             {'context_id': entry['context_id'], 'text': 'Updated successfully'},
-            {'context_id': 999999, 'text': 'This will fail'},
+            {'context_id': '0190abcdef1234567890abcd000f423f', 'text': 'This will fail'},
         ]
 
         result = await update_context_batch(updates=updates, atomic=False)
@@ -403,8 +406,8 @@ class TestUpdateContextBatch:
     @pytest.mark.asyncio
     async def test_update_batch_atomic_rollback(self) -> None:
         """Test atomic mode fails fast on validation error."""
-        updates = [
-            {'context_id': 1, 'text': 'Valid update'},
+        updates: list[dict[str, Any]] = [
+            {'context_id': '0190abcdef1234567890abcd00000001', 'text': 'Valid update'},
             {'context_id': -1, 'text': 'Invalid context_id'},
         ]
 
@@ -510,7 +513,7 @@ class TestDeleteContextBatch:
     async def test_delete_batch_no_matches(self) -> None:
         """Test delete with no matching entries."""
         result = await delete_context_batch(
-            context_ids=[999998, 999999],
+            context_ids=['0190abcdef1234567890abcd000f423e', '0190abcdef1234567890abcd000f423f'],
         )
 
         assert result['success'] is True
@@ -680,7 +683,7 @@ class TestUpdateContextBatchContentType:
         result = await update_context_batch(
             updates=[
                 {'context_id': valid_id, 'text': 'Updated valid entry'},
-                {'context_id': 999999, 'text': 'This entry does not exist'},
+                {'context_id': '0190abcdef1234567890abcd000f423f', 'text': 'This entry does not exist'},
             ],
             atomic=False,
         )

@@ -4,8 +4,6 @@ This module tests utility functions in app/server.py including
 text truncation and helper functions.
 """
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -371,7 +369,7 @@ class TestUpdateContextEdgeCases:
         from app.server import update_context
 
         with pytest.raises(ToolError, match='not found'):
-            await update_context(context_id=999999, text='New text')
+            await update_context(context_id='0190abcdef1234567890abcd000f423f', text='New text')
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
@@ -524,83 +522,154 @@ class TestEstimateMigrationTime:
         assert estimate_migration_time(10000000) == 1200
 
 
-class TestValidatePoolTimeoutForEmbedding:
-    """Tests for validate_pool_timeout_for_embedding()."""
+class TestValidatePoolAcquireTimeout:
+    """Tests for validate_pool_acquire_timeout()."""
 
-    def test_logs_warning_when_timeout_too_short(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Test warning logged when pool timeout insufficient."""
+    def test_logs_advisory_when_pool_timeout_below_floor(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test INFO advisory logged when pool timeout below the command-timeout floor."""
         import logging
 
-        from app.startup.validation import validate_pool_timeout_for_embedding
+        from app.startup.validation import validate_pool_acquire_timeout
 
         caplog.set_level(logging.INFO)  # Function logs at INFO level
 
-        # Create settings where pool timeout < embedding timeout + retry delays
+        # command_timeout=60 -> floor = max(60, 60*2) = 120; pool_timeout=5 is below it.
         mock_storage_settings = MagicMock()
-        mock_storage_settings.postgresql_pool_timeout_s = 5.0  # Short timeout
-
-        mock_embedding_settings = MagicMock()
-        mock_embedding_settings.timeout_s = 60.0  # Long embedding timeout
-        mock_embedding_settings.retry_max_attempts = 5
-        mock_embedding_settings.retry_base_delay_s = 1.0
+        mock_storage_settings.postgresql_command_timeout_s = 60.0
+        mock_storage_settings.postgresql_pool_timeout_s = 5.0  # Below the 120s floor
 
         mock_settings = MagicMock()
         mock_settings.storage = mock_storage_settings
-        mock_settings.embedding = mock_embedding_settings
-        mock_settings.semantic_search.enabled = True
 
         with patch('app.startup.validation.settings', mock_settings):
-            validate_pool_timeout_for_embedding()
+            validate_pool_acquire_timeout()
 
-        # Should have logged a message about timeout
-        assert any('timeout' in record.message.lower() for record in caplog.records)
+        # Should have logged an advisory about the pool acquire timeout.
+        advisories = [r for r in caplog.records if 'below the recommended' in r.message.lower()]
+        assert len(advisories) == 1
+        assert advisories[0].levelno == logging.INFO
 
-    def test_no_warning_when_timeout_sufficient(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Test no warning when pool timeout adequate."""
+    def test_no_advisory_when_pool_timeout_at_or_above_floor(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test no advisory when pool timeout meets or exceeds the floor."""
         import logging
 
-        from app.startup.validation import validate_pool_timeout_for_embedding
+        from app.startup.validation import validate_pool_acquire_timeout
 
         caplog.set_level(logging.INFO)
 
-        # Create settings where pool timeout > embedding timeout + retry delays
+        # command_timeout=60 -> floor = 120; pool_timeout=200 is above it.
         mock_storage_settings = MagicMock()
-        mock_storage_settings.postgresql_pool_timeout_s = 400.0  # Long timeout
-
-        mock_embedding_settings = MagicMock()
-        mock_embedding_settings.timeout_s = 60.0
-        mock_embedding_settings.retry_max_attempts = 5
-        mock_embedding_settings.retry_base_delay_s = 1.0
+        mock_storage_settings.postgresql_command_timeout_s = 60.0
+        mock_storage_settings.postgresql_pool_timeout_s = 200.0  # Above the 120s floor
 
         mock_settings = MagicMock()
         mock_settings.storage = mock_storage_settings
-        mock_settings.embedding = mock_embedding_settings
-        mock_settings.semantic_search.enabled = True
 
         with patch('app.startup.validation.settings', mock_settings):
-            validate_pool_timeout_for_embedding()
+            validate_pool_acquire_timeout()
 
-        # Should not have logged message about timeout being too short
-        timeout_messages = [r for r in caplog.records if 'below recommended' in r.message.lower()]
-        assert len(timeout_messages) == 0
+        # Should not have logged any advisory about the pool acquire timeout.
+        advisories = [r for r in caplog.records if 'below the recommended' in r.message.lower()]
+        assert len(advisories) == 0
 
-    def test_skipped_when_semantic_search_disabled(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Test no-op when ENABLE_SEMANTIC_SEARCH=false."""
+    def test_advisory_references_pool_levers_not_embedding_timeout(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test advisory message references POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S, not EMBEDDING_TIMEOUT_S."""
         import logging
 
-        from app.startup.validation import validate_pool_timeout_for_embedding
+        from app.startup.validation import validate_pool_acquire_timeout
 
-        caplog.set_level(logging.WARNING)
+        caplog.set_level(logging.INFO)
+
+        # command_timeout=60 -> floor = 120; pool_timeout=5 triggers the advisory.
+        mock_storage_settings = MagicMock()
+        mock_storage_settings.postgresql_command_timeout_s = 60.0
+        mock_storage_settings.postgresql_pool_timeout_s = 5.0
 
         mock_settings = MagicMock()
-        mock_settings.semantic_search.enabled = False
+        mock_settings.storage = mock_storage_settings
 
         with patch('app.startup.validation.settings', mock_settings):
-            validate_pool_timeout_for_embedding()
+            validate_pool_acquire_timeout()
 
-        # Should not have logged anything about timeout
-        timeout_warnings = [r for r in caplog.records if 'timeout' in r.message.lower()]
-        assert len(timeout_warnings) == 0
+        advisories = [r for r in caplog.records if 'below the recommended' in r.message.lower()]
+        assert len(advisories) == 1
+        message = advisories[0].message
+        assert 'POSTGRESQL_POOL_MAX' in message
+        assert 'POSTGRESQL_COMMAND_TIMEOUT_S' in message
+        assert 'EMBEDDING_TIMEOUT_S' not in message
+
+    def test_advisory_uses_60s_floor_when_double_command_timeout_below_60(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test the lower-clamp arm: floor = max(60.0, 2*command_timeout) clamps to 60 when 2x is below 60."""
+        import logging
+
+        from app.startup.validation import validate_pool_acquire_timeout
+
+        caplog.set_level(logging.INFO)
+
+        # command_timeout=10 -> 2*10=20 < 60, so the floor clamps to 60.0.
+        # pool_timeout=50 is below the 60s floor -> exactly one advisory.
+        mock_storage_settings = MagicMock()
+        mock_storage_settings.postgresql_command_timeout_s = 10.0
+        mock_storage_settings.postgresql_pool_timeout_s = 50.0  # Below the 60s floor
+
+        mock_settings = MagicMock()
+        mock_settings.storage = mock_storage_settings
+
+        with patch('app.startup.validation.settings', mock_settings):
+            validate_pool_acquire_timeout()
+
+        advisories = [r for r in caplog.records if 'below the recommended' in r.message.lower()]
+        assert len(advisories) == 1
+        assert advisories[0].levelno == logging.INFO
+
+    def test_no_advisory_at_60s_floor_when_double_command_timeout_below_60(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test no advisory at the clamped 60s floor when 2*command_timeout is below 60."""
+        import logging
+
+        from app.startup.validation import validate_pool_acquire_timeout
+
+        caplog.set_level(logging.INFO)
+
+        # command_timeout=10 -> 2*10=20 < 60, so the floor clamps to 60.0.
+        # pool_timeout=60 meets the floor (60 < 60 is False) -> no advisory.
+        mock_storage_settings = MagicMock()
+        mock_storage_settings.postgresql_command_timeout_s = 10.0
+        mock_storage_settings.postgresql_pool_timeout_s = 60.0  # At the 60s floor
+
+        mock_settings = MagicMock()
+        mock_settings.storage = mock_storage_settings
+
+        with patch('app.startup.validation.settings', mock_settings):
+            validate_pool_acquire_timeout()
+
+        advisories = [r for r in caplog.records if 'below the recommended' in r.message.lower()]
+        assert len(advisories) == 0
+
+
+class TestIsSupabaseSessionPooler:
+    """Tests for the is_supabase_session_pooler() predicate.
+
+    The session-pooler advisory now lives solely in
+    PostgreSQLBackend._detect_session_mode_pooler() (a single detector that
+    mirrors _detect_pgpool_ii, sets the metric, and warns once); see
+    tests/backends/test_session_pooler_detection.py. Only the shared predicate
+    remains in app.startup.validation.
+    """
+
+    def test_is_supabase_session_pooler_matrix(self) -> None:
+        """Predicate flags only pooler.supabase.com on port 5432."""
+        from app.startup.validation import is_supabase_session_pooler
+
+        assert is_supabase_session_pooler('aws-0-us-east-1.pooler.supabase.com', 5432) is True
+        assert is_supabase_session_pooler('aws-0-us-east-1.pooler.supabase.com', 6543) is False
+        assert is_supabase_session_pooler('db.abc.supabase.co', 5432) is False
+        assert is_supabase_session_pooler('localhost', 5432) is False
 
 
 class TestGetServerVersion:
@@ -681,3 +750,40 @@ class TestGetServerVersion:
         assert call_kwargs['version'] == SERVER_VERSION, (
             f'Expected version={SERVER_VERSION!r}, got {call_kwargs["version"]!r}'
         )
+
+    def test_sse_transport_forces_stateful_under_stateless_env(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SSE must pass stateless_http=False even when FASTMCP_STATELESS_HTTP=true.
+
+        FastMCP raises ValueError for stateless_http=True with the SSE transport
+        and resolves an unset stateless_http from FASTMCP_STATELESS_HTTP (whose
+        documented default is true), so the SSE branch must force it to False or
+        the server crashes on startup under the project's own default config.
+        """
+        import app.server as server_module
+        from app.settings import get_settings
+
+        monkeypatch.setenv('MCP_TRANSPORT', 'sse')
+        monkeypatch.setenv('FASTMCP_STATELESS_HTTP', 'true')
+        get_settings.cache_clear()
+        monkeypatch.setattr(server_module, 'settings', get_settings())
+        assert server_module.settings.transport.transport == 'sse'
+        assert server_module.settings.transport.stateless_http is True
+
+        mock_fastmcp_cls = MagicMock()
+        mock_instance = mock_fastmcp_cls.return_value
+        mock_instance.run = MagicMock(side_effect=SystemExit(0))
+        mock_instance.custom_route = MagicMock(return_value=lambda f: f)
+
+        with (
+            patch('app.server.FastMCP', mock_fastmcp_cls),
+            patch('app.server.create_auth_provider', return_value=None),
+            pytest.raises(SystemExit),
+        ):
+            server_module.main()
+
+        mock_instance.run.assert_called_once()
+        run_kwargs = mock_instance.run.call_args.kwargs
+        assert run_kwargs['transport'] == 'sse'
+        assert run_kwargs['stateless_http'] is False

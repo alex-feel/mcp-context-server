@@ -16,26 +16,69 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
-from app.backends import create_backend
 from app.errors import format_exception_message
+from app.migrations._pg_ddl import begin_migration
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Database path for backward compatibility mode
-DB_PATH = settings.storage.db_path
+
+def _strip_fp32_vec_statements(sql: str) -> str:
+    """Remove statements that CREATE or INDEX the fp32 ``vec_context_embeddings`` table.
+
+    Used on the SERVER startup path when ``ENABLE_EMBEDDING_COMPRESSION=true``: the
+    compressed table (``vec_context_embeddings_compressed``) REPLACES the fp32 vec
+    table, so the fp32 table must never be created. Creating it here only to have the
+    compression migration drop it churns the schema on SQLite (create-then-drop every
+    restart) and, because the PostgreSQL compression migration early-returns once
+    ``compression_metadata`` exists, leaves a permanent stray empty fp32 table + HNSW
+    index on PostgreSQL.
+
+    The test inspects only the executable (non-comment) text of each statement so an
+    ``embedding_metadata`` statement whose leading comment merely MENTIONS the fp32 vec
+    table is preserved. It is safe for BOTH backends: the function splits on ``;`` and
+    only DROPS fragments whose non-comment code references ``vec_context_embeddings``,
+    rejoining the rest with ``;`` (an identity for every kept fragment). The only dropped
+    fragments are the clean single-statement fp32 ``CREATE TABLE`` / ``CREATE INDEX``
+    DDL; the PostgreSQL ``$$``-quoted ``embedding_metadata`` trigger function never
+    references ``vec_context_embeddings`` in any of its ``;``-fragments, so it is
+    reproduced verbatim.
+
+    Returns:
+        The SQL with every ``vec_context_embeddings``-targeting statement removed.
+    """
+    kept: list[str] = []
+    for statement in sql.split(';'):
+        code = '\n'.join(
+            line for line in statement.splitlines() if not line.strip().startswith('--')
+        )
+        if code.strip() and 'vec_context_embeddings' in code:
+            continue
+        kept.append(statement)
+    return ';'.join(kept)
 
 
-async def apply_semantic_search_migration(backend: StorageBackend | None = None) -> None:
-    """Apply semantic search migration if enabled.
+async def apply_semantic_search_migration(
+    backend: StorageBackend,
+    *,
+    force: bool = False,
+    embedding_dim: int | None = None,
+) -> None:
+    """Apply the semantic-search vector storage migration when embedding generation is enabled.
 
     Args:
-        backend: Optional backend to use. If None, creates temporary backend for backward compatibility.
-
-    This function can work in two modes:
-    1. With backend parameter (normal server startup): Uses provided backend, no temp backend created
-    2. Without backend parameter (tests/direct calls): Creates temporary backend for isolation
+        backend: Storage backend instance.
+        force: When True, apply the migration regardless of
+            ``settings.embedding.generation_enabled``. Used by the migration CLI
+            (``app.cli.migrate``) to create the fp32 vector layout on a target
+            database while preserving the server's default behavior (gated on
+            embedding generation) for all other callers.
+        embedding_dim: Explicit vector dimension to template into the migration
+            SQL. When ``None`` the configured ``settings.embedding.dim`` is used.
+            The CLI passes the SOURCE database's detected dimension so the target
+            vector column width matches the data being copied.
 
     This function:
     1. Checks if vector table already exists with embeddings
@@ -46,16 +89,10 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
-    if not settings.semantic_search.enabled:
+    if not force and not settings.embedding.generation_enabled:
         return
 
-    # Determine backend type to select correct migration file
-    if backend is not None:
-        backend_type = backend.backend_type
-    else:
-        # Create temporary backend to determine type
-        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
-        backend_type = temp_backend.backend_type
+    backend_type = backend.backend_type
 
     # Select migration file based on backend type
     migration_filename = ('add_semantic_search_postgresql.sql' if backend_type == 'postgresql'
@@ -71,34 +108,51 @@ async def apply_semantic_search_migration(backend: StorageBackend | None = None)
     try:
         # Read migration SQL template
         migration_sql_template = migration_path.read_text(encoding='utf-8')
-
-        # Apply migration - use provided backend or create temporary one
-        if backend is not None:
-            # Use provided backend (normal server startup)
-            await _apply_migration_with_backend(backend, migration_sql_template)
-        else:
-            # Backward compatibility: create temporary backend for tests
-            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
-            await temp_manager.initialize()
-            try:
-                await _apply_migration_with_backend(temp_manager, migration_sql_template)
-            finally:
-                await temp_manager.shutdown()
+        # When compression is enabled the compressed table REPLACES the fp32
+        # vec_context_embeddings table, so the SERVER startup path must NOT create
+        # the fp32 table. The CLI (force=True) still builds the full fp32 layout:
+        # it never runs the compression migration and provisions compression
+        # separately via --compress.
+        skip_fp32_vec = settings.compression.enabled and not force
+        await _apply_migration_with_backend(
+            backend,
+            migration_sql_template,
+            embedding_dim=embedding_dim,
+            skip_fp32_vec=skip_fp32_vec,
+        )
     except Exception as e:
         logger.error(f'Failed to apply semantic search migration: {e}')
         raise RuntimeError(f'Semantic search migration failed: {e}') from e
 
 
-async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_template: str) -> None:
+async def _apply_migration_with_backend(
+    manager: StorageBackend,
+    migration_sql_template: str,
+    embedding_dim: int | None = None,
+    skip_fp32_vec: bool = False,
+) -> None:
     """Helper function to apply migration with a given backend.
 
     Args:
         manager: The backend to use for migration
-        migration_sql_template: The migration SQL template with {EMBEDDING_DIM} placeholder
+        migration_sql_template: The migration SQL template. The
+            semantic-search migration uses BARE table names; the
+            loader substitutes {EMBEDDING_DIM} for the vector type
+            dimension and {SCHEMA} ONLY for the trigger's FUNCTION
+            DDL (CVE-2018-1058 mitigation; TABLE DDL remains BARE).
+        embedding_dim: Explicit vector dimension to template and to compare
+            against the existing table's dimension. When ``None``, falls back to
+            ``settings.embedding.dim``.
+        skip_fp32_vec: When True, omit every statement that creates or indexes the
+            fp32 ``vec_context_embeddings`` table, provisioning only
+            ``embedding_metadata`` (which the compressed write path still requires).
+            Set by the server startup path when compression is enabled; the compressed
+            table replaces the fp32 table wholesale.
 
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
+    effective_dim = embedding_dim if embedding_dim is not None else settings.embedding.dim
     # Check for existing table and dimension compatibility - backend-specific
     if manager.backend_type == 'sqlite':
 
@@ -146,28 +200,52 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         table_exists, existing_dim = await manager.execute_read(cast(Any, _check_existing_dimension_postgresql))
 
     # Validate dimension compatibility
-    if table_exists and existing_dim is not None and existing_dim != settings.embedding.dim:
-        db_path = str(DB_PATH).replace('\\', '/')
-        raise RuntimeError(
+    if table_exists and existing_dim is not None and existing_dim != effective_dim:
+        header = (
             f'Embedding dimension mismatch detected!\n'
             f'  Existing database dimension: {existing_dim}\n'
-            f'  Configured EMBEDDING_DIM: {settings.embedding.dim}\n\n'
+            f'  Configured EMBEDDING_DIM: {effective_dim}\n\n'
             f'To change embedding dimensions, you must:\n'
-            f'  1. Back up your database: {db_path}\n'
-            f'  2. Delete or rename the database file\n'
-            f'  3. Restart the server to create new tables with dimension {settings.embedding.dim}\n'
-            f'  4. Re-import your context data (embeddings will be regenerated)\n\n'
+        )
+        if manager.backend_type == 'sqlite':
+            db_path = str(settings.storage.db_path).replace('\\', '/')
+            remediation = (
+                f'  1. Back up your database: {db_path}\n'
+                f'  2. Delete or rename the database file\n'
+                f'  3. Restart the server to create new tables with dimension {effective_dim}\n'
+                f'  4. Re-import your context data (embeddings will be regenerated)\n'
+            )
+        else:  # postgresql
+            schema = settings.storage.postgresql_schema
+            remediation = (
+                f'  1. Back up your PostgreSQL database (e.g. with pg_dump)\n'
+                f'  2. Drop the embedding tables in schema "{schema}" (vec_context_embeddings '
+                f'/ vec_context_embeddings_compressed, embedding_metadata, and compression_metadata '
+                f'when compression is enabled)\n'
+                f'  3. Restart the server to recreate them with dimension {effective_dim}\n'
+                f'  4. Re-import your context data (embeddings will be regenerated)\n'
+            )
+        raise RuntimeError(
+            f'{header}{remediation}\n'
             f'Note: Changing dimensions will lose all existing embeddings.',
         )
 
-    # Template the migration SQL with configured dimension and schema
+    # Template the migration SQL with the effective dimension and configured schema
     migration_sql = migration_sql_template.replace(
         '{EMBEDDING_DIM}',
-        str(settings.embedding.dim),
+        str(effective_dim),
     ).replace(
         '{SCHEMA}',
         settings.storage.postgresql_schema,
     )
+
+    # When compression is enabled the compressed table replaces the fp32
+    # vec_context_embeddings table, so omit every statement that creates or indexes
+    # it -- provisioning only embedding_metadata, which the compressed write path
+    # still requires. Applied uniformly to both backends (the filter preserves the
+    # PostgreSQL $$-quoted trigger verbatim).
+    if skip_fp32_vec:
+        migration_sql = _strip_fp32_vec_statements(migration_sql)
 
     # Apply migration - backend-specific
     if manager.backend_type == 'sqlite':
@@ -199,12 +277,16 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
         await manager.execute_write(_apply_migration_sqlite)
     else:  # postgresql
 
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
+
         async def _apply_migration_postgresql(conn: asyncpg.Connection) -> None:
-            # PostgreSQL: pgvector extension registration happens in backend initialization
-            # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-            # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-            # aligning with execute_write()'s conn.transaction() wrapper.
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+            # PostgreSQL: pgvector extension registration happens in backend initialization.
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it. SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # there is no finally-restore SET -- which, in an aborted transaction, would raise
+            # 25P02 and mask the real DDL error. This is the heaviest DDL (the fp32 vec table
+            # plus its HNSW index), so the pool's shorter command_timeout must not cancel it.
+            await begin_migration(conn, migration_timeout_s)
 
             # Parse and execute migration SQL statements
             statements: list[str] = []
@@ -234,14 +316,14 @@ async def _apply_migration_with_backend(manager: StorageBackend, migration_sql_t
             for stmt in statements:
                 stmt = stmt.strip()
                 if stmt and not stmt.startswith('--'):
-                    await conn.execute(stmt)
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
         await manager.execute_write(cast(Any, _apply_migration_postgresql))
 
     # Check table existence (not row existence) to determine if migration was applied
     if not table_exists:
         logger.info(
-            f'Semantic search migration applied successfully with dimension: {settings.embedding.dim}',
+            f'Semantic search migration applied successfully with dimension: {effective_dim}',
         )
     else:
         logger.info('Semantic search migration: tables already exist, skipping')
@@ -270,7 +352,7 @@ async def _check_jsonb_merge_patch_exists(conn: asyncpg.Connection) -> bool:
     return bool(result)
 
 
-async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = None) -> None:
+async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
     """Apply jsonb_merge_patch function migration for PostgreSQL.
 
     This migration creates the jsonb_merge_patch() PL/pgSQL function that implements
@@ -278,7 +360,7 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
     context_repository.patch_metadata() method for PostgreSQL backends.
 
     Args:
-        backend: Optional backend to use. If None, creates temporary backend.
+        backend: Storage backend instance.
 
     Raises:
         RuntimeError: If migration execution fails.
@@ -288,15 +370,8 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
         - Idempotent: Uses CREATE OR REPLACE FUNCTION
         - Must be called after init_database() to ensure tables exist
     """
-    # Determine backend type
-    if backend is not None:
-        backend_type = backend.backend_type
-    else:
-        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
-        backend_type = temp_backend.backend_type
-
     # Only apply to PostgreSQL backends
-    if backend_type != 'postgresql':
+    if backend.backend_type != 'postgresql':
         return
 
     migration_path = Path(__file__).parent / 'add_jsonb_merge_patch_postgresql.sql'
@@ -313,120 +388,67 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend | None = Non
         schema = settings.storage.postgresql_schema
         migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
-        if backend is not None:
-            # Check if function already exists before applying
-            function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+        # Check if function already exists before applying
+        function_exists = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
 
-            async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
-                # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-                # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-                # aligning with execute_write()'s conn.transaction() wrapper.
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
-                # Parse SQL statements, handling dollar-quoted function bodies
-                statements: list[str] = []
-                current_stmt: list[str] = []
-                in_function = False
+        async def _apply_jsonb_merge_patch(conn: asyncpg.Connection) -> None:
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction).
+            await begin_migration(conn, migration_timeout_s)
 
-                for line in migration_sql.split('\n'):
-                    stripped = line.strip()
-                    # Skip comment-only lines (but preserve function comments)
-                    if stripped.startswith('--') and not in_function:
-                        continue
-                    # Track dollar-quoted strings (function bodies)
-                    if '$$' in stripped:
-                        in_function = not in_function
-                    if stripped:
-                        current_stmt.append(line)
-                    # End of statement: semicolon when not in dollar quotes
-                    if stripped.endswith(';') and not in_function:
-                        statements.append('\n'.join(current_stmt))
-                        current_stmt = []
+            # Parse SQL statements, handling dollar-quoted function bodies
+            statements: list[str] = []
+            current_stmt: list[str] = []
+            in_function = False
 
-                # Add any remaining statement
-                if current_stmt:
+            for line in migration_sql.split('\n'):
+                stripped = line.strip()
+                # Skip comment-only lines (but preserve function comments)
+                if stripped.startswith('--') and not in_function:
+                    continue
+                # Track dollar-quoted strings (function bodies)
+                if '$$' in stripped:
+                    in_function = not in_function
+                if stripped:
+                    current_stmt.append(line)
+                # End of statement: semicolon when not in dollar quotes
+                if stripped.endswith(';') and not in_function:
                     statements.append('\n'.join(current_stmt))
+                    current_stmt = []
 
-                # Execute each statement
-                for stmt in statements:
-                    stmt = stmt.strip()
-                    if stmt and not stmt.startswith('--'):
-                        await conn.execute(stmt)
+            # Add any remaining statement
+            if current_stmt:
+                statements.append('\n'.join(current_stmt))
 
-            await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
+            # Execute each statement
+            for stmt in statements:
+                stmt = stmt.strip()
+                if stmt and not stmt.startswith('--'):
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-            # Verify function was actually created after migration
-            verification_result = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
-            if not verification_result:
-                raise RuntimeError(
-                    'jsonb_merge_patch migration applied but function verification failed. '
-                    'Check PostgreSQL permissions and error logs.',
-                )
+        await backend.execute_write(cast(Any, _apply_jsonb_merge_patch))
 
-            if function_exists:
-                logger.debug('jsonb_merge_patch function already exists, verified')
-            else:
-                logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
+        # Verify function was actually created after migration
+        verification_result = await backend.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
+        if not verification_result:
+            raise RuntimeError(
+                'jsonb_merge_patch migration applied but function verification failed. '
+                'Check PostgreSQL permissions and error logs.',
+            )
+
+        if function_exists:
+            logger.debug('jsonb_merge_patch function already exists, verified')
         else:
-            # Backward compatibility: create temporary backend
-            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
-            await temp_manager.initialize()
-            try:
-                # Check if function already exists before applying
-                function_exists = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
-
-                async def _apply_jsonb_merge_patch_temp(conn: asyncpg.Connection) -> None:
-                    # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-                    # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-                    # aligning with execute_write()'s conn.transaction() wrapper.
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
-
-                    statements: list[str] = []
-                    current_stmt: list[str] = []
-                    in_function = False
-
-                    for line in migration_sql.split('\n'):
-                        stripped = line.strip()
-                        if stripped.startswith('--') and not in_function:
-                            continue
-                        if '$$' in stripped:
-                            in_function = not in_function
-                        if stripped:
-                            current_stmt.append(line)
-                        if stripped.endswith(';') and not in_function:
-                            statements.append('\n'.join(current_stmt))
-                            current_stmt = []
-
-                    if current_stmt:
-                        statements.append('\n'.join(current_stmt))
-
-                    for stmt in statements:
-                        stmt = stmt.strip()
-                        if stmt and not stmt.startswith('--'):
-                            await conn.execute(stmt)
-
-                await temp_manager.execute_write(cast(Any, _apply_jsonb_merge_patch_temp))
-
-                # Verify function was actually created after migration
-                verification_result = await temp_manager.execute_read(cast(Any, _check_jsonb_merge_patch_exists))
-                if not verification_result:
-                    raise RuntimeError(
-                        'jsonb_merge_patch migration applied but function verification failed. '
-                        'Check PostgreSQL permissions and error logs.',
-                    )
-
-                if function_exists:
-                    logger.debug('jsonb_merge_patch function already exists, verified')
-                else:
-                    logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
-            finally:
-                await temp_manager.shutdown()
+            logger.info('Applied jsonb_merge_patch migration for PostgreSQL')
     except Exception as e:
         logger.error(f'Failed to apply jsonb_merge_patch migration: {e}')
         raise RuntimeError(f'jsonb_merge_patch migration failed: {format_exception_message(e)}') from e
 
 
-async def apply_function_search_path_migration(backend: StorageBackend | None = None) -> None:
+async def apply_function_search_path_migration(backend: StorageBackend) -> None:
     """Apply search_path fix for PostgreSQL functions (CVE-2018-1058 mitigation).
 
     This migration sets search_path for all PostgreSQL functions to prevent
@@ -434,7 +456,7 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
     and can be safely run multiple times.
 
     Args:
-        backend: Optional backend to use. If None, creates temporary backend.
+        backend: Storage backend instance.
 
     Raises:
         RuntimeError: If migration execution fails.
@@ -444,15 +466,8 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
         - Idempotent: ALTER FUNCTION SET is safe to run repeatedly
         - Must be called after all function-creating migrations
     """
-    # Determine backend type
-    if backend is not None:
-        backend_type = backend.backend_type
-    else:
-        temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
-        backend_type = temp_backend.backend_type
-
     # Only apply to PostgreSQL backends
-    if backend_type != 'postgresql':
+    if backend.backend_type != 'postgresql':
         return
 
     migration_path = Path(__file__).parent / 'fix_function_search_path_postgresql.sql'
@@ -469,85 +484,45 @@ async def apply_function_search_path_migration(backend: StorageBackend | None = 
         schema = settings.storage.postgresql_schema
         migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
-        if backend is not None:
+        migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
-            async def _apply_search_path_fix(conn: asyncpg.Connection) -> None:
-                # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-                # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-                # aligning with execute_write()'s conn.transaction() wrapper.
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+        async def _apply_search_path_fix(conn: asyncpg.Connection) -> None:
+            # Raise the transaction-scoped statement_timeout to the migration budget and take
+            # the shared advisory lock under it (SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
+            # no finally-restore that would raise 25P02 in an aborted transaction).
+            await begin_migration(conn, migration_timeout_s)
 
-                # Parse SQL statements, handling dollar-quoted DO blocks
-                statements: list[str] = []
-                current_stmt: list[str] = []
-                in_dollar_quote = False
+            # Parse SQL statements, handling dollar-quoted DO blocks
+            statements: list[str] = []
+            current_stmt: list[str] = []
+            in_dollar_quote = False
 
-                for line in migration_sql.split('\n'):
-                    stripped = line.strip()
-                    # Skip comment-only lines outside dollar quotes
-                    if stripped.startswith('--') and not in_dollar_quote:
-                        continue
-                    # Track dollar-quoted strings (DO blocks and function bodies)
-                    if '$$' in stripped:
-                        in_dollar_quote = not in_dollar_quote
-                    if stripped:
-                        current_stmt.append(line)
-                    # End of statement: semicolon when not in dollar quotes
-                    if stripped.endswith(';') and not in_dollar_quote:
-                        statements.append('\n'.join(current_stmt))
-                        current_stmt = []
-
-                # Add any remaining statement
-                if current_stmt:
+            for line in migration_sql.split('\n'):
+                stripped = line.strip()
+                # Skip comment-only lines outside dollar quotes
+                if stripped.startswith('--') and not in_dollar_quote:
+                    continue
+                # Track dollar-quoted strings (DO blocks and function bodies)
+                if '$$' in stripped:
+                    in_dollar_quote = not in_dollar_quote
+                if stripped:
+                    current_stmt.append(line)
+                # End of statement: semicolon when not in dollar quotes
+                if stripped.endswith(';') and not in_dollar_quote:
                     statements.append('\n'.join(current_stmt))
+                    current_stmt = []
 
-                for stmt in statements:
-                    stmt = stmt.strip()
-                    if stmt and not stmt.startswith('--'):
-                        await conn.execute(stmt)
+            # Add any remaining statement
+            if current_stmt:
+                statements.append('\n'.join(current_stmt))
 
-            await backend.execute_write(cast(Any, _apply_search_path_fix))
-            logger.info('Applied function search_path security fix for PostgreSQL')
-        else:
-            # Backward compatibility: create temporary backend
-            temp_manager = create_backend(backend_type=None, db_path=DB_PATH)
-            await temp_manager.initialize()
-            try:
+            for stmt in statements:
+                stmt = stmt.strip()
+                if stmt and not stmt.startswith('--'):
+                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
 
-                async def _apply_search_path_fix_temp(conn: asyncpg.Connection) -> None:
-                    # Acquire transaction-scoped advisory lock for multi-pod DDL safety.
-                    # pg_advisory_xact_lock releases automatically on COMMIT or ROLLBACK,
-                    # aligning with execute_write()'s conn.transaction() wrapper.
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
-
-                    statements: list[str] = []
-                    current_stmt: list[str] = []
-                    in_dollar_quote = False
-
-                    for line in migration_sql.split('\n'):
-                        stripped = line.strip()
-                        if stripped.startswith('--') and not in_dollar_quote:
-                            continue
-                        if '$$' in stripped:
-                            in_dollar_quote = not in_dollar_quote
-                        if stripped:
-                            current_stmt.append(line)
-                        if stripped.endswith(';') and not in_dollar_quote:
-                            statements.append('\n'.join(current_stmt))
-                            current_stmt = []
-
-                    if current_stmt:
-                        statements.append('\n'.join(current_stmt))
-
-                    for stmt in statements:
-                        stmt = stmt.strip()
-                        if stmt and not stmt.startswith('--'):
-                            await conn.execute(stmt)
-
-                await temp_manager.execute_write(cast(Any, _apply_search_path_fix_temp))
-                logger.info('Applied function search_path security fix for PostgreSQL')
-            finally:
-                await temp_manager.shutdown()
+        await backend.execute_write(cast(Any, _apply_search_path_fix))
+        logger.info('Applied function search_path security fix for PostgreSQL')
     except Exception as e:
         logger.error(f'Failed to apply function search_path migration: {e}')
         raise RuntimeError(f'Function search_path migration failed: {e}') from e

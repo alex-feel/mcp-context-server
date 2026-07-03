@@ -8,8 +8,8 @@ Contains:
 - New tests for build_batch_store_response_message, build_batch_update_response_message
 """
 
-import asyncio
 import base64
+from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import PropertyMock
@@ -18,6 +18,8 @@ import asyncpg
 import pytest
 from fastmcp.exceptions import ToolError
 
+from app.repositories.embedding_repository import ChunkEmbedding
+from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import build_store_response_message
@@ -28,6 +30,8 @@ from app.tools._shared import is_connection_error
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
 
+_ChunkEmbeddingList = list[ChunkEmbedding]
+
 # ---------------------------------------------------------------------------
 # Relocated: TestTransactionHeartbeat (from tests/backends/test_postgresql_backend.py)
 # ---------------------------------------------------------------------------
@@ -36,7 +40,8 @@ from app.tools._shared import validate_and_normalize_images
 class TestTransactionHeartbeat:
     """Test in-transaction heartbeat helper."""
 
-    def test_heartbeat_executes_select_1(self) -> None:
+    @pytest.mark.asyncio
+    async def test_heartbeat_executes_select_1(self) -> None:
         """Verify transaction_heartbeat sends SELECT 1 for PostgreSQL transactions."""
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock()
@@ -45,18 +50,19 @@ class TestTransactionHeartbeat:
         type(mock_txn).backend_type = PropertyMock(return_value='postgresql')
         type(mock_txn).connection = PropertyMock(return_value=mock_conn)
 
-        asyncio.get_event_loop().run_until_complete(transaction_heartbeat(mock_txn))
+        await transaction_heartbeat(mock_txn)
 
         mock_conn.execute.assert_called_once_with('SELECT 1')
 
-    def test_heartbeat_noop_for_sqlite(self) -> None:
+    @pytest.mark.asyncio
+    async def test_heartbeat_noop_for_sqlite(self) -> None:
         """Verify transaction_heartbeat is a no-op for SQLite transactions."""
         mock_conn = MagicMock()
         mock_txn = MagicMock()
         type(mock_txn).backend_type = PropertyMock(return_value='sqlite')
         type(mock_txn).connection = PropertyMock(return_value=mock_conn)
 
-        asyncio.get_event_loop().run_until_complete(transaction_heartbeat(mock_txn))
+        await transaction_heartbeat(mock_txn)
 
         mock_conn.execute.assert_not_called()
 
@@ -80,6 +86,20 @@ class TestConnectionErrorClassification:
         assert not is_connection_error(ValueError('bad value'))
         assert not is_connection_error(TypeError('wrong type'))
         assert not is_connection_error(RuntimeError('logic error'))
+
+    def test_query_canceled_error_is_retryable(self) -> None:
+        """statement_timeout cancel (SQLSTATE 57014) is classified retryable.
+
+        QueryCanceledError is raised when PostgreSQL cancels a statement that
+        exceeded statement_timeout. It is a transient lock-wait/timeout error,
+        safe to retry because the DB write is idempotent and generation already
+        completed outside the transaction.
+        """
+        assert is_connection_error(asyncpg.exceptions.QueryCanceledError('canceling statement due to statement timeout'))
+
+    def test_query_canceled_error_sqlstate_is_57014(self) -> None:
+        """Document the SQLSTATE this classifier now treats as retryable."""
+        assert asyncpg.exceptions.QueryCanceledError.sqlstate == '57014'
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +200,68 @@ class TestValidateAndNormalizeImages:
         _, _, errors = validate_and_normalize_images(imgs, error_mode='collect')
         assert len(errors) == 1
         assert 'Image 1' in errors[0]
+
+    def test_raise_mode_non_string_mime_type(self) -> None:
+        """A present non-string mime_type (untyped batch input) is rejected in raise mode."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'mime_type': 123}])
+        with pytest.raises(ToolError, match='Image 0 has a non-string "mime_type" field'):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_raise_mode_null_mime_type(self) -> None:
+        """A present null mime_type is rejected, not bound into the NOT NULL column."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'mime_type': None}])
+        with pytest.raises(ToolError, match='Image 0 has a non-string "mime_type" field'):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_collect_mode_non_string_mime_type(self) -> None:
+        """collect mode records a non-string mime_type error instead of raising."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'mime_type': None}])
+        _, content_type, errors = validate_and_normalize_images(imgs, error_mode='collect')
+        assert content_type == 'text'
+        assert len(errors) == 1
+        assert 'Image 0 has a non-string "mime_type" field' in errors[0]
+
+    def test_raise_mode_non_string_data(self) -> None:
+        """A present non-string data value is rejected before .strip()/base64 decode."""
+        imgs = cast('list[dict[str, str]]', [{'data': 123, 'mime_type': 'image/png'}])
+        with pytest.raises(ToolError, match='Image 0 has a non-string "data" field'):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_collect_mode_non_string_data(self) -> None:
+        """collect mode records a non-string data error instead of crashing with AttributeError."""
+        imgs = cast('list[dict[str, str]]', [{'data': 123, 'mime_type': 'image/png'}])
+        _, _, errors = validate_and_normalize_images(imgs, error_mode='collect')
+        assert len(errors) == 1
+        assert 'Image 0 has a non-string "data" field' in errors[0]
+
+    def test_raise_mode_garbage_decodes_to_zero_bytes(self) -> None:
+        """Garbage base64 (all non-alphabet, length a multiple of 4) decodes to 0 bytes and is rejected.
+
+        base64.b64decode is lenient (validate omitted), so a value like '!!!!' silently
+        discards every non-alphabet character and decodes to b''. Without an explicit
+        zero-length guard it would be stored as a 0-byte image, defeating the validator's
+        documented protection against silent 0-byte storage.
+        """
+        with pytest.raises(ToolError, match='Image 0 "data" decodes to zero bytes'):
+            validate_and_normalize_images([{'data': '!!!!'}], error_mode='raise')
+
+    def test_collect_mode_garbage_decodes_to_zero_bytes(self) -> None:
+        """collect mode records the zero-byte error instead of raising or storing a 0-byte image."""
+        _, content_type, errors = validate_and_normalize_images(
+            [{'data': '@#$%'}], error_mode='collect',
+        )
+        assert content_type == 'text'
+        assert len(errors) == 1
+        assert 'decodes to zero bytes' in errors[0]
+
+    def test_whitespace_wrapped_base64_still_accepted(self) -> None:
+        """Newline-wrapped base64 still decodes (the decode stays lenient; only a 0-byte result is rejected)."""
+        wrapped = VALID_BASE64_PNG[:4] + '\n' + VALID_BASE64_PNG[4:]
+        _, content_type, errors = validate_and_normalize_images(
+            [{'data': wrapped, 'mime_type': 'image/png'}], error_mode='collect',
+        )
+        assert content_type == 'multimodal'
+        assert errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +483,7 @@ class TestExecuteStoreInTransaction:
     def mock_repos(self) -> MagicMock:
         """Create a mock RepositoryContainer with all required sub-repositories."""
         repos = MagicMock()
-        repos.context.store_with_deduplication = AsyncMock(return_value=(42, False))
+        repos.context.store_with_deduplication = AsyncMock(return_value=('42', False))
         repos.tags.store_tags = AsyncMock()
         repos.tags.replace_tags_for_context = AsyncMock()
         repos.images.store_images = AsyncMock()
@@ -435,7 +517,7 @@ class TestExecuteStoreInTransaction:
             chunk_embeddings=None,
             embedding_model='test-model',
         )
-        assert context_id == 42
+        assert context_id == '42'
         assert was_updated is False
         assert embedding_stored is False
         mock_repos.context.store_with_deduplication.assert_called_once()
@@ -452,7 +534,7 @@ class TestExecuteStoreInTransaction:
             tags=['tag1', 'tag2'], validated_images=[],
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.tags.store_tags.assert_called_once_with(42, ['tag1', 'tag2'], txn=mock_txn)
+        mock_repos.tags.store_tags.assert_called_once_with('42', ['tag1', 'tag2'], txn=mock_txn)
         mock_repos.tags.replace_tags_for_context.assert_not_called()
 
     @pytest.mark.asyncio
@@ -472,11 +554,108 @@ class TestExecuteStoreInTransaction:
         mock_repos.tags.store_tags.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_store_with_empty_tags_dedup_entry_clears(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """An explicitly provided empty tags list CLEARS tags on a dedup UPDATE.
+
+        The documented replacement contract distinguishes provided from None:
+        [] is a provided value and must replace (clear), matching update_context
+        semantics; only None preserves existing tags.
+        """
+        mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
+        await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=[], validated_images=[],
+            chunk_embeddings=None, embedding_model='m',
+        )
+        mock_repos.tags.replace_tags_for_context.assert_called_once_with('42', [], txn=mock_txn)
+        mock_repos.tags.store_tags.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_store_with_none_tags_dedup_entry_preserves(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """tags=None preserves existing tags on a dedup UPDATE (no tag write)."""
+        mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
+        await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[],
+            chunk_embeddings=None, embedding_model='m',
+        )
+        mock_repos.tags.replace_tags_for_context.assert_not_called()
+        mock_repos.tags.store_tags.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_store_with_provided_empty_images_dedup_entry_clears(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """images provided as an empty list CLEARS images on a dedup UPDATE."""
+        mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
+        await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[], images_provided=True,
+            chunk_embeddings=None, embedding_model='m',
+        )
+        mock_repos.images.replace_images_for_context.assert_called_once_with('42', [], txn=mock_txn)
+        mock_repos.images.store_images.assert_not_called()
+        # Providing images (even []) means content_type is NOT preserved.
+        dedup_kwargs = mock_repos.context.store_with_deduplication.call_args.kwargs
+        assert dedup_kwargs['preserve_content_type_on_dedup'] is False
+
+    @pytest.mark.asyncio
+    async def test_store_with_absent_images_dedup_entry_preserves(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """images not provided (None from the caller) preserves existing images."""
+        mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
+        await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[], images_provided=False,
+            chunk_embeddings=None, embedding_model='m',
+        )
+        mock_repos.images.replace_images_for_context.assert_not_called()
+        mock_repos.images.store_images.assert_not_called()
+        dedup_kwargs = mock_repos.context.store_with_deduplication.call_args.kwargs
+        assert dedup_kwargs['preserve_content_type_on_dedup'] is True
+
+    @pytest.mark.asyncio
+    async def test_store_summary_pending_divergence_raises_reconcile(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """A divergence INSERT with a reused (summary_pending) summary aborts.
+
+        The reused summary was read from a candidate that has since diverged and
+        may describe different text; the transaction must abort via the
+        reconcile signal so the caller regenerates it for THIS text.
+        """
+        from app.tools._shared import EmbeddingsReconcileRequiredError
+
+        mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', False))
+        with pytest.raises(EmbeddingsReconcileRequiredError):
+            await execute_store_in_transaction(
+                mock_repos, mock_txn,
+                thread_id='t', source='user', content_type='text',
+                text_content='text', metadata_str=None, summary='reused summary',
+                tags=None, validated_images=[],
+                chunk_embeddings=None, embedding_model='m',
+                summary_pending=True,
+            )
+
+    @pytest.mark.asyncio
     async def test_store_with_embeddings_new_entry(
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """New entry stores embeddings and returns embedding_stored=True."""
-        chunk_embeddings = [MagicMock()]
+        chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
             thread_id='t', source='user', content_type='text',
@@ -494,7 +673,7 @@ class TestExecuteStoreInTransaction:
         """Deduplicated entry with existing embeddings skips storage."""
         mock_repos.context.store_with_deduplication = AsyncMock(return_value=(42, True))
         mock_repos.embeddings.exists = AsyncMock(return_value=True)
-        chunk_embeddings = [MagicMock()]
+        chunk_embeddings = cast(_ChunkEmbeddingList, [MagicMock()])
         context_id, was_updated, embedding_stored = await execute_store_in_transaction(
             mock_repos, mock_txn,
             thread_id='t', source='user', content_type='text',
@@ -521,6 +700,83 @@ class TestExecuteStoreInTransaction:
             )
 
     @pytest.mark.asyncio
+    async def test_store_raises_reconcile_when_insert_skipped_embeddings(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """INSERT with skipped embeddings + generation enabled raises reconcile signal.
+
+        Models the dedup pre-check / transaction divergence: the caller skipped
+        embedding generation expecting an UPDATE, but store_with_deduplication
+        inserted a new entry. The transaction must abort so the caller can
+        regenerate embeddings outside the transaction and retry.
+        """
+        # Default fixture returns ('42', False) -- a genuine INSERT.
+        with pytest.raises(EmbeddingsReconcileRequiredError) as exc_info:
+            await execute_store_in_transaction(
+                mock_repos, mock_txn,
+                thread_id='t', source='user', content_type='text',
+                text_content='reconcile me', metadata_str=None, summary=None,
+                tags=None, validated_images=[],
+                chunk_embeddings=None, embedding_model='m',
+                embedding_generation_enabled=True,
+            )
+        assert exc_info.value.text_content == 'reconcile me'
+        # Transaction aborted before any embedding write.
+        mock_repos.embeddings.store_chunked.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_store_no_reconcile_on_dedup_update(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """A dedup UPDATE with skipped embeddings does NOT trigger reconciliation."""
+        mock_repos.context.store_with_deduplication = AsyncMock(return_value=('42', True))
+        _, was_updated, embedding_stored = await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[],
+            chunk_embeddings=None, embedding_model='m',
+            embedding_generation_enabled=True,
+        )
+        assert was_updated is True
+        assert embedding_stored is False
+
+    @pytest.mark.asyncio
+    async def test_store_no_reconcile_when_embeddings_present(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """A new INSERT that already carries embeddings does NOT reconcile."""
+        chunk_embeddings = cast(list[ChunkEmbedding], [MagicMock()])
+        _, was_updated, embedding_stored = await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[],
+            chunk_embeddings=chunk_embeddings, embedding_model='m',
+            embedding_generation_enabled=True,
+        )
+        assert was_updated is False
+        assert embedding_stored is True
+        mock_repos.embeddings.store_chunked.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_store_no_reconcile_when_generation_disabled(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """With generation disabled (default), a new INSERT with no embeddings is allowed."""
+        _, was_updated, embedding_stored = await execute_store_in_transaction(
+            mock_repos, mock_txn,
+            thread_id='t', source='user', content_type='text',
+            text_content='text', metadata_str=None, summary=None,
+            tags=None, validated_images=[],
+            chunk_embeddings=None, embedding_model='m',
+            embedding_generation_enabled=False,
+        )
+        assert was_updated is False
+        assert embedding_stored is False
+        mock_repos.embeddings.store_chunked.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_store_with_images_new_entry(
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
@@ -533,7 +789,7 @@ class TestExecuteStoreInTransaction:
             tags=None, validated_images=images,
             chunk_embeddings=None, embedding_model='m',
         )
-        mock_repos.images.store_images.assert_called_once_with(42, images, txn=mock_txn)
+        mock_repos.images.store_images.assert_called_once_with('42', images, txn=mock_txn)
         mock_repos.images.replace_images_for_context.assert_not_called()
 
 
@@ -552,6 +808,7 @@ class TestExecuteUpdateInTransaction:
         repos.images.replace_images_for_context = AsyncMock()
         repos.images.count_images_for_context = AsyncMock(return_value=0)
         repos.embeddings.delete_all_chunks = AsyncMock()
+        repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
         repos.embeddings.store_chunked = AsyncMock()
         return repos
 
@@ -569,7 +826,7 @@ class TestExecuteUpdateInTransaction:
         """Update text field returns updated_fields with text."""
         updated_fields, summary_cleared = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text='New text',
             metadata=None,
             metadata_patch=None,
@@ -592,7 +849,7 @@ class TestExecuteUpdateInTransaction:
         """Apply metadata_patch calls patch_metadata."""
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text=None,
             metadata=None,
             metadata_patch={'key': 'value'},
@@ -614,7 +871,7 @@ class TestExecuteUpdateInTransaction:
         """Tags provided triggers replace_tags_for_context."""
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text=None,
             metadata=None,
             metadata_patch=None,
@@ -636,7 +893,7 @@ class TestExecuteUpdateInTransaction:
         """Empty images list removes all images and sets content_type to text."""
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text=None,
             metadata=None,
             metadata_patch=None,
@@ -650,18 +907,22 @@ class TestExecuteUpdateInTransaction:
         )
         assert 'images' in updated_fields
         assert 'content_type' in updated_fields
-        mock_repos.images.replace_images_for_context.assert_called_once_with(1, [], txn=mock_txn)
-        mock_repos.context.update_content_type.assert_called_once_with(1, 'text', txn=mock_txn)
+        mock_repos.images.replace_images_for_context.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', [], txn=mock_txn,
+        )
+        mock_repos.context.update_content_type.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', 'text', txn=mock_txn,
+        )
 
     @pytest.mark.asyncio
     async def test_embeddings_regeneration(
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
         """Chunk embeddings provided triggers delete+store cycle."""
-        chunk_embeddings = [MagicMock()]
+        chunk_embeddings = cast(_ChunkEmbeddingList, [MagicMock()])
         updated_fields, _ = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text='New text',
             metadata=None,
             metadata_patch=None,
@@ -674,8 +935,77 @@ class TestExecuteUpdateInTransaction:
             embedding_model='m',
         )
         assert 'embedding' in updated_fields
-        mock_repos.embeddings.delete_all_chunks.assert_called_once_with(1, txn=mock_txn)
+        mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', txn=mock_txn,
+        )
         mock_repos.embeddings.store_chunked.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_text_change_without_provider_clears_stale_embeddings(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """Text changed, no new embeddings, tables exist -> stale chunks deleted.
+
+        When an update changes text but no embedding provider regenerates vectors,
+        the stored chunks describe the REPLACED text and must be DELETEd so semantic
+        search cannot match the old content. Guarded by embedding_tables_exist.
+        """
+        mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
+        mock_repos.context.get_content_type = AsyncMock(return_value='text')
+        mock_repos.context.update_content_type = AsyncMock()
+        mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=True)
+        mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=True)
+
+        updated_fields, _ = await execute_update_in_transaction(
+            mock_repos, mock_txn,
+            context_id='0190abcdef1234567890abcd00000001',
+            text='Replaced text',
+            metadata=None,
+            metadata_patch=None,
+            summary=None,
+            clear_summary=False,
+            tags=None,
+            images=None,
+            validated_images=[],
+            chunk_embeddings=None,
+            embedding_model='m',
+        )
+
+        assert 'embedding' in updated_fields
+        mock_repos.embeddings.delete_all_chunks.assert_called_once_with(
+            '0190abcdef1234567890abcd00000001', txn=mock_txn,
+        )
+        mock_repos.embeddings.store_chunked.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_text_change_without_provider_tables_absent_is_noop(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """Same text-change-without-provider path but embeddings were never
+        provisioned -> safe no-op (no delete, 'embedding' not in updated_fields)."""
+        mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
+        mock_repos.context.get_content_type = AsyncMock(return_value='text')
+        mock_repos.context.update_content_type = AsyncMock()
+        mock_repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
+        mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=True)
+
+        updated_fields, _ = await execute_update_in_transaction(
+            mock_repos, mock_txn,
+            context_id='0190abcdef1234567890abcd00000001',
+            text='Replaced text',
+            metadata=None,
+            metadata_patch=None,
+            summary=None,
+            clear_summary=False,
+            tags=None,
+            images=None,
+            validated_images=[],
+            chunk_embeddings=None,
+            embedding_model='m',
+        )
+
+        assert 'embedding' not in updated_fields
+        mock_repos.embeddings.delete_all_chunks.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_update_raises_on_failed_entry_update(
@@ -686,7 +1016,7 @@ class TestExecuteUpdateInTransaction:
         with pytest.raises(ToolError, match='Failed to update context entry'):
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text='New text',
                 metadata=None,
                 metadata_patch=None,
@@ -708,7 +1038,7 @@ class TestExecuteUpdateInTransaction:
         with pytest.raises(ToolError, match='Failed to patch metadata'):
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
-                context_id=1,
+                context_id='0190abcdef1234567890abcd00000001',
                 text=None,
                 metadata=None,
                 metadata_patch={'key': 'value'},
@@ -728,7 +1058,7 @@ class TestExecuteUpdateInTransaction:
         """clear_summary=True is returned as summary_cleared."""
         _, summary_cleared = await execute_update_in_transaction(
             mock_repos, mock_txn,
-            context_id=1,
+            context_id='0190abcdef1234567890abcd00000001',
             text='Short',
             metadata=None,
             metadata_patch=None,

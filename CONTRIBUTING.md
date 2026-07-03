@@ -26,7 +26,7 @@ uv sync --all-extras --all-groups
 
 # 2. Run tests
 uv run pytest                         # Unit tests
-uv run python run_integration_test.py # Integration tests
+uv run pytest -m integration          # Integration tests
 
 # 3. Test server locally
 uv run python -m app.server           # Should start without errors

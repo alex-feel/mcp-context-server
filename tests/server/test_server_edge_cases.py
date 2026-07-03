@@ -4,8 +4,6 @@ This module tests edge cases, error handling, and less common code paths
 in app/server.py to improve coverage.
 """
 
-from __future__ import annotations
-
 import base64
 from typing import Any
 
@@ -17,6 +15,10 @@ from app.server import get_statistics
 from app.server import search_context
 from app.server import store_context
 from app.server import update_context
+from app.types import JsonValue
+
+# Type alias anchored to a usage site so ruff cannot strip the JsonValue import.
+_MetadataDict = dict[str, JsonValue]
 
 
 class TestStoreContextEdgeCases:
@@ -98,7 +100,7 @@ class TestStoreContextEdgeCases:
         # Verify unicode is preserved
         entries = await get_context_by_ids(context_ids=[result['context_id']])
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] is not None
         assert 'Unicode test' in entry['text_content']
 
@@ -118,7 +120,7 @@ class TestStoreContextEdgeCases:
         # Verify full text is stored
         entries = await get_context_by_ids(context_ids=[result['context_id']])
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert len(entry['text_content']) == 10000
 
     @pytest.mark.asyncio
@@ -331,7 +333,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify text changed but tags unchanged
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] == 'Updated text'
         assert 'tag1' in entry['tags']
 
@@ -357,7 +359,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify tags changed but text unchanged
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] == 'Original text'
         assert 'new_tag1' in entry['tags']
         assert 'new_tag2' in entry['tags']
@@ -385,7 +387,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify metadata changed but text unchanged
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['text_content'] == 'Original text'
         assert entry['metadata']['new_key'] == 'new_value'
 
@@ -411,7 +413,7 @@ class TestUpdateContextEdgeCases:
 
         # Verify tags are cleared
         entries = await get_context_by_ids(context_ids=[context_id])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['tags'] == []
 
     @pytest.mark.asyncio
@@ -422,7 +424,7 @@ class TestUpdateContextEdgeCases:
 
         with pytest.raises(ToolError, match='not found'):
             await update_context(
-                context_id=999999,
+                context_id='0190abcdef1234567890abcd000f423f',
                 text='New text',
             )
 
@@ -467,7 +469,7 @@ class TestDeleteContextEdgeCases:
 
         # Delete mix of existing and non-existing
         delete_result = await delete_context(
-            context_ids=[existing_id, 999998, 999999],
+            context_ids=[existing_id, '0' * 32, 'f' * 32],
         )
 
         assert delete_result['success'] is True
@@ -497,14 +499,14 @@ class TestGetContextByIdsEdgeCases:
         )
 
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
     async def test_get_context_preserves_metadata(self) -> None:
         """Test that get_context_by_ids preserves metadata."""
-        complex_metadata = {
+        complex_metadata: _MetadataDict = {
             'nested': {'key': 'value'},
             'list': [1, 2, 3],
             'boolean': True,
@@ -521,7 +523,7 @@ class TestGetContextByIdsEdgeCases:
         entries = await get_context_by_ids(context_ids=[context_id])
 
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['metadata'] == complex_metadata
 
 
@@ -601,19 +603,21 @@ class TestStoreContextWithImages:
             context_ids=[result['context_id']],
             include_images=True,
         )
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['content_type'] == 'multimodal'
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures('initialized_server')
     async def test_store_image_with_metadata(self) -> None:
         """Test storing image with metadata."""
+        import json as _json
+
         image_metadata = {'width': 800, 'height': 600, 'format': 'png'}
         images = [
             {
                 'data': base64.b64encode(b'image with meta').decode('utf-8'),
                 'mime_type': 'image/png',
-                'metadata': image_metadata,
+                'metadata': _json.dumps(image_metadata),
             },
         ]
 

@@ -76,7 +76,8 @@ class TestDeduplication:
             metadata=json.dumps({'key': 'value'}),
         )
 
-        assert context_id1 > 0
+        assert isinstance(context_id1, str)
+        assert len(context_id1) == 32
         assert was_updated1 is False  # First entry should be inserted
 
         # Wait to ensure timestamp would differ (SQLite has second precision)
@@ -127,7 +128,8 @@ class TestDeduplication:
             metadata=None,
         )
 
-        assert context_id1 > 0
+        assert isinstance(context_id1, str)
+        assert len(context_id1) == 32
         assert was_updated1 is False
 
         # Store different text content
@@ -248,8 +250,8 @@ class TestDeduplication:
             metadata=None,
         )
 
-        assert isinstance(context_id1, int)
-        assert context_id1 > 0
+        assert isinstance(context_id1, str)
+        assert len(context_id1) == 32
         assert isinstance(was_updated1, bool)
         assert was_updated1 is False
 
@@ -262,7 +264,7 @@ class TestDeduplication:
             metadata=None,
         )
 
-        assert isinstance(context_id2, int)
+        assert isinstance(context_id2, str)
         assert context_id2 == context_id1  # Same ID
         assert isinstance(was_updated2, bool)
         assert was_updated2 is True
@@ -276,8 +278,8 @@ class TestDeduplication:
             metadata=None,
         )
 
-        assert isinstance(context_id3, int)
-        assert context_id3 > context_id1  # New ID
+        assert isinstance(context_id3, str)
+        assert context_id3 > context_id1  # New ID (UUIDv7 lex ordering)
         assert isinstance(was_updated3, bool)
         assert was_updated3 is False
 
@@ -750,7 +752,7 @@ class TestDeduplicationInterleaving:
         repos: RepositoryContainer,
     ) -> None:
         """End-to-end ordering: alternating identical messages create distinct entries."""
-        ids: list[int] = []
+        ids: list[str] = []
         sources = ['user', 'agent', 'user', 'agent', 'user']
         texts = ['Go', 'Done', 'Go', 'Done again', 'Go']
         for source, text in zip(sources, texts, strict=True):

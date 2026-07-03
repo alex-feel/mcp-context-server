@@ -13,7 +13,7 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 import app.startup
-import app.tools.context as context_tools
+import app.tools._shared as shared_tools
 import app.tools.search as search_tools
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.startup import ensure_repositories
@@ -48,7 +48,7 @@ def _create_mock_repositories() -> MagicMock:
     repos.context.backend = mock_backend
     repos.context.check_latest_is_duplicate = AsyncMock(return_value=None)
     repos.context.store_with_deduplication = AsyncMock(return_value=(123, False))
-    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+    repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content', 'summary']))
     repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
     repos.context.get_content_type = AsyncMock(return_value='text')
@@ -68,6 +68,12 @@ def _create_mock_repositories() -> MagicMock:
     repos.embeddings.exists = AsyncMock(return_value=False)
     repos.embeddings.store_chunked = AsyncMock()
     repos.embeddings.delete_all_chunks = AsyncMock()
+    repos.embeddings.embedding_tables_exist = AsyncMock(return_value=False)
+
+    repos.index_nodes = MagicMock()
+    repos.index_nodes.replace_nodes_for_context = AsyncMock()
+    repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
+    repos.index_nodes.count_all_nodes = AsyncMock(return_value=0)
 
     return repos
 
@@ -77,14 +83,14 @@ def reset_summary_state() -> Generator[None, None, None]:
     """Reset global summary state between tests."""
     original_summary_provider = app.startup.get_summary_provider()
     original_embedding_provider = app.startup.get_embedding_provider()
-    context_tools._summary_semaphore = None
+    shared_tools._reset_summary_model_semaphore()
 
     try:
         yield
     finally:
         set_summary_provider(original_summary_provider)
         set_embedding_provider(original_embedding_provider)
-        context_tools._summary_semaphore = None
+        shared_tools._reset_summary_model_semaphore()
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -105,7 +111,7 @@ class TestGenerateSummaryWithTimeout:
         ):
             mock_settings.summary.max_concurrent = 2
 
-            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
+            result = await shared_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result == 'Generated summary'
         mock_provider.summarize.assert_awaited_once_with('Long text', 'agent')
@@ -130,7 +136,7 @@ class TestGenerateSummaryWithTimeout:
             mock_settings.summary.max_concurrent = 2
 
             with pytest.raises(ToolError, match='Summary generation exceeded total timeout'):
-                await context_tools.generate_summary_with_timeout('Long text', 'agent')
+                await shared_tools.generate_summary_with_timeout('Long text', 'agent')
 
     @pytest.mark.asyncio
     async def test_provider_none_skips_generation(self) -> None:
@@ -139,7 +145,7 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._shared.get_summary_provider', return_value=None),
         ):
-            result = await context_tools.generate_summary_with_timeout('Long text', 'agent')
+            result = await shared_tools.generate_summary_with_timeout('Long text', 'agent')
 
         assert result is None
 
@@ -171,8 +177,8 @@ class TestSummaryStoreWithMocks:
             patch('app.tools._shared.get_embedding_provider', return_value=MagicMock()),
             patch('app.tools.context.get_summary_provider', return_value=MagicMock()),
             patch('app.tools._shared.get_summary_provider', return_value=MagicMock()),
-            patch('app.tools.context.generate_embeddings_with_timeout', side_effect=fake_embedding),
-            patch('app.tools.context.generate_summary_with_timeout', side_effect=fake_summary),
+            patch('app.tools._shared.generate_embeddings_with_timeout', side_effect=fake_embedding),
+            patch('app.tools._shared.generate_summary_with_timeout', side_effect=fake_summary),
         ):
             long_text = 'x' * 500
             result = await store_context(
@@ -184,6 +190,8 @@ class TestSummaryStoreWithMocks:
         assert result['success'] is True
         assert 'embedding generated' in result['message']
         assert 'summary generated' in result['message']
+        # No images provided -> content_type is preserved on a dedup UPDATE (so a multimodal
+        # entry can't flip to 'text' while its image rows remain). See store_with_deduplication.
         repos.context.store_with_deduplication.assert_awaited_once_with(
             thread_id='parallel-summary-thread',
             source='agent',
@@ -191,6 +199,7 @@ class TestSummaryStoreWithMocks:
             text_content=long_text,
             metadata=None,
             summary='Generated summary',
+            preserve_content_type_on_dedup=True,
             txn=ANY,
         )
         repos.embeddings.store_chunked.assert_awaited_once()
@@ -598,6 +607,9 @@ class TestSummaryLifespan:
         mock_backend.initialize = AsyncMock()
         mock_backend.shutdown = AsyncMock()
         mock_backend.backend_type = 'sqlite'
+        # The compression validator probes provenance even when disabled; an
+        # awaitable execute_read returning None models a never-compressed DB.
+        mock_backend.execute_read = AsyncMock(return_value=None)
 
         mock_repos = MagicMock()
         mock_repos.fts.is_available = AsyncMock(return_value=False)
@@ -613,10 +625,15 @@ class TestSummaryLifespan:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.semantic_search.enabled = False
+        mock_settings.semantic_search.mode = 'false'
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.summary.generation_enabled = True
         mock_settings.summary.provider = 'ollama'
+        # Compression off: the validator's disabled-branch provenance probe
+        # finds no row (execute_read -> None) and the inline INFO log reports
+        # disabled without a read.
+        mock_settings.compression.enabled = False
 
         original_backend = app.startup.get_backend()
         original_repos = app.startup.get_repositories()
@@ -636,8 +653,10 @@ class TestSummaryLifespan:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                patch('app.server.apply_version_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
                 patch(
@@ -672,6 +691,9 @@ class TestSummaryLifespan:
         mock_backend.initialize = AsyncMock()
         mock_backend.shutdown = AsyncMock()
         mock_backend.backend_type = 'sqlite'
+        # The compression validator probes provenance even when disabled; an
+        # awaitable execute_read returning None models a never-compressed DB.
+        mock_backend.execute_read = AsyncMock(return_value=None)
 
         mock_repos = MagicMock()
         mock_repos.fts.is_available = AsyncMock(return_value=False)
@@ -681,9 +703,14 @@ class TestSummaryLifespan:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.semantic_search.enabled = False
+        mock_settings.semantic_search.mode = 'false'
         mock_settings.fts.enabled = False
         mock_settings.hybrid_search.enabled = False
         mock_settings.summary.generation_enabled = False
+        # Compression off: the validator's disabled-branch provenance probe
+        # finds no row (execute_read -> None) and the inline INFO log reports
+        # disabled without a read.
+        mock_settings.compression.enabled = False
 
         original_backend = app.startup.get_backend()
         original_repos = app.startup.get_repositories()
@@ -703,8 +730,10 @@ class TestSummaryLifespan:
                 patch('app.server.apply_function_search_path_migration', new=AsyncMock()),
                 patch('app.server.apply_fts_migration', new=AsyncMock()),
                 patch('app.server.apply_chunking_migration', new=AsyncMock()),
+                patch('app.server.apply_index_tree_migration', new=AsyncMock()),
                 patch('app.server.apply_summary_migration', new=AsyncMock()),
                 patch('app.server.apply_content_hash_migration', new=AsyncMock()),
+                patch('app.server.apply_version_migration', new=AsyncMock()),
                 patch('app.server.register_tool', return_value=True),
                 patch('app.server.RepositoryContainer', return_value=mock_repos),
             ):

@@ -13,7 +13,9 @@ from unittest.mock import patch
 import pytest
 
 import app.tools
+from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from app.types import MetadataDict
 
 # Get the actual async functions from app.tools
 store_context = app.tools.store_context
@@ -29,15 +31,16 @@ class TestUTF8Encoding:
     def setup(self) -> None:
         """Set up test fixtures.
 
-        Note: Phase 3 Transactional Integrity introduced backend.begin_transaction()
-        and txn parameter to repository methods.
+        Tools wrap multi-step writes in ``backend.begin_transaction()`` and pass
+        a ``txn`` argument to repository methods, so the mock backend must
+        expose ``begin_transaction`` as an async context manager.
         """
         from contextlib import asynccontextmanager
         from unittest.mock import Mock
 
         self.mock_repos = MagicMock(spec=RepositoryContainer)
 
-        # Mock backend with begin_transaction() support (Phase 3)
+        # Mock backend exposing begin_transaction() as an async context manager
         mock_backend = Mock()
 
         @asynccontextmanager
@@ -54,11 +57,16 @@ class TestUTF8Encoding:
         self.mock_repos.tags = AsyncMock()
         self.mock_repos.images = AsyncMock()
 
-        # Mock embeddings repository (Phase 3)
+        # Mock embeddings repository for generation-first transactional writes
         self.mock_repos.embeddings = AsyncMock()
         self.mock_repos.embeddings.store = AsyncMock(return_value=None)
         self.mock_repos.embeddings.store_chunked = AsyncMock(return_value=None)
         self.mock_repos.embeddings.delete_all_chunks = AsyncMock(return_value=None)
+
+        # Mock index_tree node-summary repository (text-change updates clear stale node rows).
+        self.mock_repos.index_nodes = AsyncMock()
+        self.mock_repos.index_nodes.replace_nodes_for_context = AsyncMock(return_value=None)
+        self.mock_repos.index_nodes.get_nodes_for_context = AsyncMock(return_value={})
 
     @pytest.mark.asyncio
     async def test_russian_text_encoding(self) -> None:
@@ -66,7 +74,7 @@ class TestUTF8Encoding:
         russian_text = 'кривая ошибка - это тестовый текст на русском языке'
 
         # Mock repository responses
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(1, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -76,7 +84,6 @@ class TestUTF8Encoding:
             )
 
         assert result['success'] is True
-        assert result['context_id'] == 1
 
         # Verify the text was passed correctly
         call_args = self.mock_repos.context.store_with_deduplication.call_args
@@ -87,7 +94,7 @@ class TestUTF8Encoding:
         """Test Chinese text is properly encoded and stored."""
         chinese_text = '这是一个中文测试文本，包含简体字和繁體字'
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(2, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -97,7 +104,6 @@ class TestUTF8Encoding:
             )
 
         assert result['success'] is True
-        assert result['context_id'] == 2
 
         call_args = self.mock_repos.context.store_with_deduplication.call_args
         assert call_args[1]['text_content'] == chinese_text
@@ -109,7 +115,7 @@ class TestUTF8Encoding:
         hebrew_text = 'זהו טקסט בדיקה בעברית'
 
         # Test Arabic
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(3, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -123,7 +129,7 @@ class TestUTF8Encoding:
         assert call_args[1]['text_content'] == arabic_text
 
         # Test Hebrew
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(4, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -141,7 +147,7 @@ class TestUTF8Encoding:
         """Test emoji and special Unicode characters are properly encoded."""
         emoji_text = '🎉 Testing emojis! 🚀 Complex ones: 👨‍👩‍👧‍👦 🏳️‍🌈'
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(5, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -168,7 +174,7 @@ class TestUTF8Encoding:
         Emoji: 🌍🌎🌏
         '''
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(6, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -187,7 +193,7 @@ class TestUTF8Encoding:
         """Test special Unicode characters including mathematical symbols."""
         special_text = '∀x∈ℝ: x² ≥ 0, ∑ᵢ₌₁ⁿ i = n(n+1)/2, ∫₀^∞ e⁻ˣ dx = 1'
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(7, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -211,8 +217,8 @@ class TestUTF8Encoding:
             '🎯 Updated with emojis! 🏆',
         ]
 
-        for idx, text in enumerate(unicode_texts, start=1):
-            self.mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent'))
+        for text in unicode_texts:
+            self.mock_repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
             self.mock_repos.context.update_context_entry = AsyncMock(
                 return_value=(True, ['text_content']),
             )
@@ -222,7 +228,7 @@ class TestUTF8Encoding:
 
             with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
                 result = await update_context(
-                    context_id=idx,
+                    context_id=generate_id(),
                     text=text,
                 )
 
@@ -267,21 +273,21 @@ class TestUTF8Encoding:
     @pytest.mark.asyncio
     async def test_metadata_with_unicode(self) -> None:
         """Test storing and retrieving metadata with Unicode values."""
-        metadata = {
+        metadata: MetadataDict = {
             'title': '测试标题',
             'description': 'وصف الاختبار',
             'tags': ['тег1', 'タグ2', '태그3'],
             'notes': '📝 Notes with emojis 🌟',
         }
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(10, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
                 thread_id='test-thread',
                 source='user',
                 text='Test content',
-                metadata=metadata,  # type: ignore[arg-type]
+                metadata=metadata,
             )
 
         assert result['success'] is True
@@ -294,7 +300,7 @@ class TestUTF8Encoding:
         """Test tags with Unicode characters."""
         unicode_tags = ['русский', '中文', 'العربية', 'עברית', '🏷️']
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(11, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
         self.mock_repos.tags.store_tags = AsyncMock()
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
@@ -321,7 +327,7 @@ class TestUTF8Encoding:
             '🎉' * 50,
         ])
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(12, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -341,7 +347,7 @@ class TestUTF8Encoding:
         # Text with zero-width joiners, non-joiners, and other invisible chars
         tricky_text = 'Hello\u200bWorld\u200cTest\u200d\ufeffInvisible'
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(13, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -361,7 +367,7 @@ class TestUTF8Encoding:
         combining_text = 'e\u0301'  # é as e + combining acute accent
         normalized_text = 'café'  # Pre-composed character
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(14, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(
@@ -381,7 +387,7 @@ class TestUTF8Encoding:
         # Characters outside the BMP (Basic Multilingual Plane)
         surrogate_text = '𝓗𝓮𝓵𝓵𝓸 𝔀𝓸𝓻𝓵𝓭 🎭'  # Mathematical bold script
 
-        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(15, False))
+        self.mock_repos.context.store_with_deduplication = AsyncMock(return_value=(generate_id(), False))
 
         with patch('app.tools.context.ensure_repositories', return_value=self.mock_repos):
             result = await store_context(

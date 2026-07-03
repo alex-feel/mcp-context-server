@@ -9,8 +9,6 @@ at multiple defense-in-depth layers:
 - search_context: empty summary -> None in response
 """
 
-from __future__ import annotations
-
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -20,11 +18,12 @@ from unittest.mock import patch
 
 import pytest
 
+from app.ids import generate_id
 from app.repositories.context_repository import ContextRepository
 
 _CREATE_TABLE_SQL = '''
     CREATE TABLE context_entries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL,
         source TEXT NOT NULL,
         content_type TEXT NOT NULL DEFAULT 'text',
@@ -32,6 +31,7 @@ _CREATE_TABLE_SQL = '''
         metadata TEXT,
         summary TEXT,
         content_hash TEXT,
+        version INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
@@ -92,7 +92,7 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
             patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools.context import generate_summary_with_timeout
+            from app.tools._shared import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -109,7 +109,7 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
             patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools.context import generate_summary_with_timeout
+            from app.tools._shared import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -127,7 +127,7 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools._shared.get_summary_provider', return_value=mock_provider),
             patch('app.tools._shared.compute_summary_total_timeout', return_value=120.0),
         ):
-            from app.tools.context import generate_summary_with_timeout
+            from app.tools._shared import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -140,7 +140,7 @@ class TestGenerateSummaryWithTimeout:
             patch('app.tools.context.get_summary_provider', return_value=None),
             patch('app.tools._shared.get_summary_provider', return_value=None),
         ):
-            from app.tools.context import generate_summary_with_timeout
+            from app.tools._shared import generate_summary_with_timeout
 
             result = await generate_summary_with_timeout('Some text to summarize', 'agent')
 
@@ -162,12 +162,12 @@ class TestStoreWithDeduplicationEmptySummary:
         # Create database and table with initial entry
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        existing_id = generate_id()
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(
-            '''INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, summary)
-            VALUES (?, ?, ?, ?, ?)''',
-            ('test-thread', 'agent', 'text', 'Some text content', 'Valid existing summary'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (existing_id, 'test-thread', 'agent', 'text', 'Some text content', 'Valid existing summary'),
         )
         conn.commit()
         conn.close()
@@ -208,19 +208,19 @@ class TestGetSummaryEmptyNormalization:
         # Create database with an entry that has empty summary
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        entry_id = generate_id()
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(
-            '''INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, summary)
-            VALUES (?, ?, ?, ?, ?)''',
-            ('test-thread', 'agent', 'text', 'Some text', ''),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (entry_id, 'test-thread', 'agent', 'text', 'Some text', ''),
         )
         conn.commit()
         conn.close()
 
         mock_backend = _make_sqlite_read_backend(db_path)
         repo = ContextRepository(mock_backend)
-        result = await repo.get_summary(1)
+        result = await repo.get_summary(entry_id)
 
         assert result is None
 
@@ -231,18 +231,18 @@ class TestGetSummaryEmptyNormalization:
 
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        entry_id = generate_id()
         conn.execute(_CREATE_TABLE_SQL)
         conn.execute(
-            '''INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, summary)
-            VALUES (?, ?, ?, ?, ?)''',
-            ('test-thread', 'agent', 'text', 'Some text', 'A valid summary'),
+            'INSERT INTO context_entries (id, thread_id, source, content_type, text_content, summary) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (entry_id, 'test-thread', 'agent', 'text', 'Some text', 'A valid summary'),
         )
         conn.commit()
         conn.close()
 
         mock_backend = _make_sqlite_read_backend(db_path)
         repo = ContextRepository(mock_backend)
-        result = await repo.get_summary(1)
+        result = await repo.get_summary(entry_id)
 
         assert result == 'A valid summary'

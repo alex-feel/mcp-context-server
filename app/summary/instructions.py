@@ -24,7 +24,6 @@ at runtime (not part of the prompt constants).  HumanMessage receives
 the text AS-IS, without any prefix.
 """
 
-from __future__ import annotations
 
 # Shared base requirements (DRY: used in both user and agent prompts).
 # Private constant -- not exported, used only within this module.
@@ -87,3 +86,38 @@ def resolve_summary_prompt(source: str) -> str:
     if source == 'user':
         return USER_SUMMARY_PROMPT
     return AGENT_SUMMARY_PROMPT
+
+
+# Dedicated SHORT prompt for index_tree per-node section abstracts. Distinct from
+# the 100-250-word entry-summary prompts: a navigation node needs a one-line gist,
+# not a dense paragraph. Reuses the /no_think + English + no-labels conventions.
+DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT: str = ('''
+/no_think
+You are summarizing one section of a Markdown document for a navigation index used by AI agents.
+Produce a single concise sentence (about 10-30 words) stating what this section is about, so an agent can decide whether to read it.
+
+Requirements:
+- Use specific terms from the section (named entities, topics, decisions)
+- Always write in English regardless of the input language
+- Write exactly one sentence with no line breaks
+- Do not add any labels, prefixes, headers, or explanations
+- Do not start with "This section" or "The text" or similar meta-references
+- Output ONLY the sentence, nothing else
+''').strip()
+
+
+def resolve_index_tree_node_summary_prompt() -> str:
+    """Resolve the per-node index_tree summary prompt.
+
+    Returns the operator override (INDEX_TREE_NODE_SUMMARY_PROMPT) when set,
+    otherwise the dedicated short-abstract default.
+
+    Returns:
+        The resolved node-summary prompt text.
+    """
+    from app.settings import get_settings
+
+    custom_prompt = get_settings().index_tree.prompt
+    if custom_prompt is not None and custom_prompt.strip() != '':
+        return custom_prompt
+    return DEFAULT_INDEX_TREE_NODE_SUMMARY_PROMPT

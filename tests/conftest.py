@@ -5,8 +5,6 @@ Provides reusable test fixtures including database setup, server instances,
 mock contexts, and sample test data for comprehensive testing.
 """
 
-from __future__ import annotations
-
 # ============================================================================
 # CRITICAL: These stdlib imports are safe and MUST come before the event loop
 # policy setup. They do NOT trigger httpx or langsmith imports.
@@ -62,6 +60,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from typing import cast
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -88,7 +87,6 @@ import app.startup
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.settings import AppSettings
-from tests.helpers import is_ollama_model_available
 
 # ============================================================================
 # Conditional Skip Helpers for Optional Dependencies
@@ -146,11 +144,6 @@ requires_semantic_search = pytest.mark.skipif(
     reason='Semantic search dependencies not available (ollama, sqlite_vec, numpy)',
 )
 
-requires_ollama_model = pytest.mark.skipif(
-    not is_ollama_model_available(),
-    reason='Ollama model not available (service not running or no model installed)',
-)
-
 requires_chunking = pytest.mark.skipif(
     not is_chunking_available(),
     reason='langchain-text-splitters package not installed (chunking feature)',
@@ -170,12 +163,12 @@ def is_fts_enabled() -> bool:
 
 requires_fts = pytest.mark.skipif(
     not is_fts_enabled(),
-    reason='FTS is not enabled (ENABLE_FTS=true not set)',
+    reason='FTS force-disabled (ENABLE_FTS=false)',
 )
 
 requires_hybrid_search = pytest.mark.skipif(
     not (is_fts_enabled() or are_semantic_search_deps_available()),
-    reason='Neither FTS nor semantic search is available for hybrid search',
+    reason='Hybrid search unavailable (FTS force-disabled and semantic search deps missing)',
 )
 
 # Load .env file to make environment variables available for PostgreSQL tests
@@ -187,14 +180,15 @@ os.environ['STORAGE_BACKEND'] = 'sqlite'
 
 
 # ============================================================================
-# Mock Backend Helper for Transaction Support (Phase 3 Transactional Integrity)
+# Mock Backend Helper for Transaction Support
 # ============================================================================
 def create_mock_backend_with_transaction_support() -> MagicMock:
     """Create a mock backend that supports begin_transaction() as async context manager.
 
-    This helper is needed because Phase 3 of the Transactional Integrity Fix
-    introduced backend.begin_transaction() calls in tools. Tests that mock
-    ensure_repositories() must also provide a backend that supports transactions.
+    Tools invoke ``backend.begin_transaction()`` to wrap multi-step writes in a
+    single atomic transaction. Tests that mock ``ensure_repositories()`` must
+    therefore provide a backend whose ``begin_transaction`` is callable as an
+    async context manager.
 
     Returns:
         MagicMock: A mock backend with begin_transaction() async context manager support.
@@ -272,6 +266,59 @@ def prevent_default_db_pollution():
                 os.environ['MCP_TEST_MODE'] = original_test_mode
 
 
+# Function-scoped autouse fixture: force ENABLE_EMBEDDING_COMPRESSION=false
+# for every test by default. With v3.0.0 flipping the production default to
+# true, every test that does NOT explicitly opt into compression must see
+# the disabled state. Tests that need compression on call
+# monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true') (and the
+# other COMPRESSION_* env vars) inside the test body or via a
+# feature-specific fixture; the test-body setenv overrides this autouse
+# entry because both writes target the same monkeypatch.setenv stack.
+@pytest.fixture(autouse=True)
+def force_compression_off(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Disable compression by default for every test.
+
+    The fixture sets ``ENABLE_EMBEDDING_COMPRESSION=false`` and clears the
+    settings cache so the next ``get_settings()`` call observes the override.
+    Tests that opt into compression simply call
+    ``monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')`` and
+    ``get_settings.cache_clear()`` themselves; the autouse fixture's setenv
+    is unwound by monkeypatch at test teardown.
+
+    Yields:
+        Control to the test body.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    # Refresh module-level ``settings = get_settings()`` bindings that were
+    # cached at import time. Without this, modules that read
+    # ``settings.compression.enabled`` from their own module-level binding
+    # (e.g., ``app.tools._shared``, ``app.migrations.compression``) keep the
+    # import-time singleton and ignore the per-test env override. The
+    # CLAUDE.md "Per-test environment overrides for module-level ``settings``
+    # bindings" section documents this pattern.
+    fresh = get_settings()
+    import app.migrations.compression as _compression_migration_module
+    import app.server as _server_module
+    import app.tools._shared as _shared_module
+    import app.tools.context as _context_module
+    import app.tools.discovery as _discovery_module
+    monkeypatch.setattr(_context_module, 'settings', fresh)
+    monkeypatch.setattr(_shared_module, 'settings', fresh)
+    monkeypatch.setattr(_compression_migration_module, 'settings', fresh)
+    monkeypatch.setattr(_server_module, 'settings', fresh)
+    monkeypatch.setattr(_discovery_module, 'settings', fresh)
+    try:
+        yield
+    finally:
+        # monkeypatch automatically unwinds setenv and setattr at test
+        # teardown; the try/finally is structural (it keeps the generator
+        # shape so Ruff does not rewrite this bare yield into a return) and
+        # a defensive cache_clear so the next test starts from a clean
+        # settings cache.
+        get_settings.cache_clear()
+
+
 # Test configuration
 @pytest.fixture
 def test_settings(tmp_path: Path) -> AppSettings:
@@ -327,10 +374,18 @@ def test_db(temp_db_path: Path) -> Generator[sqlite3.Connection, None, None]:
 
 @pytest_asyncio.fixture
 async def async_test_db(temp_db_path: Path) -> AsyncGenerator[sqlite3.Connection, None]:
-    """Create async test database connection."""
-    loop = asyncio.get_event_loop()
+    """Create async test database connection.
 
-    def _create_db():
+    Uses asyncio.to_thread() to offload blocking sqlite3 setup/teardown
+    onto the default thread executor without depending on a manual
+    get_event_loop() handle. ``to_thread`` resolves the running loop
+    internally and is the recommended modern equivalent of
+    ``loop.run_in_executor(None, ...)``.
+
+    Yields:
+        Initialized sqlite3 connection; closed after the test completes.
+    """
+    def _create_db() -> sqlite3.Connection:
         from app.schemas import load_schema
 
         schema_sql = load_schema('sqlite')
@@ -348,9 +403,9 @@ async def async_test_db(temp_db_path: Path) -> AsyncGenerator[sqlite3.Connection
         conn.execute('PRAGMA busy_timeout = 30000')  # 30 second busy timeout
         return conn
 
-    conn = await loop.run_in_executor(None, _create_db)
+    conn = await asyncio.to_thread(_create_db)
     yield conn
-    await loop.run_in_executor(None, conn.close)
+    await asyncio.to_thread(conn.close)
 
 
 @pytest.fixture
@@ -468,12 +523,14 @@ def sample_multimodal_data(sample_image_data: dict[str, str]) -> dict[str, Any]:
 
 
 @pytest.fixture
-def multiple_context_entries(test_db: sqlite3.Connection) -> list[int]:
-    """Insert multiple test context entries and return their IDs.
+def multiple_context_entries(test_db: sqlite3.Connection) -> list[str]:
+    """Insert multiple test context entries and return their UUIDv7 hex IDs.
 
     Returns:
-        list[int]: List of context entry IDs created in the database
+        list[str]: List of 32-char lowercase hex UUIDv7 strings for each inserted entry.
     """
+    from app.ids import generate_id
+
     cursor = test_db.cursor()
     entries = [
         ('thread_1', 'user', 'text', 'First test entry', None),
@@ -483,17 +540,18 @@ def multiple_context_entries(test_db: sqlite3.Connection) -> list[int]:
         ('thread_3', 'user', 'text', 'Third thread start', json.dumps({'priority': 1})),
     ]
 
-    ids = []
+    ids: list[str] = []
     for thread_id, source, content_type, text, metadata in entries:
+        new_id = generate_id()
         cursor.execute(
             '''
             INSERT INTO context_entries
-            (thread_id, source, content_type, text_content, metadata)
-            VALUES (?, ?, ?, ?, ?)
-        ''',
-            (thread_id, source, content_type, text, metadata),
+            (id, thread_id, source, content_type, text_content, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (new_id, thread_id, source, content_type, text, metadata),
         )
-        ids.append(cursor.lastrowid)
+        ids.append(new_id)
 
     # Add tags to some entries
     tags_data = [
@@ -507,8 +565,7 @@ def multiple_context_entries(test_db: sqlite3.Connection) -> list[int]:
         cursor.execute('INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)', (entry_id, tag))
 
     test_db.commit()
-    valid_ids: list[int] = [id_ for id_ in ids if id_ is not None]
-    return valid_ids
+    return ids
 
 
 @pytest.fixture
@@ -636,7 +693,7 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
             await existing_backend.shutdown()
             # Wait for shutdown completion via event-based synchronization
             if hasattr(existing_backend, 'wait_for_shutdown_complete'):
-                await existing_backend.wait_for_shutdown_complete(timeout_seconds=2.0)
+                await cast(Any, existing_backend).wait_for_shutdown_complete(timeout_seconds=2.0)
         except Exception:
             pass
         finally:
@@ -687,7 +744,7 @@ async def initialized_server(mock_server_dependencies: None, temp_db_path: Path)
                 )
                 # Wait for shutdown completion event to ensure all background tasks terminated
                 if hasattr(cleanup_backend, 'wait_for_shutdown_complete'):
-                    await cleanup_backend.wait_for_shutdown_complete(timeout_seconds=2.0)
+                    await cast(Any, cleanup_backend).wait_for_shutdown_complete(timeout_seconds=2.0)
             except TimeoutError:
                 # Log timeout but continue cleanup to prevent test suite hang
                 import logging

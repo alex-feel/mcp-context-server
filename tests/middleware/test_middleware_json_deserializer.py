@@ -1,6 +1,4 @@
 """Unit tests for the JSON string deserializer middleware."""
-from __future__ import annotations
-
 import json
 from typing import Any
 from unittest.mock import AsyncMock
@@ -8,8 +6,8 @@ from unittest.mock import AsyncMock
 import mcp.types as mt
 import pytest
 from fastmcp.server.middleware.middleware import MiddlewareContext
-from fastmcp.tools.tool import Tool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools.base import Tool
+from fastmcp.tools.base import ToolResult
 
 from app.middleware.json_string_deserializer import JsonStringDeserializerMiddleware
 from app.middleware.json_string_deserializer import _is_complex_type
@@ -265,6 +263,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == ['tag1', 'tag2']
         call_next.assert_awaited_once_with(ctx)
 
@@ -277,6 +276,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['metadata'] == {'key': 'value'}
 
     @pytest.mark.asyncio
@@ -288,6 +288,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['images'] == [{'data': 'abc'}]
 
     @pytest.mark.asyncio
@@ -299,6 +300,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['context_ids'] == [1, 2, 3]
 
     # ---- Over-deserialization guard ----
@@ -313,6 +315,7 @@ class TestJsonStringDeserializerMiddleware:
         await mw.on_call_tool(ctx, call_next)
 
         # 'text' is not in the schema_map, so stays as string
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['text'] == '["not","a","list"]'
 
     @pytest.mark.asyncio
@@ -324,6 +327,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['query'] == '{"k":"v"}'
 
     # ---- Double-encoding ----
@@ -339,6 +343,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == ['a', 'b']
 
     @pytest.mark.asyncio
@@ -351,6 +356,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['metadata'] == {'key': 'value'}
 
     # ---- Passthrough ----
@@ -365,6 +371,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] is native_list
 
     @pytest.mark.asyncio
@@ -377,6 +384,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['metadata'] is native_dict
 
     @pytest.mark.asyncio
@@ -388,6 +396,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] is None
 
     @pytest.mark.asyncio
@@ -400,6 +409,7 @@ class TestJsonStringDeserializerMiddleware:
         await mw.on_call_tool(ctx, call_next)
 
         # Tool not in schema_map, value stays as string
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == '["a","b"]'
 
     @pytest.mark.asyncio
@@ -448,6 +458,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == 'not json at all'
 
     @pytest.mark.asyncio
@@ -460,6 +471,7 @@ class TestJsonStringDeserializerMiddleware:
         await mw.on_call_tool(ctx, call_next)
 
         # json.loads("42") = 42 (int), not list/dict, so stays as string
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == '42'
 
     @pytest.mark.asyncio
@@ -471,6 +483,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == 'true'
 
     @pytest.mark.asyncio
@@ -482,6 +495,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == 'null'
 
     @pytest.mark.asyncio
@@ -493,6 +507,7 @@ class TestJsonStringDeserializerMiddleware:
         await mw.on_call_tool(ctx, call_next)
 
         # Empty schema_map means no tool has complex params
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == '["a","b"]'
         call_next.assert_awaited_once_with(ctx)
 
@@ -512,6 +527,7 @@ class TestJsonStringDeserializerMiddleware:
 
         await mw.on_call_tool(ctx, call_next)
 
+        assert ctx.message.arguments is not None
         assert ctx.message.arguments['tags'] == ['tag1', 'tag2']
         assert ctx.message.arguments['metadata'] == {'agent_name': 'test'}
         assert ctx.message.arguments['images'] == [{'data': 'abc', 'mime_type': 'image/png'}]

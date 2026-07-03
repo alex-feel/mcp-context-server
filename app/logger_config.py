@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import logging
 import os
@@ -16,7 +15,7 @@ _MAX_PATH_SEGMENTS = 5
 
 
 def config_logger(log_level: str) -> None:
-    """Initialise (or re-initialise) root logging once.
+    """Initialize (or re-initialize) root logging once.
 
     Uses a formatter that strips package-directory prefixes
     (site-packages, dist-packages) from record.pathname and

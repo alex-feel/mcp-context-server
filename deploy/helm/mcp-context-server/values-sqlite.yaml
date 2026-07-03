@@ -14,10 +14,30 @@ storage:
 search:
   fts:
     enabled: true
+  # semantic.enabled provisions the embedding subsystem (ENABLE_EMBEDDING_GENERATION
+  # + ENABLE_SEMANTIC_SEARCH=auto); enable it together with an embedding provider
+  # (set ollama.enabled=true or configure an API key in values.yaml).
   semantic:
     enabled: false
   hybrid:
+    enabled: true
+  # summary.enabled is opt-in like semantic: enable it together with a summary provider
+  # (set ollama.enabled=true, or configure an API key in values.yaml for openai/anthropic).
+  summary:
     enabled: false
 
 ollama:
   enabled: false
+
+# Embedding compression (default ON in v3.0.0; see docs/embedding-compression.md).
+# COMPRESSION_SEED is load-bearing and IMMUTABLE after the first server start.
+# Pick a non-negative integer and keep it stable for the lifetime of this
+# database; a mismatch refuses startup with exit 78.
+# Set compression.enabled: false to opt out and use fp32 storage.
+compression:
+  enabled: true
+  provider: turboquant
+  bits: 4
+  variant: ip
+  seed: 0
+  maxConcurrent: 4

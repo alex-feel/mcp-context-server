@@ -15,16 +15,16 @@ This combination is particularly powerful for:
 - Graceful fallback when one search method is unavailable
 - Cross-domain queries where exact terms and related concepts matter
 
-This feature is **optional** and requires enabling hybrid search along with at least one underlying search method.
+Hybrid search is **auto-enabled by default**: it registers automatically whenever at least one underlying search method (full-text or semantic) is available.
 
 ## Prerequisites
 
-Hybrid Search requires at least one of the following search methods to be enabled:
+Hybrid Search requires at least one underlying search method to be available. Both are auto-enabled by default:
 
-- **Full-Text Search (FTS)**: Set `ENABLE_FTS=true` (no additional dependencies)
-- **Semantic Search**: Set `ENABLE_SEMANTIC_SEARCH=true` (requires Ollama + embedding model)
+- **Full-Text Search (FTS)**: `ENABLE_FTS=auto` (default; no additional dependencies, so it is normally available)
+- **Semantic Search**: `ENABLE_SEMANTIC_SEARCH=auto` (default; available whenever an embedding provider is present, which it is when embedding generation is on by default)
 
-For maximum effectiveness, enable both:
+With the defaults, hybrid search works out of the box. The explicit force-on form remains available:
 
 ```bash
 ENABLE_FTS=true
@@ -62,16 +62,16 @@ ollama pull qwen3-embedding:0.6b
 
 ### Environment Variables
 
-Enable hybrid search by setting these environment variables in your MCP configuration:
+Hybrid search is controlled by the following environment variables in your MCP configuration:
 
-#### ENABLE_HYBRID_SEARCH (Required)
+#### ENABLE_HYBRID_SEARCH (Optional)
 
-- **Type**: Boolean
-- **Default**: `false`
-- **Description**: Master switch for hybrid search functionality
-- **Example**: `"ENABLE_HYBRID_SEARCH": "true"`
+- **Type**: Tri-state
+- **Default**: `auto`
+- **Description**: Controls registration of the `hybrid_search_context` tool. `auto` (default) registers it automatically when at least one underlying search method is available; `true` forces it on; `false` forces it off, for the minimal tool surface. The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted (`true` maps to force-on, `false` to force-off).
+- **Example**: `"ENABLE_HYBRID_SEARCH": "false"` (only needed to disable; default already registers the tool)
 
-**Note**: Setting `ENABLE_HYBRID_SEARCH=true` alone is not sufficient. You must also have at least one of `ENABLE_FTS=true` or `ENABLE_SEMANTIC_SEARCH=true` (or both).
+**Note**: Hybrid search still requires at least one underlying search method to be available. With the defaults (`ENABLE_FTS=auto`, `ENABLE_SEMANTIC_SEARCH=auto`), this condition is normally satisfied; if you force both underlying methods off, the hybrid tool is skipped even when `ENABLE_HYBRID_SEARCH=true`.
 
 #### HYBRID_RRF_K (Optional)
 
@@ -91,7 +91,7 @@ Enable hybrid search by setting these environment variables in your MCP configur
 
 ### MCP Configuration Example
 
-Add to your `.mcp.json` file:
+With the defaults, FTS, semantic, and hybrid search all auto-register, so no `ENABLE_*` entries are required. Installing the embedding provider extra (here, Ollama) is what makes semantic search available, and hybrid follows automatically. Add to your `.mcp.json` file (the `HYBRID_RRF_K` entry below is optional tuning):
 
 ```json
 {
@@ -107,9 +107,6 @@ Add to your `.mcp.json` file:
         "mcp-context-server"
       ],
       "env": {
-        "ENABLE_FTS": "true",
-        "ENABLE_SEMANTIC_SEARCH": "true",
-        "ENABLE_HYBRID_SEARCH": "true",
         "HYBRID_RRF_K": "60"
       }
     }
@@ -348,14 +345,14 @@ When `explain_query=True`, the response includes a `stats` object with detailed 
 
 Each result includes a `scores` object with detailed breakdown:
 
-| Field               | Type          | Description                                                                          |
-|---------------------|---------------|--------------------------------------------------------------------------------------|
-| `rrf`               | float         | Combined RRF score (higher = better)                                                 |
-| `fts_rank`          | int or null   | Position in FTS results (1-based), null if not in FTS results                        |
-| `semantic_rank`     | int or null   | Position in semantic results (1-based), null if not in semantic results              |
-| `fts_score`         | float or null | Original FTS relevance score (BM25/ts_rank)                                          |
-| `semantic_distance` | float or null | Original semantic distance (L2, lower = more similar)                                |
-| `rerank_score`      | float or null | Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled |
+| Field               | Type          | Description                                                                                                                                                            |
+|---------------------|---------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `rrf`               | float         | Combined RRF score (higher = better)                                                                                                                                   |
+| `fts_rank`          | int or null   | Position in FTS results (1-based), null if not in FTS results                                                                                                          |
+| `semantic_rank`     | int or null   | Position in semantic results (1-based), null if not in semantic results                                                                                                |
+| `fts_score`         | float or null | Original FTS relevance score (BM25/ts_rank)                                                                                                                            |
+| `semantic_distance` | float or null | Original semantic distance, lower = more similar (Euclidean L2 for uncompressed/`mse` storage; negated inner product ~ -1..0 for the default `ip` compression variant) |
+| `rerank_score`      | float or null | Cross-encoder relevance score (higher = better, 0.0-1.0), null if reranking disabled                                                                                   |
 
 **Interpreting null values:**
 
@@ -450,21 +447,21 @@ Hybrid search executes FTS and semantic search in parallel for optimal performan
 
 ### Complete Setup Checklist
 
-1. **Verify FTS is enabled:**
+1. **Confirm FTS is not force-disabled:** FTS registers by default (`ENABLE_FTS=auto`).
    ```bash
-   echo $ENABLE_FTS  # Should show: true
+   echo $ENABLE_FTS  # Empty/"auto"/"true" is fine; "false" disables it
    ```
 
-2. **Verify semantic search is enabled (if using):**
+2. **Confirm semantic search prerequisites (if using semantic):**
    ```bash
-   echo $ENABLE_SEMANTIC_SEARCH  # Should show: true
+   echo $ENABLE_SEMANTIC_SEARCH  # Empty/"auto"/"true" is fine; "false" disables it
    curl http://localhost:11434   # Should return: Ollama is running
    ollama list                   # Should show your embedding model
    ```
 
-3. **Verify hybrid search is enabled:**
+3. **Confirm hybrid search is not force-disabled:** Hybrid registers by default (`ENABLE_HYBRID_SEARCH=auto`) when at least one underlying method is available.
    ```bash
-   echo $ENABLE_HYBRID_SEARCH  # Should show: true
+   echo $ENABLE_HYBRID_SEARCH  # Empty/"auto"/"true" is fine; "false" disables it
    ```
 
 4. **Start server and check logs:**
@@ -473,8 +470,7 @@ Hybrid search executes FTS and semantic search in parallel for optimal performan
    ```
    Look for:
    ```text
-   [OK] Hybrid search enabled
-   [OK] hybrid_search_context registered
+   hybrid_search_context modes available: ['fts', 'semantic']
    ```
 
 5. **Verify MCP client** - List available tools and confirm `hybrid_search_context` is present
@@ -511,18 +507,18 @@ Both FTS and semantic search should show as available for full hybrid functional
 
 **Diagnostic Steps:**
 
-1. **Check environment variables:**
+1. **Check environment variables** (any of these set to `false` force-disables the corresponding feature):
    ```bash
-   echo $ENABLE_HYBRID_SEARCH  # Must show: true
-   echo $ENABLE_FTS            # Should show: true
-   echo $ENABLE_SEMANTIC_SEARCH # Should show: true (for full hybrid)
+   echo $ENABLE_HYBRID_SEARCH   # "false" disables hybrid
+   echo $ENABLE_FTS             # "false" disables FTS
+   echo $ENABLE_SEMANTIC_SEARCH # "false" disables semantic
    ```
 
 2. **Check server logs** for initialization messages
 
 3. **Call `get_statistics` tool** to verify underlying search methods
 
-**Solution**: Ensure `ENABLE_HYBRID_SEARCH=true` and at least one of `ENABLE_FTS=true` or `ENABLE_SEMANTIC_SEARCH=true`.
+**Solution**: Hybrid registers by default when at least one underlying method is available. If the tool is missing, ensure none of `ENABLE_HYBRID_SEARCH`, `ENABLE_FTS`, or `ENABLE_SEMANTIC_SEARCH` is set to `false`, and that at least one underlying method (FTS or semantic) is actually available.
 
 ### Issue 2: Only FTS or Only Semantic Results
 
@@ -538,10 +534,10 @@ Both FTS and semantic search should show as available for full hybrid functional
 **For missing semantic search:**
 - Verify Ollama is running: `curl http://localhost:11434`
 - Verify model is available: `ollama list`
-- Check `ENABLE_SEMANTIC_SEARCH=true`
+- Ensure `ENABLE_SEMANTIC_SEARCH` is not set to `false` (it defaults to `auto`)
 
 **For missing FTS:**
-- Check `ENABLE_FTS=true`
+- Ensure `ENABLE_FTS` is not set to `false` (it defaults to `auto`)
 - Verify FTS migration completed (check server logs)
 
 ### Issue 3: Poor Fusion Quality
@@ -588,20 +584,20 @@ Both FTS and semantic search should show as available for full hybrid functional
 
 ### Common Error Messages
 
-| Error Message                    | Cause                            | Solution                              |
-|----------------------------------|----------------------------------|---------------------------------------|
-| `Hybrid search is not available` | Feature not enabled              | Set `ENABLE_HYBRID_SEARCH=true`       |
-| `No search modes available`      | Neither FTS nor semantic enabled | Enable at least one search method     |
-| `FTS requires ENABLE_FTS=true`   | FTS not enabled                  | Set `ENABLE_FTS=true`                 |
-| `Semantic search requires...`    | Semantic dependencies missing    | Set up Ollama and semantic search     |
-| `All search modes failed`        | Both FTS and semantic errored    | Check individual search method status |
+| Error Message                    | Cause                                               | Solution                                                          |
+|----------------------------------|-----------------------------------------------------|-------------------------------------------------------------------|
+| `Hybrid search is not available` | Feature force-disabled                              | Unset `ENABLE_HYBRID_SEARCH` (default `auto`) or set it to `true` |
+| `No search modes available`      | Both FTS and semantic force-disabled or unavailable | Keep at least one search method available                         |
+| `FTS requires ENABLE_FTS=true`   | FTS force-disabled                                  | Unset `ENABLE_FTS` (default `auto`) or set `ENABLE_FTS=true`      |
+| `Semantic search requires...`    | Semantic dependencies missing                       | Set up Ollama and semantic search                                 |
+| `All search modes failed`        | Both FTS and semantic errored                       | Check individual search method status                             |
 
 ## Comparison: Hybrid vs Individual Search Methods
 
 | Feature                  | FTS                        | Semantic                 | Hybrid                         |
 |--------------------------|----------------------------|--------------------------|--------------------------------|
 | **Query Type**           | Keywords/phrases           | Natural language meaning | Both                           |
-| **Result Ranking**       | BM25/ts_rank score         | L2 distance              | RRF combined score             |
+| **Result Ranking**       | BM25/ts_rank score         | L2 / negated-IP distance | RRF combined score             |
 | **Best For**             | Exact matches, known terms | Concept discovery        | High-confidence matches        |
 | **Performance**          | Fastest                    | Slower                   | Similar to semantic (parallel) |
 | **Dependencies**         | None                       | Ollama + model           | At least one method            |

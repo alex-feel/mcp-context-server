@@ -5,7 +5,6 @@ This module handles all database operations related to tags,
 including storage and retrieval of normalized tags.
 """
 
-from __future__ import annotations
 
 import contextlib
 import sqlite3
@@ -42,9 +41,9 @@ class TagRepository(BaseRepository):
 
     async def store_tags(
         self,
-        context_id: int,
+        context_id: str,
         tags: list[str],
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> None:
         """Store normalized tags for a context entry.
 
@@ -75,7 +74,7 @@ class TagRepository(BaseRepository):
                 await self.backend.execute_write(_store_tags_sqlite)
         else:  # postgresql
 
-            async def _store_tags_postgresql(conn: asyncpg.Connection) -> None:
+            async def _store_tags_postgresql(conn: 'asyncpg.Connection') -> None:
                 for tag in tags:
                     tag = tag.strip().lower()
                     if tag:
@@ -89,7 +88,7 @@ class TagRepository(BaseRepository):
             else:
                 await self.backend.execute_write(cast(Any, _store_tags_postgresql))
 
-    async def get_tags_for_context(self, context_id: int) -> list[str]:
+    async def get_tags_for_context(self, context_id: str) -> list[str]:
         """Get all tags for a specific context entry.
 
         Args:
@@ -110,14 +109,14 @@ class TagRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_tags_postgresql(conn: asyncpg.Connection) -> list[str]:
+        async def _get_tags_postgresql(conn: 'asyncpg.Connection') -> list[str]:
             query = f'SELECT tag FROM tags WHERE context_entry_id = {self._placeholder(1)} ORDER BY tag'
             rows = await conn.fetch(query, context_id)
             return [row['tag'] for row in rows]
 
         return await self.backend.execute_read(_get_tags_postgresql)
 
-    async def get_tags_for_contexts(self, context_ids: list[int]) -> dict[int, list[str]]:
+    async def get_tags_for_contexts(self, context_ids: list[str]) -> dict[str, list[str]]:
         """Get tags for multiple context entries in a single query.
 
         Args:
@@ -131,7 +130,7 @@ class TagRepository(BaseRepository):
 
         if self.backend.backend_type == 'sqlite':
 
-            def _get_tags_batch_sqlite(conn: sqlite3.Connection) -> dict[int, list[str]]:
+            def _get_tags_batch_sqlite(conn: sqlite3.Connection) -> dict[str, list[str]]:
                 cursor = conn.cursor()
                 placeholders = self._placeholders(len(context_ids))
                 query = f'''
@@ -142,7 +141,7 @@ class TagRepository(BaseRepository):
                 '''
                 cursor.execute(query, tuple(context_ids))
 
-                result: dict[int, list[str]] = {}
+                result: dict[str, list[str]] = {}
                 for row in cursor.fetchall():
                     ctx_id = row['context_entry_id']
                     if ctx_id not in result:
@@ -159,7 +158,7 @@ class TagRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_tags_batch_postgresql(conn: asyncpg.Connection) -> dict[int, list[str]]:
+        async def _get_tags_batch_postgresql(conn: 'asyncpg.Connection') -> dict[str, list[str]]:
             placeholders = self._placeholders(len(context_ids))
             query = f'''
                     SELECT context_entry_id, tag
@@ -169,7 +168,7 @@ class TagRepository(BaseRepository):
                 '''
             rows = await conn.fetch(query, *context_ids)
 
-            result: dict[int, list[str]] = {}
+            result: dict[str, list[str]] = {}
             for row in rows:
                 ctx_id = row['context_entry_id']
                 if ctx_id not in result:
@@ -186,9 +185,9 @@ class TagRepository(BaseRepository):
 
     async def replace_tags_for_context(
         self,
-        context_id: int,
+        context_id: str,
         tags: list[str],
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> None:
         """Replace all tags for a context entry.
 
@@ -227,7 +226,7 @@ class TagRepository(BaseRepository):
                 await self.backend.execute_write(_replace_tags_sqlite)
         else:  # postgresql
 
-            async def _replace_tags_postgresql(conn: asyncpg.Connection) -> None:
+            async def _replace_tags_postgresql(conn: 'asyncpg.Connection') -> None:
                 delete_query = f'DELETE FROM tags WHERE context_entry_id = {self._placeholder(1)}'
                 await conn.execute(delete_query, context_id)
 

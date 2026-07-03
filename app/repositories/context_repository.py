@@ -5,7 +5,6 @@ This module handles all database operations related to context entries,
 including CRUD operations and deduplication logic.
 """
 
-from __future__ import annotations
 
 import hashlib
 import json
@@ -18,6 +17,9 @@ from typing import cast
 from pydantic import ValidationError
 
 from app.backends.base import StorageBackend
+from app.errors import ControlFlowError
+from app.ids import generate_id
+from app.ids import normalize_id
 from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -26,6 +28,25 @@ if TYPE_CHECKING:
     from app.backends.base import TransactionContext
 
 logger = logging.getLogger(__name__)
+
+
+class VersionConflictError(ControlFlowError):
+    """Raised by ``update_context_entry`` when its optimistic-concurrency guard
+    finds the row's ``version`` changed since the caller read it.
+
+    A concurrent writer committed a newer update first, so applying this one
+    would silently overwrite it (and leave index_tree node rows describing stale
+    text). The caller re-reads the current version and retries the transaction so
+    the update applies against the latest row instead of clobbering it. It is
+    deliberately NOT a ``ToolError`` (so an ``except ToolError`` fast-path does
+    not swallow it) and NOT a connection error (so it is not treated as a
+    transient retry).
+    """
+
+    def __init__(self, context_id: str) -> None:
+        super().__init__(f'Version conflict updating context {context_id}')
+        self.context_id = context_id
+
 
 # Explicit column list to avoid exposing internal database columns (e.g., text_search_vector)
 # This constant is used in all SELECT queries that return context entries to ensure
@@ -48,6 +69,23 @@ def compute_content_hash(text: str) -> str:
         SHA-256 hex digest string (64 characters).
     """
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE/ILIKE wildcards in a literal so it pre-filters exactly.
+
+    Escapes the backslash escape character first, then the ``%`` (any run) and
+    ``_`` (any single char) wildcards, for use with an explicit ``ESCAPE '\\'``
+    clause on both SQLite and PostgreSQL. Keeps the optional substring pre-filter
+    a tight superset of the authoritative Python match.
+
+    Args:
+        value: The literal substring to embed in a LIKE pattern.
+
+    Returns:
+        The escaped literal (still needs ``%`` sentinels added around it).
+    """
+    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 class ContextRepository(BaseRepository):
@@ -73,13 +111,14 @@ class ContextRepository(BaseRepository):
         text_content: str,
         metadata: str | None = None,
         summary: str | None = None,
-        txn: TransactionContext | None = None,
-    ) -> tuple[int, bool]:
+        preserve_content_type_on_dedup: bool = False,
+        txn: 'TransactionContext | None' = None,
+    ) -> tuple[str, bool]:
         """Store context entry with deduplication logic.
 
         Checks if the latest entry has identical thread_id, source, and text_content.
-        If found, updates metadata (via COALESCE), content_type, and updated_at.
-        Otherwise, inserts new entry.
+        If found, updates metadata and summary (via COALESCE), content_type, content_hash,
+        version (bumped by one), and updated_at. Otherwise, inserts new entry.
 
         Args:
             thread_id: Thread identifier
@@ -88,6 +127,12 @@ class ContextRepository(BaseRepository):
             text_content: The actual text content
             metadata: JSON metadata string or None
             summary: LLM-generated summary text or None
+            preserve_content_type_on_dedup: When True, a deduplication UPDATE keeps the
+                existing content_type instead of overwriting it. The store path sets this
+                when images are PRESERVED (none provided this call) so a multimodal entry
+                does not flip to 'text' while its image rows remain (which would make the
+                images unretrievable). The INSERT path always uses the concrete
+                content_type. Defaults to False (overwrite, prior behavior).
             txn: Optional transaction context for atomic multi-repository operations.
                 When provided, uses the transaction's connection directly.
                 When None, uses execute_write() for standalone operation.
@@ -103,13 +148,21 @@ class ContextRepository(BaseRepository):
         if summary is not None and not summary.strip():
             summary = None
 
+        # On a dedup UPDATE, content_type must reflect the entry's FINAL image state.
+        # When the store is preserving images (none provided this call), preserve the
+        # existing content_type via COALESCE(NULL, content_type) -- overwriting it would
+        # flip a multimodal entry to 'text' while its image rows remain, making those
+        # images permanently unretrievable. The INSERT path still uses the concrete
+        # content_type (a fresh row carries only the images supplied in this request).
+        dedup_content_type = None if preserve_content_type_on_dedup else content_type
+
         # Compute content hash for deduplication optimization.
         # Avoids transferring full text_content over the network for duplicate checks.
         content_hash = compute_content_hash(text_content)
 
         if backend_type == 'sqlite':
 
-            def _store_sqlite(conn: sqlite3.Connection) -> tuple[int, bool]:
+            def _store_sqlite(conn: sqlite3.Connection) -> tuple[str, bool]:
                 cursor = conn.cursor()
 
                 # Check if the LATEST entry (by id) for this thread_id and source is a duplicate.
@@ -128,11 +181,14 @@ class ContextRepository(BaseRepository):
                 latest_row = cursor.fetchone()
 
                 is_duplicate = False
+                # The hash value the dedup decision observed; re-asserted by the
+                # UPDATE's null-safe predicate below (NULL for pre-migration rows).
+                observed_hash: str | None = None
                 if latest_row:
-                    existing_hash = latest_row['content_hash']
-                    if existing_hash is not None:
+                    observed_hash = latest_row['content_hash']
+                    if observed_hash is not None:
                         # Hash-based comparison (fast path)
-                        is_duplicate = existing_hash == content_hash
+                        is_duplicate = observed_hash == content_hash
                     else:
                         # Fallback for pre-migration rows without content_hash
                         is_duplicate = latest_row['text_content'] == text_content
@@ -159,39 +215,53 @@ class ContextRepository(BaseRepository):
                         is_duplicate = False
 
                 if is_duplicate and latest_row:
-                    # The latest entry has identical text - update metadata, content_type, and timestamp
+                    # The latest entry has identical text - update metadata, content_type,
+                    # and timestamp. The content_hash predicate (IS = SQLite's null-safe
+                    # equality) re-asserts the dedup decision at write time: a concurrent
+                    # committed writer that changed the candidate's text (its hash) or
+                    # deleted the row between the SELECT above and this UPDATE makes the
+                    # predicate miss, so the store falls through to INSERT instead of
+                    # overwriting the newer text's hash/summary/metadata with values
+                    # describing THIS request's text. SQLite's serialized single writer
+                    # makes the race unreachable here, but the guard keeps the two
+                    # backends behaviorally identical.
                     existing_id = latest_row['id']
                     cursor.execute(
                         f'''
                         UPDATE context_entries
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
-                            content_type = {self._placeholder(2)},
+                            content_type = COALESCE({self._placeholder(2)}, content_type),
                             summary = COALESCE({self._placeholder(3)}, summary),
                             content_hash = {self._placeholder(4)},
+                            version = version + 1,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {self._placeholder(5)}
+                          AND content_hash IS {self._placeholder(6)}
                         ''',
-                        (metadata, content_type, summary, content_hash, existing_id),
+                        (metadata, dedup_content_type, summary, content_hash, existing_id, observed_hash),
                     )
-                    rows_affected = cursor.rowcount
-                    if rows_affected == 0:
-                        logger.warning(
-                            'Deduplication UPDATE affected 0 rows for context %d in thread %s',
-                            existing_id, thread_id,
-                        )
-                    logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                    return existing_id, True
+                    if cursor.rowcount > 0:
+                        logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
+                        return existing_id, True
+                    # A concurrent writer invalidated the dedup decision; fall through to
+                    # the INSERT below (the caller's reconcile machinery regenerates any
+                    # generation legs its pre-check skipped expecting an UPDATE).
+                    logger.info(
+                        'Deduplication UPDATE for context %s in thread %s matched 0 rows '
+                        '(concurrent modification); inserting a new entry instead',
+                        existing_id, thread_id,
+                    )
 
-                # No duplicate - insert new entry
+                # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
+                new_id = generate_id()
                 cursor.execute(
                     f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
-                    VALUES ({self._placeholders(7)})
+                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(8)})
                     ''',
-                    (thread_id, source, content_type, text_content, metadata, summary, content_hash),
+                    (new_id, thread_id, source, content_type, text_content, metadata, summary, content_hash),
                 )
-                new_id: int = cursor.lastrowid if cursor.lastrowid is not None else 0
                 logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
                 return new_id, False
 
@@ -201,7 +271,7 @@ class ContextRepository(BaseRepository):
 
         # PostgreSQL
         # Note: TYPE_CHECKING ensures asyncpg.Connection type is only used during type checking
-        async def _store_postgresql(conn: asyncpg.Connection) -> tuple[int, bool]:
+        async def _store_postgresql(conn: 'asyncpg.Connection') -> tuple[str, bool]:
             # Check latest entry - fetches content_hash instead of full text_content.
             # Falls back to text comparison when content_hash is NULL (pre-migration rows).
             latest_row = await conn.fetchrow(
@@ -216,10 +286,13 @@ class ContextRepository(BaseRepository):
             )
 
             is_duplicate = False
+            # The hash value the dedup decision observed; re-asserted by the
+            # UPDATE's null-safe predicate below (NULL for pre-migration rows).
+            observed_hash: str | None = None
             if latest_row:
-                existing_hash = latest_row['content_hash']
-                if existing_hash is not None:
-                    is_duplicate = existing_hash == content_hash
+                observed_hash = latest_row['content_hash']
+                if observed_hash is not None:
+                    is_duplicate = observed_hash == content_hash
                 else:
                     is_duplicate = latest_row['text_content'] == text_content
 
@@ -247,41 +320,60 @@ class ContextRepository(BaseRepository):
                     is_duplicate = False
 
             if is_duplicate and latest_row:
-                # Update metadata, content_type, and timestamp
+                # Update metadata, content_type, and timestamp. The content_hash
+                # predicate (IS NOT DISTINCT FROM = null-safe equality) re-asserts
+                # the dedup decision at write time: under READ COMMITTED a
+                # concurrent writer can commit a text change (new hash) or a delete
+                # between the SELECT above and this UPDATE, and the bare id
+                # predicate would re-evaluate against the NEW row version
+                # (EvalPlanQual) and overwrite it -- poisoning content_hash with
+                # THIS request's hash and cross-attributing summary/metadata to
+                # different text. A 0-row match instead falls through to INSERT.
                 existing_id = latest_row['id']
                 result = await conn.execute(
                     f'''
                         UPDATE context_entries
                         SET metadata = COALESCE({self._placeholder(1)}, metadata),
-                            content_type = {self._placeholder(2)},
+                            content_type = COALESCE({self._placeholder(2)}, content_type),
                             summary = COALESCE({self._placeholder(3)}, summary),
                             content_hash = {self._placeholder(4)},
+                            version = version + 1,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = {self._placeholder(5)}
+                          AND content_hash IS NOT DISTINCT FROM {self._placeholder(6)}
                         ''',
                     metadata,
-                    content_type,
+                    dedup_content_type,
                     summary,
                     content_hash,
                     existing_id,
+                    observed_hash,
                 )
                 rows_affected = int(result.split()[-1]) if result else 0
-                if rows_affected == 0:
-                    logger.warning(
-                        'Deduplication UPDATE affected 0 rows for context %d in thread %s',
-                        existing_id, thread_id,
-                    )
-                logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                return existing_id, True
+                if rows_affected > 0:
+                    logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
+                    # Normalize the asyncpg pgproto.UUID to the canonical 32-char hex
+                    # the MCP API contract requires (the SQLite branch's TEXT id is
+                    # already hex); returning the raw UUID diverges and breaks callers.
+                    return normalize_id(str(existing_id)), True
+                # A concurrent writer invalidated the dedup decision; fall through to
+                # the INSERT below (the caller's reconcile machinery regenerates any
+                # generation legs its pre-check skipped expecting an UPDATE).
+                logger.info(
+                    'Deduplication UPDATE for context %s in thread %s matched 0 rows '
+                    '(concurrent modification); inserting a new entry instead',
+                    existing_id, thread_id,
+                )
 
-            # Insert new entry with RETURNING clause
-            new_id_result = await conn.fetchval(
+            # No duplicate - insert new entry with pre-generated UUIDv7 hex id.
+            new_id = generate_id()
+            await conn.execute(
                 f'''
                     INSERT INTO context_entries
-                    (thread_id, source, content_type, text_content, metadata, summary, content_hash)
-                    VALUES ({self._placeholders(7)})
-                    RETURNING id
+                    (id, thread_id, source, content_type, text_content, metadata, summary, content_hash)
+                    VALUES ({self._placeholders(8)})
                     ''',
+                new_id,
                 thread_id,
                 source,
                 content_type,
@@ -290,7 +382,6 @@ class ContextRepository(BaseRepository):
                 summary,
                 content_hash,
             )
-            new_id = cast(int, new_id_result)
             logger.debug(f'Inserted new context entry {new_id} for thread {thread_id}')
             return new_id, False
 
@@ -303,7 +394,7 @@ class ContextRepository(BaseRepository):
         thread_id: str,
         source: str,
         text_content: str,
-    ) -> int | None:
+    ) -> str | None:
         """Check if the latest entry matches the given content (read-only pre-check).
 
         This is a performance optimization for the embedding-first pattern.
@@ -330,7 +421,7 @@ class ContextRepository(BaseRepository):
 
         if self.backend.backend_type == 'sqlite':
 
-            def _check_sqlite(conn: sqlite3.Connection) -> int | None:
+            def _check_sqlite(conn: sqlite3.Connection) -> str | None:
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
@@ -372,12 +463,12 @@ class ContextRepository(BaseRepository):
                 )
                 if cursor.fetchone() is not None:
                     return None
-                return cast(int, candidate_id)
+                return cast(str, candidate_id)
 
             return await self.backend.execute_read(_check_sqlite)
 
         # PostgreSQL
-        async def _check_postgresql(conn: asyncpg.Connection) -> int | None:
+        async def _check_postgresql(conn: 'asyncpg.Connection') -> str | None:
             row = await conn.fetchrow(
                 f'''
                     SELECT id, content_hash, text_content FROM context_entries
@@ -420,11 +511,11 @@ class ContextRepository(BaseRepository):
             )
             if interleaving_row is not None:
                 return None
-            return cast(int, candidate_id)
+            return cast(str, candidate_id)
 
         return await self.backend.execute_read(_check_postgresql)
 
-    async def get_summary(self, context_id: int) -> str | None:
+    async def get_summary(self, context_id: str) -> str | None:
         """Get the summary for a context entry.
 
         Used during deduplication to check if a summary already exists,
@@ -456,7 +547,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_get_summary_sqlite)
 
         # PostgreSQL
-        async def _get_summary_postgresql(conn: asyncpg.Connection) -> str | None:
+        async def _get_summary_postgresql(conn: 'asyncpg.Connection') -> str | None:
             row = await conn.fetchrow(
                 f'SELECT summary FROM context_entries WHERE id = {self._placeholder(1)}',
                 context_id,
@@ -470,6 +561,141 @@ class ContextRepository(BaseRepository):
             return None
 
         return await self.backend.execute_read(_get_summary_postgresql)
+
+    def _build_context_filter_clause(
+        self,
+        *,
+        thread_id: str | None = None,
+        source: str | None = None,
+        content_type: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        params_start: int = 0,
+    ) -> tuple[str, list[Any], int, list[str]]:
+        """Build the shared ``context_entries`` WHERE clause used by search and grep.
+
+        Single source of truth for the portable filter surface (indexed
+        thread/source/content_type, date range, metadata, and the tag subquery),
+        so ``search_contexts`` and ``grep_scan_text_contents`` cannot drift. The
+        caller is expected to have already emitted ``WHERE 1=1``; the returned SQL
+        is a run of `` AND ...`` fragments (or ``''`` when no filters apply).
+
+        Args:
+            thread_id: Filter by thread id (indexed).
+            source: Filter by source ('user' or 'agent', indexed).
+            content_type: Filter by content type.
+            tags: Filter by tags (OR logic, via the indexed tag table).
+            metadata: Simple metadata equality filters.
+            metadata_filters: Advanced metadata filters with operators.
+            start_date: Filter by created_at >= date (ISO 8601).
+            end_date: Filter by created_at <= date (ISO 8601).
+            params_start: Number of bind parameters already emitted before this
+                clause, so PostgreSQL ``$n`` positions continue correctly.
+
+        Returns:
+            ``(where_sql, params, filter_count, validation_errors)``. When
+            ``validation_errors`` is non-empty the caller MUST short-circuit;
+            ``where_sql``/``params`` are then empty.
+        """
+        from app.metadata_types import MetadataFilter
+        from app.query_builder import MetadataQueryBuilder
+
+        backend_type = self.backend.backend_type
+        clauses: list[str] = []
+        params: list[Any] = []
+        validation_errors: list[str] = []
+
+        def _next_ph() -> str:
+            return self._placeholder(params_start + len(params) + 1)
+
+        # Indexed scalar filters (thread_id + source use idx_thread_source).
+        if thread_id:
+            clauses.append(f' AND thread_id = {_next_ph()}')
+            params.append(thread_id)
+        if source:
+            clauses.append(f' AND source = {_next_ph()}')
+            params.append(source)
+        if content_type:
+            clauses.append(f' AND content_type = {_next_ph()}')
+            params.append(content_type)
+
+        # Date range. SQLite normalizes ISO 8601 via datetime(); PostgreSQL needs
+        # Python datetime objects for TIMESTAMPTZ parameters.
+        if start_date:
+            if backend_type == 'sqlite':
+                clauses.append(f' AND created_at >= datetime({_next_ph()})')
+                params.append(start_date)
+            else:
+                clauses.append(f' AND created_at >= {_next_ph()}')
+                params.append(self._parse_date_for_postgresql(start_date))
+        if end_date:
+            if backend_type == 'sqlite':
+                clauses.append(f' AND created_at <= datetime({_next_ph()})')
+                params.append(end_date)
+            else:
+                clauses.append(f' AND created_at <= {_next_ph()}')
+                params.append(self._parse_date_for_postgresql(end_date))
+
+        # Metadata filtering (backend-aware; PostgreSQL needs the current param offset).
+        if backend_type == 'sqlite':
+            metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
+        else:
+            metadata_builder = MetadataQueryBuilder(
+                backend_type='postgresql',
+                param_offset=params_start + len(params),
+            )
+
+        if metadata:
+            for key, value in metadata.items():
+                # An invalid simple-metadata KEY (e.g. one with a space or ';' --
+                # reachable because the MCP `metadata` param accepts arbitrary string keys)
+                # is reported as a structured validation error and short-circuits the
+                # search, exactly like an invalid advanced filter below. It must NOT raise
+                # an unhandled ValueError, nor be silently dropped (which would widen the
+                # result set) -- this keeps search_context, semantic, and fts consistent.
+                try:
+                    metadata_builder.add_simple_filter(key, value)
+                except ValueError as e:
+                    validation_errors.append(f'Invalid metadata key {key!r}: {e}')
+
+        if metadata_filters:
+            for filter_dict in metadata_filters:
+                try:
+                    filter_spec = MetadataFilter(**filter_dict)
+                    metadata_builder.add_advanced_filter(filter_spec)
+                except ValidationError as e:
+                    validation_errors.append(f'Invalid metadata filter {filter_dict}: {e}')
+                except ValueError as e:
+                    validation_errors.append(f'Invalid metadata filter {filter_dict}: {e}')
+                except Exception as e:
+                    validation_errors.append(f'Unexpected error in metadata filter {filter_dict}: {e}')
+                    logger.error(f'Unexpected error processing metadata filter: {e}')
+
+        if validation_errors:
+            return '', [], 0, validation_errors
+
+        metadata_clause, metadata_params = metadata_builder.build_where_clause()
+        if metadata_clause:
+            clauses.append(f' AND {metadata_clause}')
+            params.extend(metadata_params)
+
+        # Tag filter via the indexed tag table (OR logic across normalized tags).
+        if tags:
+            normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
+            if normalized_tags:
+                tag_placeholders = ','.join([
+                    self._placeholder(params_start + len(params) + i + 1)
+                    for i in range(len(normalized_tags))
+                ])
+                clauses.append(
+                    f' AND id IN (SELECT DISTINCT context_entry_id FROM tags WHERE tag IN ({tag_placeholders}))',
+                )
+                params.extend(normalized_tags)
+
+        return ''.join(clauses), params, metadata_builder.get_filter_count(), validation_errors
 
     async def search_contexts(
         self,
@@ -506,9 +732,6 @@ class ContextRepository(BaseRepository):
         """
         import time as time_module
 
-        from app.metadata_types import MetadataFilter
-        from app.query_builder import MetadataQueryBuilder
-
         if self.backend.backend_type == 'sqlite':
 
             def _search_sqlite(conn: sqlite3.Connection) -> tuple[list[Any], dict[str, Any]]:
@@ -518,97 +741,25 @@ class ContextRepository(BaseRepository):
                 # Build query with indexed fields first for optimization
                 # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
                 query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
-                params: list[Any] = []
-
-                # Thread filter (indexed)
-                if thread_id:
-                    query += f' AND thread_id = {self._placeholder(len(params) + 1)}'
-                    params.append(thread_id)
-
-                # Source filter (indexed)
-                if source:
-                    query += f' AND source = {self._placeholder(len(params) + 1)}'
-                    params.append(source)
-
-                # Content type filter
-                if content_type:
-                    query += f' AND content_type = {self._placeholder(len(params) + 1)}'
-                    params.append(content_type)
-
-                # Date range filtering - Use datetime() to normalize ISO 8601 input
-                # datetime() converts all ISO 8601 formats (T separator, Z suffix, timezone offsets)
-                # to SQLite's space-separated format 'YYYY-MM-DD HH:MM:SS' for proper comparison.
-                # Without datetime(), TEXT comparison fails because 'T' > ' ' in ASCII ordering.
-                if start_date:
-                    query += f' AND created_at >= datetime({self._placeholder(len(params) + 1)})'
-                    params.append(start_date)
-
-                if end_date:
-                    query += f' AND created_at <= datetime({self._placeholder(len(params) + 1)})'
-                    params.append(end_date)
-
-                # Add metadata filtering
-                metadata_builder = MetadataQueryBuilder(backend_type='sqlite')
-
-                # Simple metadata filters
-                if metadata:
-                    for key, value in metadata.items():
-                        metadata_builder.add_simple_filter(key, value)
-
-                # Advanced metadata filters
-                if metadata_filters:
-                    validation_errors: list[str] = []
-                    for filter_dict in metadata_filters:
-                        try:
-                            # Convert dict to MetadataFilter
-                            filter_spec = MetadataFilter(**filter_dict)
-                            metadata_builder.add_advanced_filter(filter_spec)
-                        except ValidationError as e:
-                            # Collect validation errors to return to user
-                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                            validation_errors.append(error_msg)
-                        except ValueError as e:
-                            # Handle value errors (e.g., from field validators)
-                            error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                            validation_errors.append(error_msg)
-                        except Exception as e:
-                            # Unexpected errors - still collect them
-                            error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
-                            validation_errors.append(error_msg)
-                            logger.error(f'Unexpected error processing metadata filter: {e}')
-
-                    # If there were validation errors, return them immediately
-                    if validation_errors:
-                        error_response = {
-                            'error': 'Metadata filter validation failed',
-                            'validation_errors': validation_errors,
-                            'execution_time_ms': 0.0,
-                            'filters_applied': 0,
-                            'rows_returned': 0,
-                        }
-                        return [], error_response
-
-                # Add metadata conditions to query
-                metadata_clause, metadata_params = metadata_builder.build_where_clause()
-                if metadata_clause:
-                    query += f' AND {metadata_clause}'
-                    params.extend(metadata_params)
-
-                # Tag filter (uses subquery with indexed tag table)
-                if tags:
-                    normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                    if normalized_tags:
-                        tag_placeholders = ','.join([
-                            self._placeholder(len(params) + i + 1) for i in range(len(normalized_tags))
-                        ])
-                        query += f'''
-                            AND id IN (
-                                SELECT DISTINCT context_entry_id
-                                FROM tags
-                                WHERE tag IN ({tag_placeholders})
-                            )
-                        '''
-                        params.extend(normalized_tags)
+                where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+                    thread_id=thread_id,
+                    source=source,
+                    content_type=content_type,
+                    tags=tags,
+                    metadata=metadata,
+                    metadata_filters=metadata_filters,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                if validation_errors:
+                    return [], {
+                        'error': 'Metadata filter validation failed',
+                        'validation_errors': validation_errors,
+                        'execution_time_ms': 0.0,
+                        'filters_applied': 0,
+                        'rows_returned': 0,
+                    }
+                query += where_sql
 
                 # Order and pagination - use id as secondary sort for consistency
                 limit_placeholder = self._placeholder(len(params) + 1)
@@ -625,7 +776,7 @@ class ContextRepository(BaseRepository):
                 # Build statistics
                 stats: dict[str, Any] = {
                     'execution_time_ms': round(execution_time_ms, 2),
-                    'filters_applied': metadata_builder.get_filter_count(),
+                    'filters_applied': filter_count,
                     'rows_returned': len(rows),
                     'backend': 'sqlite',
                 }
@@ -654,100 +805,31 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_search_sqlite)
 
         # PostgreSQL
-        async def _search_postgresql(conn: asyncpg.Connection) -> tuple[list[Any], dict[str, Any]]:
+        async def _search_postgresql(conn: 'asyncpg.Connection') -> tuple[list[Any], dict[str, Any]]:
             start_time = time_module.time()
 
             # Build query with indexed fields first for optimization
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries WHERE 1=1'
-            params: list[Any] = []
-
-            # Thread filter (indexed)
-            if thread_id:
-                query += f' AND thread_id = {self._placeholder(len(params) + 1)}'
-                params.append(thread_id)
-
-            # Source filter (indexed)
-            if source:
-                query += f' AND source = {self._placeholder(len(params) + 1)}'
-                params.append(source)
-
-            # Content type filter
-            if content_type:
-                query += f' AND content_type = {self._placeholder(len(params) + 1)}'
-                params.append(content_type)
-
-            # Date range filtering - PostgreSQL uses TIMESTAMPTZ comparison
-            # asyncpg requires Python datetime objects, not strings, for TIMESTAMPTZ parameters
-            if start_date:
-                query += f' AND created_at >= {self._placeholder(len(params) + 1)}'
-                params.append(self._parse_date_for_postgresql(start_date))
-
-            if end_date:
-                query += f' AND created_at <= {self._placeholder(len(params) + 1)}'
-                params.append(self._parse_date_for_postgresql(end_date))
-
-            # Add metadata filtering
-            # Pass param_offset so metadata builder knows current parameter position
-            metadata_builder = MetadataQueryBuilder(backend_type='postgresql', param_offset=len(params))
-
-            # Simple metadata filters
-            if metadata:
-                for key, value in metadata.items():
-                    metadata_builder.add_simple_filter(key, value)
-
-            # Advanced metadata filters
-            if metadata_filters:
-                validation_errors: list[str] = []
-                for filter_dict in metadata_filters:
-                    try:
-                        # Convert dict to MetadataFilter
-                        filter_spec = MetadataFilter(**filter_dict)
-                        metadata_builder.add_advanced_filter(filter_spec)
-                    except ValidationError as e:
-                        # Collect validation errors to return to user
-                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                        validation_errors.append(error_msg)
-                    except ValueError as e:
-                        # Handle value errors (e.g., from field validators)
-                        error_msg = f'Invalid metadata filter {filter_dict}: {e}'
-                        validation_errors.append(error_msg)
-                    except Exception as e:
-                        # Unexpected errors - still collect them
-                        error_msg = f'Unexpected error in metadata filter {filter_dict}: {e}'
-                        validation_errors.append(error_msg)
-                        logger.error(f'Unexpected error processing metadata filter: {e}')
-
-                # If there were validation errors, return them immediately
-                if validation_errors:
-                    error_response = {
-                        'error': 'Metadata filter validation failed',
-                        'validation_errors': validation_errors,
-                        'execution_time_ms': 0.0,
-                        'filters_applied': 0,
-                        'rows_returned': 0,
-                    }
-                    return [], error_response
-
-            # Add metadata conditions to query
-            metadata_clause, metadata_params = metadata_builder.build_where_clause()
-            if metadata_clause:
-                query += f' AND {metadata_clause}'
-                params.extend(metadata_params)
-
-            # Tag filter (uses subquery with indexed tag table)
-            if tags:
-                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                if normalized_tags:
-                    tag_placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(normalized_tags))])
-                    query += f'''
-                        AND id IN (
-                            SELECT DISTINCT context_entry_id
-                            FROM tags
-                            WHERE tag IN ({tag_placeholders})
-                        )
-                    '''
-                    params.extend(normalized_tags)
+            where_sql, params, filter_count, validation_errors = self._build_context_filter_clause(
+                thread_id=thread_id,
+                source=source,
+                content_type=content_type,
+                tags=tags,
+                metadata=metadata,
+                metadata_filters=metadata_filters,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if validation_errors:
+                return [], {
+                    'error': 'Metadata filter validation failed',
+                    'validation_errors': validation_errors,
+                    'execution_time_ms': 0.0,
+                    'filters_applied': 0,
+                    'rows_returned': 0,
+                }
+            query += where_sql
 
             # Order and pagination - use id as secondary sort for consistency
             limit_placeholder = self._placeholder(len(params) + 1)
@@ -763,7 +845,7 @@ class ContextRepository(BaseRepository):
             # Build statistics
             stats: dict[str, Any] = {
                 'execution_time_ms': round(execution_time_ms, 2),
-                'filters_applied': metadata_builder.get_filter_count(),
+                'filters_applied': filter_count,
                 'rows_returned': len(rows),
                 'backend': 'postgresql',
             }
@@ -779,7 +861,231 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_search_postgresql)
 
-    async def get_by_ids(self, context_ids: list[int]) -> list[Any]:
+    async def grep_scan_text_contents(
+        self,
+        *,
+        ascii_literal: str | None = None,
+        thread_id: str | None = None,
+        source: str | None = None,
+        content_type: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, str | int | float | bool] | None = None,
+        metadata_filters: list[dict[str, Any]] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        max_entries_scanned: int = 1000,
+        aggregate_bytes_budget: int = 67108864,
+        page_size: int = 200,
+    ) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+        """Scan ``text_content`` newest-first for a server-side grep pre-filter.
+
+        Exhaustive keyset pagination ordered ``id DESC`` -- deliberately NOT
+        ``search_contexts`` (whose ``LIMIT 50`` would cap results and make grep
+        silently non-exhaustive). Returns ``(id, text_content)`` candidate rows
+        (after the portable filters and an optional pure-ASCII substring
+        pre-narrow); the authoritative regex/line/offset matching runs in Python
+        in the tool layer. The scan is bounded by ``max_entries_scanned`` and an
+        aggregate code-point budget so an unscoped thread cannot exhaust memory;
+        the first entry that crosses the budget is still returned (so a single
+        huge entry is never silently skipped).
+
+        Args:
+            ascii_literal: Optional pure-ASCII substring for an ``LIKE``/``ILIKE``
+                pre-narrow (a superset of the Python match). None disables it.
+            thread_id: Filter by thread id (indexed; bounds the scan).
+            source: Filter by source ('user' or 'agent', indexed).
+            content_type: Filter by content type.
+            tags: Filter by tags (OR logic).
+            metadata: Simple metadata equality filters.
+            metadata_filters: Advanced metadata filters with operators.
+            start_date: Filter by created_at >= date (ISO 8601).
+            end_date: Filter by created_at <= date (ISO 8601).
+            max_entries_scanned: Hard cap on candidate rows visited.
+            aggregate_bytes_budget: Approximate resident-memory cap (summed
+                code-point length of fetched text) before the scan stops.
+            page_size: Rows fetched per keyset page.
+
+        Returns:
+            ``(rows, stats)`` where ``rows`` is a list of ``(context_id,
+            text_content)`` with canonical 32-char hex ids, and ``stats`` carries
+            ``scanned`` (int), ``truncated`` (bool), ``backend`` (str), and
+            ``validation_errors`` (list, only when a metadata filter is invalid).
+        """
+        backend_type = self.backend.backend_type
+        where_sql, base_params, _filter_count, validation_errors = self._build_context_filter_clause(
+            thread_id=thread_id,
+            source=source,
+            content_type=content_type,
+            tags=tags,
+            metadata=metadata,
+            metadata_filters=metadata_filters,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if validation_errors:
+            return [], {
+                'scanned': 0,
+                'truncated': False,
+                'validation_errors': validation_errors,
+                'backend': backend_type,
+            }
+
+        if backend_type == 'sqlite':
+
+            def _scan_sqlite(conn: sqlite3.Connection) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+                cursor = conn.cursor()
+                out: list[tuple[str, str]] = []
+                scanned = 0
+                total_chars = 0
+                last_id: str | None = None
+                truncated = False
+
+                def _has_more_beyond(boundary_id: str | None) -> bool:
+                    # Single-row lookahead beyond the last collected id, carrying the
+                    # SAME base filters and optional ASCII pre-narrow, so a scan that
+                    # stopped exactly on the final matching row is not falsely flagged
+                    # truncated. Used by BOTH stop triggers (byte budget and entry cap).
+                    look_params: list[Any] = list(base_params)
+                    look_clause = where_sql
+                    if ascii_literal is not None:
+                        look_clause += f" AND text_content LIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
+                        look_params.append(f'%{_escape_like(ascii_literal)}%')
+                    if boundary_id is not None:
+                        look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
+                        look_params.append(boundary_id)
+                    cursor.execute(
+                        f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                        tuple(look_params),
+                    )
+                    return cursor.fetchone() is not None
+
+                while scanned < max_entries_scanned:
+                    page_params: list[Any] = list(base_params)
+                    clause = where_sql
+                    if ascii_literal is not None:
+                        clause += f" AND text_content LIKE {self._placeholder(len(page_params) + 1)} ESCAPE '\\'"
+                        page_params.append(f'%{_escape_like(ascii_literal)}%')
+                    if last_id is not None:
+                        clause += f' AND id < {self._placeholder(len(page_params) + 1)}'
+                        page_params.append(last_id)
+                    page_limit = min(page_size, max_entries_scanned - scanned)
+                    query = (
+                        f'SELECT id, text_content FROM context_entries WHERE 1=1{clause} '
+                        f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
+                    )
+                    page_params.append(page_limit)
+                    cursor.execute(query, tuple(page_params))
+                    page = cursor.fetchall()
+                    if not page:
+                        break
+                    budget_hit = False
+                    for row in page:
+                        raw_id = row['id']
+                        text_value = row['text_content']
+                        last_id = str(raw_id)
+                        scanned += 1
+                        text_str = text_value if text_value is not None else ''
+                        out.append((normalize_id(str(raw_id)), text_str))
+                        total_chars += len(text_str)
+                        if total_chars >= aggregate_bytes_budget:
+                            budget_hit = True
+                            break
+                    if budget_hit:
+                        # Aggregate byte budget reached. A lookahead beyond the last
+                        # collected row distinguishes a genuinely truncated scan from
+                        # one that stopped exactly on the final matching row, mirroring
+                        # the entry-cap path below.
+                        truncated = _has_more_beyond(last_id)
+                        break
+                    if len(page) < page_limit:
+                        break
+                    if scanned >= max_entries_scanned:
+                        # Cap reached on a full page. Distinguish exhaustion (the
+                        # matching set is EXACTLY max_entries_scanned) from overflow
+                        # (more remain) with the same single-row lookahead, so an
+                        # exact-fit result is not falsely flagged truncated.
+                        truncated = _has_more_beyond(last_id)
+                        break
+                return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'sqlite'}
+
+            return await self.backend.execute_read(_scan_sqlite)
+
+        async def _scan_postgresql(conn: 'asyncpg.Connection') -> tuple[list[tuple[str, str]], dict[str, Any]]:
+            out: list[tuple[str, str]] = []
+            scanned = 0
+            total_chars = 0
+            last_id: Any | None = None
+            truncated = False
+
+            async def _has_more_beyond(boundary_id: object) -> bool:
+                # Single-row lookahead beyond the last collected id, carrying the
+                # SAME base filters and optional ASCII pre-narrow, so a scan that
+                # stopped exactly on the final matching row is not falsely flagged
+                # truncated. Used by BOTH stop triggers (byte budget and entry cap).
+                look_params: list[Any] = list(base_params)
+                look_clause = where_sql
+                if ascii_literal is not None:
+                    look_clause += f" AND text_content ILIKE {self._placeholder(len(look_params) + 1)} ESCAPE '\\'"
+                    look_params.append(f'%{_escape_like(ascii_literal)}%')
+                if boundary_id is not None:
+                    look_clause += f' AND id < {self._placeholder(len(look_params) + 1)}'
+                    look_params.append(boundary_id)
+                look_hit = await conn.fetchval(
+                    f'SELECT 1 FROM context_entries WHERE 1=1{look_clause} ORDER BY id DESC LIMIT 1',
+                    *look_params,
+                )
+                return look_hit is not None
+
+            while scanned < max_entries_scanned:
+                page_params: list[Any] = list(base_params)
+                clause = where_sql
+                if ascii_literal is not None:
+                    clause += f" AND text_content ILIKE {self._placeholder(len(page_params) + 1)} ESCAPE '\\'"
+                    page_params.append(f'%{_escape_like(ascii_literal)}%')
+                if last_id is not None:
+                    clause += f' AND id < {self._placeholder(len(page_params) + 1)}'
+                    page_params.append(last_id)
+                page_limit = min(page_size, max_entries_scanned - scanned)
+                query = (
+                    f'SELECT id, text_content FROM context_entries WHERE 1=1{clause} '
+                    f'ORDER BY id DESC LIMIT {self._placeholder(len(page_params) + 1)}'
+                )
+                page_params.append(page_limit)
+                page = await conn.fetch(query, *page_params)
+                if not page:
+                    break
+                budget_hit = False
+                for row in page:
+                    raw_id = row['id']
+                    text_value = row['text_content']
+                    last_id = raw_id
+                    scanned += 1
+                    text_str = text_value if text_value is not None else ''
+                    out.append((normalize_id(str(raw_id)), text_str))
+                    total_chars += len(text_str)
+                    if total_chars >= aggregate_bytes_budget:
+                        budget_hit = True
+                        break
+                if budget_hit:
+                    # Aggregate byte budget reached. A lookahead beyond the last
+                    # collected row distinguishes a genuinely truncated scan from
+                    # one that stopped exactly on the final matching row, mirroring
+                    # the entry-cap path below.
+                    truncated = await _has_more_beyond(last_id)
+                    break
+                if len(page) < page_limit:
+                    break
+                if scanned >= max_entries_scanned:
+                    # Cap reached on a full page. Single-row lookahead beyond
+                    # last_id distinguishes exhaustion (exactly the cap) from
+                    # overflow, so an exact-fit result is not falsely flagged.
+                    truncated = await _has_more_beyond(last_id)
+                    break
+            return out, {'scanned': scanned, 'truncated': truncated, 'backend': 'postgresql'}
+
+        return await self.backend.execute_read(_scan_postgresql)
+
+    async def get_by_ids(self, context_ids: list[str]) -> list[Any]:
         """Get context entries by their IDs.
 
         Args:
@@ -802,7 +1108,7 @@ class ContextRepository(BaseRepository):
                 query = f'''
                     SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
                     WHERE id IN ({placeholders})
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                 '''
                 cursor.execute(query, tuple(context_ids))
                 return list(cursor.fetchall())
@@ -810,13 +1116,13 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_fetch_sqlite)
 
         # PostgreSQL
-        async def _fetch_postgresql(conn: asyncpg.Connection) -> list[Any]:
+        async def _fetch_postgresql(conn: 'asyncpg.Connection') -> list[Any]:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
             # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
             query = f'''
                 SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
                 WHERE id IN ({placeholders})
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
             '''
             rows = await conn.fetch(query, *context_ids)
             return list(rows)
@@ -825,8 +1131,8 @@ class ContextRepository(BaseRepository):
 
     async def delete_by_ids(
         self,
-        context_ids: list[int],
-        txn: TransactionContext | None = None,
+        context_ids: list[str],
+        txn: 'TransactionContext | None' = None,
     ) -> int:
         """Delete context entries by their IDs.
 
@@ -862,7 +1168,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_delete_by_ids_sqlite)
 
         # PostgreSQL
-        async def _delete_by_ids_postgresql(conn: asyncpg.Connection) -> int:
+        async def _delete_by_ids_postgresql(conn: 'asyncpg.Connection') -> int:
             placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
             result = await conn.execute(
                 f'DELETE FROM context_entries WHERE id IN ({placeholders})',
@@ -897,7 +1203,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_delete_by_thread_sqlite)
 
         # PostgreSQL
-        async def _delete_by_thread_postgresql(conn: asyncpg.Connection) -> int:
+        async def _delete_by_thread_postgresql(conn: 'asyncpg.Connection') -> int:
             result = await conn.execute(
                 f'DELETE FROM context_entries WHERE thread_id = {self._placeholder(1)}',
                 thread_id,
@@ -909,12 +1215,13 @@ class ContextRepository(BaseRepository):
 
     async def update_context_entry(
         self,
-        context_id: int,
+        context_id: str,
         text_content: str | None = None,
         metadata: str | None = None,
         summary: str | None = None,
         clear_summary: bool = False,
-        txn: TransactionContext | None = None,
+        expected_version: int | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> tuple[bool, list[str]]:
         """Update text content and/or metadata of a context entry.
 
@@ -980,9 +1287,19 @@ class ContextRepository(BaseRepository):
                 # Always update the updated_at timestamp
                 update_parts.append('updated_at = CURRENT_TIMESTAMP')
 
-                # Execute update
-                query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {self._placeholder(len(params) + 1)}"
+                # Optimistic concurrency: bump the version and gate the write on
+                # the version captured before generation. A concurrent writer that
+                # committed in the meantime advanced the row's version, so the CAS
+                # matches 0 rows and we raise VersionConflictError -- the caller
+                # re-reads and retries instead of silently overwriting newer text.
+                where_clause = f'id = {self._placeholder(len(params) + 1)}'
                 params.append(context_id)
+                if expected_version is not None:
+                    update_parts.append('version = version + 1')
+                    where_clause += f' AND version = {self._placeholder(len(params) + 1)}'
+                    params.append(expected_version)
+
+                query = f'UPDATE context_entries SET {", ".join(update_parts)} WHERE {where_clause}'
                 cursor.execute(query, tuple(params))
 
                 # Check if any rows were affected
@@ -990,6 +1307,9 @@ class ContextRepository(BaseRepository):
                     logger.debug(f'Updated context entry {context_id}, fields: {updated_fields}')
                     return True, updated_fields
 
+                if expected_version is not None:
+                    # Row exists (checked above) but the version did not match.
+                    raise VersionConflictError(context_id)
                 return False, []
 
             if txn:
@@ -997,7 +1317,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_update_entry_sqlite)
 
         # PostgreSQL
-        async def _update_entry_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
+        async def _update_entry_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
             updated_fields: list[str] = []
 
             # First, check if the entry exists
@@ -1040,9 +1360,15 @@ class ContextRepository(BaseRepository):
             # Always update the updated_at timestamp
             update_parts.append('updated_at = CURRENT_TIMESTAMP')
 
-            # Execute update
-            query = f"UPDATE context_entries SET {', '.join(update_parts)} WHERE id = {self._placeholder(len(params) + 1)}"
+            # Optimistic concurrency (see SQLite branch for the full rationale).
+            where_clause = f'id = {self._placeholder(len(params) + 1)}'
             params.append(context_id)
+            if expected_version is not None:
+                update_parts.append('version = version + 1')
+                where_clause += f' AND version = {self._placeholder(len(params) + 1)}'
+                params.append(expected_version)
+
+            query = f'UPDATE context_entries SET {", ".join(update_parts)} WHERE {where_clause}'
             result = await conn.execute(query, *params)
 
             # Check if any rows were affected (asyncpg returns "UPDATE N")
@@ -1051,59 +1377,70 @@ class ContextRepository(BaseRepository):
                 logger.debug(f'Updated context entry {context_id}, fields: {updated_fields}')
                 return True, updated_fields
 
+            if expected_version is not None:
+                raise VersionConflictError(context_id)
             return False, []
 
         if txn:
             return await _update_entry_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_write(_update_entry_postgresql)
 
-    async def check_entry_exists(self, context_id: int) -> tuple[bool, str | None]:
-        """Check if a context entry exists and return its source.
+    async def check_entry_exists(self, context_id: str) -> tuple[bool, str | None, int | None]:
+        """Check if a context entry exists and return its source and version.
 
         Args:
             context_id: ID of the context entry
 
         Returns:
-            Tuple of (exists, source). Source is None when entry does not exist.
-            When exists=True, source is always 'user' or 'agent'.
+            Tuple of (exists, source, version). ``source`` and ``version`` are
+            None when the entry does not exist. When exists=True, source is
+            'user' or 'agent' and version is the current optimistic-concurrency
+            token -- update_context captures it BEFORE generation and passes it
+            to update_context_entry as the compare-and-set guard, so a concurrent
+            writer that commits during generation is detected.
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _check_exists_sqlite(conn: sqlite3.Connection) -> tuple[bool, str | None]:
+            def _check_exists_sqlite(conn: sqlite3.Connection) -> tuple[bool, str | None, int | None]:
                 cursor = conn.cursor()
                 cursor.execute(
-                    f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                    f'SELECT source, version FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                     (context_id,),
                 )
                 row = cursor.fetchone()
                 if row is None:
-                    return False, None
-                return True, cast(str, row['source'])
+                    return False, None, None
+                return True, cast(str, row['source']), cast(int, row['version'])
 
             return await self.backend.execute_read(_check_exists_sqlite)
 
         # PostgreSQL
-        async def _check_exists_postgresql(conn: asyncpg.Connection) -> tuple[bool, str | None]:
+        async def _check_exists_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, str | None, int | None]:
             row = await conn.fetchrow(
-                f'SELECT source FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                f'SELECT source, version FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
                 context_id,
             )
             if row is None:
-                return False, None
-            return True, cast(str, row['source'])
+                return False, None, None
+            return True, cast(str, row['source']), cast(int, row['version'])
 
         return await self.backend.execute_read(_check_exists_postgresql)
 
-    async def get_content_type(self, context_id: int) -> str | None:
+    async def get_content_type(self, context_id: str, txn: 'TransactionContext | None' = None) -> str | None:
         """Get the content type of a context entry.
 
         Args:
             context_id: ID of the context entry
+            txn: Optional transaction context. When provided the read runs on the
+                transaction's own connection instead of acquiring a second pooled
+                connection, avoiding a nested pool acquire while a transaction
+                connection is already held (PostgreSQL pool-starvation hazard).
 
         Returns:
             Content type ('text' or 'multimodal') or None if entry doesn't exist
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if backend_type == 'sqlite':
 
             def _get_content_type_sqlite(conn: sqlite3.Connection) -> str | None:
                 cursor = conn.cursor()
@@ -1114,23 +1451,27 @@ class ContextRepository(BaseRepository):
                 row = cursor.fetchone()
                 return row['content_type'] if row else None
 
+            if txn is not None:
+                return _get_content_type_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_get_content_type_sqlite)
 
         # PostgreSQL
-        async def _get_content_type_postgresql(conn: asyncpg.Connection) -> str | None:
+        async def _get_content_type_postgresql(conn: 'asyncpg.Connection') -> str | None:
             row = await conn.fetchrow(
                 f'SELECT content_type FROM context_entries WHERE id = {self._placeholder(1)}',
                 context_id,
             )
             return row['content_type'] if row else None
 
+        if txn is not None:
+            return await _get_content_type_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_get_content_type_postgresql)
 
     async def update_content_type(
         self,
-        context_id: int,
+        context_id: str,
         content_type: str,
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> bool:
         """Update the content type of a context entry.
 
@@ -1164,7 +1505,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_update_content_type_sqlite)
 
         # PostgreSQL
-        async def _update_content_type_postgresql(conn: asyncpg.Connection) -> bool:
+        async def _update_content_type_postgresql(conn: 'asyncpg.Connection') -> bool:
             content_type_placeholder = self._placeholder(1)
             id_placeholder = self._placeholder(2)
             query = (
@@ -1181,9 +1522,9 @@ class ContextRepository(BaseRepository):
 
     async def patch_metadata(
         self,
-        context_id: int,
+        context_id: str,
         patch: dict[str, Any],
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> tuple[bool, list[str]]:
         """Apply RFC 7396 JSON Merge Patch to metadata atomically.
 
@@ -1263,7 +1604,7 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_patch_metadata_sqlite)
 
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
-        async def _patch_metadata_postgresql(conn: asyncpg.Connection) -> tuple[bool, list[str]]:
+        async def _patch_metadata_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
             # Import settings here to avoid circular import and ensure schema is retrieved at call time
             from app.settings import get_settings
 
@@ -1342,17 +1683,22 @@ class ContextRepository(BaseRepository):
 
     async def get_ids_matching_batch_criteria(
         self,
+        context_ids: list[str] | None = None,
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
-    ) -> list[int]:
+        older_than_cutoff: str | None = None,
+    ) -> list[str]:
         """Return context entry IDs matching batch deletion criteria.
 
-        Builds the same WHERE clause as delete_contexts_batch but executes
-        a SELECT instead of DELETE. Used to pre-query affected IDs for
-        embedding cleanup on SQLite (where vec0 virtual tables lack CASCADE).
+        Builds the same AND-combined WHERE clause as delete_contexts_batch but
+        executes a SELECT instead of DELETE. Used to pre-query the exact IDs that a
+        delete will remove for embedding cleanup on SQLite (where vec0 virtual
+        tables lack CASCADE), so the cleanup targets only the to-be-deleted subset
+        and never orphans a surviving entry's embeddings.
 
         Args:
+            context_ids: Filter by these context IDs (intersected with the others)
             thread_ids: Filter by these thread IDs
             source: Filter by source ('user' or 'agent')
             older_than_days: Filter entries older than N days
@@ -1362,10 +1708,17 @@ class ContextRepository(BaseRepository):
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _select_ids_sqlite(conn: sqlite3.Connection) -> list[int]:
+            def _select_ids_sqlite(conn: sqlite3.Connection) -> list[str]:
                 cursor = conn.cursor()
                 conditions: list[str] = []
                 params: list[Any] = []
+
+                if context_ids:
+                    placeholders = ','.join([
+                        self._placeholder(len(params) + i + 1) for i in range(len(context_ids))
+                    ])
+                    conditions.append(f'id IN ({placeholders})')
+                    params.extend(context_ids)
 
                 if thread_ids:
                     placeholders = ','.join([
@@ -1378,7 +1731,15 @@ class ContextRepository(BaseRepository):
                     conditions.append(f'source = {self._placeholder(len(params) + 1)}')
                     params.append(source)
 
-                if older_than_days is not None:
+                if older_than_cutoff is not None:
+                    # Use a caller-resolved ABSOLUTE cutoff so this embedding-cleanup
+                    # pre-query and the subsequent DELETE share ONE age boundary.
+                    # datetime('now') re-evaluates per statement, so a row crossing the
+                    # boundary between the two would be deleted without its vec0
+                    # embeddings cleaned -- an orphan.
+                    conditions.append(f'created_at < {self._placeholder(len(params) + 1)}')
+                    params.append(older_than_cutoff)
+                elif older_than_days is not None:
                     conditions.append(
                         f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
                     )
@@ -1400,19 +1761,24 @@ class ContextRepository(BaseRepository):
 
     async def delete_contexts_batch(
         self,
-        context_ids: list[int] | None = None,
+        context_ids: list[str] | None = None,
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
+        older_than_cutoff: str | None = None,
     ) -> tuple[int, list[str]]:
         """Delete multiple context entries by various criteria.
 
         At least one criterion must be provided. Criteria can be combined
         for more targeted deletion. Cascading delete removes associated
-        tags and images. On PostgreSQL, embeddings are also removed via CASCADE.
-        On SQLite, vec0 virtual table rows (vec_context_embeddings) are not
-        covered by CASCADE and require explicit cleanup via the embedding
-        repository.
+        tags and images. On PostgreSQL, embedding rows are removed via
+        ON DELETE CASCADE on the surviving embedding table for the active
+        compression mode (fp32 ``vec_context_embeddings`` when compression
+        is disabled; compressed ``vec_context_embeddings_compressed`` when
+        enabled). On SQLite the vec0 virtual table is NOT covered by
+        CASCADE and requires explicit cleanup via the embedding repository;
+        the compressed ``vec_context_embeddings_compressed`` table IS covered
+        by CASCADE on SQLite (it is a standard table, not a virtual one).
 
         Args:
             context_ids: Specific context entry IDs to delete
@@ -1423,14 +1789,16 @@ class ContextRepository(BaseRepository):
         Returns:
             Tuple of (deleted_count, list_of_criteria_used)
         """
-        criteria_used: list[str] = []
-
         if self.backend.backend_type == 'sqlite':
 
             def _delete_batch_sqlite(conn: sqlite3.Connection) -> tuple[int, list[str]]:
                 cursor = conn.cursor()
                 conditions: list[str] = []
                 params: list[Any] = []
+                # Build per-invocation so transparent write-retries (e.g. on a
+                # transient "database is locked" error) do not accumulate
+                # duplicate criteria strings across attempts.
+                criteria_used: list[str] = []
 
                 if context_ids:
                     placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
@@ -1451,7 +1819,14 @@ class ContextRepository(BaseRepository):
                     params.append(source)
                     criteria_used.append(f'source: {source}')
 
-                if older_than_days is not None:
+                if older_than_cutoff is not None:
+                    # Shared absolute cutoff (see get_ids_matching_batch_criteria) so this
+                    # DELETE's age boundary is identical to the embedding-cleanup
+                    # pre-query, preventing a moving datetime('now') from orphaning vec0 rows.
+                    conditions.append(f'created_at < {self._placeholder(len(params) + 1)}')
+                    params.append(older_than_cutoff)
+                    criteria_used.append(f'older_than_days: {older_than_days}')
+                elif older_than_days is not None:
                     conditions.append(
                         f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
                     )
@@ -1472,9 +1847,12 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_write(_delete_batch_sqlite)
 
         # PostgreSQL
-        async def _delete_batch_postgresql(conn: asyncpg.Connection) -> tuple[int, list[str]]:
+        async def _delete_batch_postgresql(conn: 'asyncpg.Connection') -> tuple[int, list[str]]:
             conditions: list[str] = []
             params: list[Any] = []
+            # Build per-invocation (see the SQLite closure) so retried writes do
+            # not accumulate duplicate criteria strings across attempts.
+            criteria_used: list[str] = []
 
             if context_ids:
                 placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
@@ -1512,3 +1890,61 @@ class ContextRepository(BaseRepository):
             return deleted_count, criteria_used
 
         return await self.backend.execute_write(_delete_batch_postgresql, validate_connection=True)
+
+    async def find_ids_by_prefix(self, prefix: str, limit: int = 2) -> list[str]:
+        """Find context entry IDs that begin with the given prefix.
+
+        Backs the ID-prefix resolution helper :func:`app.ids.resolve_prefix` (reached via
+        :func:`app.ids.resolve_or_normalize_id`), which expands a short user-supplied
+        prefix into a full id when ambiguity is unlikely. The caller decides what to do
+        when ``limit`` rows are returned; this method's contract is "return up to N
+        matches".
+
+        Args:
+            prefix: Lowercase hex prefix. ``resolve_prefix`` only calls this for prefixes
+                of 8-31 hex characters (the range :func:`app.ids.is_id_prefix` accepts);
+                the caller is responsible for normalization and that length check.
+            limit: Maximum number of IDs to return. Defaults to 2 so callers can
+                detect ambiguity by checking ``len(result) > 1``.
+
+        Returns:
+            List of matching context_id strings (UUIDv7 hex, 32 chars), up to ``limit``.
+        """
+        if self.backend.backend_type == 'sqlite':
+
+            def _find_sqlite(conn: sqlite3.Connection) -> list[str]:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'''
+                    SELECT id FROM context_entries
+                    WHERE id LIKE {self._placeholder(1)}
+                    ORDER BY id
+                    LIMIT {self._placeholder(2)}
+                    ''',
+                    (prefix + '%', limit),
+                )
+                return [row['id'] for row in cursor.fetchall()]
+
+            return await self.backend.execute_read(_find_sqlite)
+
+        # PostgreSQL: id is a uuid column; canonical text form contains hyphens
+        # which are absent from the user-supplied hex prefix. REPLACE() removes
+        # hyphens so LIKE matches against the 32-char hex representation.
+        async def _find_postgresql(conn: 'asyncpg.Connection') -> list[str]:
+            rows = await conn.fetch(
+                f'''
+                SELECT id FROM context_entries
+                WHERE REPLACE(CAST(id AS TEXT), '-', '') LIKE {self._placeholder(1)}
+                ORDER BY id
+                LIMIT {self._placeholder(2)}
+                ''',
+                prefix + '%',
+                limit,
+            )
+            # Canonicalize: asyncpg returns UUID columns as pgproto.UUID whose str()
+            # is the 36-char hyphenated form. normalize_id yields the 32-char hex
+            # the SQLite path already returns, so prefix resolution echoes a
+            # canonical context_id on both backends (mirrors grep_scan_text_contents).
+            return [normalize_id(str(row['id'])) for row in rows]
+
+        return await self.backend.execute_read(_find_postgresql)

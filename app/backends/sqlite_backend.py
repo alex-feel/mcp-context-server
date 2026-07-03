@@ -28,8 +28,11 @@ from typing import TYPE_CHECKING
 from typing import Any
 from typing import TypeVar
 from typing import cast
+from typing import overload
 from typing import override
+from urllib.parse import quote
 
+from app.errors import ControlFlowError
 from app.settings import get_settings
 
 if TYPE_CHECKING:
@@ -232,6 +235,26 @@ class CircuitBreaker:
                     self.state = ConnectionState.DEGRADED
                     self.half_open_calls = 0
             return self.state
+
+    def peek_state(self) -> ConnectionState:
+        """Recovery-aware circuit state for synchronous, advisory reads.
+
+        Mirrors the FAILED -> DEGRADED recovery transition that get_state() and
+        is_open() apply once recovery_timeout elapses, WITHOUT mutating state, so
+        get_metrics() reports live recovery behavior instead of a value that only
+        refreshes on the periodic health check.
+
+        Returns:
+            DEGRADED when a FAILED breaker's recovery window has elapsed, else the
+            current state.
+        """
+        if (
+            self.state == ConnectionState.FAILED
+            and self.last_failure_time
+            and (time.time() - self.last_failure_time) > self.recovery_timeout
+        ):
+            return ConnectionState.DEGRADED
+        return self.state
 
 
 class WriteRequest:
@@ -505,19 +528,26 @@ class SQLiteBackend:
             self._shutdown_complete.set()
 
     def _load_sqlite_vec_extension(self, conn: sqlite3.Connection) -> None:
-        """Load sqlite-vec extension on connection if semantic search enabled.
+        """Load the sqlite-vec extension on a connection whenever it is installed.
 
         Args:
             conn: SQLite connection
 
         Note:
-            This method is safe to call even if sqlite_vec is not installed.
-            It will gracefully skip loading if the package is not available.
+            This method is safe to call even if sqlite_vec is not installed; it
+            gracefully skips loading when the package is unavailable. The load is
+            NOT gated on embedding generation: the fp32 vec0 virtual table can
+            physically persist from an earlier session that had generation
+            enabled, and the delete/update stale-embedding cleanup paths gate on
+            the durable ``embedding_tables_exist()`` table-presence signal rather
+            than the runtime generation toggle. The vec0 module must therefore be
+            available on every connection whenever that table could exist; if it
+            is absent, any access to the table raises ``no such module: vec0`` --
+            silently orphaning the FK-less vec0 rows on delete and rolling back
+            text updates. Loading is ImportError-guarded and idempotent, so
+            attempting it unconditionally is harmless when no vec table exists or
+            when compression replaced it with the BLOB layout.
         """
-        # Only attempt to load if semantic search is enabled
-        if not settings.semantic_search.enabled:
-            return
-
         # Check if already loaded to avoid duplicate loading
         if hasattr(conn, '_vec_loaded') and getattr(conn, '_vec_loaded', False):
             return
@@ -551,8 +581,16 @@ class SQLiteBackend:
                 init_conn.execute('PRAGMA encoding = "UTF-8"')
                 init_conn.commit()
 
-        # Use URI mode for better control
-        uri = f"file:{self.db_path}?mode={'ro' if readonly else 'rw'}"
+        # Use URI mode for better control. SQLite percent-decodes the URI
+        # path before use, so the filesystem path must be percent-encoded:
+        # a raw path containing '%', '?', or '#' would otherwise be misread
+        # as an escape sequence, query string, or fragment. A POSIX path
+        # with a leading double slash is collapsed first -- 'file://tmp/db'
+        # would parse 'tmp' as the URI authority and be rejected.
+        path_str = str(self.db_path)
+        if path_str.startswith('//'):
+            path_str = '/' + path_str.lstrip('/')
+        uri = f"file:{quote(path_str, safe='/:')}?mode={'ro' if readonly else 'rw'}"
         conn = sqlite3.connect(
             uri,
             uri=True,
@@ -578,15 +616,20 @@ class SQLiteBackend:
         try:
             conn.row_factory = sqlite3.Row
 
-            # Apply optimized PRAGMAs for production
+            # Apply optimized PRAGMAs for production.
+            # page_size MUST precede journal_mode. Switching to WAL (like any write)
+            # finalizes the database header's page size; a later `PRAGMA page_size` is
+            # then silently ignored on the existing file (it would need a VACUUM).
+            # Applying it first lets a FRESH database honor SQLITE_PAGE_SIZE; on an
+            # already-initialized database the pragma is a harmless no-op.
             pragmas = [
                 ('foreign_keys', 'ON' if settings.storage.sqlite_foreign_keys else 'OFF'),
+                ('page_size', str(settings.storage.sqlite_page_size)),
                 ('journal_mode', settings.storage.sqlite_journal_mode),
                 ('synchronous', settings.storage.sqlite_synchronous),
                 ('temp_store', settings.storage.sqlite_temp_store),
                 ('mmap_size', str(settings.storage.sqlite_mmap_size)),
                 ('cache_size', str(settings.storage.sqlite_cache_size)),
-                ('page_size', str(settings.storage.sqlite_page_size)),
                 ('wal_autocheckpoint', str(settings.storage.sqlite_wal_autocheckpoint)),
                 ('busy_timeout', str(settings.storage.resolved_busy_timeout_ms)),
             ]
@@ -622,7 +665,7 @@ class SQLiteBackend:
 
     async def _ensure_writer_connection(self) -> sqlite3.Connection:
         """Ensure writer connection exists and is healthy."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _get_writer() -> sqlite3.Connection:
             with self._pool_lock:
@@ -635,7 +678,7 @@ class SQLiteBackend:
 
     async def _get_reader_connection(self) -> sqlite3.Connection:
         """Get a reader connection from the pool."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _get_reader() -> sqlite3.Connection:
             # For concurrent operations, always create isolated connections
@@ -729,8 +772,14 @@ class SQLiteBackend:
                         with suppress(asyncio.CancelledError):
                             await task
 
-                    if shutdown_task in done:
+                    if shutdown_task in done and wait_task not in done:
                         break
+                    # When BOTH tasks complete in the same asyncio.wait batch, a
+                    # WriteRequest has already been dequeued by wait_task; breaking
+                    # on shutdown first would orphan it (its future never resolved,
+                    # the caller awaiting execute_write hangs past shutdown). Service
+                    # the dequeued request first; the loop condition (and the next
+                    # iteration's shutdown check) then honors the shutdown signal.
 
                     if wait_task in done:
                         try:
@@ -755,6 +804,17 @@ class SQLiteBackend:
                                 if not request.future.done():
                                     request.future.set_result(result)
                                 self.circuit_breaker.record_success()
+                            except ControlFlowError as e:
+                                # Control-flow signals (optimistic-concurrency
+                                # VersionConflictError, post-dedup
+                                # EmbeddingsReconcileRequiredError) escaping execute_write are
+                                # normal write contention, NOT a database fault: propagate to
+                                # the caller WITHOUT recording a breaker failure, mirroring
+                                # begin_transaction's exemption on this backend and the
+                                # PostgreSQL execute_write path. Recording them could open the
+                                # breaker on routine contention and lock out writes.
+                                if not request.future.done():
+                                    request.future.set_exception(e)
                             except Exception as e:
                                 if not request.future.done():
                                     request.future.set_exception(e)
@@ -790,7 +850,7 @@ class SQLiteBackend:
         """Execute a write request with retry logic."""
         assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         last_error = None
 
         for attempt in range(self.retry_config.max_retries):
@@ -803,8 +863,19 @@ class SQLiteBackend:
                     def _execute(conn: sqlite3.Connection) -> object:
                         # Cast to sync callable since SQLiteBackend only uses sync operations
                         sync_operation = cast(Callable[..., object], request.operation)
-                        result = sync_operation(conn, *request.args, **request.kwargs)
-                        conn.commit()
+                        try:
+                            result = sync_operation(conn, *request.args, **request.kwargs)
+                            conn.commit()
+                        except BaseException:
+                            # The writer connection is shared and persistent (DEFERRED
+                            # isolation), so a failure after a partial multi-statement
+                            # write would otherwise leave those rows in an open
+                            # transaction that the NEXT execute_write commits. Roll back
+                            # so a failed write leaves no state behind, mirroring the
+                            # rollback contract begin_transaction already upholds.
+                            with suppress(Exception):
+                                conn.rollback()
+                            raise
                         self.metrics.total_queries += 1
                         return result
 
@@ -881,7 +952,7 @@ class SQLiteBackend:
 
     async def _perform_health_check(self) -> None:
         """Perform health check on all connections."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _check() -> None:
             with self._pool_lock:
@@ -975,11 +1046,11 @@ class SQLiteBackend:
                 writer = await self._ensure_writer_connection()
                 try:
                     yield writer
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     await loop.run_in_executor(None, writer.commit)
                     self.circuit_breaker.record_success()
                 except Exception:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     await loop.run_in_executor(None, writer.rollback)
                     self.circuit_breaker.record_failure()
                     raise
@@ -988,6 +1059,22 @@ class SQLiteBackend:
             raise RuntimeError(
                 'Direct write connections not allowed. Use execute_write() method or set allow_write=True.',
             )
+
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_write(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
 
     async def execute_write(
         self,
@@ -1033,6 +1120,22 @@ class SQLiteBackend:
         # Wait for result
         return await future
 
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
+    @overload
+    async def execute_read(
+        self,
+        operation: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T: ...
+
     async def execute_read(
         self,
         operation: Callable[..., T] | Callable[..., Awaitable[T]],
@@ -1057,7 +1160,7 @@ class SQLiteBackend:
             synchronously in a thread executor to avoid blocking the event loop.
         """
         async with self.get_connection(readonly=True) as conn:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             def _execute() -> T:
                 # Cast to sync callable since SQLiteBackend only uses sync operations
@@ -1094,12 +1197,20 @@ class SQLiteBackend:
             RuntimeError: If backend is shutting down or circuit breaker is open
 
         Example:
+            from app.ids import generate_id
+
             async with backend.begin_transaction() as txn:
                 conn = txn.connection
-                # All operations use same connection, same transaction
-                cursor = conn.execute('INSERT INTO context_entries ...')
-                context_id = cursor.lastrowid
-                conn.execute('INSERT INTO tags ...', (context_id, 'tag1'))
+                # All operations use the same connection and transaction
+                context_id = generate_id()
+                conn.execute(
+                    'INSERT INTO context_entries (id, ...) VALUES (?, ...)',
+                    (context_id, ...),
+                )
+                conn.execute(
+                    'INSERT INTO tags (context_entry_id, tag) VALUES (?, ?)',
+                    (context_id, 'tag1'),
+                )
                 # COMMIT on exit
         """
         assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
@@ -1116,7 +1227,7 @@ class SQLiteBackend:
         # Acquire writer lock to ensure exclusive access
         async with self._writer_lock:
             writer = await self._ensure_writer_connection()
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Create transaction context
             txn_context = SQLiteTransactionContext(_connection=writer)
@@ -1130,13 +1241,20 @@ class SQLiteBackend:
                 logger.debug('Transaction committed successfully')
 
             except Exception as e:
-                # Failure: rollback transaction
-                logger.warning(f'Transaction failed, rolling back: {e}')
+                # Roll back either way; only a genuine DB fault trips the breaker.
                 try:
                     await loop.run_in_executor(None, writer.rollback)
                 except Exception as rollback_error:
                     logger.error(f'Rollback failed: {rollback_error}')
 
+                if isinstance(e, ControlFlowError):
+                    # Normal control flow (optimistic-concurrency conflict / post-dedup
+                    # embedding reconciliation), NOT a database fault: rolled back, but
+                    # do NOT record a circuit-breaker failure, so normal write
+                    # contention cannot open the breaker and reject healthy writes.
+                    raise
+
+                logger.warning(f'Transaction failed, rolling back: {e}')
                 self.circuit_breaker.record_failure()
                 raise
 
@@ -1149,8 +1267,8 @@ class SQLiteBackend:
             'total_queries': self.metrics.total_queries,
             'failed_queries': self.metrics.failed_queries,
             'write_queue_size': self.metrics.write_queue_size,
-            'circuit_state': self.metrics.circuit_state.value,
-            'consecutive_failures': self.metrics.consecutive_failures,
+            'circuit_state': self.circuit_breaker.peek_state().value,
+            'consecutive_failures': self.circuit_breaker.failures,
             'last_error': self.metrics.last_error,
             'last_error_time': self.metrics.last_error_time,
         }

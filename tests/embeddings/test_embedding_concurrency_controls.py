@@ -8,8 +8,6 @@ Tests verify:
 - FTS/semantic error logging in hybrid search graceful degradation
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from unittest.mock import AsyncMock
@@ -142,14 +140,15 @@ async def test_semaphore_limits_concurrency() -> None:
     ):
         mock_settings.embedding.max_concurrent = max_concurrent_setting
 
-        # Reset the module-level semaphore to pick up our test setting
+        # Rebind the module-level semaphore against the patched setting so
+        # the next acquisition uses the test's max_concurrent value.
         import app.tools._shared as shared_module
 
         original_semaphore = shared_module._embedding_semaphore
-        shared_module._embedding_semaphore = None
+        shared_module._reset_embedding_semaphore()
 
         try:
-            sem = shared_module._get_embedding_semaphore()
+            sem = shared_module._embedding_semaphore
 
             # Launch 4 concurrent tasks through the semaphore
             async def run_with_semaphore():
@@ -191,7 +190,7 @@ async def test_total_timeout_raises_tool_error() -> None:
         import app.tools._shared as shared_module
 
         original_semaphore = shared_module._embedding_semaphore
-        shared_module._embedding_semaphore = None
+        shared_module._reset_embedding_semaphore()
 
         try:
             from app.tools.context import store_context
@@ -209,10 +208,14 @@ async def test_total_timeout_raises_tool_error() -> None:
 @pytest.mark.asyncio
 async def test_embedding_disabled_skips_semaphore() -> None:
     """Verify that when embedding provider is None, semaphore is not acquired."""
+    mock_sem = MagicMock()
+    mock_sem.__aenter__ = AsyncMock(return_value=mock_sem)
+    mock_sem.__aexit__ = AsyncMock(return_value=False)
+
     with (
         patch('app.tools.context.get_embedding_provider', return_value=None),
         patch('app.tools._shared.get_embedding_provider', return_value=None),
-        patch('app.tools._shared._get_embedding_semaphore') as mock_sem,
+        patch('app.tools._shared._embedding_semaphore', new=mock_sem),
         patch('app.tools.context.ensure_repositories', new_callable=AsyncMock) as mock_repos,
     ):
         mock_backend = MagicMock()
@@ -235,7 +238,10 @@ async def test_embedding_disabled_skips_semaphore() -> None:
         )
 
         assert result['success'] is True
-        mock_sem.assert_not_called()
+        # When the embedding provider is None, the semaphore must NOT be
+        # acquired -- the generate_embeddings_with_timeout helper short-
+        # circuits before entering the ``async with`` block.
+        mock_sem.__aenter__.assert_not_called()
 
 
 # --- Tests for hybrid search FTS/semantic error logging ---
@@ -441,7 +447,7 @@ async def testgenerate_embeddings_with_timeout_success() -> None:
         import app.tools._shared as shared_module
 
         original_semaphore = shared_module._embedding_semaphore
-        shared_module._embedding_semaphore = None
+        shared_module._reset_embedding_semaphore()
 
         try:
             from app.tools._shared import generate_embeddings_with_timeout
@@ -473,7 +479,7 @@ async def testgenerate_embeddings_with_timeout_raises_on_timeout() -> None:
         import app.tools._shared as shared_module
 
         original_semaphore = shared_module._embedding_semaphore
-        shared_module._embedding_semaphore = None
+        shared_module._reset_embedding_semaphore()
 
         try:
             from app.tools._shared import generate_embeddings_with_timeout

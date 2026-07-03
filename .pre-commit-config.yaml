@@ -1,6 +1,6 @@
 repos:
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.14.10
+  rev: v0.15.12
   hooks:
     - id: ruff-check
       name: Ruff (lint + autofix)
@@ -54,19 +54,19 @@ repos:
       description: Check that text files with a shebang are executable
 
 - repo: https://github.com/DavidAnson/markdownlint-cli2
-  rev: v0.20.0
+  rev: v0.22.1
   hooks:
     - id: markdownlint-cli2
       name: Markdown Lint
       exclude: ^CHANGELOG\.md$
 
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.9.20
+  rev: 0.11.13
   hooks:
     - id: uv-lock
       name: Make sure uv.lock file is up to date
 
 - repo: https://github.com/commitizen-tools/commitizen
-  rev: v4.11.0
+  rev: v4.15.1
   hooks:
     - id: commitizen

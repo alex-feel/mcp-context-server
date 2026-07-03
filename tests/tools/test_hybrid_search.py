@@ -3,8 +3,6 @@
 Tests the hybrid search combining FTS and semantic search with RRF fusion.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from app.fusion import count_unique_results
@@ -18,18 +16,18 @@ class TestRRFIntegration:
         """Test RRF with documents having different rankings in each source."""
         # Simulate FTS results (ranked by relevance score)
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 10.0, 'text_content': 'Python programming tutorial', 'thread_id': 't1'},
-            {'id': 2, 'score': 8.5, 'text_content': 'Python data science guide', 'thread_id': 't1'},
-            {'id': 3, 'score': 7.0, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
-            {'id': 4, 'score': 5.5, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
+            {'id': '1', 'score': 10.0, 'text_content': 'Python programming tutorial', 'thread_id': 't1'},
+            {'id': '2', 'score': 8.5, 'text_content': 'Python data science guide', 'thread_id': 't1'},
+            {'id': '3', 'score': 7.0, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
+            {'id': '4', 'score': 5.5, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
         ]
 
         # Simulate semantic results (ranked by distance - lower is better)
         semantic_results: list[dict[str, Any]] = [
-            {'id': 3, 'distance': 0.1, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
-            {'id': 4, 'distance': 0.2, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
-            {'id': 2, 'distance': 0.3, 'text_content': 'Python data science guide', 'thread_id': 't1'},
-            {'id': 5, 'distance': 0.4, 'text_content': 'AI fundamentals', 'thread_id': 't1'},
+            {'id': '3', 'distance': 0.1, 'text_content': 'Machine learning basics', 'thread_id': 't1'},
+            {'id': '4', 'distance': 0.2, 'text_content': 'Deep learning neural networks', 'thread_id': 't1'},
+            {'id': '2', 'distance': 0.3, 'text_content': 'Python data science guide', 'thread_id': 't1'},
+            {'id': '5', 'distance': 0.4, 'text_content': 'AI fundamentals', 'thread_id': 't1'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
@@ -40,7 +38,7 @@ class TestRRFIntegration:
 
         # Documents appearing in both should have higher scores
         # Doc 2, 3, 4 appear in both
-        overlap_ids = {2, 3, 4}
+        overlap_ids = {'2', '3', '4'}
         for r in results:
             if r.get('id') in overlap_ids:
                 scores = r.get('scores', {})
@@ -58,7 +56,7 @@ class TestRRFIntegration:
         """Test that RRF preserves metadata from both sources."""
         fts_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'score': 10.0,
                 'text_content': 'Test content',
                 'thread_id': 'thread-1',
@@ -70,7 +68,7 @@ class TestRRFIntegration:
 
         semantic_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'distance': 0.1,
                 'text_content': 'Test content',
                 'metadata': {'key': 'value', 'priority': 5},
@@ -119,13 +117,13 @@ class TestRRFIntegration:
     def test_rrf_k_parameter_impact(self) -> None:
         """Test how k parameter affects ranking and score distribution."""
         fts_results: list[dict[str, Any]] = [
-            {'id': 1, 'score': 10.0, 'text_content': 'Top FTS result'},
-            {'id': 2, 'score': 5.0, 'text_content': 'Second FTS result'},
+            {'id': '1', 'score': 10.0, 'text_content': 'Top FTS result'},
+            {'id': '2', 'score': 5.0, 'text_content': 'Second FTS result'},
         ]
 
         semantic_results: list[dict[str, Any]] = [
-            {'id': 2, 'distance': 0.1, 'text_content': 'Top semantic (also #2 in FTS)'},
-            {'id': 3, 'distance': 0.2, 'text_content': 'Second semantic only'},
+            {'id': '2', 'distance': 0.1, 'text_content': 'Top semantic (also #2 in FTS)'},
+            {'id': '3', 'distance': 0.2, 'text_content': 'Second semantic only'},
         ]
 
         # With small k, top ranks matter more
@@ -134,16 +132,16 @@ class TestRRFIntegration:
         results_large_k = reciprocal_rank_fusion(fts_results, semantic_results, k=100, limit=10)
 
         # Document 2 appears in both - should be top in both cases
-        assert results_small_k[0].get('id') == 2
-        assert results_large_k[0].get('id') == 2
+        assert results_small_k[0].get('id') == '2'
+        assert results_large_k[0].get('id') == '2'
 
         # Verify k affects score magnitudes
         small_k_scores = {r.get('id'): r.get('scores', {}).get('rrf', 0) for r in results_small_k}
         large_k_scores = {r.get('id'): r.get('scores', {}).get('rrf', 0) for r in results_large_k}
 
         # Scores should be smaller with large k (1/(k+rank) decreases as k increases)
-        assert small_k_scores[2] > large_k_scores[2]
-        assert small_k_scores[1] > large_k_scores[1]
+        assert small_k_scores['2'] > large_k_scores['2']
+        assert small_k_scores['1'] > large_k_scores['1']
 
         # With small k, the absolute difference between rank 1 and rank 2 is larger
         # k=1: rank1 = 1/2 = 0.5, rank2 = 1/3 = 0.333, diff = 0.167
@@ -198,7 +196,7 @@ class TestHybridSearchToolIntegration:
         """Test fusion with only FTS results (semantic unavailable scenario)."""
         fts_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'thread_id': 't1',
                 'source': 'agent',
                 'content_type': 'text',
@@ -213,7 +211,7 @@ class TestHybridSearchToolIntegration:
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
-        assert results[0].get('id') == 1
+        assert results[0].get('id') == '1'
         scores = results[0].get('scores', {})
         assert scores.get('fts_rank') == 1
         assert scores.get('semantic_rank') is None
@@ -222,7 +220,7 @@ class TestHybridSearchToolIntegration:
         """Test fusion with only semantic results (FTS unavailable scenario)."""
         semantic_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'thread_id': 't1',
                 'source': 'agent',
                 'content_type': 'text',
@@ -237,7 +235,7 @@ class TestHybridSearchToolIntegration:
         results = reciprocal_rank_fusion([], semantic_results, k=60, limit=10)
 
         assert len(results) == 1
-        assert results[0].get('id') == 1
+        assert results[0].get('id') == '1'
         scores = results[0].get('scores', {})
         assert scores.get('fts_rank') is None
         assert scores.get('semantic_rank') == 1
@@ -246,7 +244,7 @@ class TestHybridSearchToolIntegration:
         """Test that fusion preserves metadata regardless of format."""
         fts_results: list[dict[str, Any]] = [
             {
-                'id': 1,
+                'id': '1',
                 'text_content': 'Test content',
                 'score': 10.0,
                 'metadata': {'priority': 5},  # Already a dict
@@ -270,7 +268,7 @@ class TestRRFEdgeCases:
         """
         semantic_results: list[dict[str, Any]] = [
             {'id': None, 'distance': 0.1, 'text_content': 'No ID entry'},
-            {'id': 1, 'distance': 0.2, 'text_content': 'Valid entry'},
+            {'id': '1', 'distance': 0.2, 'text_content': 'Valid entry'},
         ]
         fts_results: list[dict[str, Any]] = []
 
@@ -278,36 +276,36 @@ class TestRRFEdgeCases:
 
         # Only the entry with valid ID should be in results
         assert len(results) == 1
-        assert results[0].get('id') == 1
+        assert results[0].get('id') == '1'
 
     def test_rrf_skips_fts_results_with_none_id(self) -> None:
         """Test RRF skips FTS results where id is None."""
         fts_results: list[dict[str, Any]] = [
             {'id': None, 'score': 10.0, 'text_content': 'No ID'},
-            {'id': 2, 'score': 8.0, 'text_content': 'Valid'},
+            {'id': '2', 'score': 8.0, 'text_content': 'Valid'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, [], k=60, limit=10)
 
         assert len(results) == 1
-        assert results[0].get('id') == 2
+        assert results[0].get('id') == '2'
 
     def test_rrf_skips_both_sources_with_none_ids(self) -> None:
         """Test RRF skips None IDs from both FTS and semantic results."""
         fts_results: list[dict[str, Any]] = [
             {'id': None, 'score': 10.0, 'text_content': 'FTS no ID'},
-            {'id': 1, 'score': 8.0, 'text_content': 'FTS valid'},
+            {'id': '1', 'score': 8.0, 'text_content': 'FTS valid'},
         ]
         semantic_results: list[dict[str, Any]] = [
             {'id': None, 'distance': 0.1, 'text_content': 'Semantic no ID'},
-            {'id': 2, 'distance': 0.2, 'text_content': 'Semantic valid'},
+            {'id': '2', 'distance': 0.2, 'text_content': 'Semantic valid'},
         ]
 
         results = reciprocal_rank_fusion(fts_results, semantic_results, k=60, limit=10)
 
         # Only entries with valid IDs should be in results
         result_ids = {r.get('id') for r in results}
-        assert result_ids == {1, 2}
+        assert result_ids == {'1', '2'}
         assert len(results) == 2
 
     def test_rrf_all_none_ids_returns_empty(self) -> None:
@@ -332,7 +330,7 @@ class TestHybridSearchPagination:
         """Test that limit is applied after RRF fusion."""
         # Create 10 FTS results
         fts_results: list[dict[str, Any]] = [
-            {'id': i, 'score': 10.0 - i, 'text_content': f'Doc {i}', 'thread_id': 't1'}
+            {'id': str(i), 'score': 10.0 - i, 'text_content': f'Doc {i}', 'thread_id': 't1'}
             for i in range(1, 11)
         ]
 
@@ -342,12 +340,12 @@ class TestHybridSearchPagination:
         assert len(results) == 3
         # Results should be top 3 by RRF score
         result_ids = [r.get('id') for r in results]
-        assert result_ids == [1, 2, 3]
+        assert result_ids == ['1', '2', '3']
 
     def test_limit_exceeds_available_results(self) -> None:
         """Test limit larger than available results returns all."""
         fts_results: list[dict[str, Any]] = [
-            {'id': i, 'score': 10.0 - i, 'text_content': f'Doc {i}'}
+            {'id': str(i), 'score': 10.0 - i, 'text_content': f'Doc {i}'}
             for i in range(1, 6)  # Only 5 results
         ]
 
@@ -364,7 +362,7 @@ class TestHybridSearchPagination:
         """
         # Create 10 FTS results
         fts_results: list[dict[str, Any]] = [
-            {'id': i, 'score': 10.0 - (i * 0.1), 'text_content': f'Doc {i}', 'thread_id': 't1'}
+            {'id': str(i), 'score': 10.0 - (i * 0.1), 'text_content': f'Doc {i}', 'thread_id': 't1'}
             for i in range(1, 11)
         ]
 
@@ -377,9 +375,9 @@ class TestHybridSearchPagination:
         assert len(paginated) == 3
         # First 3 IDs (1, 2, 3) should be skipped
         paginated_ids = [r.get('id') for r in paginated]
-        assert 1 not in paginated_ids
-        assert 2 not in paginated_ids
-        assert 3 not in paginated_ids
+        assert '1' not in paginated_ids
+        assert '2' not in paginated_ids
+        assert '3' not in paginated_ids
 
 
 class TestHybridSearchResponseStructure:
@@ -584,6 +582,112 @@ class TestAdaptiveFtsMode:
         assert mode == 'boolean'
         assert 'or' in query.lower()
 
+    def test_sqlite_boolean_mode_neutralizes_fts5_operators(self) -> None:
+        """SQLite boolean-mode terms are quoted so operator barewords / special chars
+        cannot form malformed FTS5 (which raised a syntax error while PostgreSQL's
+        websearch_to_tsquery tolerated the same input -- a recall-parity divergence)."""
+        import sqlite3
+
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        db = sqlite3.connect(':memory:')
+        db.execute('CREATE VIRTUAL TABLE docs USING fts5(body)')
+        db.execute("INSERT INTO docs(body) VALUES('foo bar near baz qux')")
+        # Each query has >= 4 significant terms and embeds FTS5 operators / specials that
+        # would be a syntax error unquoted; all must run cleanly and stay in boolean mode.
+        for raw in [
+            'foo bar near baz qux',
+            'alpha AND beta OR gamma delta',
+            'find foo:bar (baz) term here',
+            'one two NOT three four',
+        ]:
+            transformed, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+            assert mode == 'boolean'
+            assert ' OR ' in transformed
+            # No raw operator bareword survives outside quotes (it is wrapped as a string).
+            db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (transformed,)).fetchall()
+
+    def test_sqlite_all_operator_query_returns_empty_sentinel(self) -> None:
+        """A query whose significant terms are ALL operator stopwords (and/or/not) empties
+        the term list; the SQLite transform must return the '' match-nothing sentinel -- NOT
+        a literal phrase (FTS5 porter/unicode61 keeps the dropped word as a token, so the
+        phrase would MATCH every document containing it, diverging from PostgreSQL's empty
+        tsquery) and NOT a raw uppercase operator (which would raise an FTS5 MATCH syntax
+        error). _search_sqlite short-circuits '' to an empty result set, so MATCH is never
+        executed with the sentinel."""
+        import sqlite3
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+        from app.repositories.fts_repository import FtsRepository
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        class _FB:
+            backend_type = 'sqlite'
+
+        repo = FtsRepository(cast(StorageBackend, _FB()))
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
+        db.execute("INSERT INTO docs(body) VALUES('hello world')")
+        for raw in ['AND OR NOT AND', 'NOT NOT NOT NOT', 'OR OR OR OR']:
+            adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+            fts = repo._transform_query_sqlite(adaptive, mode)
+            # All tokens were operator barewords -> the empty match-nothing sentinel.
+            assert fts == ''
+            # _search_sqlite skips MATCH on the empty sentinel; mirror that guard here so
+            # MATCH is never run with '' (which FTS5 rejects), yielding zero results.
+            rows = [] if not fts else db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
+            assert rows == []
+
+    def test_sqlite_short_query_operators_do_not_crash(self) -> None:
+        """A SHORT query (below the OR threshold) containing bare FTS5 operators -- including
+        leading/trailing/all-operator forms -- must not crash SQLite MATCH: the short 'match'
+        path runs through the same term sanitizer as the OR path. A normal short query keeps
+        AND-of-terms recall."""
+        import sqlite3
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+        from app.repositories.fts_repository import FtsRepository
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        class _FB:
+            backend_type = 'sqlite'
+
+        repo = FtsRepository(cast(StorageBackend, _FB()))
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE docs USING fts5(body, tokenize='porter unicode61')")
+        db.execute("INSERT INTO docs(body) VALUES('python async world')")
+        # All have < or_threshold(4) significant terms, so they take the short 'match' path.
+        for raw, expect_match in [('AND OR', False), ('OR cat', False), ('cat OR', False),
+                                  ('OR NOT AND', False), ('python async', True)]:
+            adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+            assert mode == 'match'
+            fts = repo._transform_query_sqlite(adaptive, mode)
+            # An all-operator query transforms to the '' match-nothing sentinel, which
+            # _search_sqlite short-circuits (FTS5 rejects MATCH ''); mirror that guard here.
+            rows = [] if not fts else db.execute('SELECT rowid FROM docs WHERE docs MATCH ?', (fts,)).fetchall()
+            assert (len(rows) > 0) is expect_match, f'{raw!r} -> {fts!r}'
+
+    def test_sqlite_boolean_mode_drops_operator_stopwords(self) -> None:
+        """The FTS5 operator barewords and/or/not are DROPPED on the SQLite branch (not
+        quoted) so they are not literal searchable terms -- matching PostgreSQL's
+        websearch_to_tsquery, which removes them as stopwords (cross-backend recall parity).
+        'near' is KEPT (websearch_to_tsquery keeps it)."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        transformed, mode = _prepare_hybrid_fts_query(
+            'alpha AND beta OR gamma NOT delta near epsilon',
+            or_threshold=4,
+            backend_type='sqlite',
+        )
+        assert mode == 'boolean'
+        for dropped in ('"and"', '"or"', '"not"', '"AND"', '"OR"', '"NOT"'):
+            assert dropped not in transformed
+        # Real terms (including 'near') survive as quoted literals.
+        for kept in ('"alpha"', '"beta"', '"gamma"', '"delta"', '"near"', '"epsilon"'):
+            assert kept in transformed
+
     def test_long_query_uses_boolean_mode(self) -> None:
         """Long queries above threshold use boolean mode (OR logic)."""
         from app.tools.search import _prepare_hybrid_fts_query
@@ -730,3 +834,43 @@ class TestAdaptiveFtsMode:
         )
         assert mode == 'boolean'
         assert '"error-handling"' in query
+
+    def test_sqlite_short_match_returns_raw_query_for_single_transform(self) -> None:
+        """A short SQLite query is returned RAW (not pre-sanitized) so _transform_query_sqlite
+        sanitizes it exactly once -- identically to standalone fts_search_context."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query('python async', or_threshold=4, backend_type='sqlite')
+        assert mode == 'match'
+        assert query == 'python async'  # raw; the single downstream transform does the escaping
+
+    def test_sqlite_embedded_quote_token_not_double_mangled(self) -> None:
+        """An embedded-double-quote token yields the SAME single-phrase FTS5 form via the hybrid
+        path as via standalone fts_search_context -- no non-idempotent double sanitize.
+
+        Pre-sanitizing in the hybrid builder AND re-sanitizing in _transform_query_sqlite split
+        the escaped phrase ``"ab""cd"`` into two phrases ``"ab" "cd"`` (because _FTS_TOKEN_RE
+        re-tokenizes the escaped run), diverging hybrid recall from standalone for the same
+        input. Deferring all escaping to the one downstream transform keeps them identical.
+        """
+        from typing import cast
+
+        from app.backends.base import StorageBackend
+        from app.repositories.fts_repository import FtsRepository
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        class _FB:
+            backend_type = 'sqlite'
+
+        repo = FtsRepository(cast(StorageBackend, _FB()))
+        raw = 'ab"cd ef'
+        # Hybrid short path returns the raw query; the single downstream transform escapes it.
+        adaptive, mode = _prepare_hybrid_fts_query(raw, or_threshold=4, backend_type='sqlite')
+        assert mode == 'match'
+        hybrid_fts = repo._transform_query_sqlite(adaptive, mode)
+        # Standalone fts_search_context passes the raw query straight to the same transform.
+        standalone_fts = repo._transform_query_sqlite(raw, 'match')
+        assert hybrid_fts == standalone_fts
+        # The correct single-phrase escaped form, NOT the split-into-two-phrases mangling.
+        assert hybrid_fts == '"ab""cd" "ef"'
+        assert hybrid_fts != '"ab" "cd" "ef"'

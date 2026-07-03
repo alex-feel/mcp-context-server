@@ -4,8 +4,6 @@ This module tests the SimpleTokenVerifier authentication mechanism
 using centralized AuthSettings from app.settings.
 """
 
-from __future__ import annotations
-
 import os
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -143,6 +141,35 @@ class TestSimpleTokenVerifier:
             assert result is None
 
     @pytest.mark.asyncio
+    async def test_verify_token_non_ascii_returns_none_not_raises(self) -> None:
+        """A non-ASCII bearer token rejects cleanly instead of crashing.
+
+        hmac.compare_digest raises TypeError on str operands containing non-ASCII
+        characters; verify_token compares UTF-8 bytes so a non-ASCII client token is
+        an ordinary mismatch (None -> 401) rather than an uncaught error (500).
+        """
+        with patch.dict(os.environ, {'MCP_AUTH_TOKEN': 'valid-token'}, clear=False):
+            from app.auth.simple_token import SimpleTokenVerifier
+
+            verifier = SimpleTokenVerifier()
+            result = await verifier.verify_token('töken-with-accent')
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_verify_token_non_ascii_exact_match_succeeds(self) -> None:
+        """A configured non-ASCII token still matches its exact value (byte compare)."""
+        secret = 'töken-Ünïcode'
+        with patch.dict(os.environ, {'MCP_AUTH_TOKEN': secret}, clear=False):
+            from app.auth.simple_token import SimpleTokenVerifier
+
+            verifier = SimpleTokenVerifier()
+            result = await verifier.verify_token(secret)
+
+            assert result is not None
+            assert result.token == secret
+
+    @pytest.mark.asyncio
     async def test_verify_token_with_custom_client_id(self) -> None:
         """verify_token should use custom client_id from settings."""
         with patch.dict(
@@ -253,15 +280,35 @@ class TestAuthFactory:
             provider = create_auth_provider()
             assert isinstance(provider, SimpleTokenVerifier)
 
-    def test_factory_raises_when_simple_token_without_token(self) -> None:
-        """Factory should raise ValueError when simple_token provider but no MCP_AUTH_TOKEN."""
+    def test_factory_raises_configuration_error_when_simple_token_without_token(self) -> None:
+        """Factory raises ConfigurationError (exit 78) when token is missing.
+
+        A missing required env var is a startup misconfiguration: the factory
+        translates SimpleTokenVerifier's ValueError into a ConfigurationError so
+        ``main()`` exits 78 (EX_CONFIG, supervisor does NOT restart) rather than
+        the generic exit 1 a bare ValueError would cause.
+        """
         env = {k: v for k, v in os.environ.items() if k != 'MCP_AUTH_TOKEN'}
         env['MCP_AUTH_PROVIDER'] = 'simple_token'
         with patch.dict(os.environ, env, clear=True):
             get_settings.cache_clear()
             from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
 
-            with pytest.raises(ValueError, match='MCP_AUTH_TOKEN is required'):
+            with pytest.raises(ConfigurationError, match='MCP_AUTH_TOKEN is required'):
+                create_auth_provider()
+
+    def test_factory_raises_configuration_error_when_simple_token_empty(self) -> None:
+        """Factory raises ConfigurationError when MCP_AUTH_TOKEN is empty/whitespace."""
+        env = {k: v for k, v in os.environ.items() if k != 'MCP_AUTH_TOKEN'}
+        env['MCP_AUTH_PROVIDER'] = 'simple_token'
+        env['MCP_AUTH_TOKEN'] = '   '
+        with patch.dict(os.environ, env, clear=True):
+            get_settings.cache_clear()
+            from app.auth import create_auth_provider
+            from app.errors import ConfigurationError
+
+            with pytest.raises(ConfigurationError, match='cannot be empty'):
                 create_auth_provider()
 
 

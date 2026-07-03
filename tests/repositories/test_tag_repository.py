@@ -5,14 +5,11 @@ Tests the TagRepository class for storing, retrieving, and managing
 tags associated with context entries.
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
 
 import pytest
 
-if TYPE_CHECKING:
-    from app.backends import StorageBackend
+from app.backends import StorageBackend
+from app.ids import generate_id
 
 
 @pytest.mark.asyncio
@@ -195,11 +192,13 @@ class TestTagRepository:
         backend = async_db_initialized
         repos = RepositoryContainer(backend)
 
-        result = await repos.tags.get_tags_for_contexts([99999, 99998])
-        assert 99999 in result
-        assert 99998 in result
-        assert result[99999] == []
-        assert result[99998] == []
+        missing_id_a = generate_id()
+        missing_id_b = generate_id()
+        result = await repos.tags.get_tags_for_contexts([missing_id_a, missing_id_b])
+        assert missing_id_a in result
+        assert missing_id_b in result
+        assert result[missing_id_a] == []
+        assert result[missing_id_b] == []
 
     async def test_replace_tags_for_context(
         self, async_db_initialized: StorageBackend,

@@ -5,8 +5,6 @@ Tests model validation, field validators, content type detection,
 tag normalization, and base64 image validation.
 """
 
-from __future__ import annotations
-
 import base64
 from datetime import UTC
 from datetime import datetime
@@ -79,15 +77,18 @@ class TestImageAttachment:
             ImageAttachment(data='not-valid-base64!', position=0)
         assert 'Invalid base64 encoded data' in str(exc_info.value)
 
-    def test_invalid_mime_type(self) -> None:
-        """Test invalid mime type raises validation error."""
-        with pytest.raises(ValidationError) as exc_info:
-            ImageAttachment(
-                data=base64.b64encode(b'test').decode('utf-8'),
-                mime_type='text/plain',
-                position=0,
-            )
-        assert 'String should match pattern' in str(exc_info.value)
+    def test_mime_type_is_advisory_free_form(self) -> None:
+        """mime_type is an advisory, client-supplied label -- not an allowlist.
+
+        Image bytes are opaque to the server (base64-validated and size-capped, never
+        decoded or rendered), so a non-image label is stored verbatim rather than rejected.
+        """
+        img = ImageAttachment(
+            data=base64.b64encode(b'test').decode('utf-8'),
+            mime_type='image/svg+xml',
+            position=0,
+        )
+        assert img.mime_type == 'image/svg+xml'
 
     @pytest.mark.parametrize(
         'mime_type',
@@ -100,7 +101,7 @@ class TestImageAttachment:
         ],
     )
     def test_valid_mime_types(self, mime_type: str) -> None:
-        """Test all valid mime types are accepted."""
+        """Common image mime types are accepted and stored verbatim."""
         img = ImageAttachment(
             data=base64.b64encode(b'test').decode('utf-8'),
             mime_type=mime_type,
@@ -138,8 +139,9 @@ class TestContextEntry:
     def test_full_context_entry(self) -> None:
         """Test creating context entry with all fields."""
         now = datetime.now(tz=UTC)
+        canonical_id = '0190abcdef1234567890abcdef123456'
         entry = ContextEntry(
-            id=1,
+            id=canonical_id,
             thread_id='test_thread',
             source=SourceType.AGENT,
             content_type=ContentType.MULTIMODAL,
@@ -150,7 +152,7 @@ class TestContextEntry:
             created_at=now,
             updated_at=now,
         )
-        assert entry.id == 1
+        assert entry.id == canonical_id
         assert entry.thread_id == 'test_thread'
         assert entry.source == SourceType.AGENT
         assert entry.content_type == ContentType.MULTIMODAL
@@ -333,8 +335,13 @@ class TestDeleteContextRequest:
 
     def test_delete_by_ids(self) -> None:
         """Test delete request with context IDs."""
-        request = DeleteContextRequest(context_ids=[1, 2, 3])
-        assert request.context_ids == [1, 2, 3]
+        ids = [
+            '0190abcdef1234567890abcdef111111',
+            '0190abcdef1234567890abcdef222222',
+            '0190abcdef1234567890abcdef333333',
+        ]
+        request = DeleteContextRequest(context_ids=ids)
+        assert request.context_ids == ids
         assert request.thread_id is None
 
     def test_delete_by_thread(self) -> None:
@@ -345,11 +352,15 @@ class TestDeleteContextRequest:
 
     def test_delete_with_both_fields(self) -> None:
         """Test delete request can have both IDs and thread."""
+        ids = [
+            '0190abcdef1234567890abcdef444444',
+            '0190abcdef1234567890abcdef555555',
+        ]
         request = DeleteContextRequest(
-            context_ids=[1, 2],
+            context_ids=ids,
             thread_id='test_thread',
         )
-        assert request.context_ids == [1, 2]
+        assert request.context_ids == ids
         assert request.thread_id == 'test_thread'
 
     def test_delete_without_any_field(self) -> None:

@@ -5,7 +5,6 @@ This module handles all database operations related to image attachments,
 including storage and retrieval of base64-encoded images.
 """
 
-from __future__ import annotations
 
 import base64
 import json
@@ -44,7 +43,7 @@ class ImageRepository(BaseRepository):
 
     async def store_image(
         self,
-        context_id: int,
+        context_id: str,
         image_data: bytes,
         mime_type: str,
         metadata: dict[str, Any] | None = None,
@@ -77,7 +76,7 @@ class ImageRepository(BaseRepository):
             await self.backend.execute_write(_store_image_sqlite)
         else:  # postgresql
 
-            async def _store_image_postgresql(conn: asyncpg.Connection) -> None:
+            async def _store_image_postgresql(conn: 'asyncpg.Connection') -> None:
                 query = f'''
                     INSERT INTO image_attachments
                     (context_entry_id, image_data, mime_type, image_metadata, position)
@@ -97,9 +96,9 @@ class ImageRepository(BaseRepository):
 
     async def store_images(
         self,
-        context_id: int,
+        context_id: str,
         images: list[dict[str, Any]],
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> None:
         """Store multiple image attachments for a context entry.
 
@@ -155,7 +154,7 @@ class ImageRepository(BaseRepository):
                 await self.backend.execute_write(_store_images_sqlite)
         else:  # postgresql
 
-            async def _store_images_postgresql(conn: asyncpg.Connection) -> None:
+            async def _store_images_postgresql(conn: 'asyncpg.Connection') -> None:
                 stored_count = 0
                 for idx, img in enumerate(images):
                     img_data_str = img.get('data', '')
@@ -194,7 +193,7 @@ class ImageRepository(BaseRepository):
 
     async def get_images_for_context(
         self,
-        context_id: int,
+        context_id: str,
         include_data: bool = True,
     ) -> list[ImageDict]:
         """Get all images for a specific context entry.
@@ -235,9 +234,9 @@ class ImageRepository(BaseRepository):
                             'mime_type': img_row['mime_type'],
                         }
                     else:
-                        img_data = {
-                            'mime_type': img_row['mime_type'],
-                        }
+                        img_data = ImageDict(
+                            mime_type=img_row['mime_type'],
+                        )
 
                     if img_row['image_metadata']:
                         img_data['metadata'] = json.loads(img_row['image_metadata'])
@@ -248,7 +247,7 @@ class ImageRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_images_postgresql(conn: asyncpg.Connection) -> list[ImageDict]:
+        async def _get_images_postgresql(conn: 'asyncpg.Connection') -> list[ImageDict]:
             if include_data:
                 query = f'''
                         SELECT image_data, mime_type, image_metadata, position
@@ -273,9 +272,9 @@ class ImageRepository(BaseRepository):
                         'mime_type': img_row['mime_type'],
                     }
                 else:
-                    img_data = {
-                        'mime_type': img_row['mime_type'],
-                    }
+                    img_data = ImageDict(
+                        mime_type=img_row['mime_type'],
+                    )
 
                 if img_row['image_metadata']:
                     img_data['metadata'] = json.loads(img_row['image_metadata'])
@@ -286,9 +285,9 @@ class ImageRepository(BaseRepository):
 
     async def get_images_for_contexts(
         self,
-        context_ids: list[int],
+        context_ids: list[str],
         include_data: bool = True,
-    ) -> dict[int, list[ImageDict]]:
+    ) -> dict[str, list[ImageDict]]:
         """Get images for multiple context entries in a single query.
 
         Args:
@@ -303,7 +302,7 @@ class ImageRepository(BaseRepository):
 
         if self.backend.backend_type == 'sqlite':
 
-            def _get_images_batch_sqlite(conn: sqlite3.Connection) -> dict[int, list[ImageDict]]:
+            def _get_images_batch_sqlite(conn: sqlite3.Connection) -> dict[str, list[ImageDict]]:
                 cursor = conn.cursor()
                 placeholders = self._placeholders(len(context_ids))
 
@@ -323,7 +322,7 @@ class ImageRepository(BaseRepository):
                     '''
                 cursor.execute(query, tuple(context_ids))
 
-                result: dict[int, list[ImageDict]] = {}
+                result: dict[str, list[ImageDict]] = {}
                 for row in cursor.fetchall():
                     ctx_id = row['context_entry_id']
                     if ctx_id not in result:
@@ -335,9 +334,9 @@ class ImageRepository(BaseRepository):
                             'mime_type': row['mime_type'],
                         }
                     else:
-                        img_data = {
-                            'mime_type': row['mime_type'],
-                        }
+                        img_data = ImageDict(
+                            mime_type=row['mime_type'],
+                        )
 
                     if row['image_metadata']:
                         img_data['metadata'] = json.loads(row['image_metadata'])
@@ -353,7 +352,7 @@ class ImageRepository(BaseRepository):
 
         # postgresql
 
-        async def _get_images_batch_postgresql(conn: asyncpg.Connection) -> dict[int, list[ImageDict]]:
+        async def _get_images_batch_postgresql(conn: 'asyncpg.Connection') -> dict[str, list[ImageDict]]:
             placeholders = self._placeholders(len(context_ids))
 
             if include_data:
@@ -372,7 +371,7 @@ class ImageRepository(BaseRepository):
                     '''
             rows = await conn.fetch(query, *context_ids)
 
-            result: dict[int, list[ImageDict]] = {}
+            result: dict[str, list[ImageDict]] = {}
             for row in rows:
                 ctx_id = row['context_entry_id']
                 if ctx_id not in result:
@@ -384,9 +383,9 @@ class ImageRepository(BaseRepository):
                         'mime_type': row['mime_type'],
                     }
                 else:
-                    img_data = {
-                        'mime_type': row['mime_type'],
-                    }
+                    img_data = ImageDict(
+                        mime_type=row['mime_type'],
+                    )
 
                 if row['image_metadata']:
                     img_data['metadata'] = json.loads(row['image_metadata'])
@@ -400,16 +399,21 @@ class ImageRepository(BaseRepository):
 
         return await self.backend.execute_read(_get_images_batch_postgresql)
 
-    async def count_images_for_context(self, context_id: int) -> int:
+    async def count_images_for_context(self, context_id: str, txn: 'TransactionContext | None' = None) -> int:
         """Count the number of images for a context entry.
 
         Args:
             context_id: ID of the context entry
+            txn: Optional transaction context. When provided the count runs on the
+                transaction's own connection instead of acquiring a second pooled
+                connection, avoiding a nested pool acquire while a transaction
+                connection is already held (PostgreSQL pool-starvation hazard).
 
         Returns:
             Number of images attached to the context
         """
-        if self.backend.backend_type == 'sqlite':
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if backend_type == 'sqlite':
 
             def _count_images_sqlite(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
@@ -418,22 +422,26 @@ class ImageRepository(BaseRepository):
                 result = cursor.fetchone()
                 return int(result['count']) if result else 0
 
+            if txn is not None:
+                return _count_images_sqlite(cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_count_images_sqlite)
 
         # postgresql
 
-        async def _count_images_postgresql(conn: asyncpg.Connection) -> int:
+        async def _count_images_postgresql(conn: 'asyncpg.Connection') -> int:
             query = f'SELECT COUNT(*) as count FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
             result = await conn.fetchrow(query, context_id)
             return int(result['count']) if result else 0
 
+        if txn is not None:
+            return await _count_images_postgresql(cast('asyncpg.Connection', txn.connection))
         return await self.backend.execute_read(_count_images_postgresql)
 
     async def replace_images_for_context(
         self,
-        context_id: int,
+        context_id: str,
         images: list[dict[str, Any]],
-        txn: TransactionContext | None = None,
+        txn: 'TransactionContext | None' = None,
     ) -> None:
         """Replace all images for a context entry.
 
@@ -492,7 +500,7 @@ class ImageRepository(BaseRepository):
                 await self.backend.execute_write(_replace_images_sqlite)
         else:  # postgresql
 
-            async def _replace_images_postgresql(conn: asyncpg.Connection) -> None:
+            async def _replace_images_postgresql(conn: 'asyncpg.Connection') -> None:
                 delete_query = f'DELETE FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
                 await conn.execute(delete_query, context_id)
 

@@ -1,7 +1,5 @@
 """Tests for ChunkingSettings and RerankingSettings configuration."""
 
-from __future__ import annotations
-
 import pytest
 from pydantic import ValidationError
 
@@ -416,3 +414,43 @@ class TestAppSettingsIntegration:
         assert settings.reranking.provider == 'flashrank'
         assert settings.reranking.model == 'ms-marco-MiniLM-L-12-v2'
         assert settings.reranking.max_length == 512
+
+
+class TestRetrievalSettings:
+    """Tests for RetrievalSettings.include_summary configuration."""
+
+    def test_default_value_is_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Default include_summary should be False (env var unset)."""
+        monkeypatch.delenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', raising=False)
+        from app.settings import RetrievalSettings
+        from app.settings import get_settings
+        get_settings.cache_clear()
+        settings = RetrievalSettings()
+        assert settings.include_summary is False
+
+    def test_true_value_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=true should yield True."""
+        monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'true')
+        from app.settings import RetrievalSettings
+        from app.settings import get_settings
+        get_settings.cache_clear()
+        settings = RetrievalSettings()
+        assert settings.include_summary is True
+
+    def test_false_value_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY=false should yield False."""
+        monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'false')
+        from app.settings import RetrievalSettings
+        from app.settings import get_settings
+        get_settings.cache_clear()
+        settings = RetrievalSettings()
+        assert settings.include_summary is False
+
+    def test_invalid_value_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Invalid GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY should fail validation."""
+        monkeypatch.setenv('GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY', 'not-a-bool')
+        from app.settings import RetrievalSettings
+        from app.settings import get_settings
+        get_settings.cache_clear()
+        with pytest.raises(ValidationError):
+            RetrievalSettings()

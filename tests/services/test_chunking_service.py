@@ -387,3 +387,35 @@ class TestChunkingServiceEdgeCases:
         chunks = service.split_text(text)
 
         assert len(chunks) >= 1
+
+    def test_whitespace_only_longer_than_chunk_size(self) -> None:
+        """Whitespace-only text longer than chunk_size still yields exactly one chunk.
+
+        RecursiveCharacterTextSplitter returns zero documents for an
+        all-whitespace input that exceeds chunk_size (this input takes the
+        splitter path, not the short-circuit fast path), which would break the
+        documented "always returns at least one chunk" contract and hand an empty
+        embedding list to the storage layer. split_text must fall back to a single
+        whole-text chunk so the contract holds for the chunking layer in isolation.
+        """
+        service = ChunkingService(enabled=True, chunk_size=100, chunk_overlap=10)
+        text = ' ' * 250  # whitespace-only, longer than chunk_size
+
+        chunks = service.split_text(text)
+
+        assert len(chunks) == 1
+        assert chunks[0].text == text
+        assert chunks[0].chunk_index == 0
+        assert chunks[0].start_index == 0
+        assert chunks[0].end_index == len(text)
+
+    def test_newlines_only_longer_than_chunk_size(self) -> None:
+        """Newlines-only text longer than chunk_size still yields exactly one chunk."""
+        service = ChunkingService(enabled=True, chunk_size=100, chunk_overlap=10)
+        text = '\n' * 250
+
+        chunks = service.split_text(text)
+
+        assert len(chunks) == 1
+        assert chunks[0].text == text
+        assert chunks[0].end_index == len(text)

@@ -12,7 +12,15 @@
 -- 3. jsonb_merge_patch(jsonb, jsonb) - RFC 7396 implementation
 --
 -- Reference: CVE-2018-1058, PostgreSQL Security Best Practices
--- NOTE: Schema is templated and replaced during migration (see server.py)
+-- NOTE: ALTER FUNCTION targets remain schema-qualified (matching the
+-- function definitions in postgresql_schema.sql, add_semantic_search,
+-- and add_jsonb_merge_patch). pg_namespace lookups use
+-- current_schema() to introspect whatever schema search_path resolves
+-- to. Operators with a non-default POSTGRESQL_SCHEMA must configure
+-- search_path so the ALTER FUNCTION targets and namespace lookups
+-- resolve to the intended schema. The migration loader
+-- (apply_function_search_path_migration in app/migrations/semantic.py)
+-- substitutes {SCHEMA} only for the ALTER FUNCTION targets.
 
 -- Fix update_updated_at_column (from postgresql_schema.sql)
 -- This function always exists after schema initialization
@@ -27,7 +35,7 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
-        WHERE n.nspname = '{SCHEMA}'
+        WHERE n.nspname = current_schema()
         AND p.proname = 'update_embedding_metadata_timestamp'
     ) THEN
         ALTER FUNCTION {SCHEMA}.update_embedding_metadata_timestamp()
@@ -43,7 +51,7 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_proc p
         JOIN pg_namespace n ON p.pronamespace = n.oid
-        WHERE n.nspname = '{SCHEMA}'
+        WHERE n.nspname = current_schema()
         AND p.proname = 'jsonb_merge_patch'
     ) THEN
         ALTER FUNCTION {SCHEMA}.jsonb_merge_patch(jsonb, jsonb)

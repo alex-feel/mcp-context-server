@@ -174,7 +174,7 @@ search:
     model: "qwen3-embedding:0.6b"
     dim: 1024
   hybrid:
-    enabled: false
+    enabled: true
     rrfK: 60
 ```
 
@@ -183,16 +183,16 @@ search:
 ```yaml
 search:
   summary:
-    enabled: true             # ENABLE_SUMMARY_GENERATION
+    enabled: false            # ENABLE_SUMMARY_GENERATION (opt-in; needs a provider)
     provider: "ollama"        # SUMMARY_PROVIDER: ollama, openai, or anthropic
     model: "qwen3:0.6b"      # SUMMARY_MODEL
-    maxTokens: 2000           # SUMMARY_MAX_TOKENS (tokens, 50-5000)
+    maxTokens: 4000           # SUMMARY_MAX_TOKENS (tokens, 50-16384)
     minContentLength: 500     # SUMMARY_MIN_CONTENT_LENGTH (chars, 0=always)
     prompt: ""                # SUMMARY_PROMPT: empty uses built-in default
     timeout: 240.0            # SUMMARY_TIMEOUT_S
     retryMaxAttempts: 5       # SUMMARY_RETRY_MAX_ATTEMPTS
-    retryBaseDelay: 1.0       # SUMMARY_RETRY_BASE_DELAY_S
-    maxConcurrent: 3          # SUMMARY_MAX_CONCURRENT (1-20)
+    retryBaseDelay: 3.0       # SUMMARY_RETRY_BASE_DELAY_S
+    maxConcurrent: 2          # SUMMARY_MAX_CONCURRENT (1-20)
 ```
 
 For OpenAI or Anthropic providers, configure API keys:

@@ -36,6 +36,7 @@ from app.auth import create_auth_provider
 
 # Import startup module for global state access
 from app.backends import create_backend
+from app.compression.provenance import read_compression_metadata
 from app.embeddings import create_embedding_provider
 from app.errors import ConfigurationError
 from app.errors import DependencyError
@@ -49,12 +50,15 @@ from app.migrations import ProviderCheckResult
 
 # Import migration functions from the migrations package
 from app.migrations import apply_chunking_migration
+from app.migrations import apply_compression_migration
 from app.migrations import apply_content_hash_migration
 from app.migrations import apply_fts_migration
 from app.migrations import apply_function_search_path_migration
+from app.migrations import apply_index_tree_migration
 from app.migrations import apply_jsonb_merge_patch_migration
 from app.migrations import apply_semantic_search_migration
 from app.migrations import apply_summary_migration
+from app.migrations import apply_version_migration
 from app.migrations import check_provider_dependencies
 from app.migrations import check_vector_storage_dependencies
 from app.migrations import estimate_migration_time
@@ -77,15 +81,15 @@ from app.startup import set_embedding_provider
 from app.startup import set_repositories
 from app.startup import set_reranking_provider
 from app.startup import set_summary_provider
+from app.startup.compression_validator import validate_compression_provenance
 
+# Import validation utilities from startup (for internal use)
 # Backward compatibility re-exports for validation utilities
 # Tests and external code may import these from app.server
 from app.startup.validation import truncate_text
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
-
-# Import validation utilities from startup (for internal use)
-from app.startup.validation import validate_pool_timeout_for_embedding
+from app.startup.validation import validate_pool_acquire_timeout
 
 # Import tool functions and registration helpers from app.tools
 from app.tools import TOOL_ANNOTATIONS
@@ -118,8 +122,11 @@ __all__ = [
     'fts_search_context',
     'get_context_by_ids',
     'get_statistics',
+    'grep_context',
     'hybrid_search_context',
     'list_threads',
+    'navigate_context',
+    'read_context_range',
     'search_context',
     'semantic_search_context',
     'store_context',
@@ -135,8 +142,11 @@ from app.tools import delete_context_batch
 from app.tools import fts_search_context
 from app.tools import get_context_by_ids
 from app.tools import get_statistics
+from app.tools import grep_context
 from app.tools import hybrid_search_context
 from app.tools import list_threads
+from app.tools import navigate_context
+from app.tools import read_context_range
 from app.tools import search_context
 from app.tools import semantic_search_context
 from app.tools import store_context
@@ -221,16 +231,62 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         await apply_chunking_migration(backend=backend)
         # 8) Apply summary column migration (always runs, column required for search display)
         await apply_summary_migration(backend=backend)
-        # 9) Apply content_hash column migration (deduplication optimization)
+        # 9) Apply context_entries column migrations (idempotent ADD COLUMN on
+        # in-place upgrades; a no-op on fresh DBs whose base schema already has
+        # them): content_hash (deduplication optimization) and version (the
+        # optimistic-concurrency token used by the update_context /
+        # update_context_batch compare-and-set and bumped by the dedup-store UPDATE).
         await apply_content_hash_migration(backend=backend)
-        # 10) Validate pool timeout for embedding operations (PostgreSQL only)
+        await apply_version_migration(backend=backend)
+        # 10) Apply compression migration: REPLACES fp32 vec table with compressed
+        # storage when ENABLE_EMBEDDING_COMPRESSION=true; no-op when disabled.
+        # Must run before validate_compression_provenance because the validator
+        # reads from the compression_metadata table created here.
+        await apply_compression_migration(backend=backend)
+        # 11) Apply index_tree migration: provisions context_index_nodes when
+        # per-node summaries are enabled (ENABLE_INDEX_TREE_NODE_SUMMARIES=true);
+        # no-op otherwise. The on-demand outline itself never needs the table.
+        await apply_index_tree_migration(backend=backend)
+        # 12) Validate the connection-pool acquire timeout (PostgreSQL only)
         if backend.backend_type == 'postgresql':
-            validate_pool_timeout_for_embedding()
-        # 11) Initialize repositories with the backend
+            validate_pool_acquire_timeout()
+        # 13) Validate compression provenance: bootstrap-or-validate the
+        # singleton seed/bits/variant/provider/dim row. Raises
+        # ConfigurationError(exit 78) on bootstrap-missing-seed or env/DB
+        # mismatch; the supervisor does not auto-restart.
+        await validate_compression_provenance(backend=backend)
+        # 14) Announce compression configuration at INFO level so
+        # operators can verify the active configuration at a glance when
+        # LOG_LEVEL=INFO. Mirrors the sibling feature announcements for
+        # embedding generation, reranking, chunking, and summary below.
+        # Values come from the singleton compression_metadata row
+        # (DB-truth), not the raw env vars, because the validator may have
+        # adopted an inherited row in a multi-pod race scenario.
+        if settings.compression.enabled:
+            db_meta = await read_compression_metadata(backend)
+            if db_meta is not None:
+                logger.info(
+                    f'Embedding compression enabled with provider: {db_meta.provider} '
+                    f'(bits={db_meta.bits}, variant={db_meta.variant}, '
+                    f'dim={db_meta.dim}, seed={db_meta.seed}, '
+                    f'max_concurrent={settings.compression.max_concurrent})',
+                )
+            else:
+                # Defensive: validate_compression_provenance ran above and
+                # would have raised ConfigurationError if the singleton row
+                # were missing. Surface the inconsistency loudly rather
+                # than silently.
+                logger.info(
+                    'Embedding compression enabled but provenance row missing '
+                    '(validator should have raised; check startup order)',
+                )
+        else:
+            logger.info('Embedding compression disabled (ENABLE_EMBEDDING_COMPRESSION=false)')
+        # 15) Initialize repositories with the backend
         repos = RepositoryContainer(backend)
         set_repositories(repos)
 
-        # 12) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
+        # 16) Register core tools (annotations from TOOL_ANNOTATIONS in app.tools)
         # Additive tools (create new entries)
         register_tool(mcp, store_context)
         register_tool(mcp, store_context_batch)
@@ -241,6 +297,22 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, list_threads)
         register_tool(mcp, get_statistics)
 
+        # Read-only navigation tools (locate / extract). Matching and slicing are
+        # pure-Python with no external prerequisites, so registration gates only on
+        # the tri-state toggle (auto/true register; false force-disables).
+        if settings.grep_context.enabled:
+            register_tool(mcp, grep_context)
+        else:
+            logger.info('grep_context not registered (ENABLE_GREP_CONTEXT=false)')
+        if settings.context_navigation.enabled:
+            register_tool(mcp, navigate_context)
+        else:
+            logger.info('navigate_context not registered (ENABLE_CONTEXT_NAVIGATION=false)')
+        if settings.context_range.enabled:
+            register_tool(mcp, read_context_range)
+        else:
+            logger.info('read_context_range not registered (ENABLE_CONTEXT_RANGE=false)')
+
         # Update tools (destructive, not idempotent)
         register_tool(mcp, update_context)
         register_tool(mcp, update_context_batch)
@@ -249,11 +321,11 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         register_tool(mcp, delete_context)
         register_tool(mcp, delete_context_batch)
 
-        # 13) Propagate LangSmith settings to os.environ BEFORE embedding provider init
+        # 17) Propagate LangSmith settings to os.environ BEFORE embedding provider init
         # This enables LangSmith SDK auto-detection when users configure via .env file
         propagate_langsmith_settings()
 
-        # 14) Initialize embedding generation if enabled (BEFORE semantic search)
+        # 18) Initialize embedding generation if enabled (BEFORE semantic search)
         # ENABLE_EMBEDDING_GENERATION controls: provider initialization, embedding generation in store/update
         # ENABLE_SEMANTIC_SEARCH controls: semantic_search_context tool registration ONLY
         if settings.embedding.generation_enabled:
@@ -327,7 +399,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_embedding_provider(None)
             logger.info('Embedding generation disabled (ENABLE_EMBEDDING_GENERATION=false)')
 
-        # 15) Initialize reranking provider if enabled
+        # 19) Initialize reranking provider if enabled
         # Reranking improves search precision by re-scoring results with a cross-encoder
         if settings.reranking.enabled:
             try:
@@ -367,7 +439,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_reranking_provider(None)
             logger.info('Reranking disabled (ENABLE_RERANKING=false)')
 
-        # 16) Initialize chunking service if enabled
+        # 20) Initialize chunking service if enabled
         # Chunking splits long documents into smaller pieces for better semantic search quality
         if settings.chunking.enabled:
             try:
@@ -400,7 +472,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_chunking_service(None)
             logger.info('Chunking disabled (ENABLE_CHUNKING=false)')
 
-        # 17) Initialize summary provider if enabled
+        # 21) Initialize summary provider if enabled
         if settings.summary.generation_enabled:
             # Step 1: Check provider-specific dependencies based on SUMMARY_PROVIDER
             from app.migrations import check_summary_provider_dependencies
@@ -463,27 +535,35 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             set_summary_provider(None)
             logger.info('Summary generation disabled (ENABLE_SUMMARY_GENERATION=false)')
 
-        # 18) Pre-warm Ollama models (load into memory for instant first-request response)
+        # 22) Pre-warm Ollama models (load into memory for instant first-request response)
         await prewarm_ollama_models()
 
-        # 19) Register semantic search tool if enabled AND embedding provider is available
-        # This is a separate check because ENABLE_SEMANTIC_SEARCH only controls tool registration
-        if settings.semantic_search.enabled:
-            if get_embedding_provider() is not None:
-                register_tool(mcp, semantic_search_context)
-                logger.info('semantic_search_context registered')
-            else:
-                # User explicitly set ENABLE_EMBEDDING_GENERATION=false but ENABLE_SEMANTIC_SEARCH=true
-                # This is a valid configuration - user wants no embeddings but enabled the flag
-                logger.warning(
-                    'ENABLE_SEMANTIC_SEARCH=true but ENABLE_EMBEDDING_GENERATION=false - '
-                    'semantic_search_context NOT registered (no embedding provider available)',
-                )
-        else:
+        # 23) Register semantic search tool based on its mode and embedding availability.
+        # auto: register when an embedding provider is present (initialized in step
+        # 18, so its presence is the authoritative "embeddings are available" signal).
+        # true: force on, warning when no provider is available. false: force off.
+        semantic_mode = settings.semantic_search.mode
+        if semantic_mode == 'false':
             logger.info('Semantic search disabled (ENABLE_SEMANTIC_SEARCH=false)')
             logger.info('semantic_search_context not registered (feature disabled)')
+        elif get_embedding_provider() is not None:
+            # register_tool logs both outcomes itself ('<tool> registered' or
+            # 'not registered (in DISABLED_TOOLS)'); an extra unconditional log
+            # here would falsely assert registration when DISABLED_TOOLS skips it.
+            register_tool(mcp, semantic_search_context)
+        elif semantic_mode == 'true':
+            logger.warning(
+                'ENABLE_SEMANTIC_SEARCH=true but no embedding provider is available '
+                '(ENABLE_EMBEDDING_GENERATION=false or provider initialization failed) - '
+                'semantic_search_context NOT registered',
+            )
+        else:
+            logger.info(
+                'semantic_search_context not registered '
+                '(ENABLE_SEMANTIC_SEARCH=auto and no embedding provider available)',
+            )
 
-        # 20) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
+        # 24) Register FTS tool if enabled - ALWAYS register when ENABLE_FTS=true
         # The tool handles graceful degradation during migration
         if settings.fts.enabled:
             # Generate backend-specific FTS description for AI agents
@@ -506,7 +586,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Full-text search disabled (ENABLE_FTS=false)')
             logger.info('fts_search_context not registered (feature disabled)')
 
-        # 21) Register Hybrid Search tool if enabled AND at least one search mode is available
+        # 25) Register Hybrid Search tool if enabled AND at least one search mode is available
         if settings.hybrid_search.enabled:
             semantic_available_for_hybrid = (
                 settings.semantic_search.enabled and get_embedding_provider() is not None
@@ -532,7 +612,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
             logger.info('Hybrid search disabled (ENABLE_HYBRID_SEARCH=false)')
             logger.info('hybrid_search_context not registered (feature disabled)')
 
-        # 22) Register schema-aware JSON string deserializer middleware
+        # 26) Register schema-aware JSON string deserializer middleware
         # Handles client serialization issues where list/dict params arrive as JSON strings
         # Must run AFTER all tool registrations so schema map includes all tools
         all_tools = await mcp.list_tools(run_middleware=False)
@@ -554,9 +634,26 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
         logger.info(f'MCP Context Server initialized (backend: {backend.backend_type})')
     except Exception as e:
         logger.error(f'Failed to initialize server: {e}')
+        # Shut down any provider already initialized before the failing step so a
+        # startup failure does not leak its HTTP client / thread pools (mirrors
+        # the clean-shutdown cleanup below). Each shutdown is isolated so one
+        # provider's shutdown error cannot mask the original startup exception.
+        for _startup_provider in (
+            get_reranking_provider(),
+            get_embedding_provider(),
+            get_summary_provider(),
+        ):
+            if _startup_provider is not None:
+                try:
+                    await _startup_provider.shutdown()
+                except Exception as shutdown_error:
+                    logger.error(f'Error shutting down provider during startup failure: {shutdown_error}')
         startup_backend = get_backend()
         if startup_backend:
-            await startup_backend.shutdown()
+            try:
+                await startup_backend.shutdown()
+            except Exception as shutdown_error:
+                logger.error(f'Error shutting down backend during startup failure: {shutdown_error}')
         raise
 
     # Yield control to FastMCP
@@ -686,11 +783,25 @@ def main() -> None:
                     show_banner=False,
                 )
             else:
-                # SSE transport: stateless_http parameter is silently ignored by FastMCP
+                # SSE transport does not support stateless mode. FastMCP raises
+                # ValueError when stateless_http is True for transport='sse', and an
+                # unset stateless_http is resolved from FASTMCP_STATELESS_HTTP (whose
+                # documented default is true), so it MUST be passed explicitly as
+                # False here or SSE crashes on startup under the project's own
+                # default configuration. Warn when the configured value asked for
+                # stateless so the operator knows SSE forces stateful sessions.
+                if settings.transport.stateless_http:
+                    logger.warning(
+                        'Stateless HTTP mode is not supported by the SSE transport; '
+                        'forcing stateful sessions. Server-side session tracking is '
+                        'active, which requires sticky sessions for horizontal scaling. '
+                        'Use the streamable-http transport for stateless mode.',
+                    )
                 mcp.run(
                     transport=cast(Literal['stdio', 'http', 'sse', 'streamable-http'], transport),
                     host=host,
                     port=port,
+                    stateless_http=False,
                     show_banner=False,
                 )
 

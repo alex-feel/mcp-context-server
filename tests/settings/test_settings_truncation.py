@@ -8,8 +8,6 @@ Tests verify:
 4. Settings validation warnings for chunk size vs context
 """
 
-from __future__ import annotations
-
 import os
 from collections.abc import Generator
 from contextlib import contextmanager

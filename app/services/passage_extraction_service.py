@@ -12,7 +12,6 @@ The algorithm uses the same separators as RecursiveCharacterTextSplitter
 for natural language boundary detection.
 """
 
-from __future__ import annotations
 
 import logging
 import re

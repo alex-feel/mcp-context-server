@@ -4,8 +4,6 @@ This module tests specific error handling code paths in app/server.py
 to improve coverage of exception handling and edge cases.
 """
 
-from __future__ import annotations
-
 import base64
 from typing import Any
 
@@ -227,7 +225,7 @@ class TestStoreContextErrorPaths:
 
         # Verify metadata was stored correctly
         entries = await get_context_by_ids(context_ids=[result['context_id']])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['metadata']['level1']['level2']['level3']['level4']['level5'] == 'deep_value'
 
 
@@ -238,7 +236,13 @@ class TestGetContextByIdsErrorPaths:
     @pytest.mark.usefixtures('initialized_server')
     async def test_get_by_ids_all_nonexistent(self) -> None:
         """Test getting all non-existent IDs returns empty list."""
-        entries = await get_context_by_ids(context_ids=[999997, 999998, 999999])
+        entries = await get_context_by_ids(
+            context_ids=[
+                '0190abcdef1234567890abcd000f423d',
+                '0190abcdef1234567890abcd000f423e',
+                '0190abcdef1234567890abcd000f423f',
+            ],
+        )
         assert entries == []
 
     @pytest.mark.asyncio
@@ -259,7 +263,7 @@ class TestGetContextByIdsErrorPaths:
         )
 
         assert len(entries) == 1
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert entry['content_type'] == 'multimodal'
         # When include_images=False, images key may not be present or may be empty
 
@@ -299,7 +303,7 @@ class TestRepoFailureSimulation:
 
         # Verify all tags stored
         entries = await get_context_by_ids(context_ids=[result['context_id']])
-        entry: dict[str, Any] = dict(entries[0])
+        entry: dict[str, Any] = {**entries[0]}
         assert len(entry['tags']) == 50
 
 

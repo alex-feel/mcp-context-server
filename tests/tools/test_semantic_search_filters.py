@@ -10,15 +10,11 @@ virtual table level BEFORE JOIN and WHERE filters are applied.
 Solution: CTE-based pre-filtering with vec_distance_l2() scalar function.
 """
 
-from __future__ import annotations
-
 import importlib.util
-from typing import TYPE_CHECKING
 
 import pytest
 
-if TYPE_CHECKING:
-    from app.backends import StorageBackend
+from app.backends import StorageBackend
 
 # Conditional skip marker for tests requiring semantic search dependencies
 requires_semantic_search = pytest.mark.skipif(

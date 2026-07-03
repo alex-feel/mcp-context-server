@@ -149,6 +149,7 @@ Filtering options (all combinable):
 - content_type: Filter by text or multimodal entries
 - tags: OR logic (matches ANY of provided tags)
 - start_date/end_date: Date range filtering (ISO 8601)
+- metadata: Simple key=value equality matching
 - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
 
 The `scores` object contains:
@@ -174,7 +175,7 @@ match (default): Natural language query. Words joined with implicit AND.
 
 prefix: Wildcard search with * suffix. Matches word beginnings.
   Example: "search*" matches "searching", "searched", "searchable"
-  Note: Hyphenated words are kept as single tokens ("full-text*")
+  Note: Hyphenated words become an adjacency phrase-prefix ("full-text" -> "full" then a word starting with "text")
 
 phrase: Exact phrase matching. Words must appear in exact order.
   Example: "exact phrase" matches only "exact phrase", not "phrase exact"
@@ -184,7 +185,8 @@ boolean: Boolean operators for precise control.
   Syntax: AND, OR, NOT (UPPERCASE required)
   Example: "python AND (async OR await) NOT blocking"
   Grouping: Full parentheses support
-  Note: Use double quotes for phrases within boolean: '"error handling" AND python\''''
+  Note: Use double quotes for phrases within boolean: '"error handling" AND python'
+  Note: Malformed syntax (e.g. unbalanced parentheses) degrades to a best-effort term match rather than raising an error.'''
 
 
 # PostgreSQL-specific mode descriptions
