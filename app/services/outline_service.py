@@ -54,6 +54,18 @@ ROOT_NODE_ID = 'root'
 # max_depth a caller folds the displayed tree to -- see _assign_canonical_ids.
 _CANONICAL_HEADING_DEPTH = 6
 
+# Cap for a single node-id slug segment, in Unicode code points. A node_id is
+# the '/'-joined path of per-level segments and heading depth is bounded at
+# _CANONICAL_HEADING_DEPTH, so with this cap the full id stays comfortably
+# below PostgreSQL's ~2704-byte btree index-tuple ceiling for the
+# UNIQUE(context_id, node_id) constraint on context_index_nodes, even when
+# every code point encodes to 4 UTF-8 bytes. An unbounded segment built from a
+# pathological multi-kilobyte heading line would make that INSERT fail
+# (SQLSTATE 54000) inside the single store/update transaction on PostgreSQL --
+# aborting the whole store, retry-proof -- while SQLite stored the same
+# document fine.
+_MAX_SLUG_SEGMENT_CHARS = 64
+
 
 @dataclass(frozen=True, slots=True)
 class OutlineNode:
@@ -93,7 +105,12 @@ def slugify(title: str) -> str:
 
     Lowercases, collapses runs of non-word characters to single hyphens, and
     trims hyphens. Unicode letters are preserved (so Cyrillic headings get
-    Cyrillic slugs). An empty result falls back to ``'section'``.
+    Cyrillic slugs). The slug is truncated to ``_MAX_SLUG_SEGMENT_CHARS`` code
+    points so a pathological multi-kilobyte heading cannot grow a ``node_id``
+    past PostgreSQL's btree index-tuple ceiling (see the constant's comment);
+    the sibling disambiguation in :func:`_assign_canonical_ids` keeps
+    truncation-collided duplicates unique via ordinal suffixes. An empty
+    result falls back to ``'section'``.
 
     Args:
         title: The heading title text.
@@ -102,6 +119,7 @@ def slugify(title: str) -> str:
         A non-empty slug suitable as a node-id segment.
     """
     slug = re.sub(r'[^\w]+', '-', title.strip().lower(), flags=re.UNICODE).strip('-')
+    slug = slug[:_MAX_SLUG_SEGMENT_CHARS].rstrip('-')
     return slug or 'section'
 
 
