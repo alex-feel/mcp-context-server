@@ -409,8 +409,11 @@ async def store_context_batch(
                     entry_summaries[ve_idx] = None
                     # This entry is discarded below; undo the preserved-summary count it
                     # provisionally bumped in the pre-check, mirroring the generated counts
-                    # which are bumped only on compression success.
+                    # which are bumped only on compression success. Discard the index too
+                    # so the set stays consistent with the count, like every sibling
+                    # compensation site.
                     if ve_idx in preserved_summary_indices:
+                        preserved_summary_indices.discard(ve_idx)
                         summaries_preserved_count -= 1
                 else:
                     # Count generated artifacts only AFTER compression succeeds, so a
@@ -475,6 +478,32 @@ async def store_context_batch(
                 if entry_likely_duplicate.get(ve_idx) is not None
                 else await generate_index_nodes_with_timeout(entry['text_content'])
             )
+
+        def discard_generation_counts(ve_idx: int) -> None:
+            """Reverse a discarded entry's response-counter contributions.
+
+            A transaction-phase failure discards an entry AFTER the generation
+            phase bumped the response counters. Without compensation the
+            response message computes not_stored = generated - stored and
+            labels the whole gap "not stored - duplicates", so a FAILED
+            never-stored entry would be reported as a dedup skip, and
+            "summaries generated/preserved" would be claimed for entries that
+            stored nothing. The decrement criteria mirror the bump criteria
+            exactly: one embeddings bump iff the entry holds compressed
+            embeddings, one preserved bump iff its index is still in the
+            preserved set, else one generated-summary bump iff it holds a
+            non-empty generated summary string.
+            """
+            nonlocal embeddings_generated_count, summaries_generated_count, summaries_preserved_count
+            if entry_embeddings.get(ve_idx) is not None:
+                embeddings_generated_count -= 1
+            if ve_idx in preserved_summary_indices:
+                preserved_summary_indices.discard(ve_idx)
+                summaries_preserved_count -= 1
+            else:
+                summary_value = entry_summaries.get(ve_idx)
+                if isinstance(summary_value, str) and summary_value:
+                    summaries_generated_count -= 1
 
         # === PHASE 3: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
@@ -687,6 +716,7 @@ async def store_context_batch(
                                 context_id=None,
                                 error='Failed to reconcile embeddings after deduplication divergence',
                             ))
+                            discard_generation_counts(ve_idx)
                             break
                         reconciled = True
                         # Only re-run the embedding provider when this entry's
@@ -723,12 +753,10 @@ async def store_context_batch(
                                 context_id=None,
                                 error=format_exception_message(e),
                             ))
-                            # This entry is discarded; undo the preserved-summary
-                            # count its pre-check provisionally bumped -- counts
-                            # must reflect entries surviving the generation phase.
-                            if ve_idx in preserved_summary_indices:
-                                preserved_summary_indices.discard(ve_idx)
-                                summaries_preserved_count -= 1
+                            # This entry is discarded; undo every response-counter
+                            # contribution it made -- counts must reflect entries
+                            # surviving the generation phase.
+                            discard_generation_counts(ve_idx)
                             break
                         # A REUSED summary was read from the since-diverged candidate
                         # and may describe different text; regenerate it for this
@@ -751,11 +779,11 @@ async def store_context_batch(
                                     context_id=None,
                                     error=format_exception_message(e),
                                 ))
-                                # This entry is discarded; undo the preserved-summary
-                                # count its pre-check provisionally bumped (the
-                                # success path below reverses it after regeneration).
-                                preserved_summary_indices.discard(ve_idx)
-                                summaries_preserved_count -= 1
+                                # This entry is discarded; undo every response-counter
+                                # contribution it made, including embeddings the first
+                                # reconcile pass regenerated above (the success path
+                                # below reverses only the preserved marker).
+                                discard_generation_counts(ve_idx)
                                 break
                             preserved_summary_indices.discard(ve_idx)
                             summaries_preserved_count -= 1
@@ -781,6 +809,7 @@ async def store_context_batch(
                             context_id=None,
                             error=format_exception_message(e),
                         ))
+                        discard_generation_counts(ve_idx)
                         break
                     except Exception as e:
                         if is_connection_error(e) and attempt < max_retries:
@@ -801,6 +830,7 @@ async def store_context_batch(
                             context_id=None,
                             error=format_exception_message(e),
                         ))
+                        discard_generation_counts(ve_idx)
                         break
 
         # Sort results by index for consistent ordering
@@ -1276,6 +1306,25 @@ async def update_context_batch(
                 # existence, so clearing when the table is absent is a safe no-op.
                 update_index_nodes[vu_idx] = [] if rebuilt is None else rebuilt
 
+        def discard_generation_counts(vu_idx: int) -> None:
+            """Reverse a discarded update's response-counter contributions.
+
+            A transaction-phase failure discards an update AFTER the
+            generation phase bumped the response counters, so without
+            compensation the response message would claim "embeddings
+            regenerated" / "summaries regenerated" for updates that modified
+            nothing. The decrement criteria mirror the bump criteria exactly:
+            one embeddings bump iff the update holds compressed embeddings,
+            one summary bump iff it holds a non-empty regenerated summary
+            string.
+            """
+            nonlocal embeddings_generated_count, summaries_generated_count
+            if update_embeddings.get(vu_idx) is not None:
+                embeddings_generated_count -= 1
+            summary_value = update_summaries.get(vu_idx)
+            if isinstance(summary_value, str) and summary_value:
+                summaries_generated_count -= 1
+
         # === PHASE 4: Single Atomic Transaction for ALL Database Operations ===
         backend = repos.context.backend
 
@@ -1433,6 +1482,7 @@ async def update_context_batch(
                                 updated_fields=None,
                                 error=format_exception_message(e),
                             ))
+                            discard_generation_counts(vu_idx)
                             break
                         version_conflicts += 1
                         try:
@@ -1459,6 +1509,7 @@ async def update_context_batch(
                                 updated_fields=None,
                                 error=format_exception_message(reread_error),
                             ))
+                            discard_generation_counts(vu_idx)
                             break
                         if not exists:
                             results.append(BulkUpdateResultItemDict(
@@ -1468,6 +1519,7 @@ async def update_context_batch(
                                 updated_fields=None,
                                 error=f'Context entry {context_id} not found',
                             ))
+                            discard_generation_counts(vu_idx)
                             break
                         assert current_version is not None  # exists=True guarantees a version
                         live_versions[context_id] = current_version
@@ -1482,6 +1534,7 @@ async def update_context_batch(
                             updated_fields=None,
                             error=format_exception_message(e),
                         ))
+                        discard_generation_counts(vu_idx)
                         break
                     except Exception as e:
                         if is_connection_error(e) and attempt < max_retries:
@@ -1503,6 +1556,7 @@ async def update_context_batch(
                             updated_fields=None,
                             error=format_exception_message(e),
                         ))
+                        discard_generation_counts(vu_idx)
                         break
 
         # Sort results by index for consistent ordering

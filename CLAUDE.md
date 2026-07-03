@@ -202,6 +202,10 @@ When changing core functionality, update the corresponding doc before committing
 - **`README.md`** — when adding/changing/removing user-facing features; its Key Features list (the first thing users read) must reflect current capabilities.
 - Any other related documents in `docs/`.
 
+## Synced Artifacts in `agents/` (do NOT edit here)
+
+Everything under `agents/` is SYNCHRONIZED FROM the `alex-feel/claude-code-artifacts` repository: on every push to its `main`, its sync workflow pushes the mapped source files (mapping in that repository's `.github/sync-config.yaml`) directly to `main` here as `sync-bot` commits (`chore: sync from source <sha>`). NEVER edit files under `agents/` in this repository — a direct change is silently overwritten by the next sync (this has already reverted one correct fix). To change a synced file, edit its SOURCE in `claude-code-artifacts` and let the sync propagate it.
+
 ## CI and Docker Lock File Discipline
 
 `uv.lock` is a UNIVERSAL resolution of ALL dependencies across ALL optional groups/extras; `uv sync` with selective flags installs only the relevant subset.

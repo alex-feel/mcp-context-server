@@ -1089,10 +1089,27 @@ def _prepare_hybrid_fts_query(
         # shared SQLite sanitizer; the `significant` filter already excludes it here too).
         if len(token) >= 2 and token.startswith('"') and token.endswith('"'):
             sanitized.append(token)
-        else:
-            clean = token.replace('-', ' ').strip()
-            if clean:
-                sanitized.append(clean)
+            continue
+        clean = token.replace('-', ' ').strip()
+        if not clean:
+            continue
+        if ' ' in clean:
+            # A hyphenated token becomes a QUOTED PHRASE so its parts keep
+            # ordered-adjacency semantics (websearch_to_tsquery parses "a b"
+            # as a <-> b), matching the SQLite branch where
+            # sanitize_sqlite_fts_terms wraps the same token as the FTS5
+            # phrase literal "a b". Left unquoted, websearch_to_tsquery ANDs
+            # the parts (unordered), so the two backends would return
+            # different recall for the identical hybrid query. The token
+            # itself contains no whitespace (re.findall '\\S+'), so a space
+            # here can only come from the hyphen replacement. Embedded double
+            # quotes are dropped: inside the wrapper they would terminate the
+            # phrase mid-token.
+            phrase_body = clean.replace('"', ' ').strip()
+            if phrase_body:
+                sanitized.append(f'"{phrase_body}"')
+            continue
+        sanitized.append(clean)
     if not sanitized:
         return query, 'match'
     return ' or '.join(sanitized), 'boolean'  # websearch_to_tsquery 'or' is lowercase

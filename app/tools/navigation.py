@@ -35,10 +35,12 @@ from pydantic import Field
 
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
+from app.repositories.index_node_repository import StoredNodeSummaries
 from app.services.grep_service import GrepEntryResult
 from app.services.grep_service import compile_pattern
 from app.services.grep_service import extract_ascii_literal
 from app.services.grep_service import match_entry
+from app.services.outline_service import ROOT_NODE_ID
 from app.services.outline_service import OutlineNode
 from app.services.outline_service import count_nodes
 from app.services.outline_service import parse_outline
@@ -344,16 +346,28 @@ async def grep_context(
         raise ToolError(f'Failed to grep context: {format_exception_message(exc)}') from exc
 
 
-def _outline_to_dict(node: OutlineNode, node_summaries: dict[str, str]) -> OutlineNodeDict:
+def _outline_to_dict(node: OutlineNode, stored_nodes: StoredNodeSummaries) -> OutlineNodeDict:
     """Convert an OutlineNode (and its children) to a response dict.
 
-    Each node's ``summary`` is looked up in ``node_summaries`` (the stored
-    per-node LLM summaries, empty when that layer is off). The caller overrides
-    the root node's summary with the entry summary afterwards.
+    Each node's ``summary`` is looked up in the stored per-node LLM summaries
+    (empty when that layer is off): primarily by ``node_id``, then by exact
+    ``(char_start, char_end)`` span. The span fallback re-attaches rows
+    written by an OLDER slug algorithm, whose node_id the current parse no
+    longer computes for the SAME section -- spans derive from the text rather
+    than the slug, and node rows are replaced on every text change, so an
+    exact-span match against the same revision is deterministic. The caller
+    overrides the root node's summary with the entry summary afterwards.
 
     Returns:
         The node as an OutlineNodeDict, children converted recursively.
     """
+    summary = stored_nodes.by_node_id.get(node.node_id)
+    if summary is None and node.node_id != ROOT_NODE_ID:
+        # The synthetic root is excluded from the span fallback: its summary
+        # mirrors the entry summary by reference (assigned by the caller), and
+        # a document-spanning first heading shares the root's span, so the
+        # fallback would leak that section's summary onto the root.
+        summary = stored_nodes.by_span.get((node.char_start, node.char_end))
     return {
         'node_id': node.node_id,
         'level': node.level,
@@ -361,8 +375,8 @@ def _outline_to_dict(node: OutlineNode, node_summaries: dict[str, str]) -> Outli
         'title': node.title,
         'char_start': node.char_start,
         'char_end': node.char_end,
-        'summary': node_summaries.get(node.node_id),
-        'children': [_outline_to_dict(child, node_summaries) for child in node.children],
+        'summary': summary,
+        'children': [_outline_to_dict(child, stored_nodes) for child in node.children],
     }
 
 
@@ -426,7 +440,7 @@ async def navigate_context(
         # accepted.
         text = ''
         root_summary: str | None = None
-        node_summaries: dict[str, str] = {}
+        stored_nodes = StoredNodeSummaries({}, {})
         want_node_summaries = include_node_summaries and settings.index_tree.node_summaries_enabled
         for _snapshot_attempt in range(3):
             version_before: int | None = None
@@ -452,7 +466,7 @@ async def navigate_context(
 
             # Stored per-node summaries are fetched by id and do NOT depend on the
             # parse, so they are loaded before the CPU-bound parse + serialize block.
-            node_summaries = await repos.index_nodes.get_nodes_for_context(resolved_id)
+            stored_nodes = await repos.index_nodes.get_nodes_for_context(resolved_id)
             _exists, _probe_source, version_after = await repos.context.check_entry_exists(resolved_id)
             if version_after == version_before:
                 break
@@ -470,7 +484,7 @@ async def navigate_context(
 
         def _build_outline() -> tuple[OutlineNodeDict, int]:
             built = parse_outline(text, max_depth=max_depth)
-            return _outline_to_dict(built, node_summaries), count_nodes(built)
+            return _outline_to_dict(built, stored_nodes), count_nodes(built)
 
         # parse_outline + serialization are O(text) CPU work over unbounded entry
         # text; a large entry is offloaded to a worker thread so it cannot pin the
@@ -483,8 +497,9 @@ async def navigate_context(
         if ctx:
             await ctx.info(f'navigate_context {resolved_id}: {node_count} nodes')
 
-        # The root mirrors the entry summary by reference; node_summaries never
-        # contains the synthetic root id.
+        # The root mirrors the entry summary by reference; the stored node
+        # summaries never contain the synthetic root id, and the span fallback
+        # excludes the root explicitly.
         root_dict['summary'] = root_summary
 
         return {

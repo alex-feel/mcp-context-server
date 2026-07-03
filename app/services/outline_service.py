@@ -384,7 +384,12 @@ def parse_outline(text: str, *, max_depth: int = 6) -> OutlineNode:
     ``navigate_context`` call with a lower ``max_depth`` must surface the same ids
     for stored summaries to attach to the right sections and for a returned
     ``node_id`` to round-trip. Ids are still regenerated wholesale on every parse
-    and are NOT stable across heading inserts or renames.
+    and are NOT stable across heading inserts or renames, nor across upgrades
+    that change the slug algorithm itself (for example the per-segment length
+    cap): stored per-node summaries whose persisted node_id no longer matches
+    the recomputed one re-attach by exact char span in the navigate_context
+    reader, but a node_id captured by a client before such an upgrade may no
+    longer resolve.
 
     Args:
         text: The record's full text.

@@ -757,6 +757,145 @@ class TestBatchMessageAccuracy:
         assert 'summaries preserved' not in result['message']
 
     @pytest.mark.asyncio
+    async def test_nonatomic_transaction_failure_not_labeled_duplicate(self) -> None:
+        """A transaction-phase failure is not reported as a dedup skip.
+
+        The response message computes not_stored = generated - stored and
+        labels the whole gap 'not stored - duplicates', so an entry that
+        survived generation but failed at commit time (a logical ToolError in
+        its own transaction) used to be reported as a duplicate skip with its
+        generated summary still claimed. The failure branches now reverse the
+        entry's generated-counter contributions, so a batch with zero stored
+        entries claims nothing.
+        """
+        repos = _create_mock_repositories()
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='A generated summary')
+
+        entries = [
+            {'thread_id': 'txn-fail', 'source': 'user', 'text': 'x' * 500},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.startup.get_chunking_service', return_value=None),
+            patch('app.tools._shared.get_chunking_service', return_value=None),
+            patch(
+                'app.tools.batch.execute_store_in_transaction',
+                new=AsyncMock(side_effect=ToolError('Failed to store context')),
+            ),
+        ):
+            result = await store_context_batch(entries=entries, atomic=False)
+
+        assert result['results'][0]['success'] is False
+        assert 'duplicates' not in result['message']
+        assert 'embeddings generated' not in result['message']
+        assert 'summaries generated' not in result['message']
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_transaction_failure_not_counted_as_preserved(self) -> None:
+        """A preserved-summary entry failing at commit time is not counted.
+
+        The pre-check provisionally bumps the preserved count when a likely
+        duplicate's stored summary is reused; the generation-phase discard
+        branches already compensate. The transaction-phase failure branches
+        must compensate the same way, or the response claims 'summaries
+        preserved' for an entry that was never stored.
+        """
+        repos = _create_mock_repositories()
+        repos.context.check_latest_is_duplicate = AsyncMock(
+            return_value=DuplicateCandidate(
+                context_id='0190abcdef1234567890abcd00000011',
+                summary='Existing preserved summary',
+            ),
+        )
+        repos.embeddings.exists = AsyncMock(return_value=False)
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should NOT be generated')
+
+        entries = [
+            {'thread_id': 'preserve-txn-fail', 'source': 'user', 'text': 'x' * 500},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.startup.get_chunking_service', return_value=None),
+            patch('app.tools._shared.get_chunking_service', return_value=None),
+            patch(
+                'app.tools.batch.execute_store_in_transaction',
+                new=AsyncMock(side_effect=ToolError('Failed to store context')),
+            ),
+        ):
+            result = await store_context_batch(entries=entries, atomic=False)
+
+        assert result['results'][0]['success'] is False
+        assert 'summaries preserved' not in result['message']
+        assert 'duplicates' not in result['message']
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_update_transaction_failure_not_counted_as_regenerated(self) -> None:
+        """An update failing at commit time is not reported as regenerated.
+
+        The update response message claims 'embeddings regenerated' /
+        'summaries regenerated' whenever the generation-phase counters are
+        positive, so an update that regenerated both but failed in its own
+        transaction used to produce 'Updated 0/1 ... (embeddings regenerated,
+        summaries regenerated)'. The failure branches now reverse the
+        update's generated-counter contributions.
+        """
+        repos = _create_mock_repositories()
+
+        mock_embedding = MagicMock()
+        mock_embedding.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='A regenerated summary')
+
+        updates = [
+            {'context_id': '0190abcdef1234567890abcd00000012', 'text': 'y' * 600},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.compute_summary_total_timeout', return_value=1.0),
+            patch('app.startup.get_chunking_service', return_value=None),
+            patch('app.tools._shared.get_chunking_service', return_value=None),
+            patch(
+                'app.tools.batch.execute_update_in_transaction',
+                new=AsyncMock(side_effect=ToolError('Failed to update context')),
+            ),
+        ):
+            result = await update_context_batch(updates=updates, atomic=False)
+
+        assert result['results'][0]['success'] is False
+        assert 'regenerated' not in result['message']
+
+    @pytest.mark.asyncio
     async def test_update_batch_short_text_no_summary_message(self) -> None:
         """Message omits 'summaries regenerated' when all entries skip summary due to min_content_length."""
         repos = _create_mock_repositories()

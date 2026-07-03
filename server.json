@@ -88,7 +88,7 @@
           "name": "POOL_HEALTH_CHECK_INTERVAL_S"
         },
         {
-          "description": "Maximum number of retry attempts for failed operations",
+          "description": "Total attempt budget for failed operations (minimum 1; 1 means one attempt, no retries)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1200,7 +1200,7 @@
           "name": "POOL_HEALTH_CHECK_INTERVAL_S"
         },
         {
-          "description": "Maximum number of retry attempts for failed operations",
+          "description": "Total attempt budget for failed operations (minimum 1; 1 means one attempt, no retries)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,

@@ -361,7 +361,7 @@ class EmbeddingRepository(BaseRepository):
                 )
 
             if txn:
-                _store_chunked_sqlite(cast(sqlite3.Connection, txn.connection))
+                await self._run_sqlite_txn(_store_chunked_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
                 await self.backend.execute_write(_store_chunked_sqlite)
             logger.debug(f'Stored {chunk_count} chunk embeddings for context {context_id} (SQLite)')
@@ -476,7 +476,7 @@ class EmbeddingRepository(BaseRepository):
                 )
 
             if txn:
-                _store_compressed_sqlite(cast(sqlite3.Connection, txn.connection))
+                await self._run_sqlite_txn(_store_compressed_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
                 await self.backend.execute_write(_store_compressed_sqlite)
             logger.debug(
@@ -558,7 +558,7 @@ class EmbeddingRepository(BaseRepository):
                 return n
 
             if txn:
-                return _delete_compressed_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_delete_compressed_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_delete_compressed_sqlite)
 
         # postgresql
@@ -651,7 +651,9 @@ class EmbeddingRepository(BaseRepository):
                 return len(vec_rowids)
 
             if txn:
-                deleted_count = _delete_all_chunks_sqlite(cast(sqlite3.Connection, txn.connection))
+                deleted_count = await self._run_sqlite_txn(
+                    _delete_all_chunks_sqlite, cast(sqlite3.Connection, txn.connection),
+                )
             else:
                 deleted_count = await self.backend.execute_write(_delete_all_chunks_sqlite)
             logger.debug(f'Deleted {deleted_count} chunk embeddings for context {context_id} (SQLite)')
@@ -1788,7 +1790,7 @@ class EmbeddingRepository(BaseRepository):
                 return cursor.fetchone() is not None
 
             if txn is not None:
-                return _exists_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_exists_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_exists_sqlite)
 
         # postgresql
@@ -1827,7 +1829,7 @@ class EmbeddingRepository(BaseRepository):
                 return cursor.fetchone() is not None
 
             if txn is not None:
-                return _tables_exist_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_tables_exist_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_tables_exist_sqlite)
 
         # postgresql: to_regclass resolves via the connection's search_path and returns

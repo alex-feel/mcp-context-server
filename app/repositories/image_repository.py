@@ -149,7 +149,7 @@ class ImageRepository(BaseRepository):
                 logger.debug(f'Stored {stored_count} images for context {context_id} (SQLite)')
 
             if txn:
-                _store_images_sqlite(cast(sqlite3.Connection, txn.connection))
+                await self._run_sqlite_txn(_store_images_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
                 await self.backend.execute_write(_store_images_sqlite)
         else:  # postgresql
@@ -423,7 +423,7 @@ class ImageRepository(BaseRepository):
                 return int(result['count']) if result else 0
 
             if txn is not None:
-                return _count_images_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_count_images_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_count_images_sqlite)
 
         # postgresql
@@ -495,7 +495,7 @@ class ImageRepository(BaseRepository):
                     )
 
             if txn:
-                _replace_images_sqlite(cast(sqlite3.Connection, txn.connection))
+                await self._run_sqlite_txn(_replace_images_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
                 await self.backend.execute_write(_replace_images_sqlite)
         else:  # postgresql

@@ -504,6 +504,10 @@ async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
         # decoding produces the original codebook geometry.
         provider = _provider_for(existing)
 
+        row_count = await _count_table(
+            backend, 'vec_context_embeddings_compressed',
+        )
+
         # Guard against a cross-host codebook divergence BEFORE decoding any
         # payload or dropping the compressed source. The same (dim, seed) can
         # materialize a DIFFERENT numpy.linalg.qr rotation on a host with a
@@ -512,8 +516,14 @@ async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
         # then DROPs the compressed table (the only correctly-decodable copy) in
         # the same transaction. The server startup validator catches exactly this
         # divergence with exit 78; the standalone CLI must not bypass it. A row
-        # that predates fingerprinting (None) can only be warned about.
-        if existing.codebook_fingerprint is not None:
+        # that predates fingerprinting (None) can only be warned about. The gate
+        # applies only when rows exist: with ZERO compressed rows nothing is
+        # decoded and no corruption is possible, and the zero-data reverse path
+        # exists precisely to unwedge deployments -- including a host whose
+        # numerical libraries changed -- so blocking it on a fingerprint
+        # mismatch would leave the operator with no working escape (the server
+        # refuses to start on the same divergence).
+        if row_count > 0 and existing.codebook_fingerprint is not None:
             realized_fingerprint = await asyncio.to_thread(provider.codebook_fingerprint)
             if realized_fingerprint != existing.codebook_fingerprint:
                 print(
@@ -529,7 +539,7 @@ async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
                     file=sys.stderr,
                 )
                 return 1
-        else:
+        elif row_count > 0 and existing.codebook_fingerprint is None:
             print(
                 '[WARN] compression_metadata row predates codebook fingerprinting; a '
                 'cross-host rotation-matrix divergence cannot be detected for this '
@@ -538,10 +548,6 @@ async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
                 'look wrong.',
                 file=sys.stderr,
             )
-
-        row_count = await _count_table(
-            backend, 'vec_context_embeddings_compressed',
-        )
 
         probe_rows = await _read_compressed_probe(backend, PROBE_BATCH_SIZE)
         if not probe_rows:
@@ -1196,10 +1202,38 @@ async def _execute_decompress_empty(backend: StorageBackend) -> None:
     reverse migration for that state; the next startup provisions fp32
     storage per ``ENABLE_EMBEDDING_GENERATION`` as usual. The caller has
     already verified both the provenance row and the compressed table exist.
+
+    The planning-time row count ran OUTSIDE this transaction, so emptiness is
+    re-checked INSIDE it before the drop: a compression-on server running
+    concurrently could commit compressed rows in the gap, and dropping them
+    here would destroy embeddings that were never decoded. On PostgreSQL the
+    table is locked ACCESS EXCLUSIVE first (waiting out in-flight writers) so
+    the recount is authoritative; on SQLite the recount pins the transaction
+    snapshot and the write escalation on the drop fails busy if the database
+    moved on since.
+
+    Raises:
+        ValueError: When the recount inside the transaction finds compressed
+            rows -- a concurrent writer stored embeddings after the zero-data
+            path was planned. The transaction rolls back and nothing is
+            dropped.
     """
     if backend.backend_type == 'sqlite':
         async with backend.begin_transaction() as txn:
             conn = cast(sqlite3.Connection, txn.connection)
+            live_row = conn.execute(
+                'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+            ).fetchone()
+            live_count = int(live_row[0])
+            if live_count != 0:
+                raise ValueError(
+                    f'vec_context_embeddings_compressed holds {live_count} row(s) at '
+                    'drop time but was empty when the zero-data reverse path was '
+                    'planned -- a concurrent writer stored compressed embeddings '
+                    'while --decompress was running. Aborting so no compressed '
+                    'payload is dropped; stop the server writing to this database '
+                    'and re-run --decompress.',
+                )
             conn.execute('DROP TABLE IF EXISTS vec_context_embeddings_compressed')
             conn.execute('DELETE FROM compression_metadata WHERE id = 1')
     else:
@@ -1207,6 +1241,27 @@ async def _execute_decompress_empty(backend: StorageBackend) -> None:
         async with backend.begin_transaction() as txn:
             pg_conn = cast('asyncpg.Connection', txn.connection)
             await _raise_pg_migration_budget(pg_conn, migration_timeout_s)
+            await execute_migration_ddl(
+                pg_conn,
+                'LOCK TABLE vec_context_embeddings_compressed '
+                'IN ACCESS EXCLUSIVE MODE',
+                migration_timeout_s,
+            )
+            live_count = int(
+                await pg_conn.fetchval(
+                    'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+                )
+                or 0,
+            )
+            if live_count != 0:
+                raise ValueError(
+                    f'vec_context_embeddings_compressed holds {live_count} row(s) at '
+                    'drop time but was empty when the zero-data reverse path was '
+                    'planned -- a concurrent writer stored compressed embeddings '
+                    'while --decompress was running. Aborting so no compressed '
+                    'payload is dropped; stop the server writing to this database '
+                    'and re-run --decompress.',
+                )
             await execute_migration_ddl(
                 pg_conn,
                 'DROP TABLE IF EXISTS vec_context_embeddings_compressed',
@@ -1242,6 +1297,13 @@ async def _execute_decompress_sqlite(
     skipped every row and silently dropped all embeddings on a default
     deployment. Provenance DELETE + compressed source DROP run last inside
     the same transaction.
+
+    Raises:
+        ValueError: When the recount inside the transaction disagrees with
+            the number of rows streamed -- a concurrent writer committed
+            compressed rows after the streamed reads, and the drop below
+            would destroy payloads that were never decoded. Mirrors the
+            compress path's integrity guard; the transaction rolls back.
     """
     batch_size = _MIGRATION_BATCH_SIZE
 
@@ -1315,6 +1377,26 @@ async def _execute_decompress_sqlite(
             rows_processed += len(batch)
             offset += len(batch)
 
+        # Integrity guard mirroring the compress path: a compressed row
+        # committed by a concurrent writer after the streamed reads would be
+        # destroyed by the DROP below without ever having been decoded.
+        # Recount inside the transaction and abort rather than drop undecoded
+        # payloads.
+        live_count = int(
+            conn.execute(
+                'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+            ).fetchone()[0],
+        )
+        if live_count != rows_processed:
+            raise ValueError(
+                f'decompress streamed {rows_processed} compressed row(s) but '
+                f'vec_context_embeddings_compressed holds {live_count} at drop '
+                'time -- a concurrent writer modified the table while '
+                '--decompress was running. Aborting so no undecoded payload is '
+                'dropped; stop the server writing to this database and re-run '
+                '--decompress.',
+            )
+
         # Provenance DELETE + compressed source DROP last inside the
         # same transaction.
         conn.execute('DROP TABLE IF EXISTS vec_context_embeddings_compressed')
@@ -1342,6 +1424,14 @@ async def _execute_decompress_postgresql(
     transaction. Recreates ``vec_context_embeddings`` + HNSW index
     inside the same transaction that streams decompressed rows in
     batches.
+
+    Raises:
+        ValueError: When the recount under the ACCESS EXCLUSIVE lock
+            disagrees with the number of rows streamed -- a concurrent
+            writer committed compressed rows after the streamed reads, and
+            the drop below would destroy payloads that were never decoded.
+            Mirrors the compress path's integrity guard; the transaction
+            rolls back.
     """
     batch_size = _MIGRATION_BATCH_SIZE
     migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
@@ -1424,6 +1514,34 @@ async def _execute_decompress_postgresql(
                 )
             rows_processed += len(batch)
             offset += len(batch)
+
+        # Integrity guard mirroring the compress path: under READ COMMITTED a
+        # concurrent writer can commit compressed rows after the last streamed
+        # batch, and the DROP below would destroy them without ever decoding.
+        # Lock the source table ACCESS EXCLUSIVE (waiting out in-flight
+        # writers), recount authoritatively under the lock, and abort on any
+        # mismatch rather than drop undecoded payloads.
+        await execute_migration_ddl(
+            conn,
+            'LOCK TABLE vec_context_embeddings_compressed '
+            'IN ACCESS EXCLUSIVE MODE',
+            migration_timeout_s,
+        )
+        live_count = int(
+            await conn.fetchval(
+                'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+            )
+            or 0,
+        )
+        if live_count != rows_processed:
+            raise ValueError(
+                f'decompress streamed {rows_processed} compressed row(s) but '
+                f'vec_context_embeddings_compressed holds {live_count} at drop '
+                'time -- a concurrent writer modified the table while '
+                '--decompress was running. Aborting so no undecoded payload is '
+                'dropped; stop the server writing to this database and re-run '
+                '--decompress.',
+            )
 
         # HNSW index CREATE + compressed source DROP + provenance DELETE
         # last inside the same transaction.

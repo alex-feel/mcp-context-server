@@ -150,6 +150,24 @@ class RetryConfig:
     backoff_factor: float = 2.0
 
 
+def _statement_timeout_ms(command_timeout_s: float) -> int:
+    """Derive the server-side statement_timeout from the client command timeout.
+
+    Uses 90 percent of the client-side command timeout so the server-side
+    backstop fires just before asyncpg's own cancellation, and floors the
+    result at 1 ms: PostgreSQL treats ``SET statement_timeout = 0`` as
+    UNLIMITED, so truncating a sub-millisecond command timeout to 0 would
+    silently disable the very backstop the setting exists to provide.
+
+    Args:
+        command_timeout_s: ``POSTGRESQL_COMMAND_TIMEOUT_S`` in seconds.
+
+    Returns:
+        Millisecond value for ``SET statement_timeout``, at least 1.
+    """
+    return max(1, int(command_timeout_s * 1000 * 0.9))
+
+
 @dataclass
 class PostgreSQLTransactionContext:
     """Transaction context for PostgreSQL backend.
@@ -623,7 +641,7 @@ class PostgreSQLBackend:
                 try:
                     # Set statement timeout to prevent infinite hangs
                     # Use slightly less than command_timeout for graceful handling
-                    timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
+                    timeout_ms = _statement_timeout_ms(settings.storage.postgresql_command_timeout_s)
                     await conn.execute(f'SET statement_timeout = {timeout_ms}')
                     logger.debug(f'Connection setup: statement_timeout={timeout_ms}ms')
                 except Exception as e:

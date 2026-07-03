@@ -394,6 +394,11 @@ class TestPostgresqlPoolLimits:
             ('CIRCUIT_BREAKER_FAILURE_THRESHOLD', '0'),
             ('CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS', '0'),
             ('RETRY_MAX_RETRIES', '-1'),
+            # 0 is the one value that disables EVERY database write: both
+            # backends run `for attempt in range(max_retries)`, so the loop
+            # body never executes and the post-loop tail raises without a
+            # single database attempt.
+            ('RETRY_MAX_RETRIES', '0'),
             ('RETRY_BASE_DELAY_S', '-0.5'),
             ('RETRY_MAX_DELAY_S', '-1'),
             ('RETRY_BACKOFF_FACTOR', '0.5'),
@@ -419,14 +424,14 @@ class TestPostgresqlPoolLimits:
     @pytest.mark.parametrize(
         ('env_name', 'value'),
         [
-            ('RETRY_MAX_RETRIES', '0'),
+            ('RETRY_MAX_RETRIES', '1'),
             ('RETRY_BASE_DELAY_S', '0'),
             ('RETRY_BACKOFF_FACTOR', '1'),
             ('SQLITE_BUSY_TIMEOUT_MS', '0'),
         ],
     )
     def test_boundary_timing_values_accepted(self, env_name: str, value: str) -> None:
-        """Documented boundary values (no retries, no delay, flat backoff) stay valid."""
+        """Documented boundary values (single attempt, no delay, flat backoff) stay valid."""
         from app.settings import StorageSettings
 
         with env_var(env_name, value):

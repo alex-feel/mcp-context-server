@@ -214,15 +214,28 @@ class TestPoolHardeningCallbacks:
 
     def test_statement_timeout_calculation(self) -> None:
         """Verify statement_timeout is 90% of command_timeout."""
+        from app.backends.postgresql_backend import _statement_timeout_ms
         from app.settings import get_settings
 
         settings = get_settings()
 
-        # The callback should set statement_timeout to 90% of command_timeout
-        expected_timeout_ms = int(settings.storage.postgresql_command_timeout_s * 1000 * 0.9)
-
         # Default command_timeout is 60 seconds, so statement_timeout should be 54000ms
-        assert expected_timeout_ms == 54000  # 60 * 1000 * 0.9 = 54000
+        assert _statement_timeout_ms(settings.storage.postgresql_command_timeout_s) == 54000
+
+    def test_statement_timeout_floors_at_one_millisecond(self) -> None:
+        """A sub-millisecond command timeout must not disable the server backstop.
+
+        PostgreSQL treats ``SET statement_timeout = 0`` as UNLIMITED, so a
+        command timeout whose 90-percent derivation truncates to 0 would
+        silently disable the very protection the setting exists to provide --
+        the derived value is floored at 1 ms instead.
+        """
+        from app.backends.postgresql_backend import _statement_timeout_ms
+
+        assert _statement_timeout_ms(0.0005) == 1
+        assert _statement_timeout_ms(0.001) == 1
+        # Just above the floor the 90-percent derivation resumes.
+        assert _statement_timeout_ms(0.01) == 9
 
     def test_pool_hardening_defaults_are_non_zero(self) -> None:
         """Verify default pool hardening settings are non-zero (enabled)."""

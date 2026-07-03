@@ -463,7 +463,9 @@ def test_decompress_aborts_on_codebook_fingerprint_mismatch(
     reconstructed vector and then DROP the only correctly-decodable copy. The CLI
     now re-derives the fingerprint and aborts on mismatch, mirroring the startup
     validator. Here the stored fingerprint is a deliberately wrong value, so the
-    realized digest cannot match and decompress must refuse without dropping.
+    realized digest cannot match and decompress must refuse without dropping. A
+    compressed row is present because the gate applies only when rows exist --
+    the zero-data reverse path decodes nothing and bypasses it.
     """
     monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
     get_settings.cache_clear()
@@ -503,6 +505,12 @@ def test_decompress_aborts_on_codebook_fingerprint_mismatch(
             "VALUES (1, 'turboquant', 4, 'ip', 0, 512, ?)",
             (wrong_fingerprint,),
         )
+        conn.execute(
+            'INSERT INTO vec_context_embeddings_compressed '
+            '(context_id, chunk_index, start_index, end_index, payload) '
+            'VALUES (?, 0, 0, 10, ?)',
+            ('0' * 32, b'\x00'),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -522,3 +530,172 @@ def test_decompress_aborts_on_codebook_fingerprint_mismatch(
     finally:
         conn.close()
     assert 'vec_context_embeddings_compressed' in tables
+
+
+@requires_numpy
+def test_zero_data_decompress_bypasses_fingerprint_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Zero compressed rows unwedge even on a codebook fingerprint mismatch.
+
+    The fingerprint gate exists solely to prevent decoding corruption, and the
+    zero-data reverse path decodes nothing. Blocking it on a cross-host QR
+    divergence left the operator with no working escape: the server refuses to
+    start on the identical divergence, and the mismatch error's own remedy
+    (run --decompress on a reproducing host) is impossible advice when the
+    goal is clearing an empty table. With zero rows the gate is bypassed and
+    the reverse migration completes.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    from app.schemas import load_schema
+
+    wrong_fingerprint = 'deadbeef' * 8  # 64 hex chars, never the realized QR digest
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(load_schema('sqlite'))
+        conn.executescript(
+            '''
+            CREATE TABLE IF NOT EXISTS vec_context_embeddings_compressed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                start_index INTEGER NOT NULL DEFAULT 0,
+                end_index INTEGER NOT NULL DEFAULT 0,
+                payload BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS compression_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                bits INTEGER NOT NULL,
+                variant TEXT NOT NULL,
+                seed INTEGER NOT NULL,
+                dim INTEGER NOT NULL,
+                codebook_fingerprint TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ''',
+        )
+        conn.execute(
+            'INSERT INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, 512, ?)",
+            (wrong_fingerprint,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc = run_decompress(f'sqlite:///{db}', dry_run=False)
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert 'fingerprint mismatch' not in err
+    conn = sqlite3.connect(str(db))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        count = conn.execute('SELECT COUNT(*) FROM compression_metadata').fetchone()[0]
+    finally:
+        conn.close()
+    assert 'vec_context_embeddings_compressed' not in tables
+    assert count == 0
+
+
+@requires_numpy
+@pytest.mark.asyncio
+async def test_zero_data_decompress_aborts_when_rows_appear_before_drop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The zero-data drop re-checks emptiness inside its own transaction.
+
+    The planning-time row count runs outside the drop transaction, so a
+    compression-on server running concurrently can commit compressed rows in
+    the gap; dropping the table then would destroy embeddings that were never
+    decoded. Calling the drop helper against a table that already holds a row
+    models exactly that interleaving: the in-transaction recount must abort
+    and leave both the table and the provenance row intact.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    db = tmp_path / 'test.db'
+    from app.schemas import load_schema
+
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(load_schema('sqlite'))
+        conn.executescript(
+            '''
+            CREATE TABLE IF NOT EXISTS vec_context_embeddings_compressed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                start_index INTEGER NOT NULL DEFAULT 0,
+                end_index INTEGER NOT NULL DEFAULT 0,
+                payload BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS compression_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                bits INTEGER NOT NULL,
+                variant TEXT NOT NULL,
+                seed INTEGER NOT NULL,
+                dim INTEGER NOT NULL,
+                codebook_fingerprint TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ''',
+        )
+        conn.execute(
+            'INSERT INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, 512, NULL)",
+        )
+        conn.execute(
+            'INSERT INTO vec_context_embeddings_compressed '
+            '(context_id, chunk_index, start_index, end_index, payload) '
+            'VALUES (?, 0, 0, 10, ?)',
+            ('0' * 32, b'\x00'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from app.backends import create_backend
+    from app.cli.migrate_compression import _execute_decompress_empty
+
+    backend = create_backend(backend_type='sqlite', db_path=str(db))
+    await backend.initialize()
+    try:
+        with pytest.raises(ValueError, match='concurrent writer'):
+            await _execute_decompress_empty(backend)
+    finally:
+        await backend.shutdown()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        payload_count = conn.execute(
+            'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+        ).fetchone()[0]
+        provenance_count = conn.execute(
+            'SELECT COUNT(*) FROM compression_metadata',
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert 'vec_context_embeddings_compressed' in tables
+    assert payload_count == 1
+    assert provenance_count == 1

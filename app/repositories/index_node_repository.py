@@ -12,6 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import NamedTuple
 from typing import cast
 
 from app.backends.base import StorageBackend
@@ -37,6 +38,19 @@ class IndexNodeRow:
     node_summary: str
     char_start: int
     char_end: int
+
+
+class StoredNodeSummaries(NamedTuple):
+    """Stored node summaries for one entry, indexed by both attachment keys.
+
+    ``by_node_id`` is the primary index the navigate_context reader attaches
+    with; ``by_span`` keys the same summaries by ``(char_start, char_end)`` so
+    rows written by an older slug algorithm still re-attach to the sections
+    the current parse computes for the unchanged text.
+    """
+
+    by_node_id: dict[str, str]
+    by_span: dict[tuple[int, int], str]
 
 
 class IndexNodeRepository(BaseRepository):
@@ -99,7 +113,7 @@ class IndexNodeRepository(BaseRepository):
                     )
 
             if txn:
-                _replace_sqlite(cast(sqlite3.Connection, txn.connection))
+                await self._run_sqlite_txn(_replace_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
                 await self.backend.execute_write(_replace_sqlite)
             return
@@ -128,43 +142,66 @@ class IndexNodeRepository(BaseRepository):
         else:
             await self.backend.execute_write(cast(Any, _replace_postgresql))
 
-    async def get_nodes_for_context(self, context_id: str) -> dict[str, str]:
-        """Return stored node summaries for an entry as ``{node_id: node_summary}``.
+    async def get_nodes_for_context(self, context_id: str) -> StoredNodeSummaries:
+        """Return stored node summaries indexed by node id AND by char span.
 
-        Returns an empty mapping when the table is absent (node summaries
+        The primary attachment key is ``node_id``. The span index exists so a
+        row written by an OLDER slug algorithm -- whose node_id the current
+        on-demand parse no longer computes for the SAME section -- still
+        re-attaches: spans derive from the text rather than the slug, and
+        node rows are replaced on every text change, so an exact-span match
+        against the same revision is deterministic.
+
+        Returns empty indexes when the table is absent (node summaries
         disabled) or the entry has no stored node summaries.
 
         Args:
             context_id: Canonical id of the owning context entry.
 
         Returns:
-            Mapping of node id to its stored summary.
+            :class:`StoredNodeSummaries` with the node-id and span indexes.
         """
         if self.backend.backend_type == 'sqlite':
 
-            def _get_sqlite(conn: sqlite3.Connection) -> dict[str, str]:
+            def _get_sqlite(conn: sqlite3.Connection) -> StoredNodeSummaries:
                 try:
                     cursor = conn.execute(
-                        f'SELECT node_id, node_summary FROM context_index_nodes '
+                        f'SELECT node_id, node_summary, char_start, char_end '
+                        f'FROM context_index_nodes '
                         f'WHERE context_id = {self._placeholder(1)}',
                         (context_id,),
                     )
                 except sqlite3.OperationalError:
-                    return {}
-                return {row['node_id']: row['node_summary'] for row in cursor.fetchall() if row['node_summary']}
+                    return StoredNodeSummaries({}, {})
+                rows = [row for row in cursor.fetchall() if row['node_summary']]
+                return StoredNodeSummaries(
+                    by_node_id={row['node_id']: row['node_summary'] for row in rows},
+                    by_span={
+                        (int(row['char_start']), int(row['char_end'])): row['node_summary']
+                        for row in rows
+                    },
+                )
 
             return await self.backend.execute_read(_get_sqlite)
 
-        async def _get_postgresql(conn: 'asyncpg.Connection') -> dict[str, str]:
+        async def _get_postgresql(conn: 'asyncpg.Connection') -> StoredNodeSummaries:
             try:
                 rows = await conn.fetch(
-                    f'SELECT node_id, node_summary FROM context_index_nodes '
+                    f'SELECT node_id, node_summary, char_start, char_end '
+                    f'FROM context_index_nodes '
                     f'WHERE context_id = {self._placeholder(1)}',
                     context_id,
                 )
             except asyncpg.UndefinedTableError:
-                return {}
-            return {row['node_id']: row['node_summary'] for row in rows if row['node_summary']}
+                return StoredNodeSummaries({}, {})
+            kept = [row for row in rows if row['node_summary']]
+            return StoredNodeSummaries(
+                by_node_id={row['node_id']: row['node_summary'] for row in kept},
+                by_span={
+                    (int(row['char_start']), int(row['char_end'])): row['node_summary']
+                    for row in kept
+                },
+            )
 
         return await self.backend.execute_read(cast(Any, _get_postgresql))
 
