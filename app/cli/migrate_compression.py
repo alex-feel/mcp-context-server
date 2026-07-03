@@ -767,9 +767,9 @@ async def _execute_compress(
 ) -> None:
     """Encode every fp32 row and write the compressed payload table.
 
-    The whole operation runs inside a single transaction (PG: native;
-    SQLite: implicit via ``execute_write`` which commits on success and
-    rolls back on exception).
+    The whole operation runs inside a single
+    :meth:`StorageBackend.begin_transaction` transaction on both backends,
+    committing on success and rolling back on exception.
     """
     if backend.backend_type == 'sqlite':
         await _execute_compress_sqlite(
