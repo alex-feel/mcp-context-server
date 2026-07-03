@@ -17,6 +17,7 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 import app.startup
+from app.repositories.context_repository import DuplicateCandidate
 
 if TYPE_CHECKING:
     from app.settings import AppSettings
@@ -667,9 +668,11 @@ class TestBatchMessageAccuracy:
         # Likely-duplicate with an existing summary to REUSE, but absent embeddings
         # (so an embedding task IS queued and the gather runs).
         repos.context.check_latest_is_duplicate = AsyncMock(
-            return_value='0190abcdef1234567890abcd00000009',
+            return_value=DuplicateCandidate(
+                context_id='0190abcdef1234567890abcd00000009',
+                summary='Existing preserved summary',
+            ),
         )
-        repos.context.get_summary = AsyncMock(return_value='Existing preserved summary')
         repos.embeddings.exists = AsyncMock(return_value=False)
 
         mock_embedding = MagicMock()

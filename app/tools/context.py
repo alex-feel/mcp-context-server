@@ -155,15 +155,23 @@ async def store_context(
         summary_text: str | None = None
         summary_generated = False
 
-        # Performance optimization: pre-check for likely duplicates (read-only)
+        # Performance optimization: pre-check for likely duplicates (read-only).
+        # The candidate id and its stored summary come from ONE statement-level
+        # snapshot (see DuplicateCandidate): a separate later summary read could
+        # observe a row version a concurrent update committed in between,
+        # pairing a reused summary with text it does not describe.
         likely_duplicate_id: str | None = None
+        duplicate_summary: str | None = None
 
         if get_embedding_provider() is not None or get_summary_provider() is not None:
-            likely_duplicate_id = await repos.context.check_latest_is_duplicate(
+            duplicate_candidate = await repos.context.check_latest_is_duplicate(
                 thread_id=thread_id,
                 source=source,
                 text_content=text,
             )
+            if duplicate_candidate is not None:
+                likely_duplicate_id = duplicate_candidate.context_id
+                duplicate_summary = duplicate_candidate.summary
 
         # Decide which generation legs to run. The dedup pre-check lets a likely
         # retransmit skip work it would only discard (embeddings already stored,
@@ -190,9 +198,8 @@ async def store_context(
                     len(text), min_content_length,
                 )
             elif likely_duplicate_id is not None:
-                existing_summary = await repos.context.get_summary(likely_duplicate_id)
-                if existing_summary is not None:
-                    summary_text = existing_summary  # reuse; no model call
+                if duplicate_summary is not None:
+                    summary_text = duplicate_summary  # reuse; no model call
                     summary_reused = True
                     logger.debug(
                         'Pre-check: reusing existing summary for likely duplicate '

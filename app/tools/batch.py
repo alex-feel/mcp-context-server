@@ -268,14 +268,23 @@ async def store_context_batch(
             tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
             task_names: list[str] = []
 
-            # Performance optimization: pre-check for likely duplicates (read-only)
+            # Performance optimization: pre-check for likely duplicates (read-only).
+            # The candidate id and its stored summary come from ONE
+            # statement-level snapshot (see DuplicateCandidate): a separate
+            # later summary read could observe a row version a concurrent
+            # update committed in between, pairing a reused summary with text
+            # it does not describe.
             likely_duplicate_id: str | None = None
+            duplicate_summary: str | None = None
             if embedding_provider is not None or summary_provider is not None:
-                likely_duplicate_id = await repos.context.check_latest_is_duplicate(
+                duplicate_candidate = await repos.context.check_latest_is_duplicate(
                     thread_id=entry['thread_id'],
                     source=entry['source'],
                     text_content=text_content,
                 )
+                if duplicate_candidate is not None:
+                    likely_duplicate_id = duplicate_candidate.context_id
+                    duplicate_summary = duplicate_candidate.summary
             entry_likely_duplicate[ve_idx] = likely_duplicate_id
 
             # Embedding task (with pre-check optimization)
@@ -305,9 +314,8 @@ async def store_context_batch(
                     )
                     entry_summaries[ve_idx] = None
                 elif likely_duplicate_id is not None:
-                    existing_summary = await repos.context.get_summary(likely_duplicate_id)
-                    if existing_summary is not None:
-                        entry_summaries[ve_idx] = existing_summary
+                    if duplicate_summary is not None:
+                        entry_summaries[ve_idx] = duplicate_summary
                         summaries_preserved_count += 1
                         preserved_summary_indices.add(ve_idx)
                         logger.debug(

@@ -888,7 +888,8 @@ class TestContextRepositoryCheckDuplicate:
             source='user',
             text_content='Duplicate content check',
         )
-        assert result == ctx_id
+        assert result is not None
+        assert result.context_id == ctx_id
 
     @pytest.mark.asyncio
     async def test_check_latest_is_duplicate_no_match(

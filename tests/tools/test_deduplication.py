@@ -584,7 +584,8 @@ class TestDuplicatePreCheck:
         result = await repos.context.check_latest_is_duplicate(
             thread_id='test-thread', source='user', text_content='Duplicate text',
         )
-        assert result == context_id
+        assert result is not None
+        assert result.context_id == context_id
 
     async def test_check_latest_is_duplicate_not_found(self, repos: RepositoryContainer) -> None:
         """Pre-check returns None for different content."""
@@ -629,6 +630,42 @@ class TestDuplicatePreCheck:
             thread_id='test-thread', source='user', text_content='Old matching text',
         )
         assert result is None  # Latest is "New different text", not matching
+
+    async def test_precheck_returns_summary_from_same_snapshot(
+        self, repos: RepositoryContainer,
+    ) -> None:
+        """The candidate's stored summary rides the SAME statement as the hash match.
+
+        Reading the summary in a separate later statement could observe a row
+        version a concurrent update committed in between, pairing a reused
+        summary with text it does not describe -- and the dedup UPDATE's
+        content-hash predicate cannot tell a revision-consistent row from a
+        restored one, so the mismatched summary would persist via COALESCE.
+        """
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='snap-t1', source='user', content_type='text',
+            text_content='Snapshot text', metadata=None, summary='Snapshot summary',
+        )
+        result = await repos.context.check_latest_is_duplicate(
+            thread_id='snap-t1', source='user', text_content='Snapshot text',
+        )
+        assert result is not None
+        assert result.context_id == ctx_id
+        assert result.summary == 'Snapshot summary'
+
+    async def test_precheck_summary_none_when_entry_has_no_summary(
+        self, repos: RepositoryContainer,
+    ) -> None:
+        """A candidate without a stored summary yields summary=None in the snapshot."""
+        await repos.context.store_with_deduplication(
+            thread_id='snap-t2', source='user', content_type='text',
+            text_content='No summary here', metadata=None,
+        )
+        result = await repos.context.check_latest_is_duplicate(
+            thread_id='snap-t2', source='user', text_content='No summary here',
+        )
+        assert result is not None
+        assert result.summary is None
 
 
 @pytest.mark.asyncio
@@ -797,7 +834,8 @@ class TestBatchPreCheckInterleaving:
         result = await repos.context.check_latest_is_duplicate(
             thread_id='batch-t1', source='user', text_content='Batch duplicate',
         )
-        assert result == ctx_id, (
+        assert result is not None, 'Pre-check should find the genuine duplicate'
+        assert result.context_id == ctx_id, (
             'Pre-check should return existing ID for genuine duplicate'
         )
 
