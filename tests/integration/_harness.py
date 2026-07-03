@@ -805,10 +805,14 @@ class MCPServerIntegrationTest:
         PostgreSQL ``::NUMERIC`` context is encoded as its FULL Decimal expansion (0.3 ->
         0.2999999999999999888...), so ``'0.3'::NUMERIC = $1`` was False (and ``> 0.3`` on a
         stored 0.3 wrongly True) while SQLite -- comparing the bit-identical IEEE double on
-        both sides -- matched. The fix folds a float param via ``(<ph>)::float8::numeric`` on
-        PostgreSQL so both backends compare the same IEEE double against the exact stored
-        NUMERIC. Uses non-dyadic fractions (0.1, 0.3) that are NOT exactly representable, which
-        the integer/3.5 dataset misses.
+        both sides -- matched. The fix (``_pg_numeric_body`` in ``app/query_builder.py``)
+        branches on the STORED value's integrality: an integral stored value compares exact
+        ``NUMERIC`` against the param, a fractional stored value compares double-vs-double via
+        ``(stored)::float8 <op> (<ph>)::float8``. It deliberately does NOT fold the param via
+        ``(<ph>)::float8::numeric`` -- that cast rounds to ~15 significant digits and collapses
+        large integers, and the unit tests assert the pattern is absent from the generated SQL.
+        Uses non-dyadic fractions (0.1, 0.3) that are NOT exactly representable, which the
+        integer/3.5 dataset misses.
 
         Returns:
             bool: True if all tests pass.
