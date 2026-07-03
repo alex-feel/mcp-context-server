@@ -1223,10 +1223,12 @@ class CompressionSettings(CommonSettings):
         ge=1,
         le=32,
         alias='COMPRESSION_MAX_CONCURRENT',
-        description='Max concurrent CPU-bound compression operations. Separate '
-                    'from I/O-bound EMBEDDING_MAX_CONCURRENT and '
-                    'SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4) keeps GIL '
-                    'contention bounded.',
+        description='Max concurrent compression encode workers dispatched to '
+                    'threads. The CPU-bound codec section is serialized by a '
+                    'process-wide BLAS-limits lock, so this bounds worker '
+                    'fan-out (thread count and memory), not CPU parallelism. '
+                    'Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and '
+                    'SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).',
     )
 
 

@@ -1105,7 +1105,7 @@
           "default": "0"
         },
         {
-          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "description": "Max concurrent compression encode workers dispatched to threads (the CPU-bound codec section is serialized by a process-wide BLAS-limits lock, so this bounds worker fan-out, not CPU parallelism). Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -2210,7 +2210,7 @@
           "default": "0"
         },
         {
-          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "description": "Max concurrent compression encode workers dispatched to threads (the CPU-bound codec section is serialized by a process-wide BLAS-limits lock, so this bounds worker fan-out, not CPU parallelism). Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
