@@ -9,6 +9,8 @@ import asyncio
 import contextlib
 import gc
 import sqlite3
+import threading
+import time
 import warnings
 from collections.abc import Callable
 from functools import partial
@@ -29,8 +31,6 @@ def cleanup_before_resource_tests():
     connections created by fixtures in other test modules are fully
     garbage collected and closed.
     """
-    import time
-
     # Aggressive synchronous cleanup to collect any lingering connections
     gc.collect()
     time.sleep(0.5)
@@ -381,4 +381,89 @@ class TestResourceWarningDetection:
         del manager
         del write_futures
 
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_resolves_in_flight_write_with_real_result(self, temp_db: Path) -> None:
+        """A write executing in the executor during shutdown resolves with its real result.
+
+        task.cancel() cannot interrupt a write already running in the executor
+        thread (the write may still commit), so shutdown first lets the
+        processor finish the in-flight request; the caller awaiting
+        execute_write must receive the commit outcome, not hang past shutdown.
+        """
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        await manager.execute_write(
+            lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+        )
+
+        started = threading.Event()
+
+        def slow_insert(conn: sqlite3.Connection) -> int:
+            started.set()
+            time.sleep(0.3)
+            conn.execute('INSERT INTO test VALUES (42)')
+            return 42
+
+        caller = asyncio.create_task(manager.execute_write(slow_insert))
+        # Wait until the write is genuinely executing in the executor thread.
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), 'write never reached the executor'
+
+        await manager.shutdown()
+
+        result = await asyncio.wait_for(caller, timeout=2.0)
+        assert result == 42
+
+        del manager
+        gc.collect()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_processor_resolves_in_flight_future(self, temp_db: Path) -> None:
+        """Direct processor cancellation mid-write terminally resolves the caller's future.
+
+        When the processor task is cancelled while a write runs in the
+        executor (bypassing the graceful shutdown path), the dequeued
+        request's future must still resolve so the execute_write caller
+        cannot hang forever; the queue drain never sees a dequeued request.
+        """
+        manager = SQLiteBackend(temp_db)
+        await manager.initialize()
+
+        await manager.execute_write(
+            lambda conn: conn.execute('CREATE TABLE test (id INTEGER)'),
+        )
+
+        started = threading.Event()
+
+        def slow_insert(conn: sqlite3.Connection) -> None:
+            started.set()
+            time.sleep(0.3)
+            conn.execute('INSERT INTO test VALUES (1)')
+
+        caller = asyncio.create_task(manager.execute_write(slow_insert))
+        for _ in range(200):
+            if started.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert started.is_set(), 'write never reached the executor'
+
+        processor = manager._write_processor_task
+        assert processor is not None
+        processor.cancel()
+
+        done, _pending = await asyncio.wait({caller}, timeout=2.0)
+        assert caller in done, 'execute_write caller must not hang past processor cancellation'
+        assert caller.cancelled()
+
+        # Let the detached executor thread finish before closing connections.
+        await asyncio.sleep(0.4)
+        await manager.shutdown()
+
+        del manager
         gc.collect()
