@@ -105,11 +105,22 @@ def _check_compression_migration_applied_sqlite(conn: sqlite3.Connection) -> boo
 async def _check_compression_migration_applied_postgresql(conn: asyncpg.Connection) -> bool:
     """Check whether the compression schema is already present on PostgreSQL.
 
+    Both tables are required: ``--decompress`` drops
+    ``vec_context_embeddings_compressed`` while leaving the
+    ``compression_metadata`` table behind (it only deletes the provenance
+    row), so a marker-table-only probe would treat a later re-enable as
+    already applied and skip re-creating the payload table -- wedging every
+    embedding store and search on a table that does not exist. SQLite has no
+    equivalent gap because its branch re-runs the idempotent script every
+    start.
+
     Args:
         conn: PostgreSQL connection.
 
     Returns:
-        True when ``compression_metadata`` exists in the configured schema.
+        True when ``compression_metadata`` AND
+        ``vec_context_embeddings_compressed`` both exist in the configured
+        schema.
     """
     schema = settings.storage.postgresql_schema
     result = await conn.fetchval(
@@ -118,6 +129,10 @@ async def _check_compression_migration_applied_postgresql(conn: asyncpg.Connecti
             SELECT 1 FROM information_schema.tables
             WHERE table_schema = $1
               AND table_name = 'compression_metadata'
+        ) AND EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = $1
+              AND table_name = 'vec_context_embeddings_compressed'
         )
         ''',
         schema,
@@ -219,17 +234,19 @@ async def _apply_compression_migration_with_backend(
             cast(Any, _check_compression_migration_applied_postgresql),
         )
 
-        if already_applied:
-            # The table exists, but it may predate the codebook_fingerprint column
-            # (CREATE TABLE IF NOT EXISTS never adds a column to an existing table).
-            # Add it idempotently so the read path -- which SELECTs the column -- works
-            # after an in-place upgrade, without re-running the destructive table swap.
-            async def _ensure_fingerprint_column(conn: asyncpg.Connection) -> None:
-                await conn.execute(
-                    'ALTER TABLE compression_metadata '
-                    'ADD COLUMN IF NOT EXISTS codebook_fingerprint TEXT',
-                )
+        async def _ensure_fingerprint_column(conn: asyncpg.Connection) -> None:
+            # A compression_metadata table may predate the codebook_fingerprint
+            # column (CREATE TABLE IF NOT EXISTS never adds a column to an
+            # existing table). Add it idempotently so the read path -- which
+            # SELECTs the column -- works after an in-place upgrade.
+            await conn.execute(
+                'ALTER TABLE compression_metadata '
+                'ADD COLUMN IF NOT EXISTS codebook_fingerprint TEXT',
+            )
 
+        if already_applied:
+            # Both tables exist; only the fingerprint column may be missing.
+            # Skip the destructive table swap.
             await manager.execute_write(cast(Any, _ensure_fingerprint_column))
             logger.info(
                 'Compression migration: already applied for PostgreSQL, '
@@ -273,6 +290,18 @@ async def _apply_compression_migration_with_backend(
                 stmt_clean = stmt.strip()
                 if stmt_clean and not stmt_clean.startswith('--'):
                     await execute_migration_ddl(conn, stmt_clean, migration_timeout_s)
+
+            # The script's CREATE TABLE IF NOT EXISTS keeps a surviving
+            # compression_metadata table as-is (the payload table can be
+            # re-created around it, e.g. after --decompress dropped only the
+            # payload table), so a table predating the codebook_fingerprint
+            # column still needs the idempotent ALTER on this path too.
+            await execute_migration_ddl(
+                conn,
+                'ALTER TABLE compression_metadata '
+                'ADD COLUMN IF NOT EXISTS codebook_fingerprint TEXT',
+                migration_timeout_s,
+            )
 
         await manager.execute_write(cast(Any, _apply_postgresql))
         logger.info(

@@ -220,3 +220,91 @@ async def test_compression_round_trip_postgresql_mse_variant(
                 'delete_context',
                 {'thread_id': thread_id},
             )
+
+
+@pytest.mark.asyncio
+async def test_compression_reenable_after_decompress_recreates_payload_table(
+    pg_test_url: str,
+) -> None:
+    """Re-enabling compression after --decompress re-creates the payload table.
+
+    ``--decompress`` drops ``vec_context_embeddings_compressed`` and deletes
+    the provenance row but leaves the ``compression_metadata`` table behind.
+    The migration idempotency probe must not treat that marker table alone as
+    "already applied": a later re-enable start has to re-create the payload
+    table, or every embedding store and compressed search fails with
+    UndefinedTableError and no CLI path recovers (--compress no-ops on the
+    validator-reseeded row, --decompress errors on the absent table).
+
+    Args:
+        pg_test_url: Connection string from the session-scoped docker
+            fixture.
+    """
+    # Isolated database: this test deletes the provenance row mid-sequence.
+    admin_conn = await asyncpg.connect(pg_test_url)
+    try:
+        await admin_conn.execute('DROP DATABASE IF EXISTS mcp_test_reenable')
+        await admin_conn.execute('CREATE DATABASE mcp_test_reenable')
+    finally:
+        await admin_conn.close()
+
+    reenable_url = pg_test_url.rsplit('/', 1)[0] + '/mcp_test_reenable'
+
+    db_admin = await asyncpg.connect(reenable_url)
+    try:
+        await db_admin.execute('CREATE EXTENSION IF NOT EXISTS vector')
+    finally:
+        await db_admin.close()
+
+    wrapper_script = Path(__file__).parent.parent.parent / 'run_server.py'
+    server_env = _build_server_env(reenable_url)
+
+    # First start: compression schema created, provenance row bootstrapped.
+    transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
+    client: Client[Any] = Client(transport)
+    async with client:
+        await client.ping()
+
+    # Simulate the state --decompress leaves behind: payload table dropped,
+    # provenance row deleted, marker table still present (the fp32 table it
+    # restores stays empty here -- the zero-embedding corpus of the wedge).
+    conn = await asyncpg.connect(reenable_url)
+    try:
+        assert await _table_exists(conn, 'compression_metadata')
+        await conn.execute('DROP TABLE IF EXISTS vec_context_embeddings_compressed')
+        await conn.execute('DELETE FROM compression_metadata WHERE id = 1')
+    finally:
+        await conn.close()
+
+    # Second start with compression still enabled: the migration must
+    # re-create the payload table instead of early-returning on the marker
+    # table, and the store path must work against it.
+    transport = PythonStdioTransport(script_path=str(wrapper_script), env=server_env)
+    client = Client(transport)
+    async with client:
+        await client.ping()
+
+        thread_id = f'pg_compression_reenable_{int(time.time())}'
+        store_result = await client.call_tool(
+            'store_context',
+            {
+                'thread_id': thread_id,
+                'source': 'agent',
+                'text': 'Re-enable after decompress round trip',
+            },
+        )
+        store_content: dict[str, Any] | None = None
+        if hasattr(store_result, 'structured_content'):
+            store_content = store_result.structured_content
+        assert store_content is not None
+        assert store_content.get('success') is True, store_content
+
+    conn = await asyncpg.connect(reenable_url)
+    try:
+        assert await _table_exists(conn, 'vec_context_embeddings_compressed'), (
+            'payload table must be re-created on a re-enable start'
+        )
+        row = await conn.fetchrow('SELECT provider, seed FROM compression_metadata WHERE id = 1')
+        assert row is not None, 'validator must re-seed the provenance row'
+    finally:
+        await conn.close()
