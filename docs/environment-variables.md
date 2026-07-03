@@ -273,17 +273,17 @@ These settings apply only when `STORAGE_BACKEND=sqlite`.
 | `POOL_IDLE_TIMEOUT_S`          | float   | `300.0` | Idle connection timeout in seconds (must be > 0)                                 |
 | `POOL_HEALTH_CHECK_INTERVAL_S` | float   | `30.0`  | Interval between connection health checks in seconds (must be > 0)               |
 
-## SQLite Retry Settings
+## Database Retry Settings
 
-These settings apply only when `STORAGE_BACKEND=sqlite`.
+These settings apply to both backends: the SQLite write queue and the PostgreSQL `execute_write` path build their retry configuration from the same variables.
 
-| Variable               | Type    | Default | Description                                                                  |
-|------------------------|---------|---------|------------------------------------------------------------------------------|
-| `RETRY_MAX_RETRIES`    | integer | `5`     | Maximum number of retry attempts for transient database errors (minimum `0`) |
-| `RETRY_BASE_DELAY_S`   | float   | `0.5`   | Base delay in seconds between retries (minimum `0`)                          |
-| `RETRY_MAX_DELAY_S`    | float   | `10.0`  | Maximum delay in seconds between retries (minimum `0`)                       |
-| `RETRY_JITTER`         | boolean | `true`  | Add random jitter to retry delays to prevent thundering herd                 |
-| `RETRY_BACKOFF_FACTOR` | float   | `2.0`   | Exponential backoff multiplier for retry delays (minimum `1`)                |
+| Variable               | Type    | Default | Description                                                                                         |
+|------------------------|---------|---------|-----------------------------------------------------------------------------------------------------|
+| `RETRY_MAX_RETRIES`    | integer | `5`     | Total attempt budget for transient database errors (minimum `1`; `1` means one attempt, no retries) |
+| `RETRY_BASE_DELAY_S`   | float   | `0.5`   | Base delay in seconds between retries (minimum `0`)                                                 |
+| `RETRY_MAX_DELAY_S`    | float   | `10.0`  | Maximum delay in seconds between retries (minimum `0`)                                              |
+| `RETRY_JITTER`         | boolean | `true`  | Add random jitter to retry delays to prevent thundering herd                                        |
+| `RETRY_BACKOFF_FACTOR` | float   | `2.0`   | Exponential backoff multiplier for retry delays (minimum `1`)                                       |
 
 ## SQLite PRAGMA Settings
 

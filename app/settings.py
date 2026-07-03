@@ -931,8 +931,14 @@ class StorageSettings(BaseSettings):
     pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S', gt=0)
     pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S', gt=0)
 
-    # Retry logic settings for StorageBackend
-    retry_max_retries: int = Field(default=5, alias='RETRY_MAX_RETRIES', ge=0)
+    # Retry logic settings for StorageBackend. retry_max_retries is the TOTAL
+    # attempt budget -- both backends' write paths run
+    # `for attempt in range(max_retries)` -- so 1 means a single attempt with
+    # no retries, and 0 would disable every database write outright (the loop
+    # body never runs and the post-loop tail raises without touching the
+    # database); rejected at the configuration boundary like the other
+    # broken-at-zero bounds in this class.
+    retry_max_retries: int = Field(default=5, alias='RETRY_MAX_RETRIES', ge=1)
     retry_base_delay_s: float = Field(default=0.5, alias='RETRY_BASE_DELAY_S', ge=0)
     retry_max_delay_s: float = Field(default=10.0, alias='RETRY_MAX_DELAY_S', ge=0)
     retry_jitter: bool = Field(default=True, alias='RETRY_JITTER')
