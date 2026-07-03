@@ -375,7 +375,22 @@ async def generate_compression_with_timeout(
             payload=payload_bytes,
         )
 
-    return await asyncio.gather(*[_encode_one(c) for c in chunk_embeddings])
+    # return_exceptions=True keeps the fan-out structured: a bare gather
+    # would propagate the first encode failure while the sibling tasks kept
+    # running detached past the request (run_generation's finally cancels
+    # only the three top-level legs and cannot reach these children).
+    # Awaiting every child first, then raising, matches the abort loop in
+    # run_generation and every other fan-out on the store paths.
+    results = await asyncio.gather(
+        *[_encode_one(c) for c in chunk_embeddings],
+        return_exceptions=True,
+    )
+    encoded: list[ChunkEmbedding] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+        encoded.append(result)
+    return encoded
 
 
 async def generate_summary_with_timeout(text: str, source: str) -> str | None:
