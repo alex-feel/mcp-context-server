@@ -754,6 +754,50 @@ class TestAdaptiveFtsMode:
         assert mode == 'boolean'
         assert '-' not in query
 
+    def test_hyphenated_tokens_keep_phrase_semantics_on_both_backends(self) -> None:
+        """A hyphenated token is a quoted phrase on BOTH backends in OR mode.
+
+        SQLite's sanitize_sqlite_fts_terms wraps 'a-b' as the FTS5 phrase
+        literal "a b" (ordered adjacency); the PostgreSQL branch must wrap the
+        hyphen-joined token the same way so websearch_to_tsquery parses it as
+        a <-> b instead of ANDing the parts unordered -- otherwise the two
+        backends return different recall for the identical hybrid query.
+        """
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        pg_query, pg_mode = _prepare_hybrid_fts_query(
+            query='a-b c-d e-f g-h',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert pg_mode == 'boolean'
+        assert pg_query == '"a b" or "c d" or "e f" or "g h"'
+
+        sqlite_query, sqlite_mode = _prepare_hybrid_fts_query(
+            query='a-b c-d e-f g-h',
+            or_threshold=4,
+            backend_type='sqlite',
+        )
+        assert sqlite_mode == 'boolean'
+        assert sqlite_query == '"a b" OR "c d" OR "e f" OR "g h"'
+
+        # The two transforms differ only in the OR keyword casing.
+        assert pg_query.replace(' or ', ' OR ') == sqlite_query
+
+    def test_hyphenated_token_with_embedded_quote_stays_wrappable(self) -> None:
+        """An embedded double quote cannot terminate the generated phrase early."""
+        from app.tools.search import _prepare_hybrid_fts_query
+
+        query, mode = _prepare_hybrid_fts_query(
+            query='al"pha-beta gamma delta epsilon',
+            or_threshold=4,
+            backend_type='postgresql',
+        )
+        assert mode == 'boolean'
+        # The embedded quote is dropped; the phrase wrapper stays balanced.
+        assert query.count('"') % 2 == 0
+        assert '"al pha beta"' in query
+
     def test_threshold_boundary_below(self) -> None:
         """Query with exactly threshold-1 significant words stays in match mode."""
         from app.tools.search import _prepare_hybrid_fts_query
