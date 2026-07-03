@@ -354,14 +354,14 @@ Each search tool returns a `scores` object with different fields:
 
 ### Score Polarity
 
-| Field               | Polarity        | Description                                                             |
-|---------------------|-----------------|-------------------------------------------------------------------------|
-| `fts_score`         | HIGHER = better | BM25/ts_rank relevance                                                  |
-| `fts_rank`          | LOWER = better  | FTS result rank (1 = best)                                              |
-| `semantic_distance` | LOWER = better  | Similarity-ordered: L2 (fp32/mse) or negated inner product (ip variant) |
-| `semantic_rank`     | LOWER = better  | Semantic result rank (1 = best)                                         |
-| `rrf`               | HIGHER = better | Combined RRF score                                                      |
-| `rerank_score`      | HIGHER = better | Cross-encoder relevance (0.0-1.0)                                       |
+| Field               | Polarity        | Description                       |
+|---------------------|-----------------|-----------------------------------|
+| `fts_score`         | HIGHER = better | BM25/ts_rank relevance            |
+| `fts_rank`          | LOWER = better  | FTS result rank (1 = best)        |
+| `semantic_distance` | LOWER = better  | L2 Euclidean distance             |
+| `semantic_rank`     | LOWER = better  | Semantic result rank (1 = best)   |
+| `rrf`               | HIGHER = better | Combined RRF score                |
+| `rerank_score`      | HIGHER = better | Cross-encoder relevance (0.0-1.0) |
 
 </tools>
 
