@@ -17,6 +17,7 @@ from typing import Literal
 from typing import cast
 
 from fastmcp import FastMCP
+from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -24,10 +25,23 @@ from starlette.responses import JSONResponse
 # CRITICAL: Logger Configuration MUST happen BEFORE importing app modules
 # that trigger backend loading (app.backends, app.repositories)
 # ============================================================================
+from app.errors import ConfigurationError
 from app.logger_config import config_logger
 from app.settings import get_settings
 
-settings = get_settings()
+# This is the FIRST get_settings() call in the import graph (the app module
+# imports below bind their own module-level settings from the cache), so a
+# settings ValidationError surfaces here -- at import time, before main()'s
+# error-classification handler exists. Classify it inline: a validation
+# failure (e.g. POSTGRESQL_POOL_MIN above POSTGRESQL_POOL_MAX, an
+# out-of-bounds numeric) is a permanent misconfiguration and must exit with
+# EX_CONFIG so supervisors do not restart-loop on it, not the generic exit 1
+# an unhandled traceback produces.
+try:
+    settings = get_settings()
+except ValidationError as e:
+    print(f'Configuration invalid: {e}', file=sys.stderr)
+    raise SystemExit(ConfigurationError.EXIT_CODE) from e
 config_logger(settings.logging.level)
 logger = logging.getLogger(__name__)
 
@@ -38,7 +52,6 @@ from app.auth import create_auth_provider
 from app.backends import create_backend
 from app.compression.provenance import read_compression_metadata
 from app.embeddings import create_embedding_provider
-from app.errors import ConfigurationError
 from app.errors import DependencyError
 from app.errors import classify_provider_error
 
