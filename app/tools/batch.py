@@ -363,6 +363,13 @@ async def store_context_batch(
                 generation_errors.append((original_idx, f'Generation failed: {error_details}'))
                 entry_embeddings.setdefault(ve_idx, None)
                 entry_summaries.setdefault(ve_idx, None)
+                # This entry is discarded below; undo the preserved-summary count it
+                # provisionally bumped in the pre-check, mirroring the
+                # compression-failure compensation -- counts must reflect entries
+                # surviving the generation phase.
+                if ve_idx in preserved_summary_indices:
+                    preserved_summary_indices.discard(ve_idx)
+                    summaries_preserved_count -= 1
             else:
                 entry_embeddings.setdefault(ve_idx, None)
                 if ve_idx not in entry_summaries:
@@ -704,6 +711,12 @@ async def store_context_batch(
                                 context_id=None,
                                 error=format_exception_message(e),
                             ))
+                            # This entry is discarded; undo the preserved-summary
+                            # count its pre-check provisionally bumped -- counts
+                            # must reflect entries surviving the generation phase.
+                            if ve_idx in preserved_summary_indices:
+                                preserved_summary_indices.discard(ve_idx)
+                                summaries_preserved_count -= 1
                             break
                         # A REUSED summary was read from the since-diverged candidate
                         # and may describe different text; regenerate it for this
@@ -726,6 +739,11 @@ async def store_context_batch(
                                     context_id=None,
                                     error=format_exception_message(e),
                                 ))
+                                # This entry is discarded; undo the preserved-summary
+                                # count its pre-check provisionally bumped (the
+                                # success path below reverses it after regeneration).
+                                preserved_summary_indices.discard(ve_idx)
+                                summaries_preserved_count -= 1
                                 break
                             preserved_summary_indices.discard(ve_idx)
                             summaries_preserved_count -= 1
