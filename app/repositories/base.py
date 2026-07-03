@@ -5,9 +5,15 @@ This module provides the base class that all repositories inherit from,
 ensuring consistent patterns and proper connection management.
 """
 
+import asyncio
 import datetime
+import sqlite3
+from collections.abc import Callable
+from typing import TypeVar
 
 from app.backends.base import StorageBackend
+
+T = TypeVar('T')
 
 
 def canonical_timestamp(value: object) -> str | None:
@@ -61,6 +67,35 @@ class BaseRepository:
             backend: Storage backend for executing database operations
         """
         self.backend = backend
+
+    @staticmethod
+    async def _run_sqlite_txn(
+        closure: Callable[[sqlite3.Connection], T],
+        conn: sqlite3.Connection,
+    ) -> T:
+        """Run a synchronous SQLite closure on the executor thread pool.
+
+        Repository methods handed a ``TransactionContext`` must not call their
+        sqlite3 closures directly on the event loop: the C-level calls block
+        it -- a cross-process lock holder makes ``cursor.execute`` busy-wait
+        inside SQLite for up to the resolved busy timeout, freezing every
+        concurrent request and the ``/health`` endpoint, and even uncontended
+        large writes (image BLOB decode + insert, FTS tokenization) stall the
+        loop for their full duration. Offloading matches the write-queue
+        path, which runs identical closures via ``run_in_executor``; the
+        writer connection is created with ``check_same_thread=False`` and the
+        transaction's writer lock serializes access, so one-at-a-time
+        executor use of the connection is safe.
+
+        Args:
+            closure: Synchronous callable executing statements on ``conn``.
+            conn: The transaction's SQLite connection.
+
+        Returns:
+            Whatever the closure returns.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, closure, conn)
 
     def _placeholder(self, position: int) -> str:
         """Generate SQL parameter placeholder for the given position.

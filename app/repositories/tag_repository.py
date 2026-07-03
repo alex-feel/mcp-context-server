@@ -69,7 +69,7 @@ class TagRepository(BaseRepository):
                         cursor.execute(query, (context_id, tag))
 
             if txn:
-                _store_tags_sqlite(cast(sqlite3.Connection, txn.connection))
+                await self._run_sqlite_txn(_store_tags_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
                 await self.backend.execute_write(_store_tags_sqlite)
         else:  # postgresql
@@ -221,7 +221,7 @@ class TagRepository(BaseRepository):
                         cursor.execute(insert_query, (context_id, tag))
 
             if txn:
-                _replace_tags_sqlite(cast(sqlite3.Connection, txn.connection))
+                await self._run_sqlite_txn(_replace_tags_sqlite, cast(sqlite3.Connection, txn.connection))
             else:
                 await self.backend.execute_write(_replace_tags_sqlite)
         else:  # postgresql

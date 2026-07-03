@@ -283,7 +283,7 @@ class ContextRepository(BaseRepository):
                 return new_id, False
 
             if txn:
-                return _store_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_store_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_store_sqlite)
 
         # PostgreSQL
@@ -1198,7 +1198,7 @@ class ContextRepository(BaseRepository):
                 return cursor.rowcount
 
             if txn:
-                return _delete_by_ids_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_delete_by_ids_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_delete_by_ids_sqlite)
 
         # PostgreSQL
@@ -1347,7 +1347,7 @@ class ContextRepository(BaseRepository):
                 return False, []
 
             if txn:
-                return _update_entry_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_update_entry_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_update_entry_sqlite)
 
         # PostgreSQL
@@ -1486,7 +1486,7 @@ class ContextRepository(BaseRepository):
                 return row['content_type'] if row else None
 
             if txn is not None:
-                return _get_content_type_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_get_content_type_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_read(_get_content_type_sqlite)
 
         # PostgreSQL
@@ -1535,7 +1535,7 @@ class ContextRepository(BaseRepository):
                 return cursor.rowcount > 0
 
             if txn:
-                return _update_content_type_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_update_content_type_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_update_content_type_sqlite)
 
         # PostgreSQL
@@ -1634,7 +1634,7 @@ class ContextRepository(BaseRepository):
                 return False, []
 
             if txn:
-                return _patch_metadata_sqlite(cast(sqlite3.Connection, txn.connection))
+                return await self._run_sqlite_txn(_patch_metadata_sqlite, cast(sqlite3.Connection, txn.connection))
             return await self.backend.execute_write(_patch_metadata_sqlite)
 
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function

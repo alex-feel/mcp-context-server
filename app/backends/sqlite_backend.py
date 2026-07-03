@@ -1292,10 +1292,22 @@ class SQLiteBackend:
                 self.circuit_breaker.record_success()
                 logger.debug('Transaction committed successfully')
 
-            except Exception as e:
+            except BaseException as e:
                 # Roll back either way; only a genuine DB fault trips the breaker.
+                # BaseException is caught deliberately: the repositories run their
+                # transaction-body closures on the executor, so task cancellation
+                # (CancelledError) can unwind through this block mid-transaction --
+                # an Exception-only handler would skip the rollback and leave an
+                # open partial transaction on the pooled writer connection that
+                # the NEXT write on it would silently commit.
                 try:
-                    await loop.run_in_executor(None, writer.rollback)
+                    if isinstance(e, Exception):
+                        await loop.run_in_executor(None, writer.rollback)
+                    else:
+                        # Synchronous rollback on a BaseException unwind: awaiting
+                        # inside a cancellation unwind can itself be re-cancelled,
+                        # which would skip the rollback entirely.
+                        writer.rollback()
                 except Exception as rollback_error:
                     logger.error(f'Rollback failed: {rollback_error}')
 
@@ -1304,6 +1316,11 @@ class SQLiteBackend:
                     # embedding reconciliation), NOT a database fault: rolled back, but
                     # do NOT record a circuit-breaker failure, so normal write
                     # contention cannot open the breaker and reject healthy writes.
+                    raise
+
+                if not isinstance(e, Exception):
+                    # Cancellation / interpreter shutdown: rolled back above, but
+                    # not a database fault -- do not trip the breaker.
                     raise
 
                 logger.warning(f'Transaction failed, rolling back: {e}')

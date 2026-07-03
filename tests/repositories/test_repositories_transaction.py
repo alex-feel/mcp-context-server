@@ -516,3 +516,122 @@ class TestTxnAwareReadsUseTransactionConnection:
         )
         assert await repos.context.get_content_type(context_id) == 'text'
         assert await repos.images.count_images_for_context(context_id) == 0
+
+
+class TestTransactionExecutorOffload:
+    """The SQLite txn branches run their sync closures OFF the event loop.
+
+    A repository closure called directly on the loop blocks it for the full
+    C-level sqlite3 call: a cross-process lock holder busy-waits inside SQLite
+    for up to the resolved busy timeout, freezing every concurrent request and
+    the /health endpoint. The txn branches must offload via the shared
+    BaseRepository helper, matching the write-queue path.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_sqlite_txn_executes_off_the_event_loop_thread(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        """The helper runs the closure on an executor thread, not the loop thread."""
+        import sqlite3
+        import threading
+        from typing import cast
+
+        from app.repositories.base import BaseRepository
+
+        backend, _repos = backend_with_repos
+        loop_thread = threading.get_ident()
+        seen: dict[str, int] = {}
+
+        def _closure(conn: sqlite3.Connection) -> int:
+            seen['thread'] = threading.get_ident()
+            return int(conn.execute('SELECT 1').fetchone()[0])
+
+        async with backend.begin_transaction() as txn:
+            result = await BaseRepository._run_sqlite_txn(
+                _closure, cast(sqlite3.Connection, txn.connection),
+            )
+
+        assert result == 1
+        assert seen['thread'] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_txn_repository_write_routes_through_the_offload_helper(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        """A txn-scoped repository write goes through _run_sqlite_txn."""
+        import sqlite3
+        from collections.abc import Callable
+        from unittest.mock import patch
+
+        from app.repositories.base import BaseRepository
+
+        backend, repos = backend_with_repos
+        original = BaseRepository._run_sqlite_txn
+        calls: list[str] = []
+
+        async def _spy(
+            closure: Callable[[sqlite3.Connection], object],
+            conn: sqlite3.Connection,
+        ) -> object:
+            calls.append(getattr(closure, '__name__', '?'))
+            return await original(closure, conn)
+
+        with patch.object(BaseRepository, '_run_sqlite_txn', staticmethod(_spy)):
+            async with backend.begin_transaction() as txn:
+                context_id, _ = await repos.context.store_with_deduplication(
+                    thread_id='offload-1', source='user', content_type='text',
+                    text_content='offloaded txn write', metadata=None, txn=txn,
+                )
+                await repos.tags.store_tags(context_id, ['alpha'], txn=txn)
+
+        assert '_store_sqlite' in calls
+        assert '_store_tags_sqlite' in calls
+        assert await repos.context.get_content_type(context_id) == 'text'
+
+    @pytest.mark.asyncio
+    async def test_begin_transaction_rolls_back_on_cancellation(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        """A BaseException unwind (task cancellation) still rolls the txn back.
+
+        With the executor offload the transaction body awaits, so cancellation
+        can unwind mid-transaction. An Exception-only handler would skip the
+        rollback and leave an open partial transaction on the pooled writer
+        connection, silently committed by the NEXT write. The breaker must not
+        trip either: cancellation is not a database fault.
+        """
+        import asyncio
+
+        backend, repos = backend_with_repos
+
+        async def _cancelled_mid_transaction() -> None:
+            """Open a transaction, write, then unwind with CancelledError.
+
+            Raises:
+                asyncio.CancelledError: Always, after the partial write, to
+                    model task cancellation unwinding mid-transaction.
+            """
+            async with backend.begin_transaction() as txn:
+                await repos.context.store_with_deduplication(
+                    thread_id='cancel-1', source='user', content_type='text',
+                    text_content='must roll back', metadata=None, txn=txn,
+                )
+                raise asyncio.CancelledError
+
+        with pytest.raises(asyncio.CancelledError):
+            await _cancelled_mid_transaction()
+
+        # The partial write was rolled back...
+        results, _stats = await repos.context.search_contexts(thread_id='cancel-1')
+        assert results == []
+        # ...the breaker stayed closed, and the writer connection is clean:
+        # a follow-up write commits normally.
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='cancel-2', source='user', content_type='text',
+            text_content='post-cancel write', metadata=None,
+        )
+        assert await repos.context.get_content_type(context_id) == 'text'
