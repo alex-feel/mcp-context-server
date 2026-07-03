@@ -1408,17 +1408,20 @@ async def hybrid_search_context(
             # structured error response the sibling search tools produce (error
             # + validation_errors, count 0) instead of an opaque raised
             # ToolError: the caller needs the per-filter details to correct the
-            # query rather than retry a permanently-invalid request.
-            combined_validation_errors = [
+            # query rather than retry a permanently-invalid request. Both modes
+            # validate the SAME filters and build identical messages, so the
+            # order-preserving dedup keeps each defect listed once.
+            combined_raw: list[str] = [
                 *(fts_validation_errors or []),
                 *(semantic_validation_errors or []),
             ]
+            combined_validation_errors = list(dict.fromkeys(combined_raw))
             if combined_validation_errors:
                 return {
                     'query': query,
                     'results': [],
                     'count': 0,
-                    'modes_used': [],
+                    'search_modes_used': [],
                     'error': f'All available search modes failed. {details}',
                     'validation_errors': combined_validation_errors,
                 }
