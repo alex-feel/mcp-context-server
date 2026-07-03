@@ -54,6 +54,12 @@ def _build_server_env(
         'COMPRESSION_VARIANT': variant,
         'COMPRESSION_SEED': seed,
         'COMPRESSION_MAX_CONCURRENT': '2',
+        # Pin the dim so the spawned server always matches the pre-seeded
+        # provenance row: the dict spreads the ambient os.environ first, and
+        # CI exports EMBEDDING_DIM=384 for the unit suite, which would
+        # otherwise reach the seed-locked validator as a dim mismatch and
+        # kill the server with exit 78 before the client connects.
+        'EMBEDDING_DIM': '1024',
     }
 
 

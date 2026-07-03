@@ -234,7 +234,7 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
             'ENABLE_EMBEDDING_GENERATION', 'ENABLE_SUMMARY_GENERATION',
             'ENABLE_EMBEDDING_COMPRESSION', 'COMPRESSION_BITS',
             'COMPRESSION_VARIANT', 'COMPRESSION_SEED',
-            'COMPRESSION_MAX_CONCURRENT',
+            'COMPRESSION_MAX_CONCURRENT', 'EMBEDDING_DIM',
         )
     }
 
@@ -254,6 +254,12 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
         'COMPRESSION_VARIANT': 'ip',
         'COMPRESSION_SEED': '42',
         'COMPRESSION_MAX_CONCURRENT': '2',
+        # Pin the dim so the spawned server always matches the pre-seeded
+        # provenance row: the dict spreads the ambient os.environ first, and
+        # CI exports EMBEDDING_DIM=384 for the unit suite, which would
+        # otherwise reach the seed-locked validator as a dim mismatch and
+        # kill the server with exit 78 before the client connects.
+        'EMBEDDING_DIM': '1024',
     }
     # Also mutate parent os.environ so any in-process helpers see the
     # compression toggle (e.g., when the wrapper imports app.settings).

@@ -54,6 +54,14 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
     embedding_dim = os.environ.get('EMBEDDING_DIM')
     summary_provider = os.environ.get('SUMMARY_PROVIDER')
     summary_model = os.environ.get('SUMMARY_MODEL')
+    # An EXPLICIT parent value takes precedence over the availability-based
+    # auto-disable below: boot-only tests (for example the compression
+    # re-enable regression) set ENABLE_EMBEDDING_GENERATION=true because
+    # provisioning follows the generation toggle, and they never store, so an
+    # unreachable or model-less Ollama must not silently flip their
+    # configuration. Tests that store leave the variable unset and keep the
+    # smart downgrade.
+    parent_generation = os.environ.get('ENABLE_EMBEDDING_GENERATION')
 
     if embedding_model is None:
         # No model specified by parent - detect what's available
@@ -72,14 +80,17 @@ if 'pytest' in sys.modules or any('test' in arg.lower() for arg in sys.argv):
                 break
 
         if not model_available:
-            # No model available - disable embedding generation
-            os.environ['ENABLE_EMBEDDING_GENERATION'] = 'false'
+            # No model available - disable embedding generation unless the
+            # parent explicitly took ownership of the toggle
+            if parent_generation is None:
+                os.environ['ENABLE_EMBEDDING_GENERATION'] = 'false'
             os.environ['ENABLE_SEMANTIC_SEARCH'] = 'false'
             print('[TEST SERVER] No Ollama model available - disabling embedding generation', file=sys.stderr)
     else:
         # Model explicitly specified (e.g., by CI) - verify it's available
         if not is_ollama_model_available(embedding_model):
-            os.environ['ENABLE_EMBEDDING_GENERATION'] = 'false'
+            if parent_generation is None:
+                os.environ['ENABLE_EMBEDDING_GENERATION'] = 'false'
             os.environ['ENABLE_SEMANTIC_SEARCH'] = 'false'
             print(
                 f'[TEST SERVER] Specified model "{embedding_model}" not available - disabling embedding generation',
