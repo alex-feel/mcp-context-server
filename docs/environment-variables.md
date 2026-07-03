@@ -241,7 +241,7 @@ Embedding compression is on by default in v3.0.0. The storage write path replace
 | `COMPRESSION_BITS`             | integer | `4`                 | 2-4           | Bits per coordinate. `2` = 16x compression, `3` = ~11x, `4` = 8x. Default `4` = ~8x with high recall. The lower bound of 2 is required by `variant='ip'` (the inner-product variant reserves one bit per coordinate for the QJL sign)                                                                                                                                                                                             |
 | `COMPRESSION_VARIANT`          | string  | `ip`                |               | Compression variant. `ip` (default): Algorithm 2 with QJL, unbiased inner-product estimator. `mse`: Algorithm 1, L2-optimal reconstruction                                                                                                                                                                                                                                                                                        |
 | `COMPRESSION_SEED`             | integer | `0`                 | 0..4294967295 | Rotation matrix seed, packed into the compressed payload as an unsigned 32-bit field, so it must fit `[0, 4294967295]`. Default `0`. Load-bearing invariant: rotations are deterministic given the seed; changing the seed AFTER any compressed data has been stored will corrupt all decode/search operations. Persisted in `compression_metadata` at first startup and validated on each subsequent start (exit 78 on mismatch) |
-| `COMPRESSION_MAX_CONCURRENT`   | integer | `min(cpu_count, 4)` | 1-32          | Max concurrent CPU-bound compression operations. Separate from the I/O-bound `EMBEDDING_MAX_CONCURRENT` and `SUMMARY_MAX_CONCURRENT` semaphores. Default `min(cpu_count, 4)` keeps GIL contention bounded                                                                                                                                                                                                                         |
+| `COMPRESSION_MAX_CONCURRENT`   | integer | `min(cpu_count, 4)` | 1-32          | Max concurrent compression encode workers dispatched to threads; the CPU-bound codec section is serialized by a process-wide BLAS-limits lock, so this bounds worker fan-out, not CPU parallelism. Separate from the I/O-bound `EMBEDDING_MAX_CONCURRENT` and `SUMMARY_MAX_CONCURRENT` semaphores                                                                                                                                 |
 
 ## LangSmith Tracing Settings
 
@@ -269,59 +269,59 @@ These settings apply only when `STORAGE_BACKEND=sqlite`.
 |--------------------------------|---------|---------|----------------------------------------------------------------------------------|
 | `POOL_MAX_READERS`             | integer | `8`     | Maximum number of reader connections in the SQLite connection pool (minimum `1`) |
 | `POOL_MAX_WRITERS`             | integer | `1`     | Maximum number of writer connections in the SQLite connection pool (minimum `1`) |
-| `POOL_CONNECTION_TIMEOUT_S`    | float   | `10.0`  | Connection acquisition timeout in seconds                                        |
-| `POOL_IDLE_TIMEOUT_S`          | float   | `300.0` | Idle connection timeout in seconds                                               |
-| `POOL_HEALTH_CHECK_INTERVAL_S` | float   | `30.0`  | Interval between connection health checks in seconds                             |
+| `POOL_CONNECTION_TIMEOUT_S`    | float   | `10.0`  | Connection acquisition timeout in seconds (must be > 0)                          |
+| `POOL_IDLE_TIMEOUT_S`          | float   | `300.0` | Idle connection timeout in seconds (must be > 0)                                 |
+| `POOL_HEALTH_CHECK_INTERVAL_S` | float   | `30.0`  | Interval between connection health checks in seconds (must be > 0)               |
 
 ## SQLite Retry Settings
 
 These settings apply only when `STORAGE_BACKEND=sqlite`.
 
-| Variable               | Type    | Default | Description                                                    |
-|------------------------|---------|---------|----------------------------------------------------------------|
-| `RETRY_MAX_RETRIES`    | integer | `5`     | Maximum number of retry attempts for transient database errors |
-| `RETRY_BASE_DELAY_S`   | float   | `0.5`   | Base delay in seconds between retries                          |
-| `RETRY_MAX_DELAY_S`    | float   | `10.0`  | Maximum delay in seconds between retries                       |
-| `RETRY_JITTER`         | boolean | `true`  | Add random jitter to retry delays to prevent thundering herd   |
-| `RETRY_BACKOFF_FACTOR` | float   | `2.0`   | Exponential backoff multiplier for retry delays                |
+| Variable               | Type    | Default | Description                                                                  |
+|------------------------|---------|---------|------------------------------------------------------------------------------|
+| `RETRY_MAX_RETRIES`    | integer | `5`     | Maximum number of retry attempts for transient database errors (minimum `0`) |
+| `RETRY_BASE_DELAY_S`   | float   | `0.5`   | Base delay in seconds between retries (minimum `0`)                          |
+| `RETRY_MAX_DELAY_S`    | float   | `10.0`  | Maximum delay in seconds between retries (minimum `0`)                       |
+| `RETRY_JITTER`         | boolean | `true`  | Add random jitter to retry delays to prevent thundering herd                 |
+| `RETRY_BACKOFF_FACTOR` | float   | `2.0`   | Exponential backoff multiplier for retry delays (minimum `1`)                |
 
 ## SQLite PRAGMA Settings
 
 These settings apply only when `STORAGE_BACKEND=sqlite`.
 
-| Variable                    | Type    | Default     | Description                                                                                   |
-|-----------------------------|---------|-------------|-----------------------------------------------------------------------------------------------|
-| `SQLITE_FOREIGN_KEYS`       | boolean | `true`      | Enable foreign key enforcement                                                                |
-| `SQLITE_JOURNAL_MODE`       | string  | `WAL`       | SQLite journal mode. `WAL` recommended for concurrent reads                                   |
-| `SQLITE_SYNCHRONOUS`        | string  | `NORMAL`    | SQLite synchronous mode. `NORMAL` balances safety and performance                             |
-| `SQLITE_TEMP_STORE`         | string  | `MEMORY`    | Where to store temporary tables. `MEMORY` for better performance                              |
-| `SQLITE_MMAP_SIZE`          | integer | `268435456` | Memory-mapped I/O size in bytes. Default: 256MB                                               |
-| `SQLITE_CACHE_SIZE`         | integer | `-64000`    | SQLite page cache size. Negative value = kilobytes. Default: -64000 (64MB)                    |
-| `SQLITE_PAGE_SIZE`          | integer | `4096`      | SQLite page size in bytes                                                                     |
-| `SQLITE_WAL_AUTOCHECKPOINT` | integer | `1000`      | Number of WAL frames before auto-checkpoint                                                   |
-| `SQLITE_BUSY_TIMEOUT_MS`    | integer | _(derived)_ | SQLite busy timeout in milliseconds. Default: derived from `POOL_CONNECTION_TIMEOUT_S * 1000` |
-| `SQLITE_WAL_CHECKPOINT`     | string  | `PASSIVE`   | WAL checkpoint mode                                                                           |
+| Variable                    | Type    | Default     | Description                                                                                                 |
+|-----------------------------|---------|-------------|-------------------------------------------------------------------------------------------------------------|
+| `SQLITE_FOREIGN_KEYS`       | boolean | `true`      | Enable foreign key enforcement                                                                              |
+| `SQLITE_JOURNAL_MODE`       | string  | `WAL`       | SQLite journal mode. `WAL` recommended for concurrent reads                                                 |
+| `SQLITE_SYNCHRONOUS`        | string  | `NORMAL`    | SQLite synchronous mode. `NORMAL` balances safety and performance                                           |
+| `SQLITE_TEMP_STORE`         | string  | `MEMORY`    | Where to store temporary tables. `MEMORY` for better performance                                            |
+| `SQLITE_MMAP_SIZE`          | integer | `268435456` | Memory-mapped I/O size in bytes. Default: 256MB                                                             |
+| `SQLITE_CACHE_SIZE`         | integer | `-64000`    | SQLite page cache size. Negative value = kilobytes. Default: -64000 (64MB)                                  |
+| `SQLITE_PAGE_SIZE`          | integer | `4096`      | SQLite page size in bytes                                                                                   |
+| `SQLITE_WAL_AUTOCHECKPOINT` | integer | `1000`      | Number of WAL frames before auto-checkpoint                                                                 |
+| `SQLITE_BUSY_TIMEOUT_MS`    | integer | _(derived)_ | SQLite busy timeout in milliseconds (minimum `0`). Default: derived from `POOL_CONNECTION_TIMEOUT_S * 1000` |
+| `SQLITE_WAL_CHECKPOINT`     | string  | `PASSIVE`   | WAL checkpoint mode                                                                                         |
 
 ## SQLite Circuit Breaker Settings
 
 These settings apply only when `STORAGE_BACKEND=sqlite`.
 
-| Variable                              | Type    | Default | Description                                                  |
-|---------------------------------------|---------|---------|--------------------------------------------------------------|
-| `CIRCUIT_BREAKER_FAILURE_THRESHOLD`   | integer | `10`    | Number of consecutive failures before circuit opens          |
-| `CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S`  | float   | `30.0`  | Seconds to wait before attempting recovery from open circuit |
-| `CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS` | integer | `5`     | Maximum test calls allowed in half-open state                |
+| Variable                              | Type    | Default | Description                                                                |
+|---------------------------------------|---------|---------|----------------------------------------------------------------------------|
+| `CIRCUIT_BREAKER_FAILURE_THRESHOLD`   | integer | `10`    | Number of consecutive failures before circuit opens (minimum `1`)          |
+| `CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S`  | float   | `30.0`  | Seconds to wait before attempting recovery from open circuit (must be > 0) |
+| `CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS` | integer | `5`     | Maximum test calls allowed in half-open state (minimum `1`)                |
 
 ## SQLite Operation Timeout Settings
 
 These settings apply only when `STORAGE_BACKEND=sqlite`.
 
-| Variable                  | Type  | Default | Description                                          |
-|---------------------------|-------|---------|------------------------------------------------------|
-| `SHUTDOWN_TIMEOUT_S`      | float | `10.0`  | Graceful shutdown timeout in seconds                 |
-| `SHUTDOWN_TIMEOUT_TEST_S` | float | `5.0`   | Shutdown timeout for test environments in seconds    |
-| `QUEUE_TIMEOUT_S`         | float | `1.0`   | Write queue timeout in seconds                       |
-| `QUEUE_TIMEOUT_TEST_S`    | float | `0.1`   | Write queue timeout for test environments in seconds |
+| Variable                  | Type  | Default | Description                                                        |
+|---------------------------|-------|---------|--------------------------------------------------------------------|
+| `SHUTDOWN_TIMEOUT_S`      | float | `10.0`  | Graceful shutdown timeout in seconds (must be > 0)                 |
+| `SHUTDOWN_TIMEOUT_TEST_S` | float | `5.0`   | Shutdown timeout for test environments in seconds (must be > 0)    |
+| `QUEUE_TIMEOUT_S`         | float | `1.0`   | Write queue timeout in seconds (must be > 0)                       |
+| `QUEUE_TIMEOUT_TEST_S`    | float | `0.1`   | Write queue timeout for test environments in seconds (must be > 0) |
 
 ## PostgreSQL Connection Settings
 
@@ -346,11 +346,12 @@ These settings apply only when `STORAGE_BACKEND=postgresql`.
 
 | Variable                                | Type    | Default | Constraints | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 |-----------------------------------------|---------|---------|-------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `POSTGRESQL_POOL_MIN`                   | integer | `2`     | >=0         | Minimum connections in the asyncpg connection pool                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `POSTGRESQL_POOL_MAX`                   | integer | `20`    | >=1         | Maximum connections in the asyncpg connection pool                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `POSTGRESQL_POOL_MIN`                   | integer | `2`     | >=0         | Minimum connections in the asyncpg connection pool; must not exceed `POSTGRESQL_POOL_MAX` (rejected at the configuration boundary)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `POSTGRESQL_POOL_MAX`                   | integer | `20`    | >=1         | Maximum connections in the asyncpg connection pool; must be at least `POSTGRESQL_POOL_MIN` (rejected at the configuration boundary)                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `POSTGRESQL_SESSION_POOLER_MAX_CLIENTS` | integer | `15`    | >=1         | Per-session client cap of an external session-mode pooler (Supabase Session Pooler / Supavisor); advisory startup WARNING about MaxClientsInSessionMode when `POSTGRESQL_POOL_MAX` exceeds it. Raise on larger tiers. See `docs/database-backends.md`.                                                                                                                                                                                                                                                                                                                                         |
-| `POSTGRESQL_POOL_TIMEOUT_S`             | float   | `120.0` |             | asyncpg connection acquire-wait timeout in seconds: how long `pool.acquire()` waits for a free connection before failing. A startup advisory (INFO) recommends keeping this at or above a floor of `max(60, 2 * POSTGRESQL_COMMAND_TIMEOUT_S)` so a slow query cannot starve waiters. Embedding generation runs OUTSIDE the connection pool and does not consume pool time, so this timeout does not need to cover embedding latency. For robustness under embedding-write load, scale `POSTGRESQL_POOL_MAX` (more connections) and `POSTGRESQL_COMMAND_TIMEOUT_S` (per-query budget) instead. |
-| `POSTGRESQL_COMMAND_TIMEOUT_S`          | float   | `60.0`  |             | Default command timeout in seconds; per-connection `statement_timeout` is `0.9 *` this value. fp32 mode (`ENABLE_EMBEDDING_COMPRESSION=false`) may need a higher value under write concurrency (SQLSTATE 57014). See `docs/database-backends.md`.                                                                                                                                                                                                                                                                                                                                              |
+| `POSTGRESQL_POOL_TIMEOUT_S`             | float   | `120.0` | >0          | asyncpg connection acquire-wait timeout in seconds: how long `pool.acquire()` waits for a free connection before failing. A startup advisory (INFO) recommends keeping this at or above a floor of `max(60, 2 * POSTGRESQL_COMMAND_TIMEOUT_S)` so a slow query cannot starve waiters. Embedding generation runs OUTSIDE the connection pool and does not consume pool time, so this timeout does not need to cover embedding latency. For robustness under embedding-write load, scale `POSTGRESQL_POOL_MAX` (more connections) and `POSTGRESQL_COMMAND_TIMEOUT_S` (per-query budget) instead. |
+| `POSTGRESQL_CONNECT_TIMEOUT_S`          | float   | `60.0`  | >0          | Connection ESTABLISHMENT timeout in seconds (TCP connect plus PostgreSQL startup handshake) for each new connection the pool or the pgvector pre-check opens; distinct from `POSTGRESQL_POOL_TIMEOUT_S`, which bounds waiting for a free pooled connection. Default 60 matches the asyncpg default.                                                                                                                                                                                                                                                                                            |
+| `POSTGRESQL_COMMAND_TIMEOUT_S`          | float   | `60.0`  | >0          | Default command timeout in seconds; per-connection `statement_timeout` is `0.9 *` this value. fp32 mode (`ENABLE_EMBEDDING_COMPRESSION=false`) may need a higher value under write concurrency (SQLSTATE 57014). See `docs/database-backends.md`.                                                                                                                                                                                                                                                                                                                                              |
 | `POSTGRESQL_MIGRATION_TIMEOUT_S`        | float   | `300.0` | >0, <=3600  | Timeout in seconds for migration DDL operations (CREATE INDEX, ALTER TABLE). Default: 300s (5 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 ## PostgreSQL Connection Pool Hardening

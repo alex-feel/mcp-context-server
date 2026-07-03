@@ -380,7 +380,8 @@ class TestHashBasedPreCheck:
         result = await repos.context.check_latest_is_duplicate(
             thread_id='t1', source='user', text_content='Same text',
         )
-        assert result == context_id
+        assert result is not None
+        assert result.context_id == context_id
 
     async def test_hash_mismatch_returns_none(self, repos: RepositoryContainer) -> None:
         """When content_hash does not match, returns None."""
@@ -472,7 +473,8 @@ class TestNullHashFallback:
         result = await repos_pre_migration.context.check_latest_is_duplicate(
             thread_id='t1', source='agent', text_content='Old agent text',
         )
-        assert result == legacy_id
+        assert result is not None
+        assert result.context_id == legacy_id
 
     async def test_pre_migration_different_text_returns_none(
         self, backend_pre_migration: StorageBackend, repos_pre_migration: RepositoryContainer,
@@ -582,7 +584,8 @@ class TestHashRecomputationOnUpdate:
         result = await repos.context.check_latest_is_duplicate(
             thread_id='t1', source='user', text_content='Version 2',
         )
-        assert result == context_id
+        assert result is not None
+        assert result.context_id == context_id
 
         # Dedup check for old text should NOT match
         result_old = await repos.context.check_latest_is_duplicate(

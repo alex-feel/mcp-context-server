@@ -27,6 +27,62 @@ class TestSlugify:
         assert slugify('***') == 'section'
 
 
+class TestSlugSegmentCap:
+    """The per-segment slug cap bounds node_id below PostgreSQL's btree tuple limit.
+
+    context_index_nodes carries UNIQUE(context_id, node_id) -- a btree index
+    whose tuple size PostgreSQL caps at ~2704 bytes post-compression. An
+    unbounded slug from a pathological multi-kilobyte heading line would make
+    the node-row INSERT fail inside the single store/update transaction,
+    aborting the whole store on PostgreSQL while SQLite stored it fine.
+    """
+
+    def test_single_long_heading_slug_is_capped(self) -> None:
+        long_title = 'alpha beta gamma delta ' * 200
+        slug = slugify(long_title)
+        assert 0 < len(slug) <= 64
+        assert not slug.endswith('-')
+
+    def test_truncation_collided_siblings_stay_unique(self) -> None:
+        shared_prefix = 'shared prefix segment word ' * 10
+        text = f'# {shared_prefix} one\n\n# {shared_prefix} two\n'
+        root = parse_outline(text)
+        ids = [child.node_id for child in root.children]
+        assert len(ids) == len(set(ids)) == 2
+        # Both collapse to the same 64-char base; the ordinal suffix disambiguates.
+        assert ids[1].startswith(ids[0])
+        assert ids[1] != ids[0]
+
+    def test_deep_nested_long_headings_stay_below_index_tuple_limit(self) -> None:
+        # Six levels (Markdown's maximum), each a multi-hundred-char heading of
+        # 2-byte UTF-8 code points -- the realistic worst case for byte growth.
+        heading_word = 'слово'  # Cyrillic, 2 bytes per code point
+        lines: list[str] = []
+        for level in range(1, 7):
+            lines.extend((
+                '#' * level + ' ' + f'{heading_word} ' * 80 + str(level),
+                'body',
+            ))
+        root = parse_outline('\n'.join(lines) + '\n')
+        node = root
+        max_bytes = 0
+        while node.children:
+            node = node.children[0]
+            max_bytes = max(max_bytes, len(node.node_id.encode('utf-8')))
+        assert node.level == 6
+        # Comfortably below the ~2704-byte PostgreSQL btree index-tuple ceiling.
+        assert max_bytes < 2000
+
+    def test_long_heading_round_trips_through_resolve(self) -> None:
+        long_title = 'x' * 500
+        text = f'# {long_title}\n\nbody text\n'
+        root = parse_outline(text)
+        child = root.children[0]
+        span = resolve_node_span(text, child.node_id)
+        assert span is not None
+        assert span[0] == child.char_start
+
+
 class TestParseOutlineStructure:
     def test_nested_atx_headings(self) -> None:
         text = '# A\n\nalpha\n\n## B\n\nbeta\n'

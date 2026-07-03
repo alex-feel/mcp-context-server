@@ -406,3 +406,66 @@ async def test_no_compression_creates_fp32_vec_table(
         return cur.fetchone() is not None
 
     assert await backend.execute_read(_exists) is True
+
+
+@pytest.mark.asyncio
+async def test_sqlite_migration_skips_when_generation_disabled_and_schema_absent(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With embedding generation off and no compression schema, the migration is a no-op.
+
+    Embedding storage is provisioned from ENABLE_EMBEDDING_GENERATION, so a
+    generation-off deployment must not gain a compression schema it can never
+    write to -- the validator would then seed a provenance row and a later
+    ENABLE_EMBEDDING_COMPRESSION=false flip would wedge behind a --decompress
+    run with no embedding infrastructure to operate on.
+    """
+    _enable_compression(monkeypatch)
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    import app.migrations.compression as compression_module
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+    await apply_compression_migration(backend=backend)
+
+    def _check(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name IN "
+            "('compression_metadata', 'vec_context_embeddings_compressed')",
+        )
+        return cur.fetchone() is not None
+
+    assert await backend.execute_read(_check) is False
+
+
+@pytest.mark.asyncio
+async def test_sqlite_migration_maintains_existing_schema_when_generation_disabled(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A database that already carries the compression schema keeps it maintained.
+
+    Data compressed while generation was on must stay decodable after the
+    operator turns generation off, so the migration falls through for an
+    existing schema instead of skipping it.
+    """
+    _enable_compression(monkeypatch)
+    await apply_compression_migration(backend=backend)
+
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    import app.migrations.compression as compression_module
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+    await apply_compression_migration(backend=backend)
+
+    def _check(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='vec_context_embeddings_compressed'",
+        )
+        return cur.fetchone() is not None
+
+    assert await backend.execute_read(_check) is True

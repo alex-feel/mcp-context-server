@@ -17,6 +17,7 @@ from fastmcp.exceptions import ToolError
 
 import app.server
 import app.startup
+from app.repositories.context_repository import DuplicateCandidate
 
 if TYPE_CHECKING:
     from app.settings import AppSettings
@@ -667,9 +668,11 @@ class TestBatchMessageAccuracy:
         # Likely-duplicate with an existing summary to REUSE, but absent embeddings
         # (so an embedding task IS queued and the gather runs).
         repos.context.check_latest_is_duplicate = AsyncMock(
-            return_value='0190abcdef1234567890abcd00000009',
+            return_value=DuplicateCandidate(
+                context_id='0190abcdef1234567890abcd00000009',
+                summary='Existing preserved summary',
+            ),
         )
-        repos.context.get_summary = AsyncMock(return_value='Existing preserved summary')
         repos.embeddings.exists = AsyncMock(return_value=False)
 
         mock_embedding = MagicMock()
@@ -702,6 +705,56 @@ class TestBatchMessageAccuracy:
         assert 'summaries generated' not in result['message']
         # No summary model call ran for the reused summary.
         mock_summary.summarize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_discarded_entry_not_counted_as_preserved(self) -> None:
+        """A preserved-summary entry discarded by a generation failure is not counted.
+
+        Counts must reflect entries surviving the generation phase: the
+        pre-check provisionally bumps the preserved count when a likely
+        duplicate's stored summary is reused, and the compression-failure
+        branch already compensates on discard. The sibling embedding-failure
+        discard branch must compensate the same way, or the response claims
+        'summaries preserved' for an entry that was never stored.
+        """
+        repos = _create_mock_repositories()
+        # Likely-duplicate with a reusable summary but absent embeddings, so
+        # an embedding task IS queued -- and then fails.
+        repos.context.check_latest_is_duplicate = AsyncMock(
+            return_value=DuplicateCandidate(
+                context_id='0190abcdef1234567890abcd00000010',
+                summary='Existing preserved summary',
+            ),
+        )
+        repos.embeddings.exists = AsyncMock(return_value=False)
+
+        mock_embedding = MagicMock()
+        mock_summary = MagicMock()
+        mock_summary.summarize = AsyncMock(return_value='Should NOT be generated')
+
+        entries = [
+            {'thread_id': 'preserve-discard', 'source': 'user', 'text': 'x' * 500},
+        ]
+
+        with (
+            patch('app.tools.batch.ensure_repositories', new=AsyncMock(return_value=repos)),
+            patch('app.tools.batch.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools._shared.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.context.get_embedding_provider', return_value=mock_embedding),
+            patch('app.tools.batch.get_summary_provider', return_value=mock_summary),
+            patch('app.tools.context.get_summary_provider', return_value=mock_summary),
+            patch('app.tools._shared.get_summary_provider', return_value=mock_summary),
+            patch(
+                'app.tools.batch.generate_embeddings_with_timeout',
+                new=AsyncMock(side_effect=ToolError('embedding: provider unavailable')),
+            ),
+        ):
+            result = await store_context_batch(entries=entries, atomic=False)
+
+        # The lone entry was discarded during generation, so no summary
+        # survived to be preserved and the message must not claim one.
+        assert result['results'][0]['success'] is False
+        assert 'summaries preserved' not in result['message']
 
     @pytest.mark.asyncio
     async def test_update_batch_short_text_no_summary_message(self) -> None:

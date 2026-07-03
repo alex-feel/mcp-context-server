@@ -141,10 +141,12 @@ class StatisticsRepository(BaseRepository):
             threads: list[ThreadInfoDict] = []
             for row in rows:
                 d = dict(row)
-                # asyncpg returns last_id as a native (hyphenated 36-char) UUID; normalize
-                # to the canonical 32-char hyphen-free lowercase hex the SQLite branch
-                # already emits, so list_threads' last_id is identical and contract-valid
-                # (str id format) on both backends.
+                # The pool's uuid->str codec (registered in _init_connection)
+                # already decodes uuid columns -- including array elements, so
+                # this array_agg pick too -- to the canonical 32-char lowercase
+                # hex the SQLite branch emits. normalize_id(str(...)) is
+                # idempotent defense-in-depth for codec-less connections,
+                # keeping last_id contract-valid on both backends.
                 if d.get('last_id') is not None:
                     d['last_id'] = normalize_id(str(d['last_id']))
                 threads.append(cast(ThreadInfoDict, d))

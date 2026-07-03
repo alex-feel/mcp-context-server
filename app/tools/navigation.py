@@ -416,15 +416,22 @@ async def navigate_context(
         # update commits new text AND replacement node rows atomically, so a commit
         # landing between the two reads would pair the OLD text's outline with the
         # NEW node summaries -- mis-attaching a post-edit section summary to a
-        # pre-edit span via a retained heading slug. Probe the entry's updated_at
-        # after the node read and re-take the whole snapshot (bounded) when a
-        # concurrent update landed in the window; the race is milliseconds-wide,
-        # so one retry virtually always converges.
+        # pre-edit span via a retained heading slug. Bracket both reads with probes
+        # of the monotonic version token (bumped by exactly the writes that can
+        # replace node rows) and re-take the whole snapshot (bounded) when the
+        # token moved inside the window; the race is milliseconds-wide, so one
+        # retry virtually always converges. updated_at is NOT a usable probe:
+        # SQLite CURRENT_TIMESTAMP has second granularity, so two commits inside
+        # the same wall-clock second compare equal and a torn pairing would be
+        # accepted.
         text = ''
         root_summary: str | None = None
         node_summaries: dict[str, str] = {}
         want_node_summaries = include_node_summaries and settings.index_tree.node_summaries_enabled
         for _snapshot_attempt in range(3):
+            version_before: int | None = None
+            if want_node_summaries:
+                _exists, _probe_source, version_before = await repos.context.check_entry_exists(resolved_id)
             rows = await repos.context.get_by_ids([resolved_id])
             if not rows:
                 raise ToolError(f'Context entry not found: {context_id}')
@@ -446,12 +453,19 @@ async def navigate_context(
             # Stored per-node summaries are fetched by id and do NOT depend on the
             # parse, so they are loaded before the CPU-bound parse + serialize block.
             node_summaries = await repos.index_nodes.get_nodes_for_context(resolved_id)
-            recheck = await repos.context.get_by_ids([resolved_id])
-            if recheck and recheck[0]['updated_at'] == row['updated_at']:
+            _exists, _probe_source, version_after = await repos.context.check_entry_exists(resolved_id)
+            if version_after == version_before:
                 break
             logger.debug(
                 'navigate_context %s: entry changed between text and node-summary '
                 'reads; retaking snapshot', resolved_id,
+            )
+        else:
+            logger.warning(
+                'navigate_context %s: snapshot retries exhausted under sustained '
+                'concurrent updates; the returned outline and node summaries may '
+                'pair text and section abstracts from different revisions',
+                resolved_id,
             )
 
         def _build_outline() -> tuple[OutlineNodeDict, int]:

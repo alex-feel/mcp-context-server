@@ -390,7 +390,7 @@ class PostgreSQLBackend:
         try:
             conn = await asyncpg.connect(
                 self.connection_string,
-                timeout=settings.storage.postgresql_pool_timeout_s,
+                timeout=settings.storage.postgresql_connect_timeout_s,
             )
             try:
                 await conn.execute('CREATE EXTENSION IF NOT EXISTS vector;')
@@ -408,6 +408,20 @@ class PostgreSQLBackend:
             )
             raise ConfigurationError(
                 f'pgvector extension required but cannot be created (insufficient privileges): {e}',
+            ) from e
+
+        except asyncpg.exceptions.ClientConfigurationError as e:
+            # Must precede the InterfaceError tuple below:
+            # ClientConfigurationError subclasses InterfaceError, and asyncpg
+            # raises it for permanent client-side misconfigurations (invalid
+            # sslmode/target_session_attrs/gsslib values, unresolvable DSN
+            # options) that a broad InterfaceError match would misclassify as
+            # a retryable DependencyError and restart-loop on.
+            logger.error(f'PostgreSQL client configuration invalid: {e}')
+            raise ConfigurationError(
+                f'PostgreSQL client configuration invalid: {e}. '
+                'Check POSTGRESQL_CONNECTION_STRING and the POSTGRESQL_* '
+                'connection options.',
             ) from e
 
         except (
@@ -621,7 +635,13 @@ class PostgreSQLBackend:
                 'min_size': settings.storage.postgresql_pool_min,
                 'max_size': settings.storage.postgresql_pool_max,
                 'command_timeout': settings.storage.postgresql_command_timeout_s,
-                'timeout': settings.storage.postgresql_pool_timeout_s,
+                # asyncpg.create_pool has NO acquire-timeout parameter: unknown
+                # kwargs fall through **connect_kwargs to asyncpg.connect(), so
+                # 'timeout' here is the per-connection ESTABLISHMENT timeout
+                # (TCP connect + startup handshake). The acquire-wait bound
+                # (POSTGRESQL_POOL_TIMEOUT_S) is passed per-call at every
+                # pool.acquire(timeout=...) site instead.
+                'timeout': settings.storage.postgresql_connect_timeout_s,
                 # statement_cache_size and server_settings (search_path + TCP
                 # keepalive GUCs) are merged below via
                 # build_asyncpg_connect_kwargs() so the pool and the migration
@@ -673,6 +693,22 @@ class PostgreSQLBackend:
 
             logger.info('PostgreSQL backend initialized successfully')
 
+        except asyncpg.exceptions.ClientConfigurationError as e:
+            # Must precede the InterfaceError tuple below:
+            # ClientConfigurationError subclasses BOTH InterfaceError and
+            # ValueError, and asyncpg raises it for permanent client-side
+            # misconfigurations (invalid sslmode/target_session_attrs/
+            # gsslib values, unresolvable DSN options) that a broad
+            # InterfaceError match would misclassify as a retryable
+            # DependencyError and restart-loop on.
+            logger.error(f'PostgreSQL client configuration invalid: {e}')
+            await self.circuit_breaker.record_failure()
+            raise ConfigurationError(
+                f'PostgreSQL client configuration invalid: {e}. '
+                'Check POSTGRESQL_CONNECTION_STRING and the POSTGRESQL_* '
+                'connection options.',
+            ) from e
+
         except (
             OSError,  # Includes ConnectionRefusedError, TimeoutError
             asyncpg.exceptions.ConnectionDoesNotExistError,
@@ -708,6 +744,21 @@ class PostgreSQLBackend:
         except DependencyError:
             raise  # Re-raise already-classified errors (from _ensure_pgvector_extension)
 
+        except ValueError as e:
+            # asyncpg raises plain ValueError for invalid construction inputs
+            # (pool size combinations, non-positive command_timeout) before
+            # any network I/O. DSN option errors instead surface as
+            # ClientConfigurationError and are classified above -- its
+            # InterfaceError base would shadow this clause. These are
+            # permanent misconfigurations: exit 78 so the supervisor
+            # does not restart-loop on them.
+            logger.error(f'PostgreSQL configuration invalid: {e}')
+            await self.circuit_breaker.record_failure()
+            raise ConfigurationError(
+                f'PostgreSQL configuration invalid: {e}. '
+                'Check POSTGRESQL_POOL_* values and the connection string.',
+            ) from e
+
         except Exception as e:
             logger.error(f'Failed to initialize PostgreSQL backend: {e}')
             await self.circuit_breaker.record_failure()
@@ -727,7 +778,9 @@ class PostgreSQLBackend:
         assert self._pool is not None, 'Pool not initialized'
 
         try:
-            async with self._pool.acquire() as conn:
+            async with self._pool.acquire(
+                timeout=settings.storage.postgresql_pool_timeout_s,
+            ) as conn:
                 version = await conn.fetchval('SHOW POOL_VERSION')
                 if version:
                     logger.warning(
@@ -868,8 +921,12 @@ class PostgreSQLBackend:
 
         assert self._pool is not None, 'Backend not initialized, call initialize() first'
 
-        # Acquire connection from pool
-        async with self._pool.acquire() as conn:
+        # Acquire connection from pool, bounded by the acquire-wait timeout so
+        # pool exhaustion surfaces as a TimeoutError instead of an unbounded
+        # hang (asyncpg's Pool.acquire waits forever with timeout=None).
+        async with self._pool.acquire(
+            timeout=settings.storage.postgresql_pool_timeout_s,
+        ) as conn:
             try:
                 yield conn
                 if record_breaker:
@@ -1195,7 +1252,9 @@ class PostgreSQLBackend:
         # failure (it could even leave the breaker mislearning health). Record success
         # only AFTER the inner context exits cleanly (COMMIT succeeded); a COMMIT failure
         # now flows through the same except as a body failure.
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire(
+            timeout=settings.storage.postgresql_pool_timeout_s,
+        ) as conn:
             # Create transaction context
             txn_context = PostgreSQLTransactionContext(_connection=conn)
 

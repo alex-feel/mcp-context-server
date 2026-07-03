@@ -89,8 +89,14 @@ spec:
           image: {{ include "mcp-context-server.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
+            {{- /* The container port MUST equal the port the server binds
+                   (env.FASTMCP_PORT), NOT service.port: the liveness/readiness/
+                   startup probes target the named port `http` and the Service
+                   maps service.port -> targetPort http, so deriving this from
+                   service.port breaks every probe (pod never Ready) the moment
+                   an operator overrides only env.FASTMCP_PORT. */}}
             - name: http
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ .Values.env.FASTMCP_PORT | int }}
               protocol: TCP
           envFrom:
             - configMapRef:

@@ -544,6 +544,148 @@ class TestInitializeErrorClassification:
             await backend.initialize()
 
     @pytest.mark.asyncio
+    async def test_value_error_raises_configuration_error(self) -> None:
+        """ValueError during pool creation raises ConfigurationError.
+
+        asyncpg raises plain ValueError synchronously for invalid construction
+        inputs (pool size combinations, a non-positive command_timeout) before
+        any network I/O; these are permanent misconfigurations that must exit
+        78 instead of restart-looping as a retryable dependency failure. DSN
+        option errors are NOT this shape: asyncpg raises those as
+        ClientConfigurationError, whose InterfaceError base would shadow the
+        ValueError clause, so the backend classifies them in a dedicated
+        earlier clause covered by
+        test_client_configuration_error_raises_configuration_error.
+        """
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=ValueError('min_size is greater than max_size'),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL configuration invalid'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_client_configuration_error_raises_configuration_error(self) -> None:
+        """ClientConfigurationError classifies as ConfigurationError, not DependencyError.
+
+        asyncpg raises ClientConfigurationError for permanent client-side
+        misconfigurations (invalid sslmode/target_session_attrs/gsslib values,
+        unresolvable DSN options). The class subclasses BOTH InterfaceError and
+        ValueError, so a broad InterfaceError tuple listed first would shadow
+        it into a retryable DependencyError (exit 69) and restart-loop the
+        supervisor on a permanent misconfiguration; the backend must classify
+        it as ConfigurationError (exit 78) in a clause preceding the
+        InterfaceError tuple.
+        """
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb?sslmode=bogus',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch(
+                'asyncpg.create_pool',
+                side_effect=asyncpg.exceptions.ClientConfigurationError(
+                    "sslmode is invalid, valid values are: 'disable', 'prefer', 'require'",
+                ),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL client configuration invalid'),
+        ):
+            await backend.initialize()
+
+    @pytest.mark.asyncio
+    async def test_client_configuration_error_in_pgvector_precheck(self) -> None:
+        """The pgvector pre-check classifies ClientConfigurationError the same way.
+
+        _ensure_pgvector_extension opens its own connection BEFORE pool
+        creation and carries the same InterfaceError tuple, so it needs the
+        same preceding ClientConfigurationError clause.
+        """
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb?sslmode=bogus',
+        )
+
+        with (
+            unittest.mock.patch(
+                'asyncpg.connect',
+                side_effect=asyncpg.exceptions.ClientConfigurationError(
+                    "sslmode is invalid, valid values are: 'disable', 'prefer', 'require'",
+                ),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL client configuration invalid'),
+        ):
+            await backend._ensure_pgvector_extension()
+
+    @pytest.mark.asyncio
+    async def test_acquire_timeout_and_connect_timeout_wiring(self) -> None:
+        """The acquire-wait and establishment timeouts reach their real asyncpg knobs.
+
+        asyncpg.create_pool has NO acquire-timeout parameter -- an unknown
+        'timeout' kwarg falls through connect_kwargs to asyncpg.connect() as
+        the connection ESTABLISHMENT timeout. The documented acquire-wait
+        bound (POSTGRESQL_POOL_TIMEOUT_S) therefore must be passed per-call
+        at pool.acquire(timeout=...); wiring it into create_pool instead
+        silently leaves every acquire waiting unbounded under pool
+        exhaustion.
+        """
+        from app.settings import get_settings
+
+        captured: dict[str, object] = {}
+
+        class _FakeAcquireContext:
+            async def __aenter__(self) -> AsyncMock:
+                return AsyncMock()
+
+            async def __aexit__(self, *exc_info: object) -> bool:
+                return False
+
+        fake_pool = unittest.mock.MagicMock()
+
+        def _acquire(*, timeout: float | None = None) -> _FakeAcquireContext:
+            captured['acquire_timeout'] = timeout
+            return _FakeAcquireContext()
+
+        fake_pool.acquire = _acquire
+
+        create_kwargs: dict[str, object] = {}
+
+        async def _fake_create_pool(dsn: str, **kwargs: object) -> unittest.mock.MagicMock:
+            _ = dsn
+            create_kwargs.update(kwargs)
+            return fake_pool
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch.object(backend, '_ensure_pgvector_extension', new_callable=AsyncMock),
+            unittest.mock.patch('asyncpg.create_pool', side_effect=_fake_create_pool),
+        ):
+            await backend.initialize()
+
+        settings = get_settings()
+        # create_pool's 'timeout' is the ESTABLISHMENT timeout, sourced from
+        # the dedicated connect knob -- never from the acquire knob.
+        assert create_kwargs['timeout'] == settings.storage.postgresql_connect_timeout_s
+        # The Pgpool-II detection probe runs during initialize() and must have
+        # acquired with the acquire-wait bound.
+        assert captured['acquire_timeout'] == settings.storage.postgresql_pool_timeout_s
+
+    @pytest.mark.asyncio
     async def test_unknown_exception_raises_dependency_error(self) -> None:
         """Unknown exceptions during pool creation default to DependencyError."""
 

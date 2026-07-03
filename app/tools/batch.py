@@ -138,9 +138,21 @@ async def store_context_batch(
                 validation_errors.append((idx, 'Missing required field: text'))
                 continue
 
-            # Clean input strings
-            thread_id = str(entry['thread_id']).strip()
-            text = str(entry['text']).strip()
+            # Clean input strings. Reject non-strings instead of str()-coercing:
+            # coercion would silently persist the Python repr of a truthy dict/
+            # list/number payload the Pydantic-typed single-entry store_context
+            # rejects at the tool boundary (parity with the metadata/tags/images
+            # rejections below).
+            thread_id_raw = entry['thread_id']
+            if not isinstance(thread_id_raw, str):
+                validation_errors.append((idx, 'thread_id must be a string'))
+                continue
+            text_raw = entry['text']
+            if not isinstance(text_raw, str):
+                validation_errors.append((idx, 'text must be a string'))
+                continue
+            thread_id = thread_id_raw.strip()
+            text = text_raw.strip()
 
             if not thread_id:
                 validation_errors.append((idx, 'thread_id cannot be empty or whitespace'))
@@ -268,14 +280,23 @@ async def store_context_batch(
             tasks_to_run: list[Awaitable[list[ChunkEmbedding] | str | None]] = []
             task_names: list[str] = []
 
-            # Performance optimization: pre-check for likely duplicates (read-only)
+            # Performance optimization: pre-check for likely duplicates (read-only).
+            # The candidate id and its stored summary come from ONE
+            # statement-level snapshot (see DuplicateCandidate): a separate
+            # later summary read could observe a row version a concurrent
+            # update committed in between, pairing a reused summary with text
+            # it does not describe.
             likely_duplicate_id: str | None = None
+            duplicate_summary: str | None = None
             if embedding_provider is not None or summary_provider is not None:
-                likely_duplicate_id = await repos.context.check_latest_is_duplicate(
+                duplicate_candidate = await repos.context.check_latest_is_duplicate(
                     thread_id=entry['thread_id'],
                     source=entry['source'],
                     text_content=text_content,
                 )
+                if duplicate_candidate is not None:
+                    likely_duplicate_id = duplicate_candidate.context_id
+                    duplicate_summary = duplicate_candidate.summary
             entry_likely_duplicate[ve_idx] = likely_duplicate_id
 
             # Embedding task (with pre-check optimization)
@@ -305,9 +326,8 @@ async def store_context_batch(
                     )
                     entry_summaries[ve_idx] = None
                 elif likely_duplicate_id is not None:
-                    existing_summary = await repos.context.get_summary(likely_duplicate_id)
-                    if existing_summary is not None:
-                        entry_summaries[ve_idx] = existing_summary
+                    if duplicate_summary is not None:
+                        entry_summaries[ve_idx] = duplicate_summary
                         summaries_preserved_count += 1
                         preserved_summary_indices.add(ve_idx)
                         logger.debug(
@@ -355,6 +375,13 @@ async def store_context_batch(
                 generation_errors.append((original_idx, f'Generation failed: {error_details}'))
                 entry_embeddings.setdefault(ve_idx, None)
                 entry_summaries.setdefault(ve_idx, None)
+                # This entry is discarded below; undo the preserved-summary count it
+                # provisionally bumped in the pre-check, mirroring the
+                # compression-failure compensation -- counts must reflect entries
+                # surviving the generation phase.
+                if ve_idx in preserved_summary_indices:
+                    preserved_summary_indices.discard(ve_idx)
+                    summaries_preserved_count -= 1
             else:
                 entry_embeddings.setdefault(ve_idx, None)
                 if ve_idx not in entry_summaries:
@@ -696,6 +723,12 @@ async def store_context_batch(
                                 context_id=None,
                                 error=format_exception_message(e),
                             ))
+                            # This entry is discarded; undo the preserved-summary
+                            # count its pre-check provisionally bumped -- counts
+                            # must reflect entries surviving the generation phase.
+                            if ve_idx in preserved_summary_indices:
+                                preserved_summary_indices.discard(ve_idx)
+                                summaries_preserved_count -= 1
                             break
                         # A REUSED summary was read from the since-diverged candidate
                         # and may describe different text; regenerate it for this
@@ -718,6 +751,11 @@ async def store_context_batch(
                                     context_id=None,
                                     error=format_exception_message(e),
                                 ))
+                                # This entry is discarded; undo the preserved-summary
+                                # count its pre-check provisionally bumped (the
+                                # success path below reverses it after regeneration).
+                                preserved_summary_indices.discard(ve_idx)
+                                summaries_preserved_count -= 1
                                 break
                             preserved_summary_indices.discard(ve_idx)
                             summaries_preserved_count -= 1
@@ -886,10 +924,17 @@ async def update_context_batch(
                 ))
                 continue
 
-            # Validate text if provided
+            # Validate text if provided. Reject non-strings instead of
+            # str()-coercing: coercion would silently persist the Python repr
+            # of a dict/list/number payload the Pydantic-typed single-entry
+            # update_context rejects at the tool boundary (parity with the
+            # metadata/tags rejections below).
             text = update.get('text')
             if text is not None:
-                text = str(text).strip()
+                if not isinstance(text, str):
+                    validation_errors.append((idx, context_id, 'text must be a string'))
+                    continue
+                text = text.strip()
                 if not text:
                     validation_errors.append((idx, context_id, 'text cannot be empty or whitespace'))
                     continue

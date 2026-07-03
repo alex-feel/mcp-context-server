@@ -920,19 +920,23 @@ class StorageSettings(BaseSettings):
     max_total_size_mb: int = Field(default=100, alias='MAX_TOTAL_SIZE_MB', ge=1)
     db_path: Path | None = Field(default_factory=lambda: Path.home() / '.mcp' / 'context_storage.db', alias='DB_PATH')
 
-    # Connection pool settings for StorageBackend
+    # Connection pool settings for StorageBackend. Timeouts and intervals carry
+    # gt=0 bounds: a zero or negative value passes float parsing but produces a
+    # permanently broken runtime (an asyncio wait that returns immediately
+    # busy-spins its loop; a non-positive timeout misclassifies as a retryable
+    # dependency failure), so it is rejected at the configuration boundary.
     pool_max_readers: int = Field(default=8, alias='POOL_MAX_READERS', ge=1)
     pool_max_writers: int = Field(default=1, alias='POOL_MAX_WRITERS', ge=1)
-    pool_connection_timeout_s: float = Field(default=10.0, alias='POOL_CONNECTION_TIMEOUT_S')
-    pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S')
-    pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S')
+    pool_connection_timeout_s: float = Field(default=10.0, alias='POOL_CONNECTION_TIMEOUT_S', gt=0)
+    pool_idle_timeout_s: float = Field(default=300.0, alias='POOL_IDLE_TIMEOUT_S', gt=0)
+    pool_health_check_interval_s: float = Field(default=30.0, alias='POOL_HEALTH_CHECK_INTERVAL_S', gt=0)
 
     # Retry logic settings for StorageBackend
-    retry_max_retries: int = Field(default=5, alias='RETRY_MAX_RETRIES')
-    retry_base_delay_s: float = Field(default=0.5, alias='RETRY_BASE_DELAY_S')
-    retry_max_delay_s: float = Field(default=10.0, alias='RETRY_MAX_DELAY_S')
+    retry_max_retries: int = Field(default=5, alias='RETRY_MAX_RETRIES', ge=0)
+    retry_base_delay_s: float = Field(default=0.5, alias='RETRY_BASE_DELAY_S', ge=0)
+    retry_max_delay_s: float = Field(default=10.0, alias='RETRY_MAX_DELAY_S', ge=0)
     retry_jitter: bool = Field(default=True, alias='RETRY_JITTER')
-    retry_backoff_factor: float = Field(default=2.0, alias='RETRY_BACKOFF_FACTOR')
+    retry_backoff_factor: float = Field(default=2.0, alias='RETRY_BACKOFF_FACTOR', ge=1)
 
     # SQLite PRAGMAs
     sqlite_foreign_keys: bool = Field(default=True, alias='SQLITE_FOREIGN_KEYS')
@@ -944,19 +948,21 @@ class StorageSettings(BaseSettings):
     sqlite_cache_size: int = Field(default=-64_000, alias='SQLITE_CACHE_SIZE')  # -64000 => 64MB
     sqlite_page_size: int = Field(default=4096, alias='SQLITE_PAGE_SIZE')
     sqlite_wal_autocheckpoint: int = Field(default=1000, alias='SQLITE_WAL_AUTOCHECKPOINT')
-    sqlite_busy_timeout_ms: int | None = Field(default=None, alias='SQLITE_BUSY_TIMEOUT_MS')
+    sqlite_busy_timeout_ms: int | None = Field(default=None, alias='SQLITE_BUSY_TIMEOUT_MS', ge=0)
     sqlite_wal_checkpoint: str = Field(default='PASSIVE', alias='SQLITE_WAL_CHECKPOINT')
 
     # Circuit breaker settings for StorageBackend
-    circuit_breaker_failure_threshold: int = Field(default=10, alias='CIRCUIT_BREAKER_FAILURE_THRESHOLD')
-    circuit_breaker_recovery_timeout_s: float = Field(default=30.0, alias='CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S')
-    circuit_breaker_half_open_max_calls: int = Field(default=5, alias='CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS')
+    circuit_breaker_failure_threshold: int = Field(default=10, alias='CIRCUIT_BREAKER_FAILURE_THRESHOLD', ge=1)
+    circuit_breaker_recovery_timeout_s: float = Field(default=30.0, alias='CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S', gt=0)
+    circuit_breaker_half_open_max_calls: int = Field(default=5, alias='CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS', ge=1)
 
-    # Operation timeouts
-    shutdown_timeout_s: float = Field(default=10.0, alias='SHUTDOWN_TIMEOUT_S')
-    shutdown_timeout_test_s: float = Field(default=5.0, alias='SHUTDOWN_TIMEOUT_TEST_S')
-    queue_timeout_s: float = Field(default=1.0, alias='QUEUE_TIMEOUT_S')
-    queue_timeout_test_s: float = Field(default=0.1, alias='QUEUE_TIMEOUT_TEST_S')
+    # Operation timeouts. QUEUE_TIMEOUT_S feeds asyncio.wait(timeout=...) in the
+    # write-queue processor loop, where a non-positive value returns immediately
+    # every iteration and busy-spins a core for the process lifetime.
+    shutdown_timeout_s: float = Field(default=10.0, alias='SHUTDOWN_TIMEOUT_S', gt=0)
+    shutdown_timeout_test_s: float = Field(default=5.0, alias='SHUTDOWN_TIMEOUT_TEST_S', gt=0)
+    queue_timeout_s: float = Field(default=1.0, alias='QUEUE_TIMEOUT_S', gt=0)
+    queue_timeout_test_s: float = Field(default=0.1, alias='QUEUE_TIMEOUT_TEST_S', gt=0)
 
     # PostgreSQL connection settings
     postgresql_connection_string: SecretStr | None = Field(default=None, alias='POSTGRESQL_CONNECTION_STRING')
@@ -967,7 +973,8 @@ class StorageSettings(BaseSettings):
     postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')
 
     # PostgreSQL connection pool settings. ge bounds mirror the SQLite pool
-    # fields: a zero or negative size passes pydantic but only fails later at
+    # fields, and validate_pool_min_not_above_max below enforces min <= max:
+    # any size asyncpg would reject passes pydantic but only fails later at
     # asyncpg pool creation with a plain ValueError, which the backend's broad
     # exception handler would misclassify as a retryable DependencyError
     # (exit 69, supervisor restart loop) instead of a permanent
@@ -985,8 +992,30 @@ class StorageSettings(BaseSettings):
         'Default 15 matches Supabase Free/Pro tiers; raise it on larger tiers to '
         'silence false advisories. Never clamps the pool.',
     )
-    postgresql_pool_timeout_s: float = Field(default=120.0, alias='POSTGRESQL_POOL_TIMEOUT_S')
-    postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S')
+    postgresql_pool_timeout_s: float = Field(
+        default=120.0,
+        alias='POSTGRESQL_POOL_TIMEOUT_S',
+        gt=0,
+        description='Pool acquire-wait timeout in seconds: how long a caller '
+                    'waits for a free pooled connection when every connection '
+                    'is busy. Passed per-call to pool.acquire(timeout=...); '
+                    'asyncpg.create_pool has no acquire-timeout parameter, so '
+                    'a pool-level kwarg would silently become the connection '
+                    'ESTABLISHMENT timeout instead (see '
+                    'POSTGRESQL_CONNECT_TIMEOUT_S).',
+    )
+    postgresql_connect_timeout_s: float = Field(
+        default=60.0,
+        alias='POSTGRESQL_CONNECT_TIMEOUT_S',
+        gt=0,
+        description='Connection ESTABLISHMENT timeout in seconds (TCP connect '
+                    'plus PostgreSQL startup handshake) for each new '
+                    'connection the pool or the pgvector pre-check opens. '
+                    'Distinct from POSTGRESQL_POOL_TIMEOUT_S, which bounds '
+                    'waiting for a free pooled connection. Default 60 matches '
+                    'the asyncpg default.',
+    )
+    postgresql_command_timeout_s: float = Field(default=60.0, alias='POSTGRESQL_COMMAND_TIMEOUT_S', gt=0)
     postgresql_migration_timeout_s: float = Field(
         default=300.0,
         alias='POSTGRESQL_MIGRATION_TIMEOUT_S',
@@ -1133,6 +1162,29 @@ class StorageSettings(BaseSettings):
         # Convert connection timeout from seconds to milliseconds
         return int(self.pool_connection_timeout_s * 1000)
 
+    @model_validator(mode='after')
+    def validate_pool_min_not_above_max(self) -> Self:
+        """Reject a warm-pool floor above the pool ceiling.
+
+        asyncpg raises a plain ValueError('min_size is greater than max_size')
+        from Pool.__init__ for this combination; caught at the backend's broad
+        handler it would be misclassified as a retryable DependencyError and
+        send the supervisor into a restart loop for a permanent
+        misconfiguration, so it is rejected at the configuration boundary.
+
+        Returns:
+            The validated settings instance.
+
+        Raises:
+            ValueError: If POSTGRESQL_POOL_MIN exceeds POSTGRESQL_POOL_MAX.
+        """
+        if self.postgresql_pool_min > self.postgresql_pool_max:
+            raise ValueError(
+                f'POSTGRESQL_POOL_MIN ({self.postgresql_pool_min}) must not exceed '
+                f'POSTGRESQL_POOL_MAX ({self.postgresql_pool_max})',
+            )
+        return self
+
 
 class CompressionSettings(CommonSettings):
     """Embedding compression settings.
@@ -1199,10 +1251,12 @@ class CompressionSettings(CommonSettings):
         ge=1,
         le=32,
         alias='COMPRESSION_MAX_CONCURRENT',
-        description='Max concurrent CPU-bound compression operations. Separate '
-                    'from I/O-bound EMBEDDING_MAX_CONCURRENT and '
-                    'SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4) keeps GIL '
-                    'contention bounded.',
+        description='Max concurrent compression encode workers dispatched to '
+                    'threads. The CPU-bound codec section is serialized by a '
+                    'process-wide BLAS-limits lock, so this bounds worker '
+                    'fan-out (thread count and memory), not CPU parallelism. '
+                    'Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and '
+                    'SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).',
     )
 
 

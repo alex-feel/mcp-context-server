@@ -738,3 +738,5 @@ class HybridSearchResponseDict(TypedDict, total=False):
     stats: HybridSearchStatsDict | None
     clamped_limit: ClampedLimitDict | None
     warnings: list[str] | None  # Degradation warnings when sub-searches fail (e.g., FTS or semantic)
+    error: str | None  # Set when all available modes failed on filter validation
+    validation_errors: list[str] | None  # Per-filter details accompanying error

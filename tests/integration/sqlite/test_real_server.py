@@ -199,17 +199,20 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
 
     1. vec_context_embeddings_compressed contains zero rows (no embeddings
        are produced because EMBEDDING_GENERATION is disabled), but the
-       table exists.
-    2. The legacy vec_context_embeddings table does NOT exist (the
-       migration dropped it).
+       table exists and is maintained across the boot.
+    2. The legacy vec_context_embeddings table does NOT exist.
     3. The singleton compression_metadata row exists with the env-derived
        provenance values.
     4. get_context_by_ids returns the stored entry, proving the read path
        still works with compression enabled.
 
     EMBEDDING_GENERATION is disabled so the test does not depend on
-    Ollama; the compressed write path is exercised by the unit suite at
-    ``tests/repositories/test_embedding_repository_compressed.py``.
+    Ollama. Compression provisioning follows embedding storage, so the
+    compression schema + provenance row are pre-seeded before boot,
+    reproducing a database whose data was compressed while generation was
+    on; the generation-off server maintains and seed-validates that schema
+    instead of idling. The compressed write path is exercised by the unit
+    suite at ``tests/repositories/test_embedding_repository_compressed.py``.
 
     Args:
         tmp_path: Pytest fixture providing temporary directory.
@@ -231,7 +234,7 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
             'ENABLE_EMBEDDING_GENERATION', 'ENABLE_SUMMARY_GENERATION',
             'ENABLE_EMBEDDING_COMPRESSION', 'COMPRESSION_BITS',
             'COMPRESSION_VARIANT', 'COMPRESSION_SEED',
-            'COMPRESSION_MAX_CONCURRENT',
+            'COMPRESSION_MAX_CONCURRENT', 'EMBEDDING_DIM',
         )
     }
 
@@ -251,6 +254,12 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
         'COMPRESSION_VARIANT': 'ip',
         'COMPRESSION_SEED': '42',
         'COMPRESSION_MAX_CONCURRENT': '2',
+        # Pin the dim so the spawned server always matches the pre-seeded
+        # provenance row: the dict spreads the ambient os.environ first, and
+        # CI exports EMBEDDING_DIM=384 for the unit suite, which would
+        # otherwise reach the seed-locked validator as a dim mismatch and
+        # kill the server with exit 78 before the client connects.
+        'EMBEDDING_DIM': '1024',
     }
     # Also mutate parent os.environ so any in-process helpers see the
     # compression toggle (e.g., when the wrapper imports app.settings).
@@ -265,6 +274,38 @@ async def test_compression_round_trip_sqlite(tmp_path: Path) -> None:
         conn.executescript(schema_sql)
         conn.execute('PRAGMA foreign_keys = ON')
         conn.execute('PRAGMA journal_mode = WAL')
+        # Pre-seed the compression schema + provenance row (values matching
+        # the server env below; NULL fingerprint = the documented
+        # pre-fingerprint state the validator warns about and proceeds).
+        conn.executescript(
+            '''
+            CREATE TABLE IF NOT EXISTS vec_context_embeddings_compressed (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                start_index INTEGER NOT NULL DEFAULT 0,
+                end_index INTEGER NOT NULL DEFAULT 0,
+                payload BLOB NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (context_id) REFERENCES context_entries(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS compression_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                bits INTEGER NOT NULL CHECK (bits BETWEEN 2 AND 4),
+                variant TEXT NOT NULL CHECK (variant IN ('mse', 'ip')),
+                seed INTEGER NOT NULL CHECK (seed >= 0),
+                dim INTEGER NOT NULL CHECK (dim > 0),
+                codebook_fingerprint TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            ''',
+        )
+        conn.execute(
+            'INSERT INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 42, 1024, NULL)",
+        )
         conn.commit()
 
     try:

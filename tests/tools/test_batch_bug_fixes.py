@@ -19,6 +19,8 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+from app.repositories.context_repository import DuplicateCandidate
+
 
 # Error formatting conformance
 class TestErrorFormatting:
@@ -521,8 +523,9 @@ class TestBatchStoreResponseParity:
             mock_repos.context.backend = mock_backend
 
             # Simulate dedup pre-check finding existing summary
-            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value=42)
-            mock_repos.context.get_summary = AsyncMock(return_value=mock_summary)
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(context_id='42', summary=mock_summary),
+            )
             mock_repos.context.store_with_deduplication = AsyncMock(return_value=(42, True))
 
             result = await store_context_batch(

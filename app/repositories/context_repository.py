@@ -12,6 +12,7 @@ import logging
 import sqlite3
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import NamedTuple
 from typing import cast
 
 from pydantic import ValidationError
@@ -53,6 +54,22 @@ class VersionConflictError(ControlFlowError):
 # only the expected columns are returned, preventing internal PostgreSQL columns from
 # leaking into API responses.
 CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at'
+
+
+class DuplicateCandidate(NamedTuple):
+    """Statement-level snapshot of a likely-duplicate entry found by the pre-check.
+
+    ``context_id`` and ``summary`` come from the SAME row read that matched the
+    content hash, so the summary is guaranteed to describe the text the hash
+    was computed from. Reading the summary in a separate later statement could
+    observe a row version whose summary describes DIFFERENT text (a concurrent
+    update landing between the two reads) -- and the dedup UPDATE's
+    content-hash predicate cannot distinguish a revision-consistent row from a
+    restored one, so the mismatched summary would persist via COALESCE.
+    """
+
+    context_id: str
+    summary: str | None
 
 
 def compute_content_hash(text: str) -> str:
@@ -352,9 +369,11 @@ class ContextRepository(BaseRepository):
                 rows_affected = int(result.split()[-1]) if result else 0
                 if rows_affected > 0:
                     logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                    # Normalize the asyncpg pgproto.UUID to the canonical 32-char hex
-                    # the MCP API contract requires (the SQLite branch's TEXT id is
-                    # already hex); returning the raw UUID diverges and breaks callers.
+                    # The pool's uuid->str codec (registered in _init_connection)
+                    # already yields the canonical 32-char hex the MCP API contract
+                    # requires (the SQLite branch's TEXT id is likewise hex);
+                    # normalize_id(str(...)) is idempotent defense-in-depth for
+                    # codec-less connections.
                     return normalize_id(str(existing_id)), True
                 # A concurrent writer invalidated the dedup decision; fall through to
                 # the INSERT below (the caller's reconcile machinery regenerates any
@@ -394,13 +413,21 @@ class ContextRepository(BaseRepository):
         thread_id: str,
         source: str,
         text_content: str,
-    ) -> str | None:
+    ) -> DuplicateCandidate | None:
         """Check if the latest entry matches the given content (read-only pre-check).
 
         This is a performance optimization for the embedding-first pattern.
         It allows skipping expensive embedding generation when the content
         is identical to the latest entry. The in-transaction deduplication
         in store_with_deduplication remains as the authoritative safety net.
+
+        The candidate's stored ``summary`` is returned from the SAME statement
+        that matched the content hash (see :class:`DuplicateCandidate`), so a
+        caller reusing it never pairs a summary with text it does not
+        describe: a separate later summary read could observe a row version a
+        concurrent update committed in between, and the dedup UPDATE's
+        content-hash predicate cannot tell a revision-consistent row from a
+        restored one, so the mismatched summary would persist via COALESCE.
 
         Includes an interleaving check: if opposite-source entries (agent for
         user source, user for agent source) exist after the candidate duplicate,
@@ -414,18 +441,19 @@ class ContextRepository(BaseRepository):
             text_content: Text content to check for duplicates
 
         Returns:
-            The context_id of the matching entry if duplicate found, None if no
-            match or if interleaving entries suppress deduplication.
+            A :class:`DuplicateCandidate` snapshot (context_id + stored
+            summary) if a duplicate is found, None if no match or if
+            interleaving entries suppress deduplication.
         """
         content_hash = compute_content_hash(text_content)
 
         if self.backend.backend_type == 'sqlite':
 
-            def _check_sqlite(conn: sqlite3.Connection) -> str | None:
+            def _check_sqlite(conn: sqlite3.Connection) -> DuplicateCandidate | None:
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
-                    SELECT id, content_hash, text_content FROM context_entries
+                    SELECT id, content_hash, text_content, summary FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -463,15 +491,18 @@ class ContextRepository(BaseRepository):
                 )
                 if cursor.fetchone() is not None:
                     return None
-                return cast(str, candidate_id)
+                return DuplicateCandidate(
+                    context_id=cast(str, candidate_id),
+                    summary=cast(str | None, row['summary']),
+                )
 
             return await self.backend.execute_read(_check_sqlite)
 
         # PostgreSQL
-        async def _check_postgresql(conn: 'asyncpg.Connection') -> str | None:
+        async def _check_postgresql(conn: 'asyncpg.Connection') -> DuplicateCandidate | None:
             row = await conn.fetchrow(
                 f'''
-                    SELECT id, content_hash, text_content FROM context_entries
+                    SELECT id, content_hash, text_content, summary FROM context_entries
                     WHERE thread_id = {self._placeholder(1)} AND source = {self._placeholder(2)}
                     ORDER BY id DESC
                     LIMIT 1
@@ -511,7 +542,10 @@ class ContextRepository(BaseRepository):
             )
             if interleaving_row is not None:
                 return None
-            return cast(str, candidate_id)
+            return DuplicateCandidate(
+                context_id=cast(str, candidate_id),
+                summary=cast(str | None, row['summary']),
+            )
 
         return await self.backend.execute_read(_check_postgresql)
 
@@ -1941,10 +1975,11 @@ class ContextRepository(BaseRepository):
                 prefix + '%',
                 limit,
             )
-            # Canonicalize: asyncpg returns UUID columns as pgproto.UUID whose str()
-            # is the 36-char hyphenated form. normalize_id yields the 32-char hex
-            # the SQLite path already returns, so prefix resolution echoes a
-            # canonical context_id on both backends (mirrors grep_scan_text_contents).
+            # The pool's uuid->str codec (registered in _init_connection) already
+            # decodes id to the 32-char hex the SQLite path returns.
+            # normalize_id(str(...)) is idempotent defense-in-depth for
+            # codec-less connections, so prefix resolution echoes a canonical
+            # context_id on both backends (mirrors grep_scan_text_contents).
             return [normalize_id(str(row['id'])) for row in rows]
 
         return await self.backend.execute_read(_find_postgresql)

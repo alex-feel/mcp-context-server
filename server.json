@@ -305,14 +305,21 @@
           "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
         },
         {
-          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0). This is the maximum time a request waits to acquire a connection from the pool, not the query execution timeout. For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
+          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0, must be > 0). This is the maximum time a request waits to acquire a connection from the pool (passed per-call to pool.acquire), not the query execution timeout and not the connection establishment timeout (see POSTGRESQL_CONNECT_TIMEOUT_S). For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
           "name": "POSTGRESQL_POOL_TIMEOUT_S"
         },
         {
-          "description": "PostgreSQL command execution timeout in seconds",
+          "description": "PostgreSQL connection ESTABLISHMENT timeout in seconds (default: 60.0, the asyncpg default; must be > 0): TCP connect plus startup handshake for each new connection the pool or the pgvector pre-check opens. Distinct from POSTGRESQL_POOL_TIMEOUT_S, which bounds waiting for a free pooled connection.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_CONNECT_TIMEOUT_S"
+        },
+        {
+          "description": "PostgreSQL command execution timeout in seconds (must be > 0)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1105,7 +1112,7 @@
           "default": "0"
         },
         {
-          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "description": "Max concurrent compression encode workers dispatched to threads (the CPU-bound codec section is serialized by a process-wide BLAS-limits lock, so this bounds worker fan-out, not CPU parallelism). Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -1410,14 +1417,21 @@
           "name": "POSTGRESQL_SESSION_POOLER_MAX_CLIENTS"
         },
         {
-          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0). This is the maximum time a request waits to acquire a connection from the pool, not the query execution timeout. For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
+          "description": "PostgreSQL connection-pool acquire-wait timeout in seconds (default: 120.0, must be > 0). This is the maximum time a request waits to acquire a connection from the pool (passed per-call to pool.acquire), not the query execution timeout and not the connection establishment timeout (see POSTGRESQL_CONNECT_TIMEOUT_S). For embedding-load robustness, tune POSTGRESQL_POOL_MAX and POSTGRESQL_COMMAND_TIMEOUT_S.",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
           "name": "POSTGRESQL_POOL_TIMEOUT_S"
         },
         {
-          "description": "PostgreSQL command execution timeout in seconds",
+          "description": "PostgreSQL connection ESTABLISHMENT timeout in seconds (default: 60.0, the asyncpg default; must be > 0): TCP connect plus startup handshake for each new connection the pool or the pgvector pre-check opens. Distinct from POSTGRESQL_POOL_TIMEOUT_S, which bounds waiting for a free pooled connection.",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "POSTGRESQL_CONNECT_TIMEOUT_S"
+        },
+        {
+          "description": "PostgreSQL command execution timeout in seconds (must be > 0)",
           "isRequired": false,
           "format": "number",
           "isSecret": false,
@@ -2210,7 +2224,7 @@
           "default": "0"
         },
         {
-          "description": "Max concurrent CPU-bound compression operations. Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
+          "description": "Max concurrent compression encode workers dispatched to threads (the CPU-bound codec section is serialized by a process-wide BLAS-limits lock, so this bounds worker fan-out, not CPU parallelism). Separate from I/O-bound EMBEDDING_MAX_CONCURRENT and SUMMARY_MAX_CONCURRENT. Default min(cpu_count, 4).",
           "isRequired": false,
           "format": "number",
           "isSecret": false,

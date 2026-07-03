@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp.exceptions import ToolError
 
+from app.repositories.context_repository import DuplicateCandidate
 from app.tools._shared import EmbeddingsReconcileRequiredError
 
 
@@ -81,7 +82,9 @@ class TestStoreContextReconcile:
             mock_repos.context.backend = mock_backend
 
             # Pre-check sees a duplicate WITH embeddings -> generation skipped.
-            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value='dup-id')
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(context_id='dup-id', summary=None),
+            )
             mock_repos.embeddings.exists = AsyncMock(return_value=True)
 
             # First transaction diverges (INSERT); second succeeds after regeneration.
@@ -108,11 +111,12 @@ class TestStoreContextReconcile:
     async def test_reconcile_regenerates_reused_summary(self) -> None:
         """A divergence INSERT regenerates a summary the pre-check reused.
 
-        The pre-check reads the candidate's stored summary AFTER the hash check;
-        a concurrent commit between the two can change the candidate's text so
-        the reused summary describes DIFFERENT text. When the transaction then
-        diverges into an INSERT, the reconcile path must regenerate the summary
-        for THIS text instead of persisting the poisoned reuse.
+        The pre-check snapshot pairs the candidate's stored summary with the
+        text its hash matched, but a concurrent commit can still change the
+        candidate BETWEEN the pre-check and the transaction. When the
+        transaction then diverges into a fresh INSERT, the reconcile path must
+        regenerate the summary for THIS entry's text instead of persisting the
+        candidate's since-stale reuse.
         """
         from app.tools.context import store_context
 
@@ -138,8 +142,12 @@ class TestStoreContextReconcile:
             mock_repos.context.backend = mock_backend
 
             # Pre-check sees a duplicate WITH a stored summary -> reuse, no model call.
-            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value='dup-id')
-            mock_repos.context.get_summary = AsyncMock(return_value='stale summary of other text')
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(
+                    context_id='dup-id',
+                    summary='stale summary of other text',
+                ),
+            )
 
             # First transaction diverges (INSERT); second succeeds after regeneration.
             mock_exec.side_effect = [
@@ -195,7 +203,9 @@ class TestStoreContextReconcile:
             mock_backend.begin_transaction = mock_begin_transaction
             mock_repos.context.backend = mock_backend
 
-            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value='dup-id')
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(context_id='dup-id', summary=None),
+            )
             mock_repos.embeddings.exists = AsyncMock(return_value=True)
 
             # Always diverges -- the one-shot guard must stop the loop.
@@ -245,7 +255,9 @@ class TestStoreBatchReconcile:
             mock_backend.begin_transaction = mock_begin_transaction
             mock_repos.context.backend = mock_backend
 
-            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value='dup-id')
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(context_id='dup-id', summary=None),
+            )
             mock_repos.embeddings.exists = AsyncMock(return_value=True)
 
             mock_exec.side_effect = [
@@ -307,7 +319,9 @@ class TestStoreBatchReconcile:
 
             # Both entries look like duplicates with embeddings -> upfront
             # generation is skipped for both.
-            mock_repos.context.check_latest_is_duplicate = AsyncMock(return_value='dup-id')
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(context_id='dup-id', summary=None),
+            )
             mock_repos.embeddings.exists = AsyncMock(return_value=True)
 
             # Entry 0 stores cleanly; entry 1 diverges (INSERT) so its skipped

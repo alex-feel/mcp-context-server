@@ -4,8 +4,15 @@
 --
 -- Idempotency: DROP IF EXISTS + CREATE IF NOT EXISTS make the script safe to
 -- re-run.
--- Atomicity: SQLite executescript runs the body inside a single transaction;
--- partial failures roll back.
+-- Atomicity: NONE. Under this project's legacy transaction control
+-- (isolation_level='DEFERRED'), Cursor.executescript first COMMITs any
+-- pending transaction and adds no transaction control of its own, so each
+-- DDL statement autocommits individually and a partial failure leaves the
+-- earlier statements committed. Safety comes from idempotency (a re-run
+-- self-heals) plus the enable-direction startup guard (which blocks the
+-- destructive DROP below while unencoded fp32 rows exist), NOT from
+-- rollback. Do NOT add non-idempotent or data-moving statements here
+-- expecting transactional safety.
 --
 -- Singleton provenance row: the compression_metadata table uses CHECK (id = 1)
 -- to enforce that exactly one configuration is active per database. The seed

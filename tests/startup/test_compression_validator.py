@@ -503,3 +503,62 @@ async def test_validation_null_fingerprint_warns_not_raises(
     caplog.set_level(logging_module.WARNING)
     await validate_compression_provenance(backend=backend)  # must NOT raise
     assert 'fingerprint' in caplog.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_generation_disabled_without_row_skips_seeding(
+    backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With embedding generation off and no provenance row the validator is a no-op.
+
+    Embedding storage -- and with it the compression schema -- is provisioned
+    from ENABLE_EMBEDDING_GENERATION, so nothing can ever write a compressed
+    payload on this configuration. Seeding a provenance row here would wedge a
+    later ENABLE_EMBEDDING_COMPRESSION=false flip behind the disable-direction
+    guard's --decompress instruction on a deployment whose embedding
+    infrastructure was never provisioned.
+    """
+    _set_compression_env(monkeypatch, enabled=True)
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    import app.migrations.compression as compression_module
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+    # The migration is gated the same way, so no compression tables exist.
+    await apply_compression_migration(backend=backend)
+
+    await validate_compression_provenance(backend=backend)
+
+    def _table_exists(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='compression_metadata'",
+        )
+        return cur.fetchone() is not None
+
+    assert await backend.execute_read(_table_exists) is False
+
+
+@pytest.mark.asyncio
+async def test_generation_disabled_with_existing_row_still_validates(
+    backend: StorageBackend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provenance row seeded while generation was on is still validated.
+
+    Data compressed earlier stays readable through the decode path, so the
+    seed-locked invariant must keep protecting it after the operator turns
+    embedding generation off: a seed mismatch still refuses startup (exit 78)
+    rather than silently corrupting every decode.
+    """
+    _set_compression_env(monkeypatch, seed='42')
+    await apply_compression_migration(backend=backend)
+    await validate_compression_provenance(backend=backend)
+
+    _set_compression_env(monkeypatch, seed='7')
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    import app.migrations.compression as compression_module
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+    with pytest.raises(ConfigurationError, match='COMPRESSION_SEED'):
+        await validate_compression_provenance(backend=backend)

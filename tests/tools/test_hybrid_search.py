@@ -4,6 +4,11 @@ Tests the hybrid search combining FTS and semantic search with RRF fusion.
 """
 
 from typing import Any
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+from unittest.mock import patch
+
+import pytest
 
 from app.fusion import count_unique_results
 from app.fusion import reciprocal_rank_fusion
@@ -874,3 +879,54 @@ class TestAdaptiveFtsMode:
         # The correct single-phrase escaped form, NOT the split-into-two-phrases mangling.
         assert hybrid_fts == '"ab""cd" "ef"'
         assert hybrid_fts != '"ab" "cd" "ef"'
+
+
+class TestHybridAllModesFailedValidationResponse:
+    """The structured error return when every available mode fails validation.
+
+    Exercises the ACTUAL error branch of hybrid_search_context (not a local
+    re-implementation): the response must use the documented
+    search_modes_used key, and identical validation messages produced by both
+    sub-searches over the same filters must be deduplicated.
+    """
+
+    @pytest.mark.asyncio
+    async def test_error_response_keys_and_deduplicated_messages(self) -> None:
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.fts_repository import FtsValidationError
+        from app.tools.search import hybrid_search_context
+
+        shared_messages = [
+            "Invalid metadata filter {'key': 'a', 'operator': 'nope'}: unsupported operator",
+        ]
+
+        with (
+            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=MagicMock())),
+            patch('app.tools.search.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(side_effect=FtsValidationError('Invalid filters', list(shared_messages))),
+            ),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(shared_messages))),
+            ),
+        ):
+            result = await hybrid_search_context(
+                query='anything',
+                metadata_filters=[{'key': 'a', 'operator': 'nope', 'value': 1}],
+            )
+
+        assert result['count'] == 0
+        assert result['results'] == []
+        # The documented key, matching the success path, the docstring, and
+        # the TypedDict -- not a stray spelling unique to the error branch.
+        assert result['search_modes_used'] == []
+        assert 'modes_used' not in result
+        error_text = result['error']
+        assert isinstance(error_text, str)
+        assert error_text.startswith('All available search modes failed')
+        # Both sub-searches validated the same filters and produced identical
+        # messages; the client must see each defect once.
+        assert result['validation_errors'] == shared_messages

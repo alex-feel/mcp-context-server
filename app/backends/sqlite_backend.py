@@ -470,6 +470,28 @@ class SQLiteBackend:
                 except Exception:
                     pass
 
+            # Determine timeout based on environment
+            shutdown_timeout = (
+                settings.storage.shutdown_timeout_test_s
+                if is_test_environment()
+                else settings.storage.shutdown_timeout_s
+            )
+
+            # Give the write processor a chance to exit on the shutdown signal
+            # BEFORE cancelling it: task.cancel() cannot interrupt a write
+            # already running in the executor thread (the write may still
+            # commit), so cancelling mid-write forfeits the true outcome the
+            # caller is awaiting. The processor finishes the in-flight
+            # request, resolves its future with the real result, and exits on
+            # the already-set shutdown event; only a write exceeding the
+            # timeout falls through to the forceful cancellation below.
+            if self._write_processor_task and not self._write_processor_task.done():
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(
+                        asyncio.shield(self._write_processor_task),
+                        timeout=shutdown_timeout,
+                    )
+
             # Cancel and await all background tasks
             tasks_to_cancel = list(self._background_tasks)
 
@@ -752,6 +774,12 @@ class SQLiteBackend:
         queue_timeout = settings.storage.queue_timeout_test_s if is_test_environment() else settings.storage.queue_timeout_s
         wait_task = None
         shutdown_task = None
+        # The request currently being serviced. Tracked at function scope so
+        # the cancellation handler and the finally block can terminally
+        # resolve its future: once dequeued, a request is invisible to the
+        # shutdown drain (which only sees the queue), and an unresolved
+        # future leaves its execute_write caller awaiting forever.
+        current_request: WriteRequest | None = None
 
         try:
             while not self._shutdown:
@@ -789,13 +817,21 @@ class SQLiteBackend:
                         else:
                             # This else block only executes if no exception was raised
                             # At this point, request is guaranteed to be a WriteRequest
+                            current_request = request
                             self.metrics.write_queue_size = self._write_queue.qsize()
 
-                            # Check circuit breaker
+                            # Check circuit breaker. The done() guard matches every
+                            # other resolution site in this block: the caller's task
+                            # may have been cancelled while the request sat queued
+                            # (client disconnect), and set_exception on a done future
+                            # raises InvalidStateError -- which would skip the
+                            # current_request reset and log a spurious processor error.
                             if self.circuit_breaker.is_open():
-                                request.future.set_exception(
-                                    Exception('Database circuit breaker is open, too many failures'),
-                                )
+                                if not request.future.done():
+                                    request.future.set_exception(
+                                        Exception('Database circuit breaker is open, too many failures'),
+                                    )
+                                current_request = None
                                 continue
 
                             # Process write request with retry logic
@@ -822,6 +858,18 @@ class SQLiteBackend:
                                 self.metrics.failed_queries += 1
                                 self.metrics.last_error = str(e)
                                 self.metrics.last_error_time = time.time()
+                            finally:
+                                # Terminal guarantee: whatever path unwinds this
+                                # block — including a cancellation delivered while
+                                # the write ran in the executor thread, which
+                                # cannot be interrupted and may still commit —
+                                # the caller's future must resolve. An unresolved
+                                # future leaves execute_write awaiting forever,
+                                # invisible to the shutdown drain, which only
+                                # cancels still-queued requests.
+                                if not request.future.done():
+                                    request.future.cancel()
+                                current_request = None
                     # If we get here and wait_task is not in done, it's a timeout - no writes pending
 
                 except asyncio.CancelledError:
@@ -830,6 +878,10 @@ class SQLiteBackend:
                 except Exception as e:
                     logger.error(f'Write queue processor error: {e}')
         finally:
+            # Terminal backstop: never exit with a dequeued request left
+            # unresolved, whatever path unwound the loop.
+            if current_request is not None and not current_request.future.done():
+                current_request.future.cancel()
             # Clean up any remaining tasks
             try:
                 if wait_task and not wait_task.done():

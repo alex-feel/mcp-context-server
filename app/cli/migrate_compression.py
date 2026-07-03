@@ -767,9 +767,9 @@ async def _execute_compress(
 ) -> None:
     """Encode every fp32 row and write the compressed payload table.
 
-    The whole operation runs inside a single transaction (PG: native;
-    SQLite: implicit via ``execute_write`` which commits on success and
-    rolls back on exception).
+    The whole operation runs inside a single
+    :meth:`StorageBackend.begin_transaction` transaction on both backends,
+    committing on success and rolling back on exception.
     """
     if backend.backend_type == 'sqlite':
         await _execute_compress_sqlite(
@@ -1159,9 +1159,18 @@ async def _execute_decompress(
 ) -> None:
     """Decode every compressed row and write the fp32 vec table.
 
-    The whole operation runs inside a single transaction (PG: native;
-    SQLite: implicit via ``execute_write``).
+    The whole operation runs inside a single
+    :meth:`StorageBackend.begin_transaction` transaction on both backends,
+    committing on success and rolling back on exception. With ZERO compressed rows the
+    zero-data reverse path runs instead: it drops the empty compressed table
+    and clears the provenance row WITHOUT provisioning any fp32
+    infrastructure, so the disable direction also works on deployments whose
+    embedding storage (embedding_chunks, sqlite-vec, the pgvector extension)
+    was never provisioned.
     """
+    if row_count == 0:
+        await _execute_decompress_empty(backend)
+        return
     if backend.backend_type == 'sqlite':
         await _execute_decompress_sqlite(
             backend, provider, provenance, row_count,
@@ -1169,6 +1178,44 @@ async def _execute_decompress(
         return
     await _execute_decompress_postgresql(
         backend, provider, provenance, row_count,
+    )
+
+
+async def _execute_decompress_empty(backend: StorageBackend) -> None:
+    """Zero-data reverse migration: drop the empty compressed table, clear the row.
+
+    With no compressed rows there is nothing to decode, so the fp32
+    infrastructure the full reverse path provisions (the vec0 virtual table /
+    the pgvector-typed table plus the embedding_chunks rebuild) is not needed
+    -- and may be genuinely absent: a deployment running with
+    ``ENABLE_EMBEDDING_GENERATION=false`` never provisioned embedding_chunks,
+    sqlite-vec, or the pgvector extension, yet could still carry the
+    compression schema and a provenance row, wedging the disable direction
+    behind a ``--decompress`` that crashed on the missing infrastructure.
+    Dropping the empty table and deleting the provenance row is the complete
+    reverse migration for that state; the next startup provisions fp32
+    storage per ``ENABLE_EMBEDDING_GENERATION`` as usual. The caller has
+    already verified both the provenance row and the compressed table exist.
+    """
+    if backend.backend_type == 'sqlite':
+        async with backend.begin_transaction() as txn:
+            conn = cast(sqlite3.Connection, txn.connection)
+            conn.execute('DROP TABLE IF EXISTS vec_context_embeddings_compressed')
+            conn.execute('DELETE FROM compression_metadata WHERE id = 1')
+    else:
+        migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
+        async with backend.begin_transaction() as txn:
+            pg_conn = cast('asyncpg.Connection', txn.connection)
+            await _raise_pg_migration_budget(pg_conn, migration_timeout_s)
+            await execute_migration_ddl(
+                pg_conn,
+                'DROP TABLE IF EXISTS vec_context_embeddings_compressed',
+                migration_timeout_s,
+            )
+            await pg_conn.execute('DELETE FROM compression_metadata WHERE id = 1')
+    logger.info(
+        'No compressed rows to decode; dropped the empty compressed table '
+        'and cleared the provenance row.',
     )
 
 
