@@ -1,5 +1,5 @@
 {
-  "commit-search-depth": 150,
+  "commit-search-depth": 500,
   "release-search-depth": 10,
   "sequential-calls": true,
   "packages": {
