@@ -368,3 +368,66 @@ class TestPostgresqlPoolLimits:
             settings = StorageSettings()
         assert settings.postgresql_pool_min == 5
         assert settings.postgresql_pool_max == 5
+
+    def test_connect_timeout_defaults_to_asyncpg_default(self) -> None:
+        """The establishment timeout is a separate knob from the acquire timeout."""
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert settings.postgresql_connect_timeout_s == 60.0
+        assert settings.postgresql_pool_timeout_s == 120.0
+
+    @pytest.mark.parametrize(
+        ('env_name', 'value'),
+        [
+            ('POOL_CONNECTION_TIMEOUT_S', '0'),
+            ('POOL_IDLE_TIMEOUT_S', '-1'),
+            ('POOL_HEALTH_CHECK_INTERVAL_S', '0'),
+            ('SHUTDOWN_TIMEOUT_S', '0'),
+            ('SHUTDOWN_TIMEOUT_TEST_S', '-2'),
+            ('QUEUE_TIMEOUT_S', '-1'),
+            ('QUEUE_TIMEOUT_TEST_S', '0'),
+            ('POSTGRESQL_POOL_TIMEOUT_S', '0'),
+            ('POSTGRESQL_CONNECT_TIMEOUT_S', '-1'),
+            ('POSTGRESQL_COMMAND_TIMEOUT_S', '0'),
+            ('CIRCUIT_BREAKER_RECOVERY_TIMEOUT_S', '-5'),
+            ('CIRCUIT_BREAKER_FAILURE_THRESHOLD', '0'),
+            ('CIRCUIT_BREAKER_HALF_OPEN_MAX_CALLS', '0'),
+            ('RETRY_MAX_RETRIES', '-1'),
+            ('RETRY_BASE_DELAY_S', '-0.5'),
+            ('RETRY_MAX_DELAY_S', '-1'),
+            ('RETRY_BACKOFF_FACTOR', '0.5'),
+            ('SQLITE_BUSY_TIMEOUT_MS', '-100'),
+        ],
+    )
+    def test_non_positive_timeout_and_bound_values_rejected(self, env_name: str, value: str) -> None:
+        """Out-of-bound timing values are rejected at the configuration boundary.
+
+        A zero or negative timeout passes float parsing but produces a
+        permanently broken runtime: QUEUE_TIMEOUT_S feeds asyncio.wait in the
+        write-queue processor loop where a non-positive value busy-spins a
+        core, and a non-positive asyncpg timeout raises an immediate
+        TimeoutError classified as a retryable dependency failure -- the same
+        restart-loop-on-permanent-misconfiguration class the pool-size bounds
+        close.
+        """
+        from app.settings import StorageSettings
+
+        with env_var(env_name, value), pytest.raises(ValidationError):
+            StorageSettings()
+
+    @pytest.mark.parametrize(
+        ('env_name', 'value'),
+        [
+            ('RETRY_MAX_RETRIES', '0'),
+            ('RETRY_BASE_DELAY_S', '0'),
+            ('RETRY_BACKOFF_FACTOR', '1'),
+            ('SQLITE_BUSY_TIMEOUT_MS', '0'),
+        ],
+    )
+    def test_boundary_timing_values_accepted(self, env_name: str, value: str) -> None:
+        """Documented boundary values (no retries, no delay, flat backoff) stay valid."""
+        from app.settings import StorageSettings
+
+        with env_var(env_name, value):
+            StorageSettings()
