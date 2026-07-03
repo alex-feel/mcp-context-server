@@ -383,6 +383,63 @@ class TestNavigateNodeSummaries:
         assert enriched['root']['children'][0]['children'][0]['summary'] == 'Covers the details.'
 
     @pytest.mark.asyncio
+    async def test_same_second_concurrent_update_retakes_snapshot(self, nav_backend: StorageBackend) -> None:
+        """A text-change committing between the two reads forces a snapshot retake.
+
+        SQLite CURRENT_TIMESTAMP has second granularity, so an updated_at
+        probe accepts the torn old-text/new-summaries pairing whenever the
+        concurrent update lands in the same wall-clock second as the prior
+        write -- which a sub-second commit always does. The version token
+        moves on every node-replacing write, so the probe must detect the
+        update and the result must pair the new text's outline with its own
+        node summaries.
+        """
+        await apply_index_tree_migration(nav_backend, force=True)
+        repos = await ensure_repositories()
+        cid = await _store(nav_backend, '# Old\nold body\n')
+        await repos.index_nodes.replace_nodes_for_context(cid, [
+            IndexNodeRow(
+                node_id='old', level=1, ordinal=1, title='Old',
+                node_summary='Old section abstract.', char_start=0, char_end=15,
+            ),
+        ])
+
+        real_get_nodes = repos.index_nodes.get_nodes_for_context
+        update_committed = False
+
+        async def racing_get_nodes(context_id: str) -> dict[str, str]:
+            # First node read: commit a text-change update (new text, bumped
+            # version, replaced node rows, same-second updated_at) between
+            # navigate's text read and its node read, then serve the NEW rows.
+            nonlocal update_committed
+            if not update_committed:
+                update_committed = True
+
+                def _commit_update(conn: sqlite3.Connection) -> None:
+                    conn.execute(
+                        'UPDATE context_entries SET text_content = ?, '
+                        'version = version + 1, updated_at = CURRENT_TIMESTAMP '
+                        'WHERE id = ?',
+                        ('# New\nnew body\n', context_id),
+                    )
+
+                await nav_backend.execute_write(_commit_update)
+                await repos.index_nodes.replace_nodes_for_context(context_id, [
+                    IndexNodeRow(
+                        node_id='new', level=1, ordinal=1, title='New',
+                        node_summary='New section abstract.', char_start=0, char_end=15,
+                    ),
+                ])
+            return await real_get_nodes(context_id)
+
+        with patch.object(repos.index_nodes, 'get_nodes_for_context', racing_get_nodes):
+            result = await _navigate(context_id=cid, include_node_summaries=True)
+
+        first = result['root']['children'][0]
+        assert first['title'] == 'New'
+        assert first['summary'] == 'New section abstract.'
+
+    @pytest.mark.asyncio
     async def test_summaries_omitted_by_default(self, nav_backend: StorageBackend) -> None:
         await apply_index_tree_migration(nav_backend, force=True)
         repos = await ensure_repositories()
