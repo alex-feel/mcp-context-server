@@ -352,9 +352,11 @@ class ContextRepository(BaseRepository):
                 rows_affected = int(result.split()[-1]) if result else 0
                 if rows_affected > 0:
                     logger.debug(f'Updated existing context entry {existing_id} for thread {thread_id}')
-                    # Normalize the asyncpg pgproto.UUID to the canonical 32-char hex
-                    # the MCP API contract requires (the SQLite branch's TEXT id is
-                    # already hex); returning the raw UUID diverges and breaks callers.
+                    # The pool's uuid->str codec (registered in _init_connection)
+                    # already yields the canonical 32-char hex the MCP API contract
+                    # requires (the SQLite branch's TEXT id is likewise hex);
+                    # normalize_id(str(...)) is idempotent defense-in-depth for
+                    # codec-less connections.
                     return normalize_id(str(existing_id)), True
                 # A concurrent writer invalidated the dedup decision; fall through to
                 # the INSERT below (the caller's reconcile machinery regenerates any
@@ -1941,10 +1943,11 @@ class ContextRepository(BaseRepository):
                 prefix + '%',
                 limit,
             )
-            # Canonicalize: asyncpg returns UUID columns as pgproto.UUID whose str()
-            # is the 36-char hyphenated form. normalize_id yields the 32-char hex
-            # the SQLite path already returns, so prefix resolution echoes a
-            # canonical context_id on both backends (mirrors grep_scan_text_contents).
+            # The pool's uuid->str codec (registered in _init_connection) already
+            # decodes id to the 32-char hex the SQLite path returns.
+            # normalize_id(str(...)) is idempotent defense-in-depth for
+            # codec-less connections, so prefix resolution echoes a canonical
+            # context_id on both backends (mirrors grep_scan_text_contents).
             return [normalize_id(str(row['id'])) for row in rows]
 
         return await self.backend.execute_read(_find_postgresql)
