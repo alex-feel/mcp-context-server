@@ -378,20 +378,37 @@ class MetadataQueryBuilder:
 
         The stored value is read as exact ``NUMERIC`` and NEVER down-cast: a stored-side ``DOUBLE
         PRECISION`` cast truncated a stored integer > 2**53, and a ``float8::numeric`` of the param
-        rounds to ~15 significant digits -- both diverge from SQLite. SQLite parses a JSON INTEGER
-        to an exact int64 but a JSON FLOAT to the nearest double, and asyncpg binds the param in a
-        ``NUMERIC`` context as the param's EXACT double value, so:
+        rounds the PARAM to ~15 significant digits -- both diverge from SQLite. SQLite parses a
+        JSON INTEGER to an exact int64 but a JSON FLOAT to the nearest double, and asyncpg binds
+        the param in a ``NUMERIC`` context as the param's EXACT double value, so:
 
         - INTEGER param: compare exact ``NUMERIC`` for every stored value (SQLite compares int64 /
           double-vs-int64 exactly).
-        - FLOAT param: branch on the stored value's integrality to reproduce SQLite's per-type
-          snapping -- an integral stored value compares exact ``NUMERIC`` against the param's exact
-          double value; a fractional stored value compares double-vs-double (both snapped to
-          ``float8``), so a stored ``0.3`` still equals a ``0.3`` param (same IEEE double) while a
-          stored ``2**53+1`` is never collapsed onto a ``2**53`` param.
+        - FLOAT param: reproduce SQLite's per-type snapping. ``jsonb`` normalizes every JSON number
+          to ``NUMERIC`` and discards whether the JSON text was integer-form or float-form, while
+          SQLite keeps that distinction (``json_extract`` types integer text as INTEGER, float text
+          as REAL). A float stores as its ``repr`` -- the SHORTEST decimal that round-trips -- so
+          above 2**53 the stored ``NUMERIC`` differs from the double's exact value (``float(2**55)``
+          stores as 36028797018963970 while the double is ...968), and a bare exact-``NUMERIC``
+          compare failed ``eq`` against the very value the user stored. The CASE therefore keeps
+          the exact-``NUMERIC`` compare ONLY for stored values that are integral AND provably
+          int-origin -- NOT equal to ``(stored::float8)::text::NUMERIC``, the shortest round-trip
+          decimal of their nearest double -- and compares everything else (fractional, or
+          integral-but-canonical-double-form) double-vs-double, both sides snapped to ``float8``.
+          The probe MUST route through ``::text``: ``float8out`` emits the shortest round-trip
+          decimal (Ryu, PostgreSQL 12+, ``extra_float_digits`` at its default), while the direct
+          ``float8::NUMERIC`` cast rounds to ~15 significant digits and would misclassify every
+          high-magnitude value. A stored ``0.3`` still equals a ``0.3`` param (same IEEE double),
+          a stored integer ``2**53+1`` is never collapsed onto a ``2**53`` param (non-canonical ->
+          exact), and a stored ``float(2**55)`` matches its own value again.
 
-        ``$N`` stays a single ``numeric``-typed parameter (used bare in the integral branch, cast
-        via ``(<ph>)::float8`` in the fractional branch), so asyncpg binds the float once as its
+        Known irreducible residual: an INT-origin stored value that happens to equal the canonical
+        decimal form of some double (e.g. the integer 36028797018963970) is indistinguishable from
+        a float-origin one after ``jsonb`` normalization and takes the ``float8`` comparison, while
+        SQLite compares it exactly; no provenance survives to separate the two.
+
+        ``$N`` stays a single ``numeric``-typed parameter (used bare in the exact branch, cast
+        via ``(<ph>)::float8`` in the double branch), so asyncpg binds the float once as its
         exact double value.
 
         Args:
@@ -409,7 +426,7 @@ class MetadataQueryBuilder:
         if isinstance(value, int):
             return f'{num} {sql_op} {placeholder}'
         return (
-            f'CASE WHEN {num} = trunc({num}) '
+            f'CASE WHEN {num} = trunc({num}) AND ({num}::float8)::text::NUMERIC <> {num} '
             f'THEN {num} {sql_op} {placeholder} '
             f'ELSE {num}::float8 {sql_op} ({placeholder})::float8 END'
         )

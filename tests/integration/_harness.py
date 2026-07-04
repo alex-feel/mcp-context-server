@@ -941,6 +941,90 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_metadata_filter_high_magnitude_float_roundtrip_parity(self) -> bool:
+        """A high-magnitude stored FLOAT (> 2**53) filtered by the same float agrees across backends.
+
+        Regression for the jsonb float-provenance divergence: a Python float stores as its
+        ``repr`` -- the SHORTEST decimal that round-trips -- so above 2**53 the jsonb NUMERIC
+        differs from the double's exact value (``float(2**55)`` stores as 36028797018963970 while
+        the double is ...968). asyncpg binds a float param as its EXACT double expansion, so the
+        old integral-only exact-NUMERIC branch compared 36028797018963970 = 36028797018963968 and
+        failed ``eq`` against the very value the user stored, while SQLite (double vs double)
+        matched. The fix (``_pg_numeric_body``) keeps the exact compare only for provably
+        int-origin stored values -- those NOT equal to ``(stored::float8)::NUMERIC`` -- and
+        compares canonical-double-form values double-vs-double. A stored INT equal to the double's
+        exact value (2**55 itself, non-canonical) stays on the exact branch and still matches the
+        float param exactly. Running the SAME expected counts on both backends proves parity;
+        the pre-fix PostgreSQL returned different counts than SQLite for every check with a
+        float-stored value.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter High-Magnitude Float Roundtrip Parity'
+        print('Testing high-magnitude-float roundtrip metadata-filter parity...')
+        thread = f'{self.test_thread_id}_bigfloat_parity'
+        # fstored = float(2**55): exactly 36028797018963968.0, whose shortest repr
+        # ('3.602879701896397e+16') parses to jsonb NUMERIC 36028797018963970.
+        # istored = 2**55 as an exact int. tsfloat = a nanosecond-epoch-scale float
+        # (the realistic shape that hit this divergence in the wild).
+        fstored = float(2 ** 55)
+        istored = 2 ** 55
+        tsfloat = float(1719939368123456789)
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'float 2**55', 'metadata': {'v': fstored}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'int 2**55', 'metadata': {'v': istored}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'ns-epoch float', 'metadata': {'v': tsfloat}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store high-magnitude-float entries'))
+                    return False
+
+            # SQLite (REAL vs REAL / INTEGER vs REAL exact) defines the expected counts;
+            # the fix makes PostgreSQL match. Pre-fix PG: 'eq fstored' missed the
+            # float-stored row (exact 36028797018963970 != ...968) and 'gt fstored'
+            # wrongly matched it. NOTE: an INT param against the float-stored row is the
+            # documented irreducible residual (jsonb keeps no provenance) and is
+            # deliberately NOT asserted here.
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('eq float 2**55', [{'key': 'v', 'operator': 'eq', 'value': fstored}], 2),   # {float, int}
+                ('gt float 2**55', [{'key': 'v', 'operator': 'gt', 'value': fstored}], 1),   # {ns-epoch}
+                ('gte float 2**55', [{'key': 'v', 'operator': 'gte', 'value': fstored}], 3),
+                ('lt float 2**55', [{'key': 'v', 'operator': 'lt', 'value': fstored}], 0),
+                ('ne float 2**55', [{'key': 'v', 'operator': 'ne', 'value': fstored}], 1),   # {ns-epoch}
+                ('in [float 2**55]', [{'key': 'v', 'operator': 'in', 'value': [fstored]}], 2),
+                ('eq ns-epoch float', [{'key': 'v', 'operator': 'eq', 'value': tsfloat}], 1),
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'bigfloat-parity {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All high-magnitude-float roundtrip metadata-filter parity tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_metadata_filter_boolean_type_parity(self) -> bool:
         """Boolean EQ/NE match JSON-boolean-typed values only -- identically on both backends.
 
@@ -11754,6 +11838,10 @@ class MCPServerIntegrationTest:
             (
                 'Metadata Filter High-Magnitude Int Float-Param Parity',
                 self.test_metadata_filter_high_magnitude_int_float_param_parity,
+            ),
+            (
+                'Metadata Filter High-Magnitude Float Roundtrip Parity',
+                self.test_metadata_filter_high_magnitude_float_roundtrip_parity,
             ),
             ('Metadata Filter Boolean Type Parity', self.test_metadata_filter_boolean_type_parity),
             ('Metadata Filter GLOB Special Literal', self.test_metadata_filter_glob_special_literal),
