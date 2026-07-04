@@ -351,17 +351,27 @@ def _outline_to_dict(node: OutlineNode, stored_nodes: StoredNodeSummaries) -> Ou
 
     Each node's ``summary`` is looked up in the stored per-node LLM summaries
     (empty when that layer is off): primarily by ``node_id``, then by exact
-    ``(char_start, char_end)`` span. The span fallback re-attaches rows
-    written by an OLDER slug algorithm, whose node_id the current parse no
-    longer computes for the SAME section -- spans derive from the text rather
-    than the slug, and node rows are replaced on every text change, so an
-    exact-span match against the same revision is deterministic. The caller
-    overrides the root node's summary with the entry summary afterwards.
+    ``(char_start, char_end)`` span. A ``node_id`` hit is trusted ONLY when
+    the stored row's span equals the computed node's span: node ids are
+    algorithm-versioned, so a row written by an OLDER slug algorithm can
+    collide with a DIFFERENT section's current id (a pre-cap sibling whose
+    short title equals the capped prefix of a longer sibling's slug) and
+    would otherwise attach that sibling's summary here. The span fallback
+    then re-attaches rows whose node_id the current parse no longer computes
+    for the SAME section -- spans derive from the text rather than the slug,
+    and node rows are replaced on every text change, so an exact-span match
+    against the same revision is deterministic. The caller overrides the
+    root node's summary with the entry summary afterwards.
 
     Returns:
         The node as an OutlineNodeDict, children converted recursively.
     """
-    summary = stored_nodes.by_node_id.get(node.node_id)
+    stored = stored_nodes.by_node_id.get(node.node_id)
+    summary = (
+        stored.summary
+        if stored is not None and (stored.char_start, stored.char_end) == (node.char_start, node.char_end)
+        else None
+    )
     if summary is None and node.node_id != ROOT_NODE_ID:
         # The synthetic root is excluded from the span fallback: its summary
         # mirrors the entry summary by reference (assigned by the caller), and

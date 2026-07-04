@@ -40,16 +40,34 @@ class IndexNodeRow:
     char_end: int
 
 
+class StoredNodeSummary(NamedTuple):
+    """One stored node summary with the span its row recorded at write time.
+
+    The span rides along so the reader can VALIDATE a ``node_id`` hit before
+    trusting it: node ids are algorithm-versioned (slug rules can change
+    between builds), so a stored id can collide with a DIFFERENT section's
+    current id -- e.g. a pre-cap sibling whose short title equals the capped
+    prefix of a longer sibling's slug. Spans derive from the text and rows
+    are replaced on every text change, so a span mismatch proves the id hit
+    is stale.
+    """
+
+    char_start: int
+    char_end: int
+    summary: str
+
+
 class StoredNodeSummaries(NamedTuple):
     """Stored node summaries for one entry, indexed by both attachment keys.
 
     ``by_node_id`` is the primary index the navigate_context reader attaches
-    with; ``by_span`` keys the same summaries by ``(char_start, char_end)`` so
-    rows written by an older slug algorithm still re-attach to the sections
-    the current parse computes for the unchanged text.
+    with (span-validated via :class:`StoredNodeSummary`); ``by_span`` keys
+    the same summaries by ``(char_start, char_end)`` so rows written by an
+    older slug algorithm still re-attach to the sections the current parse
+    computes for the unchanged text.
     """
 
-    by_node_id: dict[str, str]
+    by_node_id: dict[str, StoredNodeSummary]
     by_span: dict[tuple[int, int], str]
 
 
@@ -175,7 +193,12 @@ class IndexNodeRepository(BaseRepository):
                     return StoredNodeSummaries({}, {})
                 rows = [row for row in cursor.fetchall() if row['node_summary']]
                 return StoredNodeSummaries(
-                    by_node_id={row['node_id']: row['node_summary'] for row in rows},
+                    by_node_id={
+                        row['node_id']: StoredNodeSummary(
+                            int(row['char_start']), int(row['char_end']), row['node_summary'],
+                        )
+                        for row in rows
+                    },
                     by_span={
                         (int(row['char_start']), int(row['char_end'])): row['node_summary']
                         for row in rows
@@ -196,7 +219,12 @@ class IndexNodeRepository(BaseRepository):
                 return StoredNodeSummaries({}, {})
             kept = [row for row in rows if row['node_summary']]
             return StoredNodeSummaries(
-                by_node_id={row['node_id']: row['node_summary'] for row in kept},
+                by_node_id={
+                    row['node_id']: StoredNodeSummary(
+                        int(row['char_start']), int(row['char_end']), row['node_summary'],
+                    )
+                    for row in kept
+                },
                 by_span={
                     (int(row['char_start']), int(row['char_end'])): row['node_summary']
                     for row in kept

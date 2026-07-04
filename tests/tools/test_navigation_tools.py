@@ -421,6 +421,57 @@ class TestNavigateNodeSummaries:
         assert enriched['root']['summary'] is None
 
     @pytest.mark.asyncio
+    async def test_colliding_pre_cap_id_does_not_misattach_sibling_summary(
+        self, nav_backend: StorageBackend,
+    ) -> None:
+        """A stale node_id hit with a mismatched span must not steal a sibling's summary.
+
+        Node ids are algorithm-versioned: under the pre-cap slug rules a SHORT
+        sibling's id can equal the capped prefix the current parse now assigns
+        to a LONGER sibling that appears first (the short one then carries an
+        ordinal suffix). An unvalidated by_node_id hit attached the short
+        section's stored summary to the long section and left the long
+        section's own row unused. The reader must trust an id hit only when
+        the stored row's span matches the computed node's span, falling
+        through to the span index otherwise, so BOTH sections keep their own
+        summaries.
+        """
+        await apply_index_tree_migration(nav_backend, force=True)
+        repos = await ensure_repositories()
+        long_title = ('alpha beta gamma delta ' * 8).strip()
+        # Slugifies to EXACTLY the 64-code-point capped prefix of long_title's slug.
+        short_title = 'alpha beta gamma delta alpha beta gamma delta alpha beta gamma d'
+        cid = await _store(
+            nav_backend,
+            f'# {long_title}\nlong body\n# {short_title}\nshort body\n',
+        )
+
+        baseline = await _navigate(context_id=cid)
+        long_node, short_node = baseline['root']['children']
+        capped = 'alpha-beta-gamma-delta-alpha-beta-gamma-delta-alpha-beta-gamma-d'
+        assert long_node['node_id'] == capped  # the long-first sibling owns the capped base id
+        assert short_node['node_id'] != capped  # the short sibling got an ordinal suffix
+
+        pre_cap_long_id = ('alpha-beta-gamma-delta-' * 8).rstrip('-')
+        await repos.index_nodes.replace_nodes_for_context(cid, [
+            IndexNodeRow(
+                node_id=pre_cap_long_id, level=1, ordinal=1, title=long_title,
+                node_summary='Long section abstract.',
+                char_start=long_node['char_start'], char_end=long_node['char_end'],
+            ),
+            IndexNodeRow(
+                node_id=capped, level=1, ordinal=2, title=short_title,
+                node_summary='Short section abstract.',
+                char_start=short_node['char_start'], char_end=short_node['char_end'],
+            ),
+        ])
+
+        enriched = await _navigate(context_id=cid, include_node_summaries=True)
+        enriched_long, enriched_short = enriched['root']['children']
+        assert enriched_long['summary'] == 'Long section abstract.'
+        assert enriched_short['summary'] == 'Short section abstract.'
+
+    @pytest.mark.asyncio
     async def test_same_second_concurrent_update_retakes_snapshot(self, nav_backend: StorageBackend) -> None:
         """A text-change committing between the two reads forces a snapshot retake.
 

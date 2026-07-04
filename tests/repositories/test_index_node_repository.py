@@ -19,6 +19,7 @@ from app.ids import generate_id_with_timestamp
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories import RepositoryContainer
 from app.repositories.index_node_repository import IndexNodeRow
+from app.repositories.index_node_repository import StoredNodeSummary
 
 
 def _row(node_id: str, summary: str, span: tuple[int, int] = (0, 10)) -> IndexNodeRow:
@@ -70,7 +71,13 @@ class TestReplaceAndGet:
             [_row('intro', 'About intro', span=(0, 10)), _row('setup', 'About setup', span=(10, 25))],
         )
         summaries = await repos.index_nodes.get_nodes_for_context(cid)
-        assert summaries.by_node_id == {'intro': 'About intro', 'setup': 'About setup'}
+        # The node-id index carries each row's stored span so the reader can
+        # validate an id hit before trusting it (node ids are
+        # algorithm-versioned and can collide across slug-rule changes).
+        assert summaries.by_node_id == {
+            'intro': StoredNodeSummary(0, 10, 'About intro'),
+            'setup': StoredNodeSummary(10, 25, 'About setup'),
+        }
         # The span index carries the same summaries keyed by (char_start, char_end)
         # so rows written by an older slug algorithm can re-attach by position.
         assert summaries.by_span == {(0, 10): 'About intro', (10, 25): 'About setup'}
@@ -84,7 +91,7 @@ class TestReplaceAndGet:
         await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'first'), _row('b', 'second')])
         await repos.index_nodes.replace_nodes_for_context(cid, [_row('a', 'updated')])
         summaries = await repos.index_nodes.get_nodes_for_context(cid)
-        assert summaries.by_node_id == {'a': 'updated'}
+        assert summaries.by_node_id == {'a': StoredNodeSummary(0, 10, 'updated')}
 
     @pytest.mark.asyncio
     async def test_empty_replace_clears(
