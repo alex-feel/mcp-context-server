@@ -635,3 +635,66 @@ class TestTransactionExecutorOffload:
             text_content='post-cancel write', metadata=None,
         )
         assert await repos.context.get_content_type(context_id) == 'text'
+
+    @pytest.mark.asyncio
+    async def test_cancellation_mid_closure_drains_before_rollback(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        """Cancelling a task mid-closure joins the closure before unwinding.
+
+        Cancellation cannot interrupt a closure already running on the
+        executor thread; without the drain the CancelledError reaches
+        begin_transaction's rollback while the closure keeps issuing
+        statements on the same connection, and anything the zombie writes
+        after that rollback silently rides the NEXT commit. The drain must
+        hold the unwind open until the closure finishes, so its writes stay
+        inside the rolled-back transaction.
+        """
+        import asyncio
+        import sqlite3
+        import threading
+        from typing import cast
+
+        from app.ids import generate_id
+        from app.repositories.base import BaseRepository
+
+        backend, repos = backend_with_repos
+        started = threading.Event()
+        release = threading.Event()
+        zombie_id = generate_id()
+
+        def _slow_write(conn: sqlite3.Connection) -> None:
+            started.set()
+            release.wait(timeout=10)
+            conn.execute(
+                'INSERT INTO context_entries (id, thread_id, source, content_type, text_content) '
+                'VALUES (?, ?, ?, ?, ?)',
+                (zombie_id, 'zombie-1', 'user', 'text', 'must never surface'),
+            )
+
+        async def _txn_task() -> None:
+            async with backend.begin_transaction() as txn:
+                await BaseRepository._run_sqlite_txn(
+                    _slow_write, cast(sqlite3.Connection, txn.connection),
+                )
+
+        task = asyncio.create_task(_txn_task())
+        await asyncio.to_thread(started.wait, 10)
+        task.cancel()
+        # The drain must hold the cancellation open while the closure runs.
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The zombie write landed INSIDE the rolled-back transaction: a
+        # follow-up commit must not resurrect it.
+        context_id, _ = await repos.context.store_with_deduplication(
+            thread_id='zombie-2', source='user', content_type='text',
+            text_content='post-cancel commit', metadata=None,
+        )
+        assert await repos.context.get_content_type(context_id) == 'text'
+        results, _stats = await repos.context.search_contexts(thread_id='zombie-1')
+        assert results == []
