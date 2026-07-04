@@ -1,12 +1,13 @@
-"""Verify the decompress branch's catalog query uses parameterized binding.
+"""Verify the decompress branch's source-presence probe resolves via search_path.
 
-The ``_execute_decompress_postgresql`` function probes
-``information_schema.tables`` to detect whether the compressed source
-table is present. The SQL must bind the schema name as a parameter
-($1) rather than composing it via f-string interpolation; this avoids
-exposing operator-controlled ``POSTGRESQL_SCHEMA`` to SQL composition
-even when the value contains characters that would change query
-semantics if interpolated.
+``_execute_decompress_postgresql`` probes whether the compressed source
+table is present before streaming. The probe must use ``to_regclass`` so it
+resolves the BARE table name through the connection ``search_path`` --
+exactly like the bare-name DML and the trailing ``DROP TABLE`` it gates. A
+probe pinned to the configured ``POSTGRESQL_SCHEMA`` (the pre-fix
+``information_schema.tables`` lookup) reported a table living in ``public``
+as absent while the bare-name SQL kept reaching it. The operator-controlled
+schema value must also never be composed into the SQL string.
 """
 
 from collections.abc import AsyncGenerator
@@ -28,18 +29,19 @@ class _FetchvalRecorder:
 
     Mimics the asyncpg ``Connection.fetchval`` surface used by
     ``_execute_decompress_postgresql``: an async callable that accepts a
-    SQL string and any number of positional bind parameters, returns an
-    integer count, and records the (sql, params) tuple for assertion.
+    SQL string and any number of positional bind parameters, returns a
+    probe result, and records the (sql, params) tuple for assertion.
     """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
 
-    async def __call__(self, sql: str, *params: object) -> int:
+    async def __call__(self, sql: str, *params: object) -> bool:
         self.calls.append((sql, params))
-        # Return 0 so the function takes the early-return branch and
-        # avoids subsequent SQL that requires a real connection.
-        return 0
+        # Report the source table as absent so the function takes the
+        # early-return branch and avoids subsequent SQL that requires a
+        # real connection.
+        return False
 
 
 class _StubConnection:
@@ -52,7 +54,7 @@ class _StubConnection:
 
     async def execute(self, sql: str, *params: object) -> None:
         # The two ``conn.execute`` calls (CREATE TABLE / CREATE INDEX)
-        # run before the catalog-query early-return. They produce no
+        # run before the source-probe early-return. They produce no
         # observable side effects in this test.
         del sql, params
 
@@ -77,7 +79,7 @@ class _StubBackend:
 
     Only the surface that ``_execute_decompress_postgresql`` touches is
     implemented; everything else stays unimplemented to keep the test
-    scoped to the catalog-query binding invariant.
+    scoped to the source-probe resolution invariant.
     """
 
     def __init__(self, txn: _StubTxn) -> None:
@@ -93,25 +95,26 @@ class _StubBackend:
 
 
 @pytest.mark.asyncio
-async def test_decompress_catalog_query_binds_schema_as_parameter(
+async def test_decompress_source_probe_resolves_via_search_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The catalog query MUST use ``$1`` binding for the schema name.
+    """The source-presence probe MUST use ``to_regclass``, not a schema pin.
 
-    A schema string containing a single quote ``'`` would change query
-    semantics under f-string composition; under parameterized binding
-    asyncpg either rejects the value as an invalid identifier or
-    passes it through as a plain string literal. Either outcome is
-    safe; the property under test is that the schema does NOT appear
-    inside the SQL string sent to ``fetchval``.
+    ``to_regclass`` resolves the bare name through the connection
+    ``search_path`` (configured schema first, then ``public``) -- the same
+    rule the streamed reads and the trailing ``DROP TABLE`` follow. The
+    configured schema value must not appear anywhere in the SQL: an
+    injection-shaped ``POSTGRESQL_SCHEMA`` proves the probe neither pins
+    nor composes it.
     """
     fetchval = _FetchvalRecorder()
     conn = _StubConnection(fetchval=fetchval)
     txn = _StubTxn(conn=conn)
     backend = _StubBackend(txn=txn)
 
-    # Patch the settings to return a schema containing an injection-shaped
-    # character; under f-string composition this would corrupt the SQL.
+    # An injection-shaped schema: under f-string composition this would
+    # corrupt the SQL; under a schema-pinned probe it would appear as a
+    # bind parameter. The probe must show neither.
     monkeypatch.setenv('POSTGRESQL_SCHEMA', "evil'--")
     get_settings.cache_clear()
     try:
@@ -133,26 +136,22 @@ async def test_decompress_catalog_query_binds_schema_as_parameter(
         monkeypatch.delenv('POSTGRESQL_SCHEMA', raising=False)
         get_settings.cache_clear()
 
-    # Find the catalog-query call. The first or only fetchval invocation
-    # is the information_schema lookup.
-    catalog_calls = [
+    probe_calls = [
         (sql, params) for sql, params in fetchval.calls
-        if 'information_schema.tables' in sql
+        if 'to_regclass' in sql
     ]
-    assert len(catalog_calls) == 1, (
-        f'Expected exactly one information_schema.tables fetchval; '
-        f'captured={catalog_calls}'
+    assert len(probe_calls) == 1, (
+        f'Expected exactly one to_regclass source probe; '
+        f'captured={fetchval.calls}'
     )
-    sql, params = catalog_calls[0]
-    assert "'evil'--'" not in sql, (
-        'Schema name appears inside the SQL string; binding is broken. '
-        f'sql={sql!r}'
+    sql, params = probe_calls[0]
+    assert "to_regclass('vec_context_embeddings_compressed')" in sql, (
+        f'Probe must resolve the compressed source table by bare name. sql={sql!r}'
     )
-    assert '$1' in sql, (
-        'SQL must use $1 placeholder for the schema name. '
-        f'sql={sql!r}'
+    assert params == (), (
+        f'The bare-name probe takes no bind parameters. params={params!r}'
     )
-    assert params == ("evil'--",), (
-        'Schema name must be passed as the first fetchval parameter. '
-        f'params={params!r}'
-    )
+    # The schema-pinned lookup must be gone, and the operator-controlled
+    # schema value must not leak into ANY SQL string.
+    assert all('information_schema' not in s for s, _ in fetchval.calls)
+    assert all('evil' not in s for s, _ in fetchval.calls)

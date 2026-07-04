@@ -56,6 +56,7 @@ from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations._pg_ddl import fetch_migration
+from app.migrations._pg_ddl import migration_statement_timeout_ms
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -218,7 +219,22 @@ def _safe_table(name: str) -> str:
 async def _table_exists(
     backend: StorageBackend, table_name: str,
 ) -> bool:
-    """Return True if ``table_name`` exists in the database."""
+    """Return True if ``table_name`` exists in the database.
+
+    The PostgreSQL probe resolves the name with ``to_regclass`` -- through the
+    connection ``search_path`` -- because every consumer of this probe then
+    reads, counts, or drops the table with a BARE name resolved the same way.
+    A probe pinned to the configured schema would miss a table living in
+    ``public`` (the natural state of a deployment that predates a non-default
+    ``POSTGRESQL_SCHEMA``) while the bare-name SQL keeps reaching it.
+
+    Args:
+        backend: Storage backend to query.
+        table_name: Unqualified table name to probe.
+
+    Returns:
+        True when the table is reachable by an unqualified reference.
+    """
     if backend.backend_type == 'sqlite':
 
         def _check(conn: sqlite3.Connection) -> bool:
@@ -230,18 +246,10 @@ async def _table_exists(
 
         return await backend.execute_read(_check)
 
-    schema = get_settings().storage.postgresql_schema
-
     async def _check_pg(conn: asyncpg.Connection) -> bool:
         result = await conn.fetchval(
-            '''
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = $1
-                  AND table_name = $2
-            )
-            ''',
-            schema, table_name,
+            'SELECT to_regclass($1) IS NOT NULL',
+            table_name,
         )
         return bool(result)
 
@@ -454,7 +462,6 @@ async def _compress_async(source_url: str, *, dry_run: bool) -> int:
             backend=backend,
             provider=provider,
             provenance=provenance,
-            row_count=row_count,
         )
 
         print(
@@ -769,21 +776,23 @@ async def _execute_compress(
     backend: StorageBackend,
     provider: CompressionProvider,
     provenance: CompressionMetadata,
-    row_count: int,
 ) -> None:
     """Encode every fp32 row and write the compressed payload table.
 
     The whole operation runs inside a single
     :meth:`StorageBackend.begin_transaction` transaction on both backends,
-    committing on success and rolling back on exception.
+    committing on success and rolling back on exception. Each branch locks
+    the source table (``BEGIN IMMEDIATE`` / ``LOCK TABLE ... ACCESS
+    EXCLUSIVE``) BEFORE streaming and recounts it INSIDE the transaction, so
+    no planning-time row count is consumed here.
     """
     if backend.backend_type == 'sqlite':
         await _execute_compress_sqlite(
-            backend, provider, provenance, row_count,
+            backend, provider, provenance,
         )
         return
     await _execute_compress_postgresql(
-        backend, provider, provenance, row_count,
+        backend, provider, provenance,
     )
 
 
@@ -791,7 +800,6 @@ async def _execute_compress_sqlite(
     backend: StorageBackend,
     provider: CompressionProvider,
     provenance: CompressionMetadata,
-    row_count: int,
 ) -> None:
     """SQLite branch of :func:`_execute_compress`.
 
@@ -849,6 +857,17 @@ async def _execute_compress_sqlite(
             );
             ''',
         )
+
+        # Take the write lock BEFORE the first streamed read: sqlite3's
+        # legacy transaction control would otherwise open the implicit
+        # transaction only at the first INSERT, so a concurrent-process
+        # writer could commit between the planning count / early batches and
+        # that first INSERT (an equal-count replacement would slip past the
+        # count guard below and the DROP would destroy never-encoded rows).
+        # BEGIN IMMEDIATE freezes the database for the whole stream + swap;
+        # executescript above ran first because it COMMITS any open
+        # transaction (its IF NOT EXISTS DDL is idempotent autocommit).
+        conn.execute('BEGIN IMMEDIATE')
 
         # Idempotency check: a populated provenance singleton means the
         # migration has already been applied. Re-running is a no-op.
@@ -910,13 +929,21 @@ async def _execute_compress_sqlite(
         # Integrity guard: the streamed read joins embedding_chunks to
         # vec_context_embeddings, so a vec row with no embedding_chunks bridge
         # (an orphan from a corrupted source) would be silently skipped and then
-        # destroyed by the DROP below. Abort the transaction rather than drop
-        # unread fp32 data, mirroring the decompress rebuild's mismatch guard.
-        if rows_processed != row_count:
+        # destroyed by the DROP below. Recount INSIDE the write transaction
+        # (the planning-time count ran outside it and may predate a
+        # concurrent commit that BEGIN IMMEDIATE has since locked out) and
+        # abort rather than drop unread fp32 data, mirroring the decompress
+        # rebuild's mismatch guard.
+        live_count = int(
+            conn.execute(
+                'SELECT COUNT(*) FROM vec_context_embeddings',
+            ).fetchone()[0],
+        )
+        if rows_processed != live_count:
             raise ValueError(
                 f'compress read {rows_processed} fp32 row(s) but '
-                f'vec_context_embeddings holds {row_count} '
-                f'(mismatch of {abs(row_count - rows_processed)} row(s); fewer reads '
+                f'vec_context_embeddings holds {live_count} '
+                f'(mismatch of {abs(live_count - rows_processed)} row(s); fewer reads '
                 'mean orphaned vec rows lack an embedding_chunks bridge, more mean '
                 'duplicate bridges). Aborting so no fp32 vector is dropped.',
             )
@@ -965,16 +992,19 @@ async def _raise_pg_migration_budget(
     additionally carry the matching client-side deadline via :func:`execute_migration_ddl`
     and :func:`fetch_migration`. Unlike :func:`begin_migration` this does NOT take the
     schema-init advisory lock: the CLI creates its tables inline and runs as a deliberate
-    one-shot operator action, not concurrent multi-pod schema init.
+    one-shot operator action, not concurrent multi-pod schema init. The millisecond
+    conversion is floored at 1 via :func:`migration_statement_timeout_ms` -- a
+    sub-millisecond budget would truncate to 0, which PostgreSQL treats as UNLIMITED.
     """
-    await conn.execute(f'SET LOCAL statement_timeout = {int(migration_timeout_s * 1000)}')
+    await conn.execute(
+        f'SET LOCAL statement_timeout = {migration_statement_timeout_ms(migration_timeout_s)}',
+    )
 
 
 async def _execute_compress_postgresql(
     backend: StorageBackend,
     provider: CompressionProvider,
     provenance: CompressionMetadata,
-    row_count: int,
 ) -> None:
     """PostgreSQL branch of :func:`_execute_compress`.
 
@@ -983,18 +1013,22 @@ async def _execute_compress_postgresql(
     ``(context_id, id)`` and encodes each batch in-process. Server-side
     cursors would keep a portal open against the source table that
     PostgreSQL would reject when the trailing ``DROP TABLE`` runs in the
-    same transaction. Every batch INSERT plus the provenance row, the
-    HNSW index DROP, and the source table DROP run inside ONE
-    :meth:`StorageBackend.begin_transaction` so any failure rolls back
-    all work and the source table remains intact.
+    same transaction. The source table is locked ``ACCESS EXCLUSIVE``
+    BEFORE the first batch: the stream runs under READ COMMITTED, so a
+    concurrent writer replacing rows mid-stream with an equal-cardinality
+    set would otherwise slip past a count-only guard and the trailing DROP
+    would destroy never-encoded rows. Every batch INSERT plus the
+    provenance row, the HNSW index DROP, and the source table DROP run
+    inside ONE :meth:`StorageBackend.begin_transaction` so any failure
+    rolls back all work and the source table remains intact.
 
     Bounded peak memory: ``O(_MIGRATION_BATCH_SIZE * dim * 4)`` bytes
     (~40 MB at ``dim == 1024``).
 
     Raises:
-        ValueError: If the streamed read did not cover every fp32 row in
-            ``vec_context_embeddings`` (an orphan lacking an embedding_chunks
-            bridge), so the transaction aborts rather than dropping unread data.
+        ValueError: If the streamed read did not cover every fp32 row the
+            in-transaction recount sees under the lock, so the transaction
+            aborts rather than dropping unread data.
     """
     batch_size = _MIGRATION_BATCH_SIZE
     migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
@@ -1055,6 +1089,25 @@ async def _execute_compress_postgresql(
             )
             return
 
+        # Freeze the source table BEFORE streaming: the batches read under
+        # READ COMMITTED, so a concurrent writer replacing rows mid-stream
+        # with an equal-cardinality set would defeat a count-only guard --
+        # the stream would have encoded the OLD rows and the DROP below
+        # would destroy the never-encoded replacements. ACCESS EXCLUSIVE
+        # (waiting out in-flight writers, bounded by the migration budget)
+        # makes every batch, the recount, and the DROP see one frozen state.
+        await execute_migration_ddl(
+            conn,
+            'LOCK TABLE vec_context_embeddings IN ACCESS EXCLUSIVE MODE',
+            migration_timeout_s,
+        )
+        live_count = int(
+            await conn.fetchval(
+                'SELECT COUNT(*) FROM vec_context_embeddings',
+            )
+            or 0,
+        )
+
         # Stream fp32 rows in batches via LIMIT/OFFSET pagination.
         # Server-side cursors would keep a portal open against the
         # source table that PostgreSQL would reject when the trailing
@@ -1114,14 +1167,15 @@ async def _execute_compress_postgresql(
             rows_processed += len(batch)
             offset += len(batch)
 
-        # Integrity guard: abort rather than drop vec_context_embeddings if the
-        # streamed read did not cover every fp32 row. The PG read is taken
-        # directly from the table being dropped, so a mismatch signals a
-        # concurrent modification or anomaly; abort so no fp32 vector is lost.
-        if rows_processed != row_count:
+        # Integrity guard: abort rather than drop vec_context_embeddings if
+        # the streamed read did not cover every fp32 row the in-transaction
+        # recount saw under the ACCESS EXCLUSIVE lock. With the table frozen
+        # since before the first batch, a mismatch signals OFFSET-pagination
+        # drift or an anomaly; abort so no fp32 vector is lost.
+        if rows_processed != live_count:
             raise ValueError(
                 f'compress read {rows_processed} fp32 row(s) but '
-                f'vec_context_embeddings holds {row_count}; aborting so no '
+                f'vec_context_embeddings holds {live_count}; aborting so no '
                 'fp32 vector is dropped.',
             )
 
@@ -1208,9 +1262,13 @@ async def _execute_decompress_empty(backend: StorageBackend) -> None:
     concurrently could commit compressed rows in the gap, and dropping them
     here would destroy embeddings that were never decoded. On PostgreSQL the
     table is locked ACCESS EXCLUSIVE first (waiting out in-flight writers) so
-    the recount is authoritative; on SQLite the recount pins the transaction
-    snapshot and the write escalation on the drop fails busy if the database
-    moved on since.
+    the recount is authoritative; on SQLite an explicit ``BEGIN IMMEDIATE``
+    takes the write lock up front -- sqlite3's legacy transaction control
+    opens the implicit transaction only before DML, so a bare SELECT pins no
+    snapshot and a DROP with no transaction open would run in AUTOCOMMIT,
+    committing past the guard -- making the recount authoritative and the
+    drop + provenance delete one atomic commit; a concurrent write-lock
+    holder surfaces as SQLITE_BUSY, bounded by the busy timeout.
 
     Raises:
         ValueError: When the recount inside the transaction finds compressed
@@ -1221,6 +1279,7 @@ async def _execute_decompress_empty(backend: StorageBackend) -> None:
     if backend.backend_type == 'sqlite':
         async with backend.begin_transaction() as txn:
             conn = cast(sqlite3.Connection, txn.connection)
+            conn.execute('BEGIN IMMEDIATE')
             live_row = conn.execute(
                 'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
             ).fetchone()
@@ -1295,15 +1354,18 @@ async def _execute_decompress_sqlite(
     per-context sequential ``chunk_index``), so the earlier "look up
     ``embedding_chunks`` by ``chunk_index`` and skip on miss" approach
     skipped every row and silently dropped all embeddings on a default
-    deployment. Provenance DELETE + compressed source DROP run last inside
-    the same transaction.
+    deployment. ``BEGIN IMMEDIATE`` takes the write lock BEFORE the first
+    streamed read, so a concurrent-process writer cannot commit (or replace
+    rows with an equal-cardinality set) mid-stream. Provenance DELETE +
+    compressed source DROP run last inside the same transaction.
 
     Raises:
         ValueError: When the recount inside the transaction disagrees with
-            the number of rows streamed -- a concurrent writer committed
-            compressed rows after the streamed reads, and the drop below
-            would destroy payloads that were never decoded. Mirrors the
-            compress path's integrity guard; the transaction rolls back.
+            the number of rows streamed -- with the write lock held since
+            before the first batch this signals pagination drift or an
+            anomaly, and the drop below could destroy payloads that were
+            never decoded. Mirrors the compress path's integrity guard; the
+            transaction rolls back.
     """
     batch_size = _MIGRATION_BATCH_SIZE
 
@@ -1315,6 +1377,15 @@ async def _execute_decompress_sqlite(
             f'CREATE VIRTUAL TABLE IF NOT EXISTS vec_context_embeddings '
             f'USING vec0(embedding float[{provenance.dim}])',
         )
+
+        # Take the write lock BEFORE the first streamed read (see the
+        # compress branch): without BEGIN IMMEDIATE the implicit transaction
+        # opens only at the first DML, leaving early batch reads exposed to a
+        # concurrent-process writer whose equal-count replacement would slip
+        # past the recount guard below. executescript above ran first because
+        # it COMMITS any open transaction (its IF NOT EXISTS DDL is
+        # idempotent autocommit).
+        conn.execute('BEGIN IMMEDIATE')
 
         # Idempotency check: if the compressed source table no longer
         # exists, the reverse migration has already run.
@@ -1377,11 +1448,10 @@ async def _execute_decompress_sqlite(
             rows_processed += len(batch)
             offset += len(batch)
 
-        # Integrity guard mirroring the compress path: a compressed row
-        # committed by a concurrent writer after the streamed reads would be
-        # destroyed by the DROP below without ever having been decoded.
-        # Recount inside the transaction and abort rather than drop undecoded
-        # payloads.
+        # Integrity guard mirroring the compress path: with BEGIN IMMEDIATE
+        # holding the write lock since before the first batch, a mismatch
+        # against the in-transaction recount signals pagination drift or an
+        # anomaly; abort rather than drop undecoded payloads.
         live_count = int(
             conn.execute(
                 'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
@@ -1421,15 +1491,19 @@ async def _execute_decompress_postgresql(
     ordered by ``(context_id, chunk_index)``. Server-side cursors would
     keep a portal open against the source table that PostgreSQL would
     reject when the trailing ``DROP TABLE`` runs in the same
-    transaction. Recreates ``vec_context_embeddings`` + HNSW index
-    inside the same transaction that streams decompressed rows in
-    batches.
+    transaction. The source table is locked ``ACCESS EXCLUSIVE`` BEFORE
+    the first batch: the stream runs under READ COMMITTED, so a concurrent
+    same-chunk-count update committing mid-stream would otherwise replace
+    rows the stream had already decoded without changing the cardinality a
+    trailing recount could check. Recreates ``vec_context_embeddings`` +
+    HNSW index inside the same transaction that streams decompressed rows
+    in batches.
 
     Raises:
-        ValueError: When the recount under the ACCESS EXCLUSIVE lock
-            disagrees with the number of rows streamed -- a concurrent
-            writer committed compressed rows after the streamed reads, and
-            the drop below would destroy payloads that were never decoded.
+        ValueError: When the number of rows streamed disagrees with the
+            recount taken under the lock before streaming -- with the table
+            frozen this signals OFFSET-pagination drift or an anomaly, and
+            the drop below could destroy payloads that were never decoded.
             Mirrors the compress path's integrity guard; the transaction
             rolls back.
     """
@@ -1448,10 +1522,9 @@ async def _execute_decompress_postgresql(
         # this matches the project-wide pattern in
         # ``embedding_repository.py`` and ``postgresql_schema.sql``.
         # Operators using a non-default schema configure ``search_path``
-        # accordingly. The ``information_schema.tables`` lookup below
-        # passes the schema name as a parameterized bind value rather
-        # than composing it into the SQL string, matching the binding
-        # pattern used by ``_check_pg`` at lines 233-244.
+        # accordingly. The existence probe below uses ``to_regclass`` so
+        # it resolves through the SAME search_path as the bare-name DML
+        # and the trailing DROP TABLE.
         await conn.execute(
             f'CREATE TABLE IF NOT EXISTS vec_context_embeddings ('
             f'  id BIGSERIAL PRIMARY KEY,'
@@ -1470,18 +1543,38 @@ async def _execute_decompress_postgresql(
 
         # Idempotency check: the compressed source table must exist for
         # reverse migration to have work to do.
-        existing_count = await conn.fetchval(
-            'SELECT COUNT(*) FROM information_schema.tables '
-            'WHERE table_schema = $1 '
-            "AND table_name = 'vec_context_embeddings_compressed'",
-            get_settings().storage.postgresql_schema,
+        source_reachable = await conn.fetchval(
+            "SELECT to_regclass('vec_context_embeddings_compressed') IS NOT NULL",
         )
-        if int(existing_count or 0) == 0:
+        if not source_reachable:
             logger.info(
                 'Reverse migration already applied (compressed source '
                 'table absent); --decompress is a no-op.',
             )
             return
+
+        # Freeze the source table BEFORE streaming: the batches read under
+        # READ COMMITTED, so a concurrent writer replacing an entry's N
+        # compressed rows with N new ones mid-stream (a same-chunk-count
+        # update, the most common write shape) would defeat a count-only
+        # recount taken after the fact -- the stream would have decoded the
+        # OLD rows, the cardinality would still match, and the DROP below
+        # would destroy the never-decoded new payloads while fp32 kept the
+        # stale ones. ACCESS EXCLUSIVE (waiting out in-flight writers,
+        # bounded by the migration budget) makes every batch, the recount,
+        # and the DROP see one frozen state.
+        await execute_migration_ddl(
+            conn,
+            'LOCK TABLE vec_context_embeddings_compressed '
+            'IN ACCESS EXCLUSIVE MODE',
+            migration_timeout_s,
+        )
+        live_count = int(
+            await conn.fetchval(
+                'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+            )
+            or 0,
+        )
 
         # Stream compressed rows in batches via LIMIT/OFFSET pagination.
         # Server-side cursors would keep a portal open against the
@@ -1515,24 +1608,11 @@ async def _execute_decompress_postgresql(
             rows_processed += len(batch)
             offset += len(batch)
 
-        # Integrity guard mirroring the compress path: under READ COMMITTED a
-        # concurrent writer can commit compressed rows after the last streamed
-        # batch, and the DROP below would destroy them without ever decoding.
-        # Lock the source table ACCESS EXCLUSIVE (waiting out in-flight
-        # writers), recount authoritatively under the lock, and abort on any
-        # mismatch rather than drop undecoded payloads.
-        await execute_migration_ddl(
-            conn,
-            'LOCK TABLE vec_context_embeddings_compressed '
-            'IN ACCESS EXCLUSIVE MODE',
-            migration_timeout_s,
-        )
-        live_count = int(
-            await conn.fetchval(
-                'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
-            )
-            or 0,
-        )
+        # Integrity guard mirroring the compress path: with the ACCESS
+        # EXCLUSIVE lock held since before the first batch, the table cannot
+        # have changed mid-stream; a mismatch against the under-lock recount
+        # signals OFFSET-pagination drift or an anomaly, and aborting is
+        # still safer than dropping an undecoded payload.
         if live_count != rows_processed:
             raise ValueError(
                 f'decompress streamed {rows_processed} compressed row(s) but '
