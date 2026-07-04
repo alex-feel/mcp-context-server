@@ -421,6 +421,159 @@ class TestDryRunNoTargetWrites:
         assert not new_target_db_path.exists()
 
 
+class TestEnsureTargetPgFts:
+    """FTS backstop for a PRE-EXISTING PostgreSQL target.
+
+    ``initialize_target_postgresql`` provisions FTS only when the target had
+    no ``context_entries`` table at all; a pre-existing target (bootstrapped
+    by a server run with ``ENABLE_FTS=false``, or by any means other than
+    this CLI) previously lost the source's full-text search silently -- the
+    exact regression class the source-presence gate closed for freshly
+    initialized targets. Unlike embeddings (not derivable -> abort), FTS is
+    fully derivable from the copied rows, so the backstop provisions it.
+    """
+
+    @staticmethod
+    def _column_probe_conn(has_fts_column: bool) -> object:
+        """Build a fake target connection answering the column probe.
+
+        Args:
+            has_fts_column: Whether the probe reports text_search_vector.
+
+        Returns:
+            An object exposing the async ``fetchval`` surface the probe uses.
+        """
+
+        class _Conn:
+            async def fetchval(self, query: str, *args: object) -> bool:
+                del query, args
+                return has_fts_column
+
+        return _Conn()
+
+    @pytest.mark.asyncio
+    async def test_noop_when_source_has_no_fts(self) -> None:
+        """No probe, no provisioning, no note when the source lacks FTS."""
+        from typing import Any
+        from typing import cast
+
+        from app.cli.migrate import ensure_target_pg_fts
+
+        stats = MigrationStats()
+        await ensure_target_pg_fts(
+            'postgresql://ignored', cast(Any, object()),
+            target_schema='public', source_has_fts=False,
+            dry_run=False, stats=stats,
+        )
+        assert stats.warnings == []
+        assert stats.errors == []
+
+    @pytest.mark.asyncio
+    async def test_noop_when_target_already_has_fts(self) -> None:
+        """A target already carrying text_search_vector is left untouched."""
+        from typing import Any
+        from typing import cast
+
+        from app.cli.migrate import ensure_target_pg_fts
+
+        stats = MigrationStats()
+        await ensure_target_pg_fts(
+            'postgresql://ignored', cast(Any, self._column_probe_conn(True)),
+            target_schema='public', source_has_fts=True,
+            dry_run=False, stats=stats,
+        )
+        assert stats.warnings == []
+
+    @pytest.mark.asyncio
+    async def test_dry_run_records_the_provisioning_plan(self) -> None:
+        """A dry run records the plan instead of touching the target."""
+        from typing import Any
+        from typing import cast
+
+        from app.cli.migrate import ensure_target_pg_fts
+
+        stats = MigrationStats()
+        await ensure_target_pg_fts(
+            'postgresql://ignored', cast(Any, self._column_probe_conn(False)),
+            target_schema='public', source_has_fts=True,
+            dry_run=True, stats=stats,
+        )
+        assert any('would be provisioned' in w for w in stats.warnings)
+        assert stats.errors == []
+
+    @pytest.mark.asyncio
+    async def test_real_run_applies_the_fts_migration_with_force(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A real run applies apply_fts_migration(force=True) against the target."""
+        from typing import Any
+        from typing import cast
+        from unittest.mock import AsyncMock
+
+        import app.backends as backends_module
+        import app.migrations.fts as fts_module
+        from app.cli.migrate import ensure_target_pg_fts
+
+        fake_backend = AsyncMock()
+        monkeypatch.setattr(
+            backends_module, 'create_backend', lambda **_kw: fake_backend,
+        )
+        apply_spy = AsyncMock()
+        monkeypatch.setattr(fts_module, 'apply_fts_migration', apply_spy)
+
+        stats = MigrationStats()
+        await ensure_target_pg_fts(
+            'postgresql://ignored', cast(Any, self._column_probe_conn(False)),
+            target_schema='public', source_has_fts=True,
+            dry_run=False, stats=stats,
+        )
+
+        apply_spy.assert_awaited_once_with(fake_backend, force=True)
+        fake_backend.initialize.assert_awaited_once()
+        fake_backend.shutdown.assert_awaited_once()
+        assert any('provisioned full-text search' in w for w in stats.warnings)
+
+
+class TestSettingsValidationExitCode:
+    """A settings ValidationError exits EX_CONFIG (78) on every CLI path.
+
+    The server's guarded import (app/server.py) classifies an import-time
+    settings ValidationError as a permanent misconfiguration and exits 78,
+    but mcp-context-server-migrate never imports app.server: its in-place
+    flows reach get_settings() through the lazily imported backend modules,
+    and previously a value like RETRY_MAX_RETRIES=0 surfaced as a raw
+    multi-frame pydantic traceback with the generic exit 1 -- the exact
+    failure mode the server guard eliminated, alive on a second first-class
+    entry point.
+    """
+
+    def test_in_place_dispatch_maps_validation_error_to_exit_78(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--compress under an invalid env exits 78 with the pydantic detail."""
+        from app.errors import ConfigurationError
+        from app.settings import get_settings
+
+        db = tmp_path / 'src.db'
+        sqlite3.connect(str(db)).close()
+        monkeypatch.setenv('RETRY_MAX_RETRIES', '0')
+        get_settings.cache_clear()
+        try:
+            rc = cli_main(['--source-url', f'sqlite:///{db}', '--compress', '--dry-run'])
+        finally:
+            monkeypatch.delenv('RETRY_MAX_RETRIES', raising=False)
+            get_settings.cache_clear()
+
+        assert rc == ConfigurationError.EXIT_CODE
+        err = capsys.readouterr().err
+        assert 'Configuration invalid' in err
+        assert 'RETRY_MAX_RETRIES' in err or 'retry_max_retries' in err
+
+
 class TestUuidMappingFormat:
     """Format invariants for produced UUIDv7 hex strings."""
 
