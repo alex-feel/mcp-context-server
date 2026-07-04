@@ -19,40 +19,11 @@ import asyncpg
 
 from app.backends import StorageBackend
 
-
-async def embedding_metadata_table_exists(backend: StorageBackend) -> bool:
-    """Return True when the ``embedding_metadata`` table exists.
-
-    Args:
-        backend: Storage backend to query.
-
-    Returns:
-        True when the ``embedding_metadata`` table is present in the database.
-    """
-    if backend.backend_type == 'sqlite':
-
-        def _check(conn: sqlite3.Connection) -> bool:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name='embedding_metadata'",
-            )
-            return cursor.fetchone() is not None
-
-        return await backend.execute_read(_check)
-
-    async def _check_pg(conn: asyncpg.Connection) -> bool:
-        result = await conn.fetchval(
-            '''
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = current_schema()
-                  AND table_name = 'embedding_metadata'
-            )
-            ''',
-        )
-        return bool(result)
-
-    return await backend.execute_read(cast(Any, _check_pg))
+# Re-exported from the shared migration-probe module so the CLI flows and the
+# migration provisioning gates consult the SAME probe (sqlite_master on
+# SQLite; to_regclass -- connection search_path -- on PostgreSQL, matching
+# the bare-name reads it gates) and cannot drift apart.
+from app.migrations._probes import embedding_metadata_table_exists
 
 
 async def dimension_conflict_error(

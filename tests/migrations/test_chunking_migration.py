@@ -25,17 +25,23 @@ class TestApplyChunkingMigration:
 
     @pytest.mark.asyncio
     async def test_migration_skipped_when_embedding_generation_disabled(self) -> None:
-        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false.
+        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false on a FRESH database.
 
         The chunking migration provisions the 1:N embedding-storage layer from
         embedding GENERATION (settings.embedding.generation_enabled), not from the
-        semantic-search TOOL toggle. It skips only when embedding generation is off.
+        semantic-search TOOL toggle. With generation off it skips only when the
+        database carries no embedding infrastructure (the infra-present
+        fallthrough keeps an existing layout maintained); the only read allowed
+        is that probe.
         """
+        from unittest.mock import AsyncMock
+
         from app.migrations import apply_chunking_migration
 
-        # Create mock backend
+        # Create mock backend; the infra probe reports a fresh database.
         mock_backend = MagicMock()
         mock_backend.backend_type = 'sqlite'
+        mock_backend.execute_read = AsyncMock(return_value=False)
 
         # Mock settings with embedding generation disabled
         mock_settings = MagicMock()
@@ -45,9 +51,9 @@ class TestApplyChunkingMigration:
             # Call should return early without doing anything
             await apply_chunking_migration(backend=mock_backend)
 
-            # No execute_write calls should have been made
+            # No writes; the single read is the embedding-infra probe.
             mock_backend.execute_write.assert_not_called()
-            mock_backend.execute_read.assert_not_called()
+            mock_backend.execute_read.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_migration_creates_embedding_chunks_table_sqlite(self, tmp_path: Path) -> None:

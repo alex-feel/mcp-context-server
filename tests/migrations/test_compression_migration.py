@@ -553,6 +553,73 @@ async def test_sqlite_migration_provisions_schema_for_embedding_infra_generation
 
 
 @pytest.mark.asyncio
+@requires_sqlite_vec
+async def test_sqlite_fp32_reprovisioned_after_compression_off_flip_generation_off(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A compression-off flip on an infra-carrying generation-off database self-heals.
+
+    Chain: a generation-on past provisions the fp32 embedding layout; a
+    generation-off boot with compression on swaps the (empty) fp32 table for
+    the compressed schema, and the validator seeds no provenance row there
+    (nothing can write compressed data), so a later bare
+    ENABLE_EMBEDDING_COMPRESSION=false flip boots without the --decompress
+    ceremony. The cleanup paths gate on embedding_metadata presence and then
+    touch the fp32 table, so the semantic migration's infra-present
+    fallthrough must re-provision it -- without the fallthrough, every
+    text-carrying update failed inside its transaction on PostgreSQL while
+    SQLite silently no-opped.
+    """
+    import app.migrations.chunking as chunking_module
+    import app.migrations.compression as compression_module
+    import app.migrations.semantic as semantic_module
+    from app.migrations.chunking import apply_chunking_migration
+    from app.migrations.semantic import apply_semantic_search_migration
+
+    def _rebind_settings() -> None:
+        get_settings.cache_clear()
+        fresh = get_settings()
+        monkeypatch.setattr(semantic_module, 'settings', fresh)
+        monkeypatch.setattr(chunking_module, 'settings', fresh)
+        monkeypatch.setattr(compression_module, 'settings', fresh)
+
+    def _fp32_exists(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='vec_context_embeddings'",
+        )
+        return cur.fetchone() is not None
+
+    # Phase 1: a generation-on past provisions the real fp32 embedding infra.
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    _rebind_settings()
+    await apply_semantic_search_migration(backend=backend)
+    await apply_chunking_migration(backend=backend)
+    assert await backend.execute_read(_fp32_exists) is True
+
+    # Phase 2: generation off + compression on -> the table swap removes the
+    # empty fp32 table and provisions the compressed schema.
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('COMPRESSION_SEED', '42')
+    _rebind_settings()
+    await apply_compression_migration(backend=backend)
+    assert await backend.execute_read(_fp32_exists) is False
+
+    # Phase 3: bare compression-off flip (generation still off; no provenance
+    # row, so no disable-direction guard) -> the semantic and chunking
+    # fallthrough re-provisions the fp32 layout the cleanup paths depend on.
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.delenv('COMPRESSION_SEED', raising=False)
+    _rebind_settings()
+    await apply_semantic_search_migration(backend=backend)
+    await apply_chunking_migration(backend=backend)
+    await apply_compression_migration(backend=backend)
+    assert await backend.execute_read(_fp32_exists) is True
+
+
+@pytest.mark.asyncio
 async def test_sqlite_migration_stays_clean_after_zero_data_decompress_generation_off(
     backend: StorageBackend,
     monkeypatch: pytest.MonkeyPatch,

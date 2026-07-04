@@ -32,17 +32,22 @@ class TestApplySemanticSearchMigration:
 
     @pytest.mark.asyncio
     async def test_migration_skipped_when_disabled(self) -> None:
-        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false.
+        """Verify no-op when ENABLE_EMBEDDING_GENERATION=false on a FRESH database.
 
         The semantic-search vector-storage migration is provisioned from embedding
         GENERATION (settings.embedding.generation_enabled), not from the search TOOL
-        toggle. It skips only when embedding generation is off.
+        toggle. With generation off it skips only when the database carries no
+        embedding infrastructure (the infra-present fallthrough keeps an
+        existing layout maintained); the only read allowed is that probe.
         """
+        from unittest.mock import AsyncMock
+
         from app.migrations import apply_semantic_search_migration
 
-        # Create mock backend
+        # Create mock backend; the infra probe reports a fresh database.
         mock_backend = MagicMock()
         mock_backend.backend_type = 'sqlite'
+        mock_backend.execute_read = AsyncMock(return_value=False)
 
         # Mock settings directly since it's already loaded at import time
         mock_settings = MagicMock()
@@ -52,9 +57,9 @@ class TestApplySemanticSearchMigration:
             # Call should return early without doing anything
             await apply_semantic_search_migration(backend=mock_backend)
 
-            # No execute_write calls should have been made
+            # No writes; the single read is the embedding-infra probe.
             mock_backend.execute_write.assert_not_called()
-            mock_backend.execute_read.assert_not_called()
+            mock_backend.execute_read.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_migration_creates_tables_sqlite(self, tmp_path: Path) -> None:
@@ -1185,6 +1190,36 @@ class TestMigrationDdlTimeout:
             'advisory' in stmt.lower() and t == 300.0 + _CLIENT_TIMEOUT_MARGIN_S
             for stmt, t in recorded
         )
+
+    @pytest.mark.asyncio
+    async def test_begin_migration_floors_sub_millisecond_budget_at_one(self) -> None:
+        """A sub-millisecond budget must not truncate to statement_timeout = 0.
+
+        PostgreSQL treats ``SET LOCAL statement_timeout = 0`` as UNLIMITED, so
+        truncating a sub-millisecond POSTGRESQL_MIGRATION_TIMEOUT_S (the
+        settings bound is only gt=0) would silently REMOVE the server-side
+        backstop and invert the server-cancels-first design.
+        """
+        from app.migrations._pg_ddl import begin_migration
+
+        recorded: list[str] = []
+
+        async def record_execute(stmt, *_a, **kw):
+            del kw
+            recorded.append(stmt)
+
+        mock_conn = AsyncMock()
+        mock_conn.execute = record_execute
+        await begin_migration(mock_conn, 0.0005)
+
+        assert recorded[0] == 'SET LOCAL statement_timeout = 1'
+
+    def test_migration_statement_timeout_ms_floor_and_default(self) -> None:
+        """The shared millisecond conversion floors at 1 and is exact at the default."""
+        from app.migrations._pg_ddl import migration_statement_timeout_ms
+
+        assert migration_statement_timeout_ms(0.0005) == 1
+        assert migration_statement_timeout_ms(300.0) == 300000
 
     @staticmethod
     def _recording_pg_backend(executed: list[tuple[str, float | None]]) -> MagicMock:

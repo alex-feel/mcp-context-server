@@ -24,6 +24,7 @@ from app.errors import ConfigurationError
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
+from app.migrations._probes import embedding_metadata_table_exists
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,17 @@ async def _fp32_table_has_rows(backend: StorageBackend) -> bool:
     compression provenance row exists, a populated fp32 table is the
     AUTHORITATIVE embedding store, and the migration's ``DROP TABLE IF EXISTS
     vec_context_embeddings`` would destroy it irrecoverably.
+
+    Args:
+        backend: Storage backend instance.
+
+    The PostgreSQL probe resolves the name with ``to_regclass``, i.e. through
+    the connection ``search_path`` (configured schema first, then ``public``),
+    because the ``DROP TABLE`` this guard protects uses a BARE name resolved
+    the same way. A probe pinned to the configured schema would miss a legacy
+    fp32 table living in ``public`` -- exactly the table the bare-name DROP
+    would destroy -- whenever the operator later sets a non-default
+    ``POSTGRESQL_SCHEMA``.
 
     Args:
         backend: Storage backend instance.
@@ -66,16 +78,8 @@ async def _fp32_table_has_rows(backend: StorageBackend) -> bool:
         return await backend.execute_read(_probe_sqlite)
 
     async def _probe_pg(conn: asyncpg.Connection) -> bool:
-        schema = settings.storage.postgresql_schema
         exists = await conn.fetchval(
-            '''
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = $1
-                  AND table_name = 'vec_context_embeddings'
-            )
-            ''',
-            schema,
+            "SELECT to_regclass('vec_context_embeddings') IS NOT NULL",
         )
         if not exists:
             return False
@@ -111,50 +115,6 @@ def _check_compression_migration_applied_sqlite(conn: sqlite3.Connection) -> boo
     )
     row = cursor.fetchone()
     return bool(row and row[0] == 2)
-
-
-async def _embedding_metadata_table_exists(backend: StorageBackend) -> bool:
-    """Return True when the ``embedding_metadata`` table exists.
-
-    Table presence is the durable signal that embedding storage was ever
-    provisioned (the semantic-search migration creates it): the delete and
-    update cleanup paths gate on it and route through the compressed payload
-    table whenever compression is enabled, so a compression-enabled runtime
-    on such a database MUST carry the compression schema even while embedding
-    generation is toggled off -- otherwise every text-carrying update would
-    fail on the missing payload table inside its transaction.
-
-    Args:
-        backend: Storage backend instance.
-
-    Returns:
-        True when the table exists in the active schema.
-    """
-    if backend.backend_type == 'sqlite':
-
-        def _probe_sqlite(conn: sqlite3.Connection) -> bool:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='embedding_metadata'",
-            )
-            return cursor.fetchone() is not None
-
-        return await backend.execute_read(_probe_sqlite)
-
-    async def _probe_pg(conn: asyncpg.Connection) -> bool:
-        schema = settings.storage.postgresql_schema
-        exists = await conn.fetchval(
-            '''
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables
-                WHERE table_schema = $1
-                  AND table_name = 'embedding_metadata'
-            )
-            ''',
-            schema,
-        )
-        return bool(exists)
-
-    return await backend.execute_read(cast(Any, _probe_pg))
 
 
 async def uncompressed_fp32_guard_message(backend: StorageBackend) -> str | None:
@@ -207,28 +167,23 @@ async def _check_compression_migration_applied_postgresql(conn: asyncpg.Connecti
     probe applies the same both-tables rule for the generation-off gate,
     which consumes these probes as its skip signal.
 
+    Resolution uses ``to_regclass`` (connection ``search_path``) because the
+    migration's DDL and every runtime read/write of these tables use BARE
+    names resolved the same way; a probe pinned to the configured schema
+    would report tables living in ``public`` as absent while the bare-name
+    SQL keeps reaching them.
+
     Args:
         conn: PostgreSQL connection.
 
     Returns:
         True when ``compression_metadata`` AND
-        ``vec_context_embeddings_compressed`` both exist in the configured
-        schema.
+        ``vec_context_embeddings_compressed`` are both reachable by an
+        unqualified reference on this connection.
     """
-    schema = settings.storage.postgresql_schema
     result = await conn.fetchval(
-        '''
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = $1
-              AND table_name = 'compression_metadata'
-        ) AND EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = $1
-              AND table_name = 'vec_context_embeddings_compressed'
-        )
-        ''',
-        schema,
+        "SELECT to_regclass('compression_metadata') IS NOT NULL "
+        "AND to_regclass('vec_context_embeddings_compressed') IS NOT NULL",
     )
     return bool(result)
 
@@ -287,7 +242,11 @@ async def apply_compression_migration(backend: StorageBackend) -> None:
     # exists (a generation-on past, or a migration-CLI-initialized target):
     # the delete/update cleanup paths route through the compressed payload
     # table whenever compression is enabled, so skipping there would make
-    # every text-carrying update fail on the missing table.
+    # every text-carrying update fail on the missing table. The semantic and
+    # chunking migrations apply the SAME infra-present fallthrough for the
+    # fp32 side (shared probe in app/migrations/_probes.py), so whichever
+    # format is active gets its payload table re-provisioned on an
+    # infra-carrying database regardless of the generation toggle.
     if not settings.embedding.generation_enabled:
         if backend.backend_type == 'postgresql':
             applied = await backend.execute_read(
@@ -297,7 +256,7 @@ async def apply_compression_migration(backend: StorageBackend) -> None:
             applied = await backend.execute_read(
                 _check_compression_migration_applied_sqlite,
             )
-        if not applied and not await _embedding_metadata_table_exists(backend):
+        if not applied and not await embedding_metadata_table_exists(backend):
             return
 
     backend_type = backend.backend_type

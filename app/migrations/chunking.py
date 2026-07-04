@@ -20,6 +20,7 @@ from app.backends import StorageBackend
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
+from app.migrations._probes import embedding_metadata_table_exists
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -124,12 +125,23 @@ async def apply_chunking_migration(backend: StorageBackend, *, force: bool = Fal
         RuntimeError: If migration execution fails.
 
     Note:
-        - Only applies when embedding generation is enabled (embeddings exist)
+        - Applies when embedding generation is enabled, and ALSO -- with
+          generation off -- when the database already carries embedding
+          infrastructure (the ``embedding_metadata`` table); only a FRESH
+          generation-off database skips.
         - Idempotent: Uses IF NOT EXISTS / IF EXISTS patterns
         - Must be called after apply_semantic_search_migration()
     """
-    # Only apply when embeddings are generated (embeddings exist), unless forced
-    if not force and not settings.embedding.generation_enabled:
+    # Infra-present fallthrough shared with the semantic and compression
+    # migrations (probe in app/migrations/_probes.py): an infra-carrying
+    # database keeps its active-format embedding layout maintained even
+    # while generation is toggled off; a fresh generation-off database
+    # skips.
+    if (
+        not force
+        and not settings.embedding.generation_enabled
+        and not await embedding_metadata_table_exists(backend)
+    ):
         return
 
     backend_type = backend.backend_type
