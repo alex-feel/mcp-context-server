@@ -615,14 +615,24 @@ async def store_context_batch(
                     # and may describe different text; regenerate it for the
                     # diverged text so the divergence INSERT cannot persist a
                     # mismatched summary. Clearing the preserved marker also
-                    # clears the summary_pending reconcile gate on retry.
+                    # clears the summary_pending reconcile gate on retry. The
+                    # diverged text is fixed and the prompt varies only by
+                    # source, so ONE call per distinct source is broadcast to
+                    # every matching entry -- mirroring the embedding block's
+                    # compute-once pattern above instead of issuing redundant,
+                    # sequential LLM round-trips for identical (text, source)
+                    # pairs on this abort-sensitive path.
                     if summary_provider is not None:
+                        regenerated_summaries: dict[str, str | None] = {}
                         for r_ve_idx, r_entry in validated_entries_filtered:
                             if (r_ve_idx in preserved_summary_indices
                                     and r_entry['text_content'] == reconcile.text_content):
-                                entry_summaries[r_ve_idx] = await generate_summary_with_timeout(
-                                    reconcile.text_content, r_entry['source'],
-                                )
+                                r_source = r_entry['source']
+                                if r_source not in regenerated_summaries:
+                                    regenerated_summaries[r_source] = await generate_summary_with_timeout(
+                                        reconcile.text_content, r_source,
+                                    )
+                                entry_summaries[r_ve_idx] = regenerated_summaries[r_source]
                                 preserved_summary_indices.discard(r_ve_idx)
                                 summaries_preserved_count -= 1
                                 if entry_summaries[r_ve_idx] is not None:
