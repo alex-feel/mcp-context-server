@@ -58,8 +58,9 @@ class _RecordingConn:
 
     async def fetchval(self, statement: str, *_args: Any, **_kwargs: Any) -> int:
         # Idempotency probes: compress wants 0 (provenance absent -> proceed);
-        # decompress wants 1 (compressed source table present -> proceed).
-        return 1 if 'information_schema' in statement else 0
+        # decompress wants truthy (compressed source table reachable via the
+        # to_regclass search_path probe -> proceed).
+        return 1 if 'to_regclass' in statement else 0
 
 
 class _FakeTxn:
@@ -113,6 +114,22 @@ def _timeouts_for(conn: _RecordingConn, needle: str) -> list[float | None]:
     return [t for stmt, t in conn.execute_calls if needle in stmt]
 
 
+def test_raise_pg_migration_budget_floors_sub_millisecond_budget() -> None:
+    """A sub-millisecond migration budget must not become statement_timeout = 0.
+
+    PostgreSQL treats ``SET LOCAL statement_timeout = 0`` as UNLIMITED, so a
+    truncating conversion would silently remove the server-side backstop and
+    leave only the client-side deadline -- which surfaces a non-retryable
+    ``asyncio.TimeoutError`` instead of the retryable ``QueryCanceledError``
+    this budget exists to produce.
+    """
+    from app.cli.migrate_compression import _raise_pg_migration_budget
+
+    conn = _RecordingConn()
+    asyncio.run(_raise_pg_migration_budget(cast(Any, conn), 0.0005))
+    assert conn.execute_calls == [('SET LOCAL statement_timeout = 1', None)]
+
+
 def test_compress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:
     conn = _RecordingConn()
     backend = _FakeBackend(conn)
@@ -121,7 +138,6 @@ def test_compress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:
             cast(Any, backend),
             Mock(),
             _provenance(),
-            row_count=0,
         ),
     )
 
@@ -137,6 +153,10 @@ def test_compress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:
     drop_index = _timeouts_for(conn, 'DROP INDEX IF EXISTS idx_vec_context_embeddings_hnsw')
     assert drop_index
     assert all(t == expected for t in drop_index)
+    # The pre-stream source freeze runs under the migration budget too.
+    lock_stmts = _timeouts_for(conn, 'LOCK TABLE vec_context_embeddings IN ACCESS EXCLUSIVE MODE')
+    assert lock_stmts
+    assert all(t == expected for t in lock_stmts)
     # The streamed batch read is budgeted too.
     assert conn.fetch_calls
     assert all(t == expected for _, t in conn.fetch_calls)

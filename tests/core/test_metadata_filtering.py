@@ -125,23 +125,30 @@ class TestMetadataQueryBuilder:
         ],
     )
     def test_pg_float_param_matches_sqlite_exact_semantics(self, operator: MetadataOperator) -> None:
-        """On PostgreSQL a FLOAT param branches on the stored value's integrality to match
-        SQLite's exact integer/double comparison: an integral stored value compares exact NUMERIC
-        against the param's exact double value, a fractional stored value compares double-vs-double
-        (both snapped to float8). The stored side is never down-cast through DOUBLE PRECISION (which
-        truncated a stored integer > 2**53) and the param is never run through float8::numeric
-        (which rounds to ~15 significant digits); an INTEGER param compares exact NUMERIC for every
-        stored value."""
+        """On PostgreSQL a FLOAT param reproduces SQLite's exact integer/double comparison:
+        the exact-NUMERIC compare is kept only for stored values that are integral AND provably
+        int-origin (not equal to their nearest double's shortest round-trip decimal, probed via
+        ``(stored::float8)::NUMERIC``); everything else -- fractional, or integral values that ARE
+        the canonical form of some double (every float stores as its shortest repr, so above 2**53
+        the stored NUMERIC differs from the double's exact value) -- compares double-vs-double
+        (both snapped to float8). The stored side is never down-cast through DOUBLE PRECISION
+        (which truncated a stored integer > 2**53) and the param is never run through
+        float8::numeric (which rounds the PARAM to ~15 significant digits); an INTEGER param
+        compares exact NUMERIC for every stored value."""
         fbuilder = MetadataQueryBuilder(backend_type='postgresql')
         fbuilder.add_advanced_filter(MetadataFilter(key='score', operator=operator, value=0.3))
         fclause, _ = fbuilder.build_where_clause()
-        # Float param: integrality CASE (trunc), double-vs-double fractional branch (::float8),
-        # exact NUMERIC stored side; never DOUBLE PRECISION, never float8::numeric on the param.
+        # Float param: integrality + int-origin CASE (trunc + text-routed canonical-form
+        # probe -- float8out is shortest-repr while a direct float8::NUMERIC cast rounds
+        # to ~15 digits), double-vs-double branch (::float8), exact NUMERIC stored side;
+        # never DOUBLE PRECISION, never float8::numeric anywhere.
         assert 'trunc(' in fclause
         assert '::float8' in fclause
+        assert '::float8)::text::NUMERIC' in fclause
         assert ')::NUMERIC' in fclause
         assert '::DOUBLE PRECISION' not in fclause
         assert '::float8::numeric' not in fclause
+        assert '::float8)::NUMERIC' not in fclause
 
         ibuilder = MetadataQueryBuilder(backend_type='postgresql')
         ibuilder.add_advanced_filter(MetadataFilter(key='score', operator=operator, value=5))

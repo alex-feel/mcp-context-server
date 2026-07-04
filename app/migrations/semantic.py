@@ -19,6 +19,7 @@ from app.backends import StorageBackend
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
+from app.migrations._probes import embedding_metadata_table_exists
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,13 @@ async def apply_semantic_search_migration(
     force: bool = False,
     embedding_dim: int | None = None,
 ) -> None:
-    """Apply the semantic-search vector storage migration when embedding generation is enabled.
+    """Apply the semantic-search vector storage migration.
+
+    Applies when embedding generation is enabled, and ALSO -- with generation
+    off -- when the database already carries embedding infrastructure (the
+    ``embedding_metadata`` table), so the active-format payload table the
+    runtime cleanup paths depend on stays provisioned. Only a FRESH
+    generation-off database skips.
 
     Args:
         backend: Storage backend instance.
@@ -74,7 +81,8 @@ async def apply_semantic_search_migration(
             ``settings.embedding.generation_enabled``. Used by the migration CLI
             (``app.cli.migrate``) to create the fp32 vector layout on a target
             database while preserving the server's default behavior (gated on
-            embedding generation) for all other callers.
+            embedding generation with the infra-present fallthrough) for all
+            other callers.
         embedding_dim: Explicit vector dimension to template into the migration
             SQL. When ``None`` the configured ``settings.embedding.dim`` is used.
             The CLI passes the SOURCE database's detected dimension so the target
@@ -89,7 +97,23 @@ async def apply_semantic_search_migration(
     Raises:
         RuntimeError: If migration fails or dimension mismatch detected
     """
-    if not force and not settings.embedding.generation_enabled:
+    # Infra-present fallthrough, mirroring apply_compression_migration: a
+    # database whose embedding_metadata table exists (a generation-on past,
+    # or a migration-CLI-initialized target) must keep its ACTIVE-format
+    # payload table provisioned even while generation is toggled off,
+    # because the delete/update cleanup paths gate on embedding_metadata
+    # presence and then touch that table. With compression OFF the active
+    # format is fp32, and without this fallthrough a database whose fp32
+    # table was removed (the compression migration's table swap, or a
+    # zero-data --decompress) would fail every text-carrying update inside
+    # its transaction on PostgreSQL. A FRESH generation-off database (no
+    # embedding infra) still skips: nothing can ever write an embedding
+    # there.
+    if (
+        not force
+        and not settings.embedding.generation_enabled
+        and not await embedding_metadata_table_exists(backend)
+    ):
         return
 
     backend_type = backend.backend_type

@@ -61,6 +61,10 @@ from typing import cast
 from urllib.parse import quote
 from urllib.parse import urlparse
 
+from pydantic import ValidationError
+
+from app.errors import ConfigurationError
+
 # UUIDv7 generation for integer-keyed rows uses the timestamp parameter of
 # uuid_utils.uuid7() in UNIX seconds (with optional nanos for sub-second
 # precision). Upstream tracker on the parameter's units:
@@ -1798,6 +1802,69 @@ async def initialize_target_postgresql(
     )
 
 
+async def ensure_target_pg_fts(
+    target_url: str,
+    target_conn: 'asyncpg.Connection[asyncpg.Record]',
+    *,
+    target_schema: str,
+    source_has_fts: bool,
+    dry_run: bool,
+    stats: MigrationStats,
+) -> None:
+    """Provision FTS on a PRE-EXISTING PostgreSQL target when the source has it.
+
+    :func:`initialize_target_postgresql` provisions FTS only when it runs --
+    that is, only when the target had NO ``context_entries`` table at all. A
+    pre-existing target (its schema bootstrapped by a server started with
+    ``ENABLE_FTS=false``, or created by any means other than this CLI)
+    silently lost the full-text search the source had -- the exact regression
+    class the source-presence gate closed for freshly initialized targets.
+    Unlike the embeddings backstop, which must ABORT (vectors are not
+    derivable from the copied rows), FTS is fully derivable: the migration
+    adds a STORED generated ``text_search_vector`` column plus its GIN index,
+    so the backstop PROVISIONS it instead. It MUST run before the data copy
+    so the generated column populates as rows are INSERTed. Mirrors the
+    SQLite target path, which re-applies the IF-NOT-EXISTS FTS DDL keyed only
+    on source presence.
+
+    Args:
+        target_url: asyncpg DSN for the target database.
+        target_conn: Open target connection used for the column probe.
+        target_schema: Explicit schema for the probe, matching the
+            ``context_entries`` probe that established the target as
+            pre-existing.
+        source_has_fts: Whether the source carries full-text search.
+        dry_run: When True, record the plan instead of provisioning.
+        stats: Mutated with the provisioning (or plan) note.
+    """
+    if not source_has_fts:
+        return
+    if await _pg_column_exists(
+        target_conn, 'context_entries', 'text_search_vector', schema=target_schema,
+    ):
+        return
+    if dry_run:
+        stats.warnings.append(
+            'source has full-text search but the pre-existing target lacks the '
+            'text_search_vector column; it would be provisioned on a real run',
+        )
+        return
+
+    from app.backends import create_backend
+    from app.migrations.fts import apply_fts_migration
+
+    backend = create_backend(backend_type='postgresql', connection_string=target_url)
+    await backend.initialize()
+    try:
+        await apply_fts_migration(backend, force=True)
+    finally:
+        await backend.shutdown()
+    stats.warnings.append(
+        'provisioned full-text search on the pre-existing target '
+        '(source has FTS; the target lacked the text_search_vector column)',
+    )
+
+
 async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
     """Drive a PostgreSQL-to-PostgreSQL migration.
 
@@ -1940,6 +2007,19 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
                 else:
                     stats.errors.append(f'{message} Aborting to avoid silently dropping embeddings.')
                     return stats
+
+        # FTS backstop for a PRE-EXISTING target: initialize_target_postgresql
+        # runs only when context_entries is absent, so a target bootstrapped by
+        # other means would silently lose the source's full-text search.
+        if target_initialized:
+            await ensure_target_pg_fts(
+                options.target_url,
+                target_conn,
+                target_schema=target_schema,
+                source_has_fts=source_has_fts,
+                dry_run=options.dry_run,
+                stats=stats,
+            )
 
         if not options.dry_run:
             await target_conn.execute('BEGIN')
@@ -2179,6 +2259,18 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     source_has_fts=optional_tables.get('context_entries_fts', False),
                     stats=stats,
                 )
+
+        # FTS backstop for a PRE-EXISTING target (mirrors the PG->PG path):
+        # the auto-init above runs only when context_entries is absent.
+        if target_initialized:
+            await ensure_target_pg_fts(
+                options.target_url,
+                target_conn,
+                target_schema=target_schema,
+                source_has_fts=optional_tables.get('context_entries_fts', False),
+                dry_run=options.dry_run,
+                stats=stats,
+            )
 
         if not options.dry_run:
             await target_conn.execute('BEGIN')
@@ -2664,7 +2756,9 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns:
         Process exit code: 0 on success, 1 on user error or recorded
-        errors, 2 on unrecoverable migration failure.
+        errors, 2 on unrecoverable migration failure, 78 (EX_CONFIG) on a
+        settings ValidationError -- the same classification the server's
+        guarded import applies.
     """
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -2684,24 +2778,37 @@ def main(argv: list[str] | None = None) -> int:
     # and --decompress is documented as not combinable with --embed-missing
     # (run it separately afterward). Imported lazily so callers running the
     # v2->v3 migration do not pay the compression/numpy import cost.
-    if args.compress:
-        from app.cli.migrate_compression import run_compress
-        rc = run_compress(args.source_url, dry_run=args.dry_run)
-        if rc != 0:
-            return rc
+    #
+    # Settings validation surfaces on these paths at the first get_settings()
+    # call (transitively, at backend-module import), never through
+    # app.server's guarded import: mcp-context-server-migrate is its own
+    # console script and never imports app.server. Classify it here exactly
+    # like the server does -- a permanent misconfiguration exits EX_CONFIG
+    # (78) with the pydantic detail on stderr, instead of an unhandled
+    # traceback and the generic exit 1 supervisors cannot distinguish from a
+    # transient failure.
+    try:
+        if args.compress:
+            from app.cli.migrate_compression import run_compress
+            rc = run_compress(args.source_url, dry_run=args.dry_run)
+            if rc != 0:
+                return rc
+            if args.embed_missing:
+                from app.cli.migrate_embeddings import run_embed_missing
+                return run_embed_missing(args.source_url, dry_run=args.dry_run)
+            return 0
+        if args.decompress:
+            from app.cli.migrate_compression import run_decompress
+            return run_decompress(args.source_url, dry_run=args.dry_run)
+        if args.re_embed:
+            from app.cli.migrate_reembed import run_reembed
+            return run_reembed(args.source_url, dry_run=args.dry_run)
         if args.embed_missing:
             from app.cli.migrate_embeddings import run_embed_missing
             return run_embed_missing(args.source_url, dry_run=args.dry_run)
-        return 0
-    if args.decompress:
-        from app.cli.migrate_compression import run_decompress
-        return run_decompress(args.source_url, dry_run=args.dry_run)
-    if args.re_embed:
-        from app.cli.migrate_reembed import run_reembed
-        return run_reembed(args.source_url, dry_run=args.dry_run)
-    if args.embed_missing:
-        from app.cli.migrate_embeddings import run_embed_missing
-        return run_embed_missing(args.source_url, dry_run=args.dry_run)
+    except ValidationError as e:
+        print(f'Configuration invalid: {e}', file=sys.stderr)
+        return ConfigurationError.EXIT_CODE
 
     if not args.target_url:
         logger.error(
@@ -2738,6 +2845,12 @@ def main(argv: list[str] | None = None) -> int:
         else:
             logger.error('unsupported backend combination: %s -> %s', src_kind, tgt_kind)
             return 1
+    except ValidationError as exc:
+        # Same classification as the in-place dispatch above: a settings
+        # ValidationError is a permanent misconfiguration (EX_CONFIG), not a
+        # migration failure worth the generic exit 2.
+        print(f'Configuration invalid: {exc}', file=sys.stderr)
+        return ConfigurationError.EXIT_CODE
     except Exception as exc:
         logger.exception('migration failed: %s', exc)
         return 2

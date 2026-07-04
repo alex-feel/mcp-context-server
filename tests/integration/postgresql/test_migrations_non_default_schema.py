@@ -384,6 +384,73 @@ def test_compression_migration_idempotent_under_non_default_schema(
     ))
 
 
+def test_compression_guard_sees_legacy_fp32_in_public_under_non_default_schema(
+    pg_non_default_schema_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A populated legacy fp32 table in ``public`` trips the enable-direction guard.
+
+    The migration's ``DROP TABLE IF EXISTS vec_context_embeddings`` uses a
+    BARE name resolved through ``search_path`` (configured schema first,
+    then ``public``), so a legacy fp32 deployment living in ``public`` is
+    reachable by the drop even after the operator sets a non-default
+    ``POSTGRESQL_SCHEMA``. The guard probe must resolve the same way: a
+    probe pinned to the configured schema reported the table absent, let
+    the guard pass, and the migration destroyed every stored embedding.
+    The guard must refuse loudly (exit 78) and leave the table intact.
+    """
+    from app.errors import ConfigurationError
+
+    _install_search_path_patch(monkeypatch, NON_DEFAULT_SCHEMA)
+    _configure_non_default_env(monkeypatch, pg_non_default_schema_db)
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'true')
+    monkeypatch.setenv('COMPRESSION_SEED', '42')
+    get_settings.cache_clear()
+    monkeypatch.setattr(compression_module, 'settings', get_settings())
+
+    async def _seed_legacy_public_fp32() -> None:
+        conn = await asyncpg.connect(pg_non_default_schema_db)
+        try:
+            await conn.execute(
+                'CREATE TABLE public.vec_context_embeddings '
+                '(id BIGSERIAL PRIMARY KEY, context_id UUID)',
+            )
+            await conn.execute(
+                'INSERT INTO public.vec_context_embeddings (context_id) '
+                "VALUES ('00000000-0000-0000-0000-000000000001')",
+            )
+        finally:
+            await conn.close()
+
+    async def _scenario() -> None:
+        await _seed_legacy_public_fp32()
+        backend = create_backend(
+            backend_type='postgresql',
+            connection_string=pg_non_default_schema_db,
+        )
+        await backend.initialize()
+        try:
+            await init_database(backend=backend)
+            with pytest.raises(ConfigurationError, match='uncompressed fp32'):
+                await apply_compression_migration(backend=backend)
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    asyncio.run(_scenario())
+
+    # The legacy table survived, still populated, and no compression schema
+    # was provisioned anywhere.
+    assert asyncio.run(_table_exists_in_schema(
+        pg_non_default_schema_db, 'public', 'vec_context_embeddings',
+    ))
+    for schema in ('public', NON_DEFAULT_SCHEMA):
+        assert not asyncio.run(_table_exists_in_schema(
+            pg_non_default_schema_db, schema,
+            'vec_context_embeddings_compressed',
+        ))
+
+
 def test_chunking_migration_idempotent_under_non_default_schema(
     pg_non_default_schema_db: str,
     monkeypatch: pytest.MonkeyPatch,

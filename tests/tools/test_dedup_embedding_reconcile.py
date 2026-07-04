@@ -280,6 +280,87 @@ class TestStoreBatchReconcile:
         assert mock_gen_emb.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_atomic_reconcile_regenerates_summary_once_per_text_source_pair(self) -> None:
+        """Identical (text, source) entries share ONE summary regeneration.
+
+        The atomic reconcile's embedding block computes the regenerated
+        embedding once and broadcasts it to every matching entry, but the
+        summary block used to call the model INSIDE the per-entry loop --
+        issuing redundant, sequential, identical LLM round-trips when several
+        diverged entries share the same text AND source. The prompt varies
+        only by source for a fixed text, so one call per distinct source
+        must be broadcast to all matching entries.
+        """
+        from app.tools.batch import store_context_batch
+
+        _, mock_begin_transaction = _make_mock_txn()
+        # Long enough to clear SUMMARY_MIN_CONTENT_LENGTH so the pre-check
+        # actually reserves (reuses) the candidate summary for both entries.
+        shared_text = 'y' * 600
+
+        with (
+            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.get_embedding_provider', return_value=MagicMock()),
+            patch('app.tools.batch.get_summary_provider', return_value=MagicMock()),
+            patch('app.tools.batch.execute_store_in_transaction') as mock_exec,
+            patch(
+                'app.tools.batch.generate_embeddings_with_timeout',
+                new_callable=AsyncMock,
+                return_value=_fake_chunk_embeddings(),
+            ),
+            patch(
+                'app.tools.batch.generate_compression_with_timeout',
+                new_callable=AsyncMock,
+                side_effect=lambda emb: emb,
+            ),
+            patch(
+                'app.tools.batch.generate_summary_with_timeout',
+                new_callable=AsyncMock,
+                return_value='fresh shared summary',
+            ) as mock_gen_summary,
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+
+            # Pre-check: duplicate WITH embeddings and a stored summary, so
+            # both entries skip generation and REUSE the candidate summary.
+            mock_repos.context.check_latest_is_duplicate = AsyncMock(
+                return_value=DuplicateCandidate(
+                    context_id='dup-id',
+                    summary='stale summary of other text',
+                ),
+            )
+            mock_repos.embeddings.exists = AsyncMock(return_value=True)
+
+            # First transaction attempt diverges on entry 1 (whole atomic txn
+            # aborts); the retry stores both entries.
+            mock_exec.side_effect = [
+                EmbeddingsReconcileRequiredError(shared_text),
+                ('ctx-1', False, True),
+                ('ctx-2', False, True),
+            ]
+
+            result = await store_context_batch(
+                entries=[
+                    {'thread_id': 'batch-shared-1', 'source': 'user', 'text': shared_text},
+                    {'thread_id': 'batch-shared-2', 'source': 'user', 'text': shared_text},
+                ],
+                atomic=True,
+            )
+
+        assert all(r['success'] for r in result['results'])
+        assert mock_exec.call_count == 3
+        # ONE model call for the shared (text, source) pair, broadcast to both.
+        assert mock_gen_summary.await_count == 1
+        retry_calls = mock_exec.call_args_list[1:]
+        assert all(c.kwargs['summary'] == 'fresh shared summary' for c in retry_calls)
+
+    @pytest.mark.asyncio
     async def test_nonatomic_reconcile_failure_isolates_to_entry(self) -> None:
         """A reconcile-time embedding failure fails only that entry, not the batch.
 

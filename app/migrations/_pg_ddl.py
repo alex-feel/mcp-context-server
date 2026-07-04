@@ -148,6 +148,28 @@ async def begin_migration(
         migration_timeout_s: The migration budget in seconds
             (``settings.storage.postgresql_migration_timeout_s``).
     """
-    migration_timeout_ms = int(migration_timeout_s * 1000)
-    await conn.execute(f'SET LOCAL statement_timeout = {migration_timeout_ms}')
+    await conn.execute(
+        f'SET LOCAL statement_timeout = {migration_statement_timeout_ms(migration_timeout_s)}',
+    )
     await execute_migration_ddl(conn, SCHEMA_INIT_ADVISORY_LOCK_SQL, migration_timeout_s)
+
+
+def migration_statement_timeout_ms(migration_timeout_s: float) -> int:
+    """Convert the migration budget to the ``SET LOCAL statement_timeout`` milliseconds.
+
+    Floored at 1 ms: PostgreSQL treats ``statement_timeout = 0`` as UNLIMITED,
+    so a sub-millisecond ``POSTGRESQL_MIGRATION_TIMEOUT_S`` (the settings bound
+    is only ``gt=0``) would otherwise truncate to 0 and silently REMOVE the
+    server-side backstop -- inverting the module's server-cancels-first design
+    (the client-side deadline would always fire first, surfacing a
+    non-retryable ``asyncio.TimeoutError`` instead of the retryable
+    ``QueryCanceledError`` these helpers exist to produce). Mirrors
+    ``_statement_timeout_ms`` on the pool connection-setup path.
+
+    Args:
+        migration_timeout_s: The migration budget in seconds.
+
+    Returns:
+        The value for ``SET LOCAL statement_timeout``, at least 1.
+    """
+    return max(1, int(migration_timeout_s * 1000))

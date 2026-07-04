@@ -87,6 +87,20 @@ class BaseRepository:
         transaction's writer lock serializes access, so one-at-a-time
         executor use of the connection is safe.
 
+        The executor future is shielded and, on any unwind, drained before
+        the exception propagates. Cancelling the awaiting task cannot cancel
+        a closure that is already executing in the worker thread; without the
+        drain the CancelledError would reach ``begin_transaction``'s rollback
+        while the closure keeps issuing statements on the same connection --
+        anything the zombie executed after that rollback would open a fresh
+        implicit transaction that the NEXT write on the pooled writer
+        connection silently commits. Draining guarantees the closure has
+        fully finished before the rollback runs and before the writer lock is
+        released. The drain deliberately never cancels the wrapper future:
+        cancelling an ``asyncio`` future succeeds immediately regardless of
+        the running callable, which would end the join early and resurrect
+        the race.
+
         Args:
             closure: Synchronous callable executing statements on ``conn``.
             conn: The transaction's SQLite connection.
@@ -95,7 +109,23 @@ class BaseRepository:
             Whatever the closure returns.
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, closure, conn)
+        future = loop.run_in_executor(None, closure, conn)
+        try:
+            return await asyncio.shield(future)
+        except BaseException:
+            while not future.done():
+                try:
+                    await asyncio.wait([future])
+                except asyncio.CancelledError:
+                    # Re-cancellation during the drain: keep waiting -- the
+                    # closure must finish before the unwind may continue.
+                    continue
+            if not future.cancelled():
+                # Retrieve (and discard) the closure's own outcome so an
+                # exception set during a cancellation unwind does not log a
+                # "Future exception was never retrieved" warning.
+                future.exception()
+            raise
 
     def _placeholder(self, position: int) -> str:
         """Generate SQL parameter placeholder for the given position.
