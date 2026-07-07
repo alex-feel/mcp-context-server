@@ -380,10 +380,15 @@ class MetadataQueryBuilder:
     # out-of-int64 integer must take the double comparison to match SQLite.
     _INT64_MIN = '-9223372036854775808'
     _INT64_MAX = '9223372036854775807'
-    # float8 magnitude ceiling (DBL_MAX): a NUMERIC beyond it cannot cast to float8
-    # (SQLSTATE 22003), so map it to +/-inf -- matching SQLite reading a huge JSON
-    # integer as REAL inf -- rather than aborting the whole query.
-    _FLOAT8_MAX = '1.7976931348623157e308'
+    # float8 overflow threshold = 2**1024 - 2**970, the exact midpoint between DBL_MAX
+    # and 2**1024: a NUMERIC of magnitude >= this rounds to +/-Infinity on a ``::float8``
+    # cast (SQLSTATE 22003), so map it to +/-inf -- matching SQLite reading a huge JSON
+    # integer as REAL inf -- rather than aborting the whole query. It MUST be the true
+    # overflow boundary, NOT DBL_MAX's shortest-repr decimal (1.7976931348623157e308,
+    # strictly smaller): a stored value in the finite band (DBL_MAX, midpoint) casts to a
+    # FINITE DBL_MAX on BOTH engines, so mapping it to Infinity would flip every
+    # comparison against a DBL_MAX-range param on PostgreSQL only.
+    _FLOAT8_OVERFLOW = str(2**1024 - 2**970)
 
     def _pg_numeric_compare(self, num: str, sql_op: str, placeholder: str, value: float) -> str:
         """Compare a NUMERIC stored expression to a numeric param, matching SQLite's semantics.
@@ -395,8 +400,13 @@ class MetadataQueryBuilder:
         the nearest double), and asyncpg binds the param in a ``NUMERIC`` context as the param's
         EXACT double value, so:
 
-        - INTEGER param: compare exact ``NUMERIC`` for every stored value (SQLite compares int64 /
-          double-vs-int64 exactly).
+        - INTEGER param: compare exact ``NUMERIC`` for every stored value. Within int64 this is
+          exact on both engines (SQLite reads the stored JSON integer as an exact int64). A stored
+          integer OUTSIDE int64 -- which SQLite reads as its nearest double -- leaves a documented,
+          irreducible residual on one narrow corner (see below): PostgreSQL cannot materialize a
+          ``float8``'s exact decimal value, so there is no faithful SQL reconstruction of SQLite's
+          double-vs-int64 comparison, and exact ``NUMERIC`` is the closest available (it diverges on
+          the fewest inputs of any option).
         - FLOAT param: reproduce SQLite's per-type snapping via a nested ``CASE``. The exact
           ``NUMERIC`` compare is kept ONLY for a stored value that is integral, WITHIN int64, AND
           provably int-origin -- NOT equal to ``(stored::float8)::text::NUMERIC``, the shortest
@@ -407,19 +417,32 @@ class MetadataQueryBuilder:
           ``extra_float_digits`` in ``server_settings`` so a cluster override cannot revert it to
           ``%.15g`` and misclassify), while the direct ``float8::NUMERIC`` cast rounds to ~15
           digits. The int64 guard and ``safe_float8`` are load-bearing: the exact-form probe casts
-          to ``float8`` and would raise 22003 on a stored value beyond DBL_MAX, so it runs ONLY in
-          the within-int64 nested branch (CASE guarantees only the matching branch is evaluated,
-          unlike ``AND`` which PostgreSQL may not short-circuit), and the double branch maps an
-          out-of-range NUMERIC to +/-inf to mirror SQLite's REAL read of a huge JSON integer. A
+          to ``float8`` and would raise 22003 on a stored value at/beyond the float8 overflow
+          threshold (``_FLOAT8_OVERFLOW`` = 2**1024 - 2**970), so it runs ONLY in the within-int64
+          nested branch (CASE guarantees only the matching branch is evaluated, unlike ``AND`` which
+          PostgreSQL may not short-circuit), and the double branch maps a NUMERIC at/beyond that
+          threshold to +/-inf to mirror SQLite's REAL read of a huge JSON integer while leaving the
+          finite band (DBL_MAX, threshold) to cast to a finite DBL_MAX on both engines. A
           stored ``0.3`` still equals a ``0.3`` param, a stored integer ``2**53+1`` is never
           collapsed onto a ``2**53`` param, a stored ``float(2**55)`` matches its own value, an
           out-of-int64 integer compares by double (matching SQLite), and a 309-digit integer no
           longer aborts the query.
 
-        Known irreducible residual: an in-int64 INT-origin stored value that happens to equal the
-        canonical decimal form of some double is indistinguishable from a float-origin one after
-        ``jsonb`` normalization and takes the ``float8`` comparison, while SQLite compares it
-        exactly; no provenance survives to separate the two.
+        Known irreducible residuals (no faithful SQL reconstruction exists):
+        - FLOAT param: an in-int64 INT-origin stored value that happens to equal the canonical
+          decimal form of some double is indistinguishable from a float-origin one after ``jsonb``
+          normalization and takes the ``float8`` comparison, while SQLite compares it exactly; no
+          provenance survives to separate the two.
+        - INT param: SQLite reads a stored integer OUTSIDE int64 as its nearest double, then
+          compares that double's EXACT value against the exact int64 param. PostgreSQL cannot
+          materialize a ``float8``'s exact decimal (``float8::numeric`` rounds to ~15 digits and
+          ``float8::text::numeric`` yields the shortest round-trip decimal, neither equal to the
+          exact binary value), so the exact-``NUMERIC`` compare used here diverges from SQLite on a
+          narrow corner -- e.g. a stored value in ``[-2**63-1024, -2**63-1]`` (SQLite rounds to
+          ``-2**63``) against a ``-2**63`` param. A ``float8``-vs-``float8`` compare would not
+          reduce this: it merely shifts the same-size window to the positive corner (a stored
+          ``2**63`` against a ``2**63-1`` param) while also corrupting large in-range params, so
+          exact ``NUMERIC`` is retained as the minimum-divergence option.
 
         Args:
             num: A SQL expression yielding the stored value as ``NUMERIC``.
@@ -431,12 +454,19 @@ class MetadataQueryBuilder:
             A boolean SQL expression comparing the stored number to the param.
         """
         # ``isinstance(value, int)`` (not ``float``) distinguishes an int param from a float under
-        # the numeric-tower ``value: float`` annotation; bool is excluded upstream.
+        # the numeric-tower ``value: float`` annotation; bool is excluded upstream. An INTEGER
+        # param compares exact ``NUMERIC`` for EVERY stored value: for a stored integer OUTSIDE
+        # int64 (which SQLite reads as its nearest double) this leaves a documented, irreducible
+        # residual on one narrow corner -- see the docstring -- because PostgreSQL cannot
+        # materialize a ``float8``'s exact decimal value (both ``::numeric`` and ``::text::numeric``
+        # are lossy), and a ``float8``-vs-``float8`` compare would only shift the same-size
+        # divergence to the positive corner while corrupting large in-range params. Exact
+        # ``NUMERIC`` is the closest faithful reconstruction available in SQL.
         if isinstance(value, int):
             return f'{num} {sql_op} {placeholder}'
         safe_f8 = (
-            f"CASE WHEN {num} > {self._FLOAT8_MAX} THEN 'infinity'::float8 "
-            f"WHEN {num} < -{self._FLOAT8_MAX} THEN '-infinity'::float8 "
+            f"CASE WHEN {num} >= {self._FLOAT8_OVERFLOW} THEN 'infinity'::float8 "
+            f"WHEN {num} <= -{self._FLOAT8_OVERFLOW} THEN '-infinity'::float8 "
             f'ELSE {num}::float8 END'
         )
         double_cmp = f'{safe_f8} {sql_op} ({placeholder})::float8'
