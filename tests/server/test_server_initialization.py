@@ -33,6 +33,7 @@ def _patch_server_migrations() -> AbstractContextManager[Any]:
         'app.server',
         init_database=AsyncMock(),
         handle_metadata_indexes=AsyncMock(),
+        guard_compression_disable_over_populated=AsyncMock(),
         apply_semantic_search_migration=AsyncMock(),
         apply_jsonb_merge_patch_migration=AsyncMock(),
         apply_function_search_path_migration=AsyncMock(),
@@ -377,6 +378,7 @@ class TestLifespanErrorHandling:
                 patch('app.server.create_backend', return_value=mock_backend),
                 patch('app.server.init_database', new=AsyncMock()),
                 patch('app.server.handle_metadata_indexes', new=AsyncMock()),
+                patch('app.server.guard_compression_disable_over_populated', new=AsyncMock()),
                 patch(
                     'app.server.apply_semantic_search_migration',
                     side_effect=RuntimeError('Migration failed'),

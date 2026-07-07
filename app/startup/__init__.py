@@ -190,9 +190,17 @@ async def init_database(backend: StorageBackend | None = None) -> None:
         else:
             raise RuntimeError(f'Schema file not found: {schema_path}')
 
-        # Template the schema SQL with configured schema name (PostgreSQL only)
+        # Template the schema SQL with configured schema name (PostgreSQL only).
+        # {SCHEMA} appears only in schema-qualified function DDL, so it MUST be
+        # quoted the same way the connection search_path and the migrate-CLI
+        # CREATE SCHEMA quote it -- an unquoted mixed-case or reserved-word
+        # schema folds to lowercase at parse time and crashes boot with
+        # 'schema "..." does not exist'.
         if backend_type == 'postgresql':
-            schema_sql = schema_sql_template.replace('{SCHEMA}', settings.storage.postgresql_schema)
+            from app.backends.postgresql_backend import quote_pg_identifier
+            schema_sql = schema_sql_template.replace(
+                '{SCHEMA}', quote_pg_identifier(settings.storage.postgresql_schema),
+            )
         else:
             schema_sql = schema_sql_template
 
