@@ -884,21 +884,47 @@ class TestResolveProvisionVector:
         return conn
 
     @pytest.mark.asyncio
-    async def test_generation_on_provisions_without_probe_even_under_compression(self) -> None:
-        """generation on -> always provision; no probe needed.
+    async def test_generation_on_compression_off_provisions_without_probe(self) -> None:
+        """generation on + compression off -> always provision the fp32 layout; no probe.
 
-        Covers the migration-CLI force-init path (initialize_target_postgresql always builds
-        the fp32 vector layout regardless of compression) and the compression-off server;
-        keying the gate on compression here would leave the CLI's vector(dim) DDL with no
-        pgvector extension.
+        Covers the compression-off server and the migration-CLI force-init path
+        (initialize_target_postgresql always builds the fp32 vector(dim) layout); keying the
+        gate on compression here would leave that DDL with no pgvector extension.
         """
-        for compression in (True, False):
-            connect = AsyncMock()
-            with unittest.mock.patch(
-                'app.backends.postgresql_backend.settings', self._settings(compression=compression, generation=True),
-            ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=connect):
-                assert await self._backend()._resolve_provision_vector() is True
-                connect.assert_not_called()
+        connect = AsyncMock()
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=False, generation=True),
+        ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=connect):
+            assert await self._backend()._resolve_provision_vector() is True
+            connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generation_on_compression_on_no_fp32_skips_pgvector(self) -> None:
+        """generation on + compression on (the v3.0.0 default) + no fp32 table -> skip pgvector.
+
+        The compressed server stores BYTEA and never binds the vector type, so forcing CREATE
+        EXTENSION vector would crash boot on a pgvector-less host. The gate falls through to the
+        fp32-table probe and skips when no stray fp32 table exists.
+        """
+        conn = self._conn(fp32=False, embedding_metadata=True)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=True, generation=True),
+        ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(return_value=conn)):
+            assert await self._backend()._resolve_provision_vector() is False
+        conn.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_generation_on_compression_on_fp32_present_provisions(self) -> None:
+        """generation on + compression on + a stray fp32 table present -> provision the codec.
+
+        A leftover fp32 table still needs the vector codec to read it, so the probe returns True
+        even though the compressed write path itself binds no vector.
+        """
+        conn = self._conn(fp32=True, embedding_metadata=True)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=True, generation=True),
+        ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(return_value=conn)):
+            assert await self._backend()._resolve_provision_vector() is True
 
     @pytest.mark.asyncio
     async def test_compressed_generation_off_no_fp32_skips_pgvector(self) -> None:

@@ -317,13 +317,24 @@ async def _apply_migration_with_backend(
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
         async def _apply_migration_postgresql(conn: asyncpg.Connection) -> None:
-            # PostgreSQL: pgvector extension registration happens in backend initialization.
             # Raise the transaction-scoped statement_timeout to the migration budget and take
             # the shared advisory lock under it. SET LOCAL auto-reverts on COMMIT/ROLLBACK, so
             # there is no finally-restore SET -- which, in an aborted transaction, would raise
             # 25P02 and mask the real DDL error. This is the heaviest DDL (the fp32 vec table
             # plus its HNSW index), so the pool's shorter command_timeout must not cancel it.
             await begin_migration(conn, migration_timeout_s)
+
+            # The fp32 vec_context_embeddings table uses the pgvector ``vector`` type, so ensure
+            # the extension exists before its DDL runs whenever this call actually builds the fp32
+            # layout (not skip_fp32_vec). Boot-time provisioning (initialize ->
+            # _ensure_pgvector_extension) is gated on _resolve_provision_vector, which SKIPS
+            # pgvector for a compressed (BYTEA-only) server, so the fp32 builder is self-sufficient
+            # -- covering the migration CLI's force init and any caller that builds fp32 under a
+            # compression-on ambient config, without forcing the unused extension on the compressed
+            # server path (which stripped the fp32 statements above). Idempotent, and carried under
+            # the same advisory lock + migration budget as the rest of the DDL.
+            if not skip_fp32_vec:
+                await execute_migration_ddl(conn, 'CREATE EXTENSION IF NOT EXISTS vector', migration_timeout_s)
 
             # Parse and execute migration SQL statements
             statements: list[str] = []

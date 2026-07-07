@@ -491,35 +491,41 @@ class PostgreSQLBackend:
     async def _resolve_provision_vector(self) -> bool:
         """Decide whether the pgvector extension and vector codec are needed at boot.
 
-        The ``vector`` type is used ONLY by the fp32 ``vec_context_embeddings`` layout, so
-        the extension and codec are needed when that layout WILL be provisioned or ALREADY
+        The ``vector`` type is used ONLY by the fp32 ``vec_context_embeddings`` layout, so the
+        extension and codec are needed exactly when that layout WILL be provisioned or ALREADY
         exists:
 
-        - ``generation`` on: always provision. The compression-off server provisions the fp32
-          layout, and the migration CLI's ``force=True`` init ALWAYS builds the full fp32
-          layout regardless of ``compression`` (``initialize_target_postgresql``), so the
-          extension must exist before its ``vector(dim)`` DDL runs. A compression-on
-          generation-on server does not use the type, but provisioning it is harmless (the
-          extension merely exists) and this same ``initialize`` runs for both callers.
-        - the fp32 ``vec_context_embeddings`` table already exists: it is read via the
-          vector codec (an fp32 archive, or the ``--compress`` CLI reading it before it
-          replaces it with the compressed table).
+        - ``generation`` on + ``compression`` OFF: always provision, WITHOUT a probe (the common
+          fast path). The compression-off server provisions the fp32 layout, so the extension must
+          exist before its ``vector(dim)`` DDL runs.
+        - ``generation`` on + ``compression`` ON (the v3.0.0 default): the server strips every fp32
+          statement (``skip_fp32_vec``), stores payloads as BYTEA, and reads them in pure Python, so
+          the ``vector`` type is never created or bound. Provisioning it anyway would force ``CREATE
+          EXTENSION vector`` and CRASH boot on a host that lacks pgvector -- exactly the pgvector-free
+          deployment the compression docs promote -- so fall through to the fp32-table probe and
+          provision ONLY if a stray fp32 table actually exists (it needs the codec). The migration
+          CLI's ``force=True`` init builds the full fp32 layout even under compression, but does NOT
+          rely on this gate: ``initialize_target_postgresql`` creates the extension itself before its
+          ``vector(dim)`` DDL, and its backend runs DDL only (no vector value I/O), while the paths
+          that DO read fp32 vectors (``--compress``, a PG->PG copy) operate on a database where the
+          fp32 table already exists, so the probe returns True for them.
+        - the fp32 ``vec_context_embeddings`` table already exists: it is read via the vector codec
+          (an fp32 archive, or the ``--compress`` CLI reading it before it replaces it with the
+          compressed table).
         - ``compression`` off + ``generation`` off + ``embedding_metadata`` present: the
           infra-present fallthrough re-provisions the fp32 layout, which needs the type.
 
-        The regression this closes: a compressed (BYTEA-only) GENERATION-OFF archive whose
-        active payload table is compressed (``skip_fp32_vec`` strips every vector statement)
-        and whose read/write path binds no vector -- restored on a host that lacks pgvector
-        -- must NOT be forced to create the unused extension. Keying on ``embedding_metadata``
-        presence alone could not tell the two payload formats apart (that table exists under
-        both), which is why the fp32 table itself is probed when generation is off. A
-        connection failure returns False; the pool creation that follows surfaces the same
-        error with proper classification.
+        The regression this closes: returning True for every generation-on boot forced a compressed
+        (BYTEA-only) server -- the default configuration -- to create the unused pgvector extension,
+        crashing boot on a pgvector-less PostgreSQL host. Keying on ``embedding_metadata`` presence
+        alone could not tell the two payload formats apart (that table exists under both), which is
+        why the fp32 table itself is probed. A connection failure returns False; the pool creation
+        that follows surfaces the same error with proper classification.
 
         Returns:
             True when the pgvector extension and vector codec must be provisioned.
         """
-        if settings.embedding.generation_enabled:
+        if settings.embedding.generation_enabled and not settings.compression.enabled:
             return True
         compression_enabled = settings.compression.enabled
         connect_kwargs = build_asyncpg_connect_kwargs()
@@ -553,10 +559,11 @@ class PostgreSQLBackend:
         try:
             # Resolve whether the pgvector extension and vector codec are needed. The
             # vector type is used ONLY by the fp32 vec_context_embeddings layout, so a
-            # compressed (BYTEA-only) database -- including a generation-off archive
-            # restored on a host without pgvector -- must NOT be forced to create the
-            # unused extension, while a compression-off database that will provision or
-            # already carries the fp32 layout still must. See _resolve_provision_vector.
+            # compressed (BYTEA-only) database -- a compression-on server, or a
+            # generation-off archive restored on a host without pgvector -- must NOT be
+            # forced to create the unused extension, while a compression-off database that
+            # will provision or already carries the fp32 layout still must. See
+            # _resolve_provision_vector.
             self._provision_vector = await self._resolve_provision_vector()
 
             # Pre-create pgvector extension when the vector layout will be
@@ -610,11 +617,12 @@ class PostgreSQLBackend:
 
                 # === pgvector Type Registration ===
                 # Register the vector codec whenever the fp32 vector layout will be
-                # provisioned (self._provision_vector: generation on, OR a generation-off
-                # database that already carries embedding infrastructure). A fresh
-                # generation-off database has no vec tables, so the codec is never needed
-                # and a missing pgvector extension must NOT fail connection setup --
-                # mirroring the same gate on _ensure_pgvector_extension in initialize().
+                # provisioned (self._provision_vector: a compression-off generation-on
+                # server, or any database that already carries the fp32 vec table). A
+                # compressed server and a fresh generation-off database have no fp32 vec
+                # table, so the codec is never needed and a missing pgvector extension must
+                # NOT fail connection setup -- mirroring the same gate on
+                # _ensure_pgvector_extension in initialize().
                 # (The SQLite _load_sqlite_vec_extension load is NOT an analogue: it is
                 # unconditional -- see its docstring -- because the vec0 module must stay
                 # reachable for durable stale-embedding cleanup when generation is off.)

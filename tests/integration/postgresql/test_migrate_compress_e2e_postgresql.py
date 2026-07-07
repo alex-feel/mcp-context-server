@@ -110,6 +110,15 @@ async def _seed_fp32_pg(
     monkeypatch.delenv('COMPRESSION_SEED', raising=False)
     get_settings.cache_clear()
 
+    # The backend's module-level ``settings`` (postgresql_backend.settings) is captured at
+    # import and would otherwise stay at the ambient compression-on default, so
+    # _resolve_provision_vector would skip the pgvector extension + codec for this
+    # compression-off fp32 seed (the codec is what encodes the vector column). Refresh the
+    # binding to the compression-off settings before initialize(), mirroring the semantic and
+    # chunking module refreshes below, so the backend provisions the fp32 vector layout.
+    import app.backends.postgresql_backend as _pg_backend_module
+    monkeypatch.setattr(_pg_backend_module, 'settings', get_settings())
+
     backend = create_backend(
         backend_type='postgresql', connection_string=pg_url,
     )
