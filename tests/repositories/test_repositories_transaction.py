@@ -836,3 +836,47 @@ class TestTransactionExecutorOffload:
 
         # The orphaned reader was closed and untracked; nothing leaked.
         assert len(sqlite_backend._temporary_connections) == before
+
+    @pytest.mark.asyncio
+    async def test_cancelled_read_drains_before_connection_close(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        """A read cancelled mid-query drains it before get_connection closes the reader.
+
+        execute_read offloads the query to an executor thread; a BARE offload lets a
+        cancellation release get_connection's finally, which closes the temporary reader
+        connection while the query is STILL running on it on the worker thread -- a
+        use-after-free that stalls the event loop or crashes the interpreter. The drain
+        must hold the unwind open until the query finishes on the live connection.
+        """
+        import asyncio
+        import sqlite3
+        import threading
+
+        backend, _repos = backend_with_repos
+        started = threading.Event()
+        release = threading.Event()
+        completed: dict[str, object] = {}
+
+        def _slow_read(conn: sqlite3.Connection) -> int:
+            started.set()
+            release.wait(timeout=10)
+            # Runs while the drain holds the cancellation open: the reader connection
+            # must still be open here (a bare offload would already have closed it).
+            value = int(conn.execute('SELECT 42').fetchone()[0])
+            completed['value'] = value
+            return value
+
+        task = asyncio.create_task(backend.execute_read(_slow_read))
+        await asyncio.to_thread(started.wait, 10)
+        task.cancel()
+        # The drain holds the cancellation open while the query runs.
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        assert 'value' not in completed
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The query completed on a live connection before the reader was closed.
+        assert completed['value'] == 42

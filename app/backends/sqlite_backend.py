@@ -1263,7 +1263,14 @@ class SQLiteBackend:
                 return result
 
             try:
-                return await loop.run_in_executor(None, _execute)
+                # Drain the read like every other executor hop (commit, rollback,
+                # the direct write, reader creation): a cancellation landing on a bare
+                # await releases get_connection's finally, which CLOSES this temporary
+                # reader connection while the query is still running on the worker
+                # thread -- a use-after-free that stalls the event loop for the length
+                # of the in-flight statement or crashes the interpreter. The drain lets
+                # the query finish before the connection is closed.
+                return await run_in_executor_uninterruptible(loop, _execute)
             except Exception:
                 self.metrics.failed_queries += 1
                 raise
