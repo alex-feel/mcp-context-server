@@ -973,7 +973,13 @@ class StorageSettings(BaseSettings):
     # PostgreSQL connection settings
     postgresql_connection_string: SecretStr | None = Field(default=None, alias='POSTGRESQL_CONNECTION_STRING')
     postgresql_host: str = Field(default='localhost', alias='POSTGRESQL_HOST')
-    postgresql_port: int = Field(default=5432, alias='POSTGRESQL_PORT')
+    # Bounded to a valid TCP port range so a typo (0, negative, >65535) is
+    # rejected at the configuration boundary as a ValidationError (exit 78,
+    # never retried), mirroring FASTMCP_PORT. Without the bound a bad port
+    # passes pydantic and surfaces only at the socket layer as an OSError that
+    # the backend classifies as a retryable DependencyError (exit 69), so a
+    # supervisor restart-loops forever on a permanent misconfiguration.
+    postgresql_port: int = Field(default=5432, alias='POSTGRESQL_PORT', ge=1, le=65535)
     postgresql_user: str = Field(default='postgres', alias='POSTGRESQL_USER')
     postgresql_password: SecretStr = Field(default=SecretStr('postgres'), alias='POSTGRESQL_PASSWORD')
     postgresql_database: str = Field(default='mcp_context', alias='POSTGRESQL_DATABASE')

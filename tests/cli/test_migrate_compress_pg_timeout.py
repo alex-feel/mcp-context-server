@@ -46,6 +46,7 @@ class _RecordingConn:
     def __init__(self) -> None:
         self.execute_calls: list[tuple[str, float | None]] = []
         self.fetch_calls: list[tuple[str, float | None]] = []
+        self.fetchval_calls: list[tuple[str, float | None]] = []
 
     async def execute(self, statement: str, *_args: Any, **kwargs: Any) -> str:
         self.execute_calls.append((statement, kwargs.get('timeout')))
@@ -56,10 +57,12 @@ class _RecordingConn:
         # An empty batch makes the streaming loop exit after the first read.
         return []
 
-    async def fetchval(self, statement: str, *_args: Any, **_kwargs: Any) -> int:
+    async def fetchval(self, statement: str, *_args: Any, **kwargs: Any) -> int:
+        self.fetchval_calls.append((statement, kwargs.get('timeout')))
         # Idempotency probes: compress wants 0 (provenance absent -> proceed);
         # decompress wants truthy (compressed source table reachable via the
-        # to_regclass search_path probe -> proceed).
+        # to_regclass search_path probe -> proceed). COUNT(*) recounts return 0
+        # (empty, so the recount-vs-processed guard passes).
         return 1 if 'to_regclass' in statement else 0
 
 
@@ -160,6 +163,11 @@ def test_compress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:
     # The streamed batch read is budgeted too.
     assert conn.fetch_calls
     assert all(t == expected for _, t in conn.fetch_calls)
+    # The under-lock COUNT(*) recount is budgeted too (not the bare pool timeout):
+    # it is the first full-table scan under the lock on a large corpus.
+    recount = [t for stmt, t in conn.fetchval_calls if 'COUNT(*) FROM vec_context_embeddings' in stmt]
+    assert recount
+    assert all(t == expected for t in recount)
     # Sanity: the empty-table CREATE statements stay bare (timeout None), so the
     # recording distinguishes budgeted statements from un-budgeted ones.
     assert any(t is None for stmt, t in conn.execute_calls if stmt.startswith('CREATE TABLE'))
@@ -190,3 +198,7 @@ def test_decompress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:
     assert all(t == expected for t in drop_compressed)
     assert conn.fetch_calls
     assert all(t == expected for _, t in conn.fetch_calls)
+    # The under-lock COUNT(*) recount is budgeted too.
+    recount = [t for stmt, t in conn.fetchval_calls if 'COUNT(*) FROM vec_context_embeddings_compressed' in stmt]
+    assert recount
+    assert all(t == expected for t in recount)

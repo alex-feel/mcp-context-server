@@ -1124,12 +1124,23 @@ class FtsRepository(BaseRepository):
         # postgresql
         async def _check_postgresql(conn: 'asyncpg.Connection') -> bool:
             try:
-                # Check if text_search_vector column exists
+                # Resolve context_entries through the connection search_path
+                # (to_regclass), then check THAT relation for the column via
+                # pg_attribute. A schema-blind information_schema.columns query
+                # (no table_schema filter) reported the column present when it
+                # existed in ANY visible schema -- e.g. a colliding
+                # public.context_entries -- so the FTS backstop believed the
+                # configured target schema already had FTS and no-oped, leaving
+                # migrated rows without full-text search under a non-default
+                # POSTGRESQL_SCHEMA. Resolving by regclass matches exactly where
+                # the FTS reads/writes and get_current_language() resolve.
                 result = await conn.fetchval(
                     '''
                     SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'context_entries' AND column_name = 'text_search_vector'
+                        SELECT 1 FROM pg_attribute
+                        WHERE attrelid = to_regclass('context_entries')
+                          AND attname = 'text_search_vector'
+                          AND NOT attisdropped
                     )
                     ''',
                 )

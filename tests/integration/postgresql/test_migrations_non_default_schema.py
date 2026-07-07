@@ -653,6 +653,180 @@ def test_fix_function_search_path_under_non_default_schema(
         )
 
 
+def test_function_ddl_quotes_mixed_case_schema(
+    pg_non_default_schema_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Schema-qualified function DDL must quote a mixed-case POSTGRESQL_SCHEMA.
+
+    ``CREATE/EXECUTE/ALTER FUNCTION {SCHEMA}.foo()`` built by raw substitution
+    of an unquoted schema folds a mixed-case (or reserved-word) name to
+    lowercase at parse time, so boot crashes with 'schema "..." does not
+    exist' even though the connection search_path (quoted) reaches the schema.
+    init_database and the three function migrations MUST succeed against a
+    quoted mixed-case schema created via quoted DDL, and the functions MUST
+    land in that schema.
+    """
+    mixed = 'MixedCaseSchema'
+
+    async def _create_mixed_schema() -> None:
+        conn = await asyncpg.connect(pg_non_default_schema_db)
+        try:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{mixed}"')
+        finally:
+            await conn.close()
+
+    asyncio.run(_create_mixed_schema())
+
+    # Drive the REAL production pool (which quotes search_path via
+    # server_settings), NOT the raw-SET test shim, so a mixed-case schema
+    # resolves the same way production resolves it.
+    monkeypatch.setenv('STORAGE_BACKEND', 'postgresql')
+    monkeypatch.setenv('POSTGRESQL_CONNECTION_STRING', pg_non_default_schema_db)
+    monkeypatch.setenv('POSTGRESQL_SCHEMA', mixed)
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')
+    monkeypatch.setenv('ENABLE_SEMANTIC_SEARCH', 'true')
+    get_settings.cache_clear()
+    _refresh_module_settings(monkeypatch)
+
+    async def _scenario() -> None:
+        backend = create_backend(
+            backend_type='postgresql',
+            connection_string=pg_non_default_schema_db,
+        )
+        await backend.initialize()
+        try:
+            # Pre-fix, init_database itself crashes here on the unquoted
+            # CREATE FUNCTION "mixedcaseschema".update_updated_at_column().
+            await init_database(backend=backend)
+            await apply_semantic_search_migration(backend=backend)
+            await apply_jsonb_merge_patch_migration(backend=backend)
+            await apply_function_search_path_migration(backend=backend)
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    asyncio.run(_scenario())
+
+    for function in (
+        'update_updated_at_column',
+        'update_embedding_metadata_timestamp',
+        'jsonb_merge_patch',
+    ):
+        assert asyncio.run(_function_exists_in_schema(
+            pg_non_default_schema_db, mixed, function,
+        )), f'{mixed}.{function} must exist after the quoted function DDL ran'
+        assert not asyncio.run(_function_exists_in_schema(
+            pg_non_default_schema_db, mixed.lower(), function,
+        )), f'the function must not fold into a lowercased schema {mixed.lower()!r}'
+
+
+def test_generation_off_infra_present_reprovisions_vector_layout(
+    pg_non_default_schema_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generation off + embedding infra present + pgvector absent still boots.
+
+    The semantic/chunking migrations re-provision the fp32 vector layout on an
+    infra-carrying generation-off database (embedding_metadata exists), but the
+    pgvector extension pre-create + codec must follow the SAME gate. With the
+    extension dropped, the migration's ``CREATE TABLE ... vector(dim)`` crashed
+    boot. The backend now resolves the provision-vector decision as
+    ``generation OR infra-present`` and re-creates the extension, so the
+    migration succeeds.
+    """
+    # Use the fixture's own schema (which matches the connecting role, so the
+    # raw-connection CREATE EXTENSION lands in the same schema the migration's
+    # search_path resolves through). Compression OFF so the fp32 vector layout
+    # (the vector-type user) is actually provisioned in phase 1.
+    _install_search_path_patch(monkeypatch, NON_DEFAULT_SCHEMA)
+    _configure_non_default_env(monkeypatch, pg_non_default_schema_db)
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    _refresh_module_settings(monkeypatch)
+
+    async def _vector_type_present() -> bool:
+        conn = await asyncpg.connect(pg_non_default_schema_db)
+        try:
+            return bool(await conn.fetchval("SELECT to_regtype('vector') IS NOT NULL"))
+        finally:
+            await conn.close()
+
+    async def _phase1_generation_on() -> None:
+        backend = create_backend(
+            backend_type='postgresql', connection_string=pg_non_default_schema_db,
+        )
+        await backend.initialize()
+        try:
+            await init_database(backend=backend)
+            await apply_semantic_search_migration(backend=backend)
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    asyncio.run(_phase1_generation_on())
+    assert asyncio.run(_table_exists_in_schema(
+        pg_non_default_schema_db, NON_DEFAULT_SCHEMA, 'embedding_metadata',
+    ))
+    assert asyncio.run(_table_exists_in_schema(
+        pg_non_default_schema_db, NON_DEFAULT_SCHEMA, 'vec_context_embeddings',
+    ))
+
+    async def _drop_extension_keep_infra() -> None:
+        conn = await asyncpg.connect(pg_non_default_schema_db)
+        try:
+            # Model a schema-only restore that omitted the pgvector extension and
+            # its vector table but kept embedding_metadata: drop the fp32 table +
+            # HNSW index first, then the extension (so nothing depends on the
+            # vector type). This is the C9 precondition -- the vector type is
+            # absent while the embedding infrastructure signal survives.
+            await conn.execute('DROP INDEX IF EXISTS idx_vec_context_embeddings_hnsw')
+            await conn.execute('DROP TABLE IF EXISTS vec_context_embeddings')
+            await conn.execute('DROP EXTENSION IF EXISTS vector')
+        finally:
+            await conn.close()
+
+    asyncio.run(_drop_extension_keep_infra())
+    # The vector type and table are gone; embedding_metadata (the infra signal)
+    # survives, so the infra-present provisioning decision must still fire.
+    assert not asyncio.run(_vector_type_present())
+    assert not asyncio.run(_table_exists_in_schema(
+        pg_non_default_schema_db, NON_DEFAULT_SCHEMA, 'vec_context_embeddings',
+    ))
+    assert asyncio.run(_table_exists_in_schema(
+        pg_non_default_schema_db, NON_DEFAULT_SCHEMA, 'embedding_metadata',
+    ))
+
+    # Phase 2: generation OFF + compression OFF. A fresh backend must re-create
+    # the pgvector extension (infra-present decision) so the semantic migration's
+    # CREATE TABLE ... vector(dim) type-checks instead of crashing on
+    # 'type "vector" does not exist' (which it does even when the relation
+    # already exists, because CREATE TABLE IF NOT EXISTS type-checks first).
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    _refresh_module_settings(monkeypatch)
+
+    async def _phase2_generation_off() -> None:
+        backend = create_backend(
+            backend_type='postgresql', connection_string=pg_non_default_schema_db,
+        )
+        await backend.initialize()
+        try:
+            # Pre-fix, this raised 'type "vector" does not exist' at boot.
+            await apply_semantic_search_migration(backend=backend)
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    asyncio.run(_phase2_generation_off())
+    # The extension was re-created (infra-present decision), so the vector type
+    # is available again and the migration re-provisioned the fp32 table.
+    assert asyncio.run(_vector_type_present())
+    assert asyncio.run(_table_exists_in_schema(
+        pg_non_default_schema_db, NON_DEFAULT_SCHEMA, 'vec_context_embeddings',
+    ))
+
+
 def test_no_project_tables_in_public_when_non_default_schema_used(
     pg_non_default_schema_db: str,
     monkeypatch: pytest.MonkeyPatch,

@@ -40,6 +40,7 @@ from pydantic import Field
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
+from app.metadata_types import non_finite_metadata_error
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -196,6 +197,13 @@ async def store_context_batch(
             if metadata is not None and not isinstance(metadata, dict):
                 validation_errors.append((idx, 'metadata must be a JSON object'))
                 continue
+            # Reject non-finite floats before generation (invalid JSON that
+            # PostgreSQL rejects, so parity divergence + a wasted generation pass).
+            if metadata is not None:
+                metadata_error = non_finite_metadata_error(cast('object', metadata))
+                if metadata_error is not None:
+                    validation_errors.append((idx, metadata_error))
+                    continue
             tags = entry.get('tags')
             if tags is not None and (
                 not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
@@ -1028,6 +1036,19 @@ async def update_context_batch(
 
             # Check if entry already had validation errors from images
             if any(idx == err[0] for err in validation_errors):
+                continue
+
+            # Reject non-finite floats in metadata (full or patch) before
+            # generation: invalid JSON that PostgreSQL rejects, so parity
+            # divergence + a wasted generation pass.
+            non_finite_error: str | None = None
+            for meta_value in (update.get('metadata'), update.get('metadata_patch')):
+                if meta_value is not None:
+                    non_finite_error = non_finite_metadata_error(cast('object', meta_value))
+                    if non_finite_error is not None:
+                        break
+            if non_finite_error is not None:
+                validation_errors.append((idx, context_id, non_finite_error))
                 continue
 
             # Prepare validated update

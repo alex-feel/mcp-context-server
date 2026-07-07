@@ -56,6 +56,7 @@ from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations._pg_ddl import fetch_migration
+from app.migrations._pg_ddl import fetchval_migration
 from app.migrations._pg_ddl import migration_statement_timeout_ms
 from app.settings import get_settings
 
@@ -1101,9 +1102,15 @@ async def _execute_compress_postgresql(
             'LOCK TABLE vec_context_embeddings IN ACCESS EXCLUSIVE MODE',
             migration_timeout_s,
         )
+        # Route the recount through the migration budget (not a bare fetchval,
+        # which inherits the pool's ~60s command_timeout): this COUNT(*) is the
+        # first full-table scan under the lock, and on a large corpus it must
+        # use POSTGRESQL_MIGRATION_TIMEOUT_S like the streamed reads that follow.
         live_count = int(
-            await conn.fetchval(
+            await fetchval_migration(
+                conn,
                 'SELECT COUNT(*) FROM vec_context_embeddings',
+                migration_timeout_s,
             )
             or 0,
         )
@@ -1569,9 +1576,14 @@ async def _execute_decompress_postgresql(
             'IN ACCESS EXCLUSIVE MODE',
             migration_timeout_s,
         )
+        # Route the recount through the migration budget (see the compress
+        # path): a bare fetchval would cap this first under-lock full-table
+        # scan at the pool command_timeout instead of the migration budget.
         live_count = int(
-            await conn.fetchval(
+            await fetchval_migration(
+                conn,
                 'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+                migration_timeout_s,
             )
             or 0,
         )

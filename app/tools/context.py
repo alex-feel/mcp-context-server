@@ -41,6 +41,7 @@ from pydantic import Field
 from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
+from app.metadata_types import non_finite_metadata_error
 from app.repositories.base import canonical_timestamp
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
@@ -141,6 +142,15 @@ async def store_context(
 
         # Determine content type and validate images
         validated_images, content_type, _ = validate_and_normalize_images(images, error_mode='raise')
+
+        # Reject non-finite floats in metadata BEFORE generation: they serialize
+        # to invalid JSON that PostgreSQL's jsonb parser rejects, so the same
+        # entry would store on SQLite but fail on PostgreSQL -- and the failure
+        # would otherwise surface only after a wasted generation pass.
+        if metadata is not None:
+            metadata_error = non_finite_metadata_error(metadata)
+            if metadata_error is not None:
+                raise ToolError(metadata_error)
 
         # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
         # All generation happens BEFORE any database operation: if an
@@ -660,6 +670,15 @@ async def update_context(
         if not exists:
             raise ToolError(f'Context entry with ID {context_id} not found')
         assert entry_source is not None  # guaranteed by exists=True
+
+        # Reject non-finite floats in metadata (full or patch) BEFORE generation:
+        # they serialize to invalid JSON that PostgreSQL rejects, so the update
+        # would succeed on SQLite but fail on PostgreSQL after a wasted pass.
+        for meta_value in (metadata, metadata_patch):
+            if meta_value is not None:
+                metadata_error = non_finite_metadata_error(meta_value)
+                if metadata_error is not None:
+                    raise ToolError(metadata_error)
 
         # === PHASE 2: Generate Summary + Embedding FIRST (Outside Transaction) ===
         # CRITICAL: All generation happens BEFORE any database modification.

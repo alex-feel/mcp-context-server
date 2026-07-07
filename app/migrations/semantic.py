@@ -16,6 +16,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.backends.postgresql_backend import quote_pg_identifier
 from app.errors import format_exception_message
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
@@ -254,13 +255,16 @@ async def _apply_migration_with_backend(
             f'Note: Changing dimensions will lose all existing embeddings.',
         )
 
-    # Template the migration SQL with the effective dimension and configured schema
+    # Template the migration SQL with the effective dimension and configured
+    # schema. {SCHEMA} appears only in schema-qualified function DDL, so it is
+    # quoted (matching the connection search_path) -- an unquoted mixed-case or
+    # reserved-word schema would fold to lowercase and fail to resolve.
     migration_sql = migration_sql_template.replace(
         '{EMBEDDING_DIM}',
         str(effective_dim),
     ).replace(
         '{SCHEMA}',
-        settings.storage.postgresql_schema,
+        quote_pg_identifier(settings.storage.postgresql_schema),
     )
 
     # When compression is enabled the compressed table replaces the fp32
@@ -275,27 +279,36 @@ async def _apply_migration_with_backend(
     if manager.backend_type == 'sqlite':
 
         def _apply_migration_sqlite(conn: sqlite3.Connection) -> None:
-            # Load sqlite-vec extension before executing migration
-            try:
-                import sqlite_vec
+            # Load sqlite-vec ONLY when the script actually contains vec0 DDL.
+            # Under compression, skip_fp32_vec strips every vec0 statement (the
+            # script is just embedding_metadata), so the vec0 module is not
+            # needed -- and a slim install without an embeddings-* extra (which
+            # is where sqlite-vec ships) must still boot a compressed,
+            # generation-off database that reached here via the infra-present
+            # fallthrough. Requiring the package for DDL already stripped from
+            # the script would fail boot on a functionally unneeded dependency.
+            if not skip_fp32_vec:
+                try:
+                    import sqlite_vec
 
-                conn.enable_load_extension(True)
-                sqlite_vec.load(conn)
-                conn.enable_load_extension(False)
-                logger.debug('sqlite-vec extension loaded for migration')
-            except ImportError:
-                raise RuntimeError(
-                    'sqlite-vec package required for semantic search migration. '
-                    'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
-                ) from None
-            except AttributeError:
-                raise RuntimeError(
-                    'SQLite does not support extension loading. Semantic search requires SQLite with extension support.',
-                ) from None
-            except Exception as e:
-                raise RuntimeError(f'Failed to load sqlite-vec extension: {e}') from e
+                    conn.enable_load_extension(True)
+                    sqlite_vec.load(conn)
+                    conn.enable_load_extension(False)
+                    logger.debug('sqlite-vec extension loaded for migration')
+                except ImportError:
+                    raise RuntimeError(
+                        'sqlite-vec package required for semantic search migration. '
+                        'Install: uv sync --extra embeddings-ollama (or other embeddings-* provider)',
+                    ) from None
+                except AttributeError:
+                    raise RuntimeError(
+                        'SQLite does not support extension loading. '
+                        'Semantic search requires SQLite with extension support.',
+                    ) from None
+                except Exception as e:
+                    raise RuntimeError(f'Failed to load sqlite-vec extension: {e}') from e
 
-            # Now safe to execute migration with vec0 module
+            # Execute migration (vec0 module loaded above when the script needs it)
             conn.executescript(migration_sql)
 
         await manager.execute_write(_apply_migration_sqlite)
@@ -408,8 +421,9 @@ async def apply_jsonb_merge_patch_migration(backend: StorageBackend) -> None:
     try:
         migration_sql_template = migration_path.read_text(encoding='utf-8')
 
-        # Template the migration SQL with configured schema
-        schema = settings.storage.postgresql_schema
+        # Template the migration SQL with the configured schema, quoted for the
+        # schema-qualified function DDL (see apply_semantic_search_migration).
+        schema = quote_pg_identifier(settings.storage.postgresql_schema)
         migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
         # Check if function already exists before applying
@@ -504,8 +518,9 @@ async def apply_function_search_path_migration(backend: StorageBackend) -> None:
     try:
         migration_sql_template = migration_path.read_text(encoding='utf-8')
 
-        # Template the migration SQL with configured schema
-        schema = settings.storage.postgresql_schema
+        # Template the migration SQL with the configured schema, quoted for the
+        # schema-qualified ALTER FUNCTION targets (see apply_semantic_search_migration).
+        schema = quote_pg_identifier(settings.storage.postgresql_schema)
         migration_sql = migration_sql_template.replace('{SCHEMA}', schema)
 
         migration_timeout_s = settings.storage.postgresql_migration_timeout_s

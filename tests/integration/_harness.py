@@ -1025,6 +1025,142 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_metadata_filter_out_of_range_numeric_parity(self) -> bool:
+        """Out-of-float8 and out-of-int64 stored numbers filter identically on both backends.
+
+        Two regressions in the float discriminator: (1) a stored integer beyond float8
+        range (309+ digits, legal through jsonb) made the exact-form probe's float8 cast
+        raise 22003 and abort the WHOLE PostgreSQL query while SQLite answered normally;
+        (2) a stored integer beyond int64 was classified int-origin (exact NUMERIC) while
+        SQLite reads it as REAL, so the same float filter diverged. The nested CASE now
+        guards the int64 boundary and maps out-of-float8 magnitudes to +/-inf (mirroring
+        SQLite's REAL read), so the same expected counts hold on both backends by
+        construction; the pre-fix PostgreSQL either errored or returned different counts.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Metadata Filter Out-of-Range Numeric Parity'
+        print('Testing out-of-float8 / out-of-int64 numeric metadata-filter parity...')
+        thread = f'{self.test_thread_id}_outofrange_parity'
+        # huge = 10**400 (beyond DBL_MAX -> SQLite REAL inf); u64 = 2**64+1 (beyond int64,
+        # SQLite reads as REAL 2**64); small = 5 (a plain in-range integer).
+        huge = 10 ** 400
+        u64 = 2 ** 64 + 1
+        f64 = float(2 ** 64)
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'huge int', 'metadata': {'v': huge}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'u64+1 int', 'metadata': {'v': u64}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'small int', 'metadata': {'v': 5}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store out-of-range entries'))
+                    return False
+
+            # SQLite (REAL inf for huge, REAL 2**64 for u64) defines the expected counts;
+            # the fix makes PostgreSQL match instead of aborting / diverging. A float
+            # param is used throughout so the discriminator's float branch is exercised.
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                ('gt 5.0 float', [{'key': 'v', 'operator': 'gt', 'value': 5.0}], 2),   # {huge, u64}
+                ('eq 5.0 float', [{'key': 'v', 'operator': 'eq', 'value': 5.0}], 1),   # {5}
+                ('lt 5.0 float', [{'key': 'v', 'operator': 'lt', 'value': 5.0}], 0),   # none
+                ('eq f64', [{'key': 'v', 'operator': 'eq', 'value': f64}], 1),         # {u64}=2**64
+                ('gt f64', [{'key': 'v', 'operator': 'gt', 'value': f64}], 1),         # {huge}; u64 rounds to 2**64
+                ('lt f64', [{'key': 'v', 'operator': 'lt', 'value': f64}], 1),         # {5}
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'out-of-range parity {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All out-of-range numeric metadata-filter parity tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_array_contains_high_magnitude_float_parity(self) -> bool:
+        """array_contains with a high-magnitude float member matches identically on both backends.
+
+        A bare ``@>`` containment matched only the float's canonical decimal form, so a
+        genuinely int-origin array element (e.g. the exact integer 2**55) matched on
+        SQLite but not PostgreSQL above 2**53. The float-member path now iterates numeric
+        elements through the shared exact/double discriminator, so a clean int-origin
+        element matches on both backends and a clearly-different element matches on
+        neither.
+
+        Returns:
+            bool: True if all tests pass.
+        """
+        test_name = 'Array Contains High-Magnitude Float Parity'
+        print('Testing high-magnitude-float array_contains parity...')
+        thread = f'{self.test_thread_id}_arrfloat_parity'
+        i55 = 2 ** 55            # exact integer element (36028797018963968)
+        other = 2 ** 55 + 8      # the next representable double up; must NOT match float(2**55)
+        fparam = float(2 ** 55)
+        entries = [
+            {'thread_id': thread, 'source': 'agent', 'text': 'has 2**55', 'metadata': {'vals': [1, i55, 3]}},
+            {'thread_id': thread, 'source': 'agent', 'text': 'has 2**55+8', 'metadata': {'vals': [other]}},
+        ]
+
+        async def _count(filters: list[dict[str, Any]]) -> int:
+            assert self.client is not None
+            res = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': filters},
+            )
+            return len(self._extract_content(res).get('results', []))
+
+        try:
+            assert self.client is not None  # Type guard for Pyright
+            for entry in entries:
+                result = await self.client.call_tool('store_context', entry)
+                if not self._extract_content(result).get('success'):
+                    self.test_results.append((test_name, False, 'Failed to store array_contains entries'))
+                    return False
+
+            checks: list[tuple[str, list[dict[str, Any]], int]] = [
+                # The int-origin 2**55 element matches float(2**55) on BOTH backends now.
+                ('contains float 2**55', [{'key': 'vals', 'operator': 'array_contains', 'value': fparam}], 1),
+                # A plain int member still matches its exact element (unchanged @> path).
+                ('contains int 2**55', [{'key': 'vals', 'operator': 'array_contains', 'value': i55}], 1),
+            ]
+            for label, filters, expected in checks:
+                got = await _count(filters)
+                if got != expected:
+                    msg = f'array_contains parity {label}: expected {expected}, got {got}'
+                    print(f'[FAIL] {msg}')
+                    self.test_results.append((test_name, False, msg))
+                    return False
+
+            print('[OK] All high-magnitude-float array_contains parity tests passed')
+            self.test_results.append((test_name, True, 'All tests passed'))
+            return True
+
+        except Exception as e:
+            print(f'Test failed with exception: {e}')
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_metadata_filter_boolean_type_parity(self) -> bool:
         """Boolean EQ/NE match JSON-boolean-typed values only -- identically on both backends.
 
@@ -11842,6 +11978,14 @@ class MCPServerIntegrationTest:
             (
                 'Metadata Filter High-Magnitude Float Roundtrip Parity',
                 self.test_metadata_filter_high_magnitude_float_roundtrip_parity,
+            ),
+            (
+                'Metadata Filter Out-of-Range Numeric Parity',
+                self.test_metadata_filter_out_of_range_numeric_parity,
+            ),
+            (
+                'Array Contains High-Magnitude Float Parity',
+                self.test_array_contains_high_magnitude_float_parity,
             ),
             ('Metadata Filter Boolean Type Parity', self.test_metadata_filter_boolean_type_parity),
             ('Metadata Filter GLOB Special Literal', self.test_metadata_filter_glob_special_literal),

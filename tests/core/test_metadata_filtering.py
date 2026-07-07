@@ -194,6 +194,96 @@ class TestMetadataQueryBuilder:
         assert 'trunc(' in simple_clause
         assert ')::NUMERIC' in simple_clause
 
+    @pytest.mark.parametrize('bad', [float('nan'), float('inf'), float('-inf')])
+    def test_non_finite_filter_value_rejected(self, bad: float) -> None:
+        """A NaN/Infinity filter value is rejected on both the advanced and simple paths.
+
+        SQLite binds a non-finite float as NULL (matching nothing) while
+        PostgreSQL orders NaN above all numbers (matching everything), so the
+        same filter diverges; rejecting it uniformly is the parity-correct
+        contract (mirroring the int64 guard).
+        """
+        with pytest.raises(ValueError, match='[Nn]on-finite'):
+            MetadataFilter(key='v', operator=MetadataOperator.LT, value=bad)
+
+        with pytest.raises(ValueError, match='[Nn]on-finite'):
+            MetadataQueryBuilder(backend_type='sqlite').add_simple_filter('v', bad)
+
+        # A non-finite member inside an IN list is rejected too.
+        with pytest.raises(ValueError, match='[Nn]on-finite'):
+            MetadataFilter(key='v', operator=MetadataOperator.IN, value=[1.0, bad])
+
+    def test_non_finite_metadata_error_walks_nested_structures(self) -> None:
+        """Stored metadata is scanned recursively for non-finite floats.
+
+        A non-finite float at any depth serializes to invalid JSON that
+        PostgreSQL's jsonb parser rejects, so the store must fail fast before
+        generation; finite floats and non-float values return no error.
+        """
+        from app.metadata_types import non_finite_metadata_error
+
+        assert non_finite_metadata_error({'a': 1, 'b': [0.5, {'c': 'ok'}], 'd': True}) is None
+        for bad_meta in (
+            {'v': float('nan')},
+            {'nested': [{'deep': float('inf')}]},
+            [1, 2, float('-inf')],
+            {'a': {'b': {'c': float('nan')}}},
+        ):
+            message = non_finite_metadata_error(bad_meta)
+            assert message is not None
+            assert 'on-finite' in message
+
+    def test_pg_float_discriminator_guards_int64_and_float8_range(self) -> None:
+        """The float discriminator guards the int64 boundary and never overflows float8.
+
+        A float param routes through a nested CASE that (a) keeps the exact-NUMERIC
+        compare only for integral stored values WITHIN int64 -- an out-of-int64 integer
+        SQLite reads as REAL must take the double branch -- and (b) maps an
+        out-of-float8-range stored value to +/-inf instead of casting it to float8,
+        which would raise 22003 and abort the whole query on a legal 309-digit stored
+        integer.
+        """
+        b = MetadataQueryBuilder(backend_type='postgresql')
+        b.add_advanced_filter(MetadataFilter(key='n', operator=MetadataOperator.GT, value=1.5))
+        clause, _ = b.build_where_clause()
+        # int64-boundary guard: the exact branch only fires within int64.
+        assert 'BETWEEN -9223372036854775808 AND 9223372036854775807' in clause
+        # safe-float8 maps out-of-range magnitudes to +/-inf (no 22003 abort).
+        assert "'infinity'::float8" in clause
+        assert "'-infinity'::float8" in clause
+        assert '1.7976931348623157e308' in clause
+        # The exact-form probe still routes through ::text (Ryu shortest-repr).
+        assert '::float8)::text::NUMERIC' in clause
+
+    def test_pg_array_contains_float_member_uses_shared_discriminator(self) -> None:
+        """A float array_contains member matches numeric elements via the shared discriminator.
+
+        A bare ``@>`` containment matches only the float's canonical decimal form and
+        diverges from SQLite's exact int-vs-double element comparison above 2**53. The
+        float-member path iterates numeric elements and reuses _pg_numeric_compare, so a
+        genuinely int-origin element now matches on both backends; ints/strings keep @>.
+        """
+        fb = MetadataQueryBuilder(backend_type='postgresql')
+        fb.add_advanced_filter(
+            MetadataFilter(key='vals', operator=MetadataOperator.ARRAY_CONTAINS, value=3.602879701896397e16),
+        )
+        fclause, fparams = fb.build_where_clause()
+        assert 'jsonb_array_elements' in fclause
+        assert "jsonb_typeof(elem) = 'number'" in fclause
+        assert "(elem #>> '{}')::NUMERIC" in fclause
+        assert '@>' not in fclause
+        # The numeric member is bound as the raw float, not json.dumps text.
+        assert fparams == [3.602879701896397e16]
+
+        # An INTEGER member still uses exact @> containment (json.dumps is exact).
+        ib = MetadataQueryBuilder(backend_type='postgresql')
+        ib.add_advanced_filter(
+            MetadataFilter(key='vals', operator=MetadataOperator.ARRAY_CONTAINS, value=7),
+        )
+        iclause, _ = ib.build_where_clause()
+        assert '@>' in iclause
+        assert 'jsonb_array_elements' not in iclause
+
     @pytest.mark.parametrize('operator', [MetadataOperator.EQ, MetadataOperator.NE])
     def test_boolean_guards_boolean_type(self, operator: MetadataOperator) -> None:
         """Boolean EQ/NE are JSON-boolean-typed-only on both backends: SQLite guards on

@@ -553,6 +553,95 @@ async def test_sqlite_migration_provisions_schema_for_embedding_infra_generation
 
 
 @pytest.mark.asyncio
+async def test_semantic_migration_under_compression_does_not_require_sqlite_vec(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stripped semantic migration must not require sqlite-vec.
+
+    With compression on, skip_fp32_vec strips every vec0 statement, so the
+    executed script is only embedding_metadata + its index -- the vec0 module
+    is not needed. A slim install without an embeddings-* extra (where
+    sqlite-vec ships) must still boot a compressed, generation-off database
+    that reached the semantic migration via the infra-present fallthrough;
+    requiring the package for DDL already stripped from the script fails boot
+    on a functionally unneeded dependency.
+    """
+    import sys
+
+    import app.migrations.semantic as semantic_module
+    from app.migrations.semantic import apply_semantic_search_migration
+
+    # Provision the real embedding_metadata schema with generation ON first
+    # (sqlite-vec is available in the dev env, so this full run succeeds).
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'true')
+    monkeypatch.delenv('ENABLE_EMBEDDING_COMPRESSION', raising=False)
+    get_settings.cache_clear()
+    monkeypatch.setattr(semantic_module, 'settings', get_settings())
+    await apply_semantic_search_migration(backend=backend)
+
+    def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        )
+        return cur.fetchone() is not None
+
+    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata')) is True
+
+    # Now flip to compression ON + generation OFF (the infra-present fallthrough
+    # fires because embedding_metadata exists), and simulate sqlite-vec NOT
+    # installed: `import sqlite_vec` raises ImportError. The backend's own load
+    # is ImportError-guarded (skips gracefully); only the migration's stripped
+    # path (skip_fp32_vec strips every vec0 statement) must avoid demanding it.
+    _enable_compression(monkeypatch)
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    monkeypatch.setattr(semantic_module, 'settings', get_settings())
+    monkeypatch.setitem(sys.modules, 'sqlite_vec', None)
+
+    # Must NOT raise despite sqlite-vec being unavailable (no vec0 DDL to run).
+    await apply_semantic_search_migration(backend=backend)
+    assert await backend.execute_read(lambda c: _table_exists(c, 'embedding_metadata')) is True
+
+
+@pytest.mark.asyncio
+async def test_disable_direction_guard_refuses_populated_before_provisioning(
+    backend: StorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The disable-direction guard refuses a compression-off flip on compressed data.
+
+    Run BEFORE the provisioning migrations in the lifespan so no stray fp32
+    table is ever created: compression off + a compression_metadata provenance
+    row present must raise ConfigurationError; a fresh database (no row) passes.
+    """
+    from app.startup.compression_validator import guard_compression_disable_over_populated
+
+    # First compress (seeds the provenance row) while compression is on.
+    _enable_compression(monkeypatch)
+    await apply_compression_migration(backend=backend)
+
+    def _seed_provenance(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            'INSERT OR REPLACE INTO compression_metadata '
+            '(id, provider, bits, variant, seed, dim, codebook_fingerprint) '
+            "VALUES (1, 'turboquant', 4, 'ip', 0, 1024, NULL)",
+        )
+
+    await backend.execute_write(_seed_provenance)
+
+    # Flip compression OFF: the guard must refuse (exit 78) with a --decompress hint.
+    _disable_compression(monkeypatch)
+    get_settings.cache_clear()
+    import app.startup.compression_validator as validator_module
+    monkeypatch.setattr(validator_module, 'get_settings', get_settings)
+
+    with pytest.raises(ConfigurationError, match='--decompress'):
+        await guard_compression_disable_over_populated(backend)
+
+
+@pytest.mark.asyncio
 @requires_sqlite_vec
 async def test_sqlite_fp32_reprovisioned_after_compression_off_flip_generation_off(
     backend: StorageBackend,

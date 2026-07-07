@@ -100,6 +100,15 @@ def build_asyncpg_connect_kwargs(app_settings: AppSettings | None = None) -> dic
     # quote yields a valid quoted identifier rather than a malformed search_path.
     server_settings: dict[str, str] = {
         'search_path': f'{quote_pg_identifier(storage.postgresql_schema)}, public',
+        # Pin extra_float_digits to a shortest-round-trip setting so the numeric
+        # metadata-filter discriminator (query_builder._pg_numeric_compare) sees
+        # the Ryu shortest-repr float8 text it relies on: a cluster/role default
+        # of 0 or negative reverts float8out to %.15g and would misclassify every
+        # high-magnitude float-origin stored value, silently resurrecting the
+        # eq-against-its-own-value divergence the discriminator exists to close.
+        # Sent in the startup packet, so it survives the pool's RESET ALL (same
+        # mechanism as search_path).
+        'extra_float_digits': '1',
     }
     tcp_idle_guc = storage.postgresql_tcp_keepalives_idle_s
     tcp_interval_guc = storage.postgresql_tcp_keepalives_interval_s
@@ -333,6 +342,12 @@ class PostgreSQLBackend:
 
         # Connection pool
         self._pool: asyncpg.Pool | None = None
+        # Whether the fp32 vector layout will be provisioned (so the pgvector
+        # extension must exist and the vector codec must be registered):
+        # generation on, OR a generation-off database that already carries
+        # embedding infrastructure (the infra-present fallthrough the
+        # semantic/chunking migrations use). Resolved in initialize().
+        self._provision_vector: bool = settings.embedding.generation_enabled
 
         # Circuit breaker and metrics
         self.circuit_breaker = CircuitBreaker(
@@ -473,15 +488,54 @@ class PostgreSQLBackend:
             # Default to DependencyError for unknown errors (safer - allows retry)
             raise DependencyError(f'pgvector extension is required but could not be created: {e}') from e
 
+    async def _embedding_metadata_present(self) -> bool:
+        """Return True when ``embedding_metadata`` is reachable in the configured schema.
+
+        Probed on a temporary connection carrying the configured search_path (via
+        ``build_asyncpg_connect_kwargs``) with ``to_regclass``, so the answer matches
+        exactly what the semantic/chunking migrations' infra-present fallthrough will
+        see. A connection failure returns False -- the pool creation that follows
+        surfaces the same error with proper classification.
+
+        Returns:
+            True when an unqualified ``embedding_metadata`` reference resolves.
+        """
+        connect_kwargs = build_asyncpg_connect_kwargs()
+        try:
+            conn = await asyncpg.connect(
+                self.connection_string,
+                timeout=settings.storage.postgresql_connect_timeout_s,
+                **connect_kwargs,
+            )
+        except Exception as e:
+            logger.debug('embedding_metadata probe could not connect (deferring to pool init): %s', e)
+            return False
+        try:
+            return bool(await conn.fetchval("SELECT to_regclass('embedding_metadata') IS NOT NULL"))
+        finally:
+            await conn.close()
+
     async def initialize(self) -> None:
         """Initialize the PostgreSQL backend with connection pool."""
         logger.info(f'Initializing PostgreSQL backend: {self.backend_type}')
 
         try:
-            # Pre-create pgvector extension when embedding generation is enabled (the
-            # vector storage exists independently of the semantic search tool). This
-            # prevents "unknown type: public.vector" warnings during pool initialization.
-            if settings.embedding.generation_enabled:
+            # Resolve whether the fp32 vector layout will be provisioned. With
+            # generation off, the semantic/chunking migrations still re-provision
+            # the vector-typed layout on a database that already carries embedding
+            # infrastructure (embedding_metadata exists), so the pgvector extension
+            # and the vector codec are needed there too -- otherwise that migration
+            # raises 'type "vector" does not exist' and boot crashes, a regression
+            # against the migration provisioning gate. A fresh generation-off
+            # database (no embedding infra) still skips both.
+            self._provision_vector = (
+                settings.embedding.generation_enabled or await self._embedding_metadata_present()
+            )
+
+            # Pre-create pgvector extension when the vector layout will be
+            # provisioned. This prevents "unknown type: public.vector" warnings
+            # during pool initialization and lets the migration's vector DDL run.
+            if self._provision_vector:
                 await self._ensure_pgvector_extension()
 
             # Define connection initialization function for TCP keepalive and pgvector support
@@ -528,14 +582,16 @@ class PostgreSQLBackend:
                         logger.warning('Failed to configure TCP keepalive: %s', e)
 
                 # === pgvector Type Registration ===
-                # Only when embedding generation is enabled: vector storage is provisioned
-                # from ENABLE_EMBEDDING_GENERATION (no vec tables exist when it is off), so
-                # the vector type codec is never needed and a missing pgvector extension must
-                # NOT fail connection setup -- mirroring the gated _ensure_pgvector_extension
-                # call in initialize(). (The SQLite _load_sqlite_vec_extension load is NOT an
-                # analogue: it is unconditional -- see its docstring -- because the vec0 module
-                # must stay reachable for durable stale-embedding cleanup when generation is off.)
-                if settings.embedding.generation_enabled:
+                # Register the vector codec whenever the fp32 vector layout will be
+                # provisioned (self._provision_vector: generation on, OR a generation-off
+                # database that already carries embedding infrastructure). A fresh
+                # generation-off database has no vec tables, so the codec is never needed
+                # and a missing pgvector extension must NOT fail connection setup --
+                # mirroring the same gate on _ensure_pgvector_extension in initialize().
+                # (The SQLite _load_sqlite_vec_extension load is NOT an analogue: it is
+                # unconditional -- see its docstring -- because the vec0 module must stay
+                # reachable for durable stale-embedding cleanup when generation is off.)
+                if self._provision_vector:
                     try:
                         from pgvector.asyncpg import register_vector
 
