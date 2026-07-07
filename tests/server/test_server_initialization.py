@@ -427,7 +427,7 @@ class TestLifespanErrorHandling:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.summary.generation_enabled = False
-        # Step 22 registration reads semantic_search.mode (tri-state string);
+        # Step 24 registration reads semantic_search.mode (tri-state string);
         # 'true' forces the tool on (warns when no provider).
         mock_settings.semantic_search.mode = 'true'
         mock_settings.semantic_search.enabled = True
@@ -499,7 +499,7 @@ class TestLifespanErrorHandling:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.summary.generation_enabled = False
-        # Step 22 reads semantic_search.mode; 'false' forces the tool off,
+        # Step 24 reads semantic_search.mode; 'false' forces the tool off,
         # matching the intent that no provider is available here.
         mock_settings.semantic_search.mode = 'false'
         mock_settings.semantic_search.enabled = False
@@ -567,7 +567,7 @@ class TestLifespanErrorHandling:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.summary.generation_enabled = False
-        # Step 22 reads semantic_search.mode; 'false' forces the tool off.
+        # Step 24 reads semantic_search.mode; 'false' forces the tool off.
         mock_settings.semantic_search.mode = 'false'
         mock_settings.semantic_search.enabled = False
         mock_settings.fts.enabled = False
@@ -637,7 +637,7 @@ class TestLifespanErrorHandling:
         mock_settings.reranking.enabled = False
         mock_settings.chunking.enabled = False
         mock_settings.summary.generation_enabled = False
-        # Step 22 reads semantic_search.mode; 'true' with a provider present
+        # Step 24 reads semantic_search.mode; 'true' with a provider present
         # registers semantic_search_context.
         mock_settings.semantic_search.mode = 'true'
         mock_settings.semantic_search.enabled = True
@@ -742,7 +742,7 @@ class TestSearchToolRegistrationMatrix:
         mock_settings.summary.generation_enabled = False
         mock_settings.semantic_search.mode = semantic_mode
         # The derived .enabled property mirrors mode != 'false'; set it
-        # explicitly because step 24 (hybrid) reads the property directly.
+        # explicitly because step 26 (hybrid) reads the property directly.
         mock_settings.semantic_search.enabled = semantic_mode != 'false'
         mock_settings.fts.enabled = fts_enabled
         mock_settings.fts.language = 'english'

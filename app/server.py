@@ -575,7 +575,7 @@ async def lifespan(mcp: FastMCP[None]) -> AsyncGenerator[None, None]:
 
         # 24) Register semantic search tool based on its mode and embedding availability.
         # auto: register when an embedding provider is present (initialized in step
-        # 18, so its presence is the authoritative "embeddings are available" signal).
+        # 19, so its presence is the authoritative "embeddings are available" signal).
         # true: force on, warning when no provider is available. false: force off.
         semantic_mode = settings.semantic_search.mode
         if semantic_mode == 'false':
