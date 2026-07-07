@@ -36,6 +36,7 @@ from fastmcp.exceptions import ToolError
 from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import ControlFlowError
 from app.errors import format_exception_message
+from app.metadata_types import non_finite_metadata_error
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.services.outline_service import OutlineNode
@@ -856,6 +857,7 @@ def validate_and_normalize_images(
     - Validates base64 encoding
     - Enforces per-image size limit (MAX_IMAGE_SIZE_MB)
     - Enforces total size limit (MAX_TOTAL_SIZE_MB)
+    - Rejects a non-finite-float per-image 'metadata' value (invalid jsonb)
     - Uses enumerate() for indexed error messages
 
     Args:
@@ -928,6 +930,20 @@ def validate_and_normalize_images(
                     raise ToolError(msg)
                 errors.append(msg)
                 return images, 'text', errors
+
+        # A per-image 'metadata' value carrying a non-finite float (NaN/Infinity) serializes
+        # to invalid JSON that PostgreSQL's jsonb image_metadata column REJECTS while SQLite
+        # stores it -- a cross-backend parity divergence, and a wasted generation pass on the
+        # PostgreSQL failure, the same non_finite_metadata_error guards for entry metadata.
+        # Reachable on the untyped batch path, whose image dicts are not constrained to string
+        # values; a string (JSON-encoded) metadata value has no bare float and passes cleanly.
+        metadata_error = non_finite_metadata_error(cast(object, img.get('metadata')))
+        if metadata_error is not None:
+            msg = f'Image {idx} metadata: {metadata_error}'
+            if error_mode == 'raise':
+                raise ToolError(msg)
+            errors.append(msg)
+            return images, 'text', errors
 
         # Validate base64 encoding
         try:
