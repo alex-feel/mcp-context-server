@@ -32,6 +32,7 @@ from typing import overload
 from typing import override
 from urllib.parse import quote
 
+from app.backends._executor import run_in_executor_uninterruptible
 from app.errors import ControlFlowError
 from app.settings import get_settings
 
@@ -699,7 +700,19 @@ class SQLiteBackend:
         return await loop.run_in_executor(None, _get_writer)
 
     async def _get_reader_connection(self) -> sqlite3.Connection:
-        """Get a reader connection from the pool."""
+        """Get a reader connection from the pool.
+
+        The worker registers the new connection in ``_temporary_connections``
+        BEFORE returning it, so a cancellation landing on the creation await
+        would otherwise orphan an open connection: the caller's finally-cleanup
+        never runs (its ``conn`` is left unbound) and nothing else reclaims
+        temporary connections during normal operation. On any unwind the
+        future is drained and the created connection is closed and untracked so
+        a cancelled read leaks nothing.
+
+        Returns:
+            An isolated read-only SQLite connection tracked for later cleanup.
+        """
         loop = asyncio.get_running_loop()
 
         def _get_reader() -> sqlite3.Connection:
@@ -712,7 +725,21 @@ class SQLiteBackend:
             logger.debug('Created isolated reader connection for thread safety')
             return temp_conn
 
-        return await loop.run_in_executor(None, _get_reader)
+        future = loop.run_in_executor(None, _get_reader)
+        try:
+            return await asyncio.shield(future)
+        except BaseException:
+            while not future.done():
+                try:
+                    await asyncio.wait([future])
+                except asyncio.CancelledError:
+                    continue
+            if not future.cancelled() and future.exception() is None:
+                orphan = future.result()
+                with self._connection_lock:
+                    self._temporary_connections.discard(orphan)
+                self._safe_close_connection(orphan)
+            raise
 
     async def _close_all_connections(self) -> None:
         """Close all database connections with comprehensive tracking."""
@@ -931,7 +958,13 @@ class SQLiteBackend:
                         self.metrics.total_queries += 1
                         return result
 
-                    return await loop.run_in_executor(None, _execute, writer)
+                    # Drained offload: on shutdown the write-queue processor task
+                    # is cancelled after a grace period, but the executor callable
+                    # (sync_operation + conn.commit) cannot be interrupted mid-flight
+                    # -- draining it to completion keeps _close_all_connections (which
+                    # runs later in shutdown) from closing the shared writer while a
+                    # statement is still executing on it.
+                    return await run_in_executor_uninterruptible(loop, _execute, writer)
 
             except sqlite3.OperationalError as e:
                 last_error = e
@@ -1096,15 +1129,23 @@ class SQLiteBackend:
             # Direct write connection with lock protection
             async with self._writer_lock:
                 writer = await self._ensure_writer_connection()
+                loop = asyncio.get_running_loop()
                 try:
                     yield writer
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, writer.commit)
+                    # Drained commit (see begin_transaction): a cancellation must
+                    # not leave a zombie commit against the shared writer.
+                    await run_in_executor_uninterruptible(loop, writer.commit)
                     self.circuit_breaker.record_success()
-                except Exception:
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, writer.rollback)
-                    self.circuit_breaker.record_failure()
+                except BaseException as e:
+                    # Mirror begin_transaction: BaseException (cancellation) must
+                    # still roll back the open transaction on the shared writer,
+                    # or the NEXT write silently commits its partial state. Only a
+                    # genuine fault trips the breaker.
+                    if isinstance(e, Exception):
+                        await run_in_executor_uninterruptible(loop, writer.rollback)
+                        self.circuit_breaker.record_failure()
+                    else:
+                        writer.rollback()
                     raise
         else:
             # Use write queue for normal write operations
@@ -1287,8 +1328,13 @@ class SQLiteBackend:
             try:
                 yield txn_context
 
-                # Success: commit transaction
-                await loop.run_in_executor(None, writer.commit)
+                # Success: commit transaction. The commit hop is drained (not a
+                # bare offload) so a cancellation landing on it cannot leave a
+                # zombie commit callable to fire later against the shared writer
+                # connection -- the drain runs it to completion, and the
+                # cancellation then falls into the rollback arm below as a
+                # harmless no-op (nothing is open once the commit succeeded).
+                await run_in_executor_uninterruptible(loop, writer.commit)
                 self.circuit_breaker.record_success()
                 logger.debug('Transaction committed successfully')
 
@@ -1302,11 +1348,18 @@ class SQLiteBackend:
                 # the NEXT write on it would silently commit.
                 try:
                     if isinstance(e, Exception):
-                        await loop.run_in_executor(None, writer.rollback)
+                        # Drained offload, NOT a bare one: an ordinary-Exception
+                        # body (e.g. a routine VersionConflictError) can still be
+                        # cancelled while the rollback is queued/running on the
+                        # shared executor, and a bare offload would skip the
+                        # rollback -- reopening the exact silent-commit vector
+                        # the drain closes for transaction bodies.
+                        await run_in_executor_uninterruptible(loop, writer.rollback)
                     else:
-                        # Synchronous rollback on a BaseException unwind: awaiting
-                        # inside a cancellation unwind can itself be re-cancelled,
-                        # which would skip the rollback entirely.
+                        # Synchronous rollback on a BaseException unwind (interpreter
+                        # shutdown): the executor may be gone, so do not offload; the
+                        # transaction body was already drained to completion, so the
+                        # connection is quiescent and this rollback runs fast.
                         writer.rollback()
                 except Exception as rollback_error:
                     logger.error(f'Rollback failed: {rollback_error}')

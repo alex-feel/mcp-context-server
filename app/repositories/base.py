@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Callable
 from typing import TypeVar
 
+from app.backends._executor import run_in_executor_uninterruptible
 from app.backends.base import StorageBackend
 
 T = TypeVar('T')
@@ -109,23 +110,7 @@ class BaseRepository:
             Whatever the closure returns.
         """
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(None, closure, conn)
-        try:
-            return await asyncio.shield(future)
-        except BaseException:
-            while not future.done():
-                try:
-                    await asyncio.wait([future])
-                except asyncio.CancelledError:
-                    # Re-cancellation during the drain: keep waiting -- the
-                    # closure must finish before the unwind may continue.
-                    continue
-            if not future.cancelled():
-                # Retrieve (and discard) the closure's own outcome so an
-                # exception set during a cancellation unwind does not log a
-                # "Future exception was never retrieved" warning.
-                future.exception()
-            raise
+        return await run_in_executor_uninterruptible(loop, closure, conn)
 
     def _placeholder(self, position: int) -> str:
         """Generate SQL parameter placeholder for the given position.

@@ -698,3 +698,141 @@ class TestTransactionExecutorOffload:
         assert await repos.context.get_content_type(context_id) == 'text'
         results, _stats = await repos.context.search_contexts(thread_id='zombie-1')
         assert results == []
+
+    @pytest.mark.asyncio
+    async def test_drain_helper_completes_callable_before_cancel_propagates(self) -> None:
+        """The shared drain helper holds the unwind until the callable finishes.
+
+        A cancellation landing on the offload cannot interrupt a callable
+        already running on the executor thread; the helper must drain it to
+        completion (side effect observable) before re-raising, and must not
+        resolve the awaiting task early.
+        """
+        import asyncio
+        import threading
+
+        from app.backends._executor import run_in_executor_uninterruptible
+
+        release = threading.Event()
+        started = threading.Event()
+        ran_to_completion = threading.Event()
+
+        def _slow() -> str:
+            started.set()
+            release.wait(timeout=10)
+            ran_to_completion.set()
+            return 'done'
+
+        async def _call() -> str:
+            loop = asyncio.get_running_loop()
+            return await run_in_executor_uninterruptible(loop, _slow)
+
+        task = asyncio.create_task(_call())
+        await asyncio.to_thread(started.wait, 10)
+        task.cancel()
+        # The drain holds the cancellation open while the callable runs.
+        await asyncio.sleep(0.1)
+        assert not task.done()
+        assert not ran_to_completion.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert ran_to_completion.is_set()
+
+    @pytest.mark.asyncio
+    async def test_begin_transaction_commit_and_rollback_route_through_drain(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        """begin_transaction's own commit and rollback hops use the drain helper.
+
+        A bare offload of writer.commit / writer.rollback would let a
+        cancellation leave a zombie commit or skip the rollback on the shared
+        writer connection; both boundary hops must route through the same
+        drained helper the transaction body uses.
+        """
+        import asyncio
+        from collections.abc import Callable
+        from unittest.mock import patch
+
+        from app.backends._executor import run_in_executor_uninterruptible as original
+
+        backend, repos = backend_with_repos
+        drained: list[str] = []
+
+        async def _spy(loop: asyncio.AbstractEventLoop, func: Callable[..., object], *args: object) -> object:
+            drained.append(getattr(func, '__name__', repr(func)))
+            return await original(loop, func, *args)
+
+        async def _failing_txn() -> None:
+            """Open a transaction, write, then raise an ordinary Exception.
+
+            Raises:
+                RuntimeError: Always, to model a body failure that must roll back.
+            """
+            async with backend.begin_transaction() as txn:
+                await repos.context.store_with_deduplication(
+                    thread_id='drain-rollback', source='user', content_type='text',
+                    text_content='rollback via drain', metadata=None, txn=txn,
+                )
+                raise RuntimeError('body failure')
+
+        with patch('app.backends.sqlite_backend.run_in_executor_uninterruptible', _spy):
+            # Success path -> commit routes through the drain.
+            async with backend.begin_transaction() as txn:
+                await repos.context.store_with_deduplication(
+                    thread_id='drain-commit', source='user', content_type='text',
+                    text_content='commit via drain', metadata=None, txn=txn,
+                )
+            assert 'commit' in drained
+
+            # Failure path (ordinary Exception) -> rollback routes through the drain.
+            drained.clear()
+            with pytest.raises(RuntimeError):
+                await _failing_txn()
+            assert 'rollback' in drained
+
+    @pytest.mark.asyncio
+    async def test_reader_connection_not_leaked_on_cancellation(
+        self,
+        backend_with_repos: 'tuple[StorageBackend, RepositoryContainer]',
+    ) -> None:
+        """A read cancelled during connection creation leaks no connection.
+
+        The worker registers the temporary connection before returning it, so a
+        cancellation on the creation await must drain and then close+untrack the
+        orphan -- the caller's finally never runs because its conn is unbound.
+        """
+        import asyncio
+        import threading
+        from typing import Any
+        from typing import cast
+        from unittest.mock import patch
+
+        backend, _repos = backend_with_repos
+        sqlite_backend = cast(Any, backend)
+        real_create = sqlite_backend._create_connection
+        gate = threading.Event()
+        creating = threading.Event()
+
+        def _blocking_create(*, readonly: bool = False) -> object:
+            if readonly:
+                creating.set()
+                gate.wait(timeout=10)
+            return real_create(readonly=readonly)
+
+        before = len(sqlite_backend._temporary_connections)
+        with patch.object(sqlite_backend, '_create_connection', _blocking_create):
+            async def _read() -> None:
+                async with backend.get_connection(readonly=True) as conn:
+                    conn.execute('SELECT 1')
+
+            task = asyncio.create_task(_read())
+            await asyncio.to_thread(creating.wait, 10)
+            task.cancel()
+            gate.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # The orphaned reader was closed and untracked; nothing leaked.
+        assert len(sqlite_backend._temporary_connections) == before
