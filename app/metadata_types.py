@@ -15,7 +15,9 @@ The :class:`MetadataFilter` ``value`` field accepts string values, so no
 type extension is required to support UUIDv7 identifiers.
 """
 
+import math
 from enum import StrEnum
+from typing import cast
 
 from pydantic import BaseModel
 from pydantic import Field
@@ -59,6 +61,83 @@ def reject_out_of_int64(
                 f'64-bit range [-2**63, 2**63-1]. SQLite cannot store or compare an integer this '
                 f'large, so it is rejected on both backends for cross-backend parity.',
             )
+
+
+def reject_non_finite(
+    value: str | float | bool | list[str | int | float | bool] | None,
+) -> None:
+    """Reject NaN/Infinity float metadata-filter values on BOTH backends.
+
+    SQLite binds a non-finite float as SQL NULL, so every numeric comparison
+    returns no rows, while PostgreSQL treats NaN as equal to itself and greater
+    than all numbers (and +/-Infinity as ordered extremes), so ``lt``/``lte``/
+    ``ne`` with a NaN param matches EVERY number row -- an all-vs-none
+    cross-backend divergence on the same path :func:`reject_out_of_int64` guards
+    for the int64 case. Non-finite floats are not valid JSON either; rejecting
+    them uniformly turns the filter into a clean ``ValueError`` instead of silent
+    wrong results. ``bool`` is an int subclass, never a float, so it is
+    unaffected.
+
+    Args:
+        value: A scalar metadata-filter value, or a list of them (IN/NOT_IN).
+
+    Raises:
+        ValueError: If any float member is not finite (NaN or +/-Infinity).
+    """
+    candidates: list[object] = list(value) if isinstance(value, list) else [value]
+    for candidate in candidates:
+        if isinstance(candidate, bool):
+            continue
+        if isinstance(candidate, float) and not math.isfinite(candidate):
+            raise ValueError(
+                f'Non-finite metadata-filter value {candidate!r} (NaN or Infinity) is not '
+                f'supported: SQLite binds it as NULL (matching no rows) while PostgreSQL orders '
+                f'NaN above all numbers, so the same filter diverges across backends.',
+            )
+
+
+def non_finite_metadata_error(metadata: object) -> str | None:
+    """Return a message if a stored metadata value contains a non-finite float, else None.
+
+    A store must not accept a non-finite float in metadata: ``json.dumps`` emits
+    the invalid-JSON tokens ``NaN``/``Infinity`` (its ``allow_nan`` default),
+    which PostgreSQL's jsonb parser REJECTS -- so the same document stores on
+    SQLite but hard-fails on PostgreSQL, and the PostgreSQL failure only surfaces
+    AFTER embedding/summary generation already ran (wasted model calls, an opaque
+    driver error). Called in the input-validation phase BEFORE generation so the
+    store fails fast with a clear message and burns no generation pass. Walks
+    nested dicts and lists so a non-finite float at any depth is caught. Returns
+    a message (the tool raises ``ToolError``/records a per-entry failure) rather
+    than raising, mirroring the guard-message idiom and keeping ``str(e)`` out of
+    the tool boundary.
+
+    Args:
+        metadata: The metadata value to validate (any JSON-compatible structure).
+
+    Returns:
+        An operator-facing message on the first non-finite float found, else None.
+    """
+    if isinstance(metadata, bool):
+        return None
+    if isinstance(metadata, float):
+        if not math.isfinite(metadata):
+            return (
+                f'Non-finite float {metadata!r} (NaN or Infinity) in metadata is not '
+                f'supported: it serializes to invalid JSON that PostgreSQL rejects, so the '
+                f'same entry would store on SQLite but fail on PostgreSQL.'
+            )
+        return None
+    if isinstance(metadata, dict):
+        for item in cast('dict[object, object]', metadata).values():
+            message = non_finite_metadata_error(item)
+            if message is not None:
+                return message
+    elif isinstance(metadata, (list, tuple)):
+        for item in cast('list[object]', metadata):
+            message = non_finite_metadata_error(item)
+            if message is not None:
+                return message
+    return None
 
 
 class MetadataOperator(StrEnum):
@@ -243,11 +322,12 @@ class MetadataFilter(BaseModel):
             if v is None:
                 raise ValueError('Operator array_contains requires a non-null value')
 
-        # Reject integer values outside the signed 64-bit range on BOTH backends.
-        # The identical guard runs at the simple metadata={} equality builder
-        # (MetadataQueryBuilder.add_simple_filter), so the advanced metadata_filters
-        # path and the simple path reject an out-of-range integer the same way --
-        # see reject_out_of_int64 for the full cross-backend rationale.
+        # Reject integer values outside the signed 64-bit range, and non-finite
+        # floats (NaN/Infinity), on BOTH backends. The identical guards run at
+        # the simple metadata={} equality builder (add_simple_filter), so the
+        # advanced metadata_filters path and the simple path reject the same
+        # divergent inputs -- see reject_out_of_int64 / reject_non_finite.
         reject_out_of_int64(v)
+        reject_non_finite(v)
 
         return v

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
+from app.metadata_types import reject_non_finite
 from app.metadata_types import reject_out_of_int64
 
 # Match the metadata COLUMN token only, so a table alias can qualify the column
@@ -89,11 +90,13 @@ class MetadataQueryBuilder:
             raise ValueError(f'Invalid metadata key: {key}')
 
         # The simple metadata={} equality path bypasses MetadataFilter validation,
-        # so reject out-of-int64 integers here too: without this guard an
-        # out-of-range int aborts the search on SQLite (OverflowError) while
-        # PostgreSQL matches it -- the cross-backend divergence the advanced
-        # metadata_filters path already rejects via the same helper.
+        # so reject out-of-int64 integers AND non-finite floats here too: without
+        # these guards an out-of-range int aborts the search on SQLite while
+        # PostgreSQL matches it, and a NaN param matches nothing on SQLite but
+        # every number row on PostgreSQL -- the cross-backend divergences the
+        # advanced metadata_filters path already rejects via the same helpers.
         reject_out_of_int64(value)
+        reject_non_finite(value)
 
         json_path = self._build_json_path(key)
         placeholder = self._placeholder()
@@ -372,44 +375,84 @@ class MetadataQueryBuilder:
         # non-ASCII member would diverge between backends or against its own accessor.
         return text.translate(_ASCII_LOWER_TABLE) if lower and isinstance(value, str) else text
 
-    def _pg_numeric_body(self, key_path: str, sql_op: str, placeholder: str, value: float) -> str:
-        """PostgreSQL numeric comparison body (without the JSON-number type guard) matching
-        SQLite's exact integer/double comparison.
+    # int64 bounds: SQLite reads a JSON integer OUTSIDE this range as REAL (nearest
+    # double), so only within-range integral stored values can be int-origin; an
+    # out-of-int64 integer must take the double comparison to match SQLite.
+    _INT64_MIN = '-9223372036854775808'
+    _INT64_MAX = '9223372036854775807'
+    # float8 magnitude ceiling (DBL_MAX): a NUMERIC beyond it cannot cast to float8
+    # (SQLSTATE 22003), so map it to +/-inf -- matching SQLite reading a huge JSON
+    # integer as REAL inf -- rather than aborting the whole query.
+    _FLOAT8_MAX = '1.7976931348623157e308'
+
+    def _pg_numeric_compare(self, num: str, sql_op: str, placeholder: str, value: float) -> str:
+        """Compare a NUMERIC stored expression to a numeric param, matching SQLite's semantics.
 
         The stored value is read as exact ``NUMERIC`` and NEVER down-cast: a stored-side ``DOUBLE
         PRECISION`` cast truncated a stored integer > 2**53, and a ``float8::numeric`` of the param
         rounds the PARAM to ~15 significant digits -- both diverge from SQLite. SQLite parses a
-        JSON INTEGER to an exact int64 but a JSON FLOAT to the nearest double, and asyncpg binds
-        the param in a ``NUMERIC`` context as the param's EXACT double value, so:
+        JSON INTEGER within int64 to an exact int64 (integers OUTSIDE int64, and JSON floats, to
+        the nearest double), and asyncpg binds the param in a ``NUMERIC`` context as the param's
+        EXACT double value, so:
 
         - INTEGER param: compare exact ``NUMERIC`` for every stored value (SQLite compares int64 /
           double-vs-int64 exactly).
-        - FLOAT param: reproduce SQLite's per-type snapping. ``jsonb`` normalizes every JSON number
-          to ``NUMERIC`` and discards whether the JSON text was integer-form or float-form, while
-          SQLite keeps that distinction (``json_extract`` types integer text as INTEGER, float text
-          as REAL). A float stores as its ``repr`` -- the SHORTEST decimal that round-trips -- so
-          above 2**53 the stored ``NUMERIC`` differs from the double's exact value (``float(2**55)``
-          stores as 36028797018963970 while the double is ...968), and a bare exact-``NUMERIC``
-          compare failed ``eq`` against the very value the user stored. The CASE therefore keeps
-          the exact-``NUMERIC`` compare ONLY for stored values that are integral AND provably
-          int-origin -- NOT equal to ``(stored::float8)::text::NUMERIC``, the shortest round-trip
-          decimal of their nearest double -- and compares everything else (fractional, or
-          integral-but-canonical-double-form) double-vs-double, both sides snapped to ``float8``.
-          The probe MUST route through ``::text``: ``float8out`` emits the shortest round-trip
-          decimal (Ryu, PostgreSQL 12+, ``extra_float_digits`` at its default), while the direct
-          ``float8::NUMERIC`` cast rounds to ~15 significant digits and would misclassify every
-          high-magnitude value. A stored ``0.3`` still equals a ``0.3`` param (same IEEE double),
-          a stored integer ``2**53+1`` is never collapsed onto a ``2**53`` param (non-canonical ->
-          exact), and a stored ``float(2**55)`` matches its own value again.
+        - FLOAT param: reproduce SQLite's per-type snapping via a nested ``CASE``. The exact
+          ``NUMERIC`` compare is kept ONLY for a stored value that is integral, WITHIN int64, AND
+          provably int-origin -- NOT equal to ``(stored::float8)::text::NUMERIC``, the shortest
+          round-trip decimal of its nearest double. Everything else (fractional, out-of-int64, or
+          an integral value that IS a double's canonical decimal form) is compared double-vs-double
+          via ``safe_float8`` on both sides. The probe MUST route through ``::text``: ``float8out``
+          emits the shortest round-trip decimal (Ryu, PostgreSQL 12+; the app pins
+          ``extra_float_digits`` in ``server_settings`` so a cluster override cannot revert it to
+          ``%.15g`` and misclassify), while the direct ``float8::NUMERIC`` cast rounds to ~15
+          digits. The int64 guard and ``safe_float8`` are load-bearing: the exact-form probe casts
+          to ``float8`` and would raise 22003 on a stored value beyond DBL_MAX, so it runs ONLY in
+          the within-int64 nested branch (CASE guarantees only the matching branch is evaluated,
+          unlike ``AND`` which PostgreSQL may not short-circuit), and the double branch maps an
+          out-of-range NUMERIC to +/-inf to mirror SQLite's REAL read of a huge JSON integer. A
+          stored ``0.3`` still equals a ``0.3`` param, a stored integer ``2**53+1`` is never
+          collapsed onto a ``2**53`` param, a stored ``float(2**55)`` matches its own value, an
+          out-of-int64 integer compares by double (matching SQLite), and a 309-digit integer no
+          longer aborts the query.
 
-        Known irreducible residual: an INT-origin stored value that happens to equal the canonical
-        decimal form of some double (e.g. the integer 36028797018963970) is indistinguishable from
-        a float-origin one after ``jsonb`` normalization and takes the ``float8`` comparison, while
-        SQLite compares it exactly; no provenance survives to separate the two.
+        Known irreducible residual: an in-int64 INT-origin stored value that happens to equal the
+        canonical decimal form of some double is indistinguishable from a float-origin one after
+        ``jsonb`` normalization and takes the ``float8`` comparison, while SQLite compares it
+        exactly; no provenance survives to separate the two.
 
-        ``$N`` stays a single ``numeric``-typed parameter (used bare in the exact branch, cast
-        via ``(<ph>)::float8`` in the double branch), so asyncpg binds the float once as its
-        exact double value.
+        Args:
+            num: A SQL expression yielding the stored value as ``NUMERIC``.
+            sql_op: The comparison operator (``=``, ``!=``, ``>``, ``>=``, ``<``, ``<=``).
+            placeholder: The bound-parameter placeholder for this comparison.
+            value: The numeric filter param (int or float; bool handled separately upstream).
+
+        Returns:
+            A boolean SQL expression comparing the stored number to the param.
+        """
+        # ``isinstance(value, int)`` (not ``float``) distinguishes an int param from a float under
+        # the numeric-tower ``value: float`` annotation; bool is excluded upstream.
+        if isinstance(value, int):
+            return f'{num} {sql_op} {placeholder}'
+        safe_f8 = (
+            f"CASE WHEN {num} > {self._FLOAT8_MAX} THEN 'infinity'::float8 "
+            f"WHEN {num} < -{self._FLOAT8_MAX} THEN '-infinity'::float8 "
+            f'ELSE {num}::float8 END'
+        )
+        double_cmp = f'{safe_f8} {sql_op} ({placeholder})::float8'
+        return (
+            f'CASE WHEN {num} = trunc({num}) AND {num} BETWEEN {self._INT64_MIN} AND {self._INT64_MAX} '
+            f'THEN CASE WHEN ({num}::float8)::text::NUMERIC <> {num} '
+            f'THEN {num} {sql_op} {placeholder} ELSE {double_cmp} END '
+            f'ELSE {double_cmp} END'
+        )
+
+    def _pg_numeric_body(self, key_path: str, sql_op: str, placeholder: str, value: float) -> str:
+        """PostgreSQL scalar numeric comparison body (without the JSON-number type guard).
+
+        Thin wrapper: builds the ``NUMERIC`` accessor for ``key_path`` and delegates to
+        :meth:`_pg_numeric_compare`, the shared exact/double discriminator also used by
+        ``array_contains`` numeric members.
 
         Args:
             key_path: The metadata key path (without the leading ``$.``).
@@ -421,15 +464,7 @@ class MetadataQueryBuilder:
             A boolean SQL expression comparing the stored number to the param.
         """
         num = f'({self._pg_text_accessor(key_path)})::NUMERIC'
-        # ``isinstance(value, int)`` (not ``float``) distinguishes an int param from a float under
-        # the numeric-tower ``value: float`` annotation; bool is excluded upstream.
-        if isinstance(value, int):
-            return f'{num} {sql_op} {placeholder}'
-        return (
-            f'CASE WHEN {num} = trunc({num}) AND ({num}::float8)::text::NUMERIC <> {num} '
-            f'THEN {num} {sql_op} {placeholder} '
-            f'ELSE {num}::float8 {sql_op} ({placeholder})::float8 END'
-        )
+        return self._pg_numeric_compare(num, sql_op, placeholder, value)
 
     def _pg_number_guard(self, key_path: str) -> str:
         """PostgreSQL predicate restricting a numeric operator to JSON numbers.
@@ -1176,9 +1211,26 @@ class MetadataQueryBuilder:
                         f'ELSE FALSE END)',
                     )
                     self.parameters.append(value)
+                elif isinstance(value, float):
+                    # A float member matches a numeric element with the SAME exact/double
+                    # semantics as the scalar operators: a bare @> containment matches only
+                    # the float's canonical decimal form, which diverges from SQLite's
+                    # exact int-vs-double element comparison above 2**53. Iterate the number
+                    # elements and reuse the shared discriminator so array_contains stays
+                    # consistent with the scalar path (only the documented int-origin /
+                    # canonical-double-form residual remains).
+                    elem_num = "(elem #>> '{}')::NUMERIC"
+                    compare = self._pg_numeric_compare(elem_num, '=', placeholder, value)
+                    self.conditions.append(
+                        f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
+                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata#>'{array_path}') AS elem "
+                        f"WHERE jsonb_typeof(elem) = 'number' AND {compare}) ELSE FALSE END)",
+                    )
+                    self.parameters.append(value)
                 else:
-                    # Case-sensitive or non-string: use @> operator with json.dumps() + ::jsonb
-                    # Wrap in CASE to handle non-array fields gracefully
+                    # Case-sensitive string, int, or bool: use @> operator with json.dumps() +
+                    # ::jsonb (exact for ints/bools; a canonical string match for strings).
+                    # Wrap in CASE to handle non-array fields gracefully.
                     self.conditions.append(
                         f"(CASE WHEN jsonb_typeof(metadata#>'{array_path}') = 'array' "
                         f"THEN metadata#>'{array_path}' @> {placeholder}::jsonb ELSE FALSE END)",
@@ -1199,9 +1251,21 @@ class MetadataQueryBuilder:
                         f'ELSE FALSE END)',
                     )
                     self.parameters.append(value)
+                elif isinstance(value, float):
+                    # A float member matches a numeric element with the SAME exact/double
+                    # semantics as the scalar operators (see the nested-path branch above).
+                    elem_num = "(elem #>> '{}')::NUMERIC"
+                    compare = self._pg_numeric_compare(elem_num, '=', placeholder, value)
+                    self.conditions.append(
+                        f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
+                        f"THEN EXISTS (SELECT 1 FROM jsonb_array_elements(metadata->'{key_path}') AS elem "
+                        f"WHERE jsonb_typeof(elem) = 'number' AND {compare}) ELSE FALSE END)",
+                    )
+                    self.parameters.append(value)
                 else:
-                    # Case-sensitive or non-string: use @> operator with json.dumps() + ::jsonb
-                    # Wrap in CASE to handle non-array fields gracefully
+                    # Case-sensitive string, int, or bool: use @> operator with json.dumps() +
+                    # ::jsonb (exact for ints/bools; a canonical string match for strings).
+                    # Wrap in CASE to handle non-array fields gracefully.
                     self.conditions.append(
                         f"(CASE WHEN jsonb_typeof(metadata->'{key_path}') = 'array' "
                         f"THEN metadata->'{key_path}' @> {placeholder}::jsonb ELSE FALSE END)",
