@@ -258,7 +258,23 @@ async def _table_exists(
 
 
 async def _count_table(backend: StorageBackend, table_name: str) -> int:
-    """Return the row count for ``table_name``."""
+    """Return the row count for ``table_name``.
+
+    On PostgreSQL this pre-lock estimate is a full-table ``COUNT(*)`` on the SAME
+    (potentially large) vec table the under-lock recount reads, so it runs under the
+    migration budget: a bare ``fetchval`` on the borrowed server pool would inherit the
+    ~60s ``command_timeout`` / ~54s session ``statement_timeout`` and be cancelled here --
+    before the budgeted transaction even begins -- on exactly the large corpus where
+    raising ``POSTGRESQL_MIGRATION_TIMEOUT_S`` is meant to help. A short read transaction
+    raises both the server-side (``SET LOCAL``) and client-side deadlines for the scan.
+
+    Args:
+        backend: The storage backend to count on.
+        table_name: The table whose rows to count (validated via ``_safe_table``).
+
+    Returns:
+        The row count for ``table_name``.
+    """
     safe = _safe_table(table_name)
     if backend.backend_type == 'sqlite':
 
@@ -268,8 +284,14 @@ async def _count_table(backend: StorageBackend, table_name: str) -> int:
 
         return await backend.execute_read(_count)
 
+    migration_timeout_s = get_settings().storage.postgresql_migration_timeout_s
+
     async def _count_pg(conn: asyncpg.Connection) -> int:
-        result = await conn.fetchval(f'SELECT COUNT(*) FROM {safe}')
+        async with conn.transaction():
+            await _raise_pg_migration_budget(conn, migration_timeout_s)
+            result = await fetchval_migration(
+                conn, f'SELECT COUNT(*) FROM {safe}', migration_timeout_s,
+            )
         return int(result or 0)
 
     return await backend.execute_read(cast(Any, _count_pg))
@@ -1313,9 +1335,15 @@ async def _execute_decompress_empty(backend: StorageBackend) -> None:
                 'IN ACCESS EXCLUSIVE MODE',
                 migration_timeout_s,
             )
+            # Route the under-lock recount through the migration budget (not a bare
+            # fetchval, which inherits the pool's ~60s command_timeout), matching the
+            # compress/decompress recounts: this COUNT(*) runs under the lock and must
+            # use POSTGRESQL_MIGRATION_TIMEOUT_S on a large table.
             live_count = int(
-                await pg_conn.fetchval(
+                await fetchval_migration(
+                    pg_conn,
                     'SELECT COUNT(*) FROM vec_context_embeddings_compressed',
+                    migration_timeout_s,
                 )
                 or 0,
             )

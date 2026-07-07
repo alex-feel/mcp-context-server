@@ -16,6 +16,8 @@ pgvector container in the integration suite.
 """
 
 import asyncio
+from collections.abc import Awaitable
+from collections.abc import Callable
 from collections.abc import Generator
 from typing import Any
 from typing import cast
@@ -64,6 +66,31 @@ class _RecordingConn:
         # to_regclass search_path probe -> proceed). COUNT(*) recounts return 0
         # (empty, so the recount-vs-processed guard passes).
         return 1 if 'to_regclass' in statement else 0
+
+    def transaction(self) -> '_ReadTxnCM':
+        return _ReadTxnCM()
+
+
+class _ReadTxnCM:
+    """An asyncpg-shaped transaction context manager (for the pre-lock read count)."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+class _ReadBackend:
+    """A backend whose execute_read invokes the async operation on a recording conn."""
+
+    backend_type = 'postgresql'
+
+    def __init__(self, conn: _RecordingConn) -> None:
+        self._conn = conn
+
+    async def execute_read(self, operation: Callable[[_RecordingConn], Awaitable[int]]) -> int:
+        return await operation(self._conn)
 
 
 class _FakeTxn:
@@ -202,3 +229,45 @@ def test_decompress_postgresql_runs_heavy_ddl_under_migration_budget() -> None:
     recount = [t for stmt, t in conn.fetchval_calls if 'COUNT(*) FROM vec_context_embeddings_compressed' in stmt]
     assert recount
     assert all(t == expected for t in recount)
+
+
+def test_count_table_pg_runs_under_migration_budget() -> None:
+    """The pre-lock estimate COUNT(*) carries the migration budget, not the pool timeout.
+
+    On a large corpus a bare fetchval on the borrowed pool would be cancelled at the ~60s
+    command_timeout before the budgeted transaction begins, aborting the CLI where raising
+    POSTGRESQL_MIGRATION_TIMEOUT_S is meant to help. The pre-lock count runs in a short read
+    transaction that raises both the server-side (SET LOCAL) and client-side deadlines.
+    """
+    from app.cli.migrate_compression import _count_table
+
+    conn = _RecordingConn()
+    backend = _ReadBackend(conn)
+    count = asyncio.run(_count_table(cast(Any, backend), 'vec_context_embeddings'))
+    assert count == 0
+    # The read transaction raises the server-side budget.
+    set_local = [stmt for stmt, _ in conn.execute_calls if stmt.startswith('SET LOCAL statement_timeout')]
+    assert set_local == [_budget_set_local()]
+    # The COUNT(*) carries the explicit client-side deadline (not the bare pool timeout).
+    counts = [t for stmt, t in conn.fetchval_calls if 'COUNT(*) FROM vec_context_embeddings' in stmt]
+    assert counts
+    assert all(t == _expected_client_timeout() for t in counts)
+
+
+def test_decompress_empty_recount_runs_under_migration_budget() -> None:
+    """The zero-data reverse path's under-lock recount also carries the migration budget.
+
+    The third under-lock recount (missed by the original 'both recounts' sweep) must use
+    the budget like its compress/decompress siblings, not the pool command_timeout.
+    """
+    from app.cli.migrate_compression import _execute_decompress_empty
+
+    conn = _RecordingConn()
+    backend = _FakeBackend(conn)
+    asyncio.run(_execute_decompress_empty(cast(Any, backend)))
+
+    set_local = [stmt for stmt, _ in conn.execute_calls if stmt.startswith('SET LOCAL statement_timeout')]
+    assert set_local == [_budget_set_local()]
+    recount = [t for stmt, t in conn.fetchval_calls if 'COUNT(*) FROM vec_context_embeddings_compressed' in stmt]
+    assert recount
+    assert all(t == _expected_client_timeout() for t in recount)
