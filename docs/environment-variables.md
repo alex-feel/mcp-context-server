@@ -331,7 +331,7 @@ These settings apply only when `STORAGE_BACKEND=postgresql`.
 |--------------------------------|---------|---------------|------------------------------------------------------------------------------------------------------------------|
 | `POSTGRESQL_CONNECTION_STRING` | secret  | _(none)_      | Full PostgreSQL connection string. When provided, overrides individual host/port/user/password/database settings |
 | `POSTGRESQL_HOST`              | string  | `localhost`   | PostgreSQL server host                                                                                           |
-| `POSTGRESQL_PORT`              | integer | `5432`        | PostgreSQL server port                                                                                           |
+| `POSTGRESQL_PORT`              | integer | `5432`        | PostgreSQL server port. Valid range `1`-`65535`; an out-of-range value fails at startup (exit 78)                |
 | `POSTGRESQL_USER`              | string  | `postgres`    | PostgreSQL username                                                                                              |
 | `POSTGRESQL_PASSWORD`          | secret  | `postgres`    | PostgreSQL password                                                                                              |
 | `POSTGRESQL_DATABASE`          | string  | `mcp_context` | PostgreSQL database name                                                                                         |
