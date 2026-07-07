@@ -120,6 +120,55 @@ class TestFtsRepositoryQueryTransform:
         normal = repo._transform_query_sqlite('python async', 'match')
         assert db.execute('SELECT rowid FROM d WHERE d MATCH ?', (normal,)).fetchall() == [(1,)]
 
+    def test_sanitize_drops_operator_barewords_only_for_stopword_languages(self) -> None:
+        """and/or/not are dropped ONLY for languages PostgreSQL treats them as stopwords.
+
+        PostgreSQL's plainto_tsquery drops and/or/not as stopwords for english, hindi, and russian
+        (their ASCII words route through english_stem) but keeps them as required lexemes for every
+        other language, so the SQLite sanitizer must mirror that per-language or the two backends
+        return different rows for the same non-English query.
+        """
+        from app.repositories.fts_repository import sanitize_sqlite_fts_terms
+
+        tokens = ['system', 'and', 'or', 'not', 'config']
+        # english (default) and russian: operator barewords dropped, mirroring plainto_tsquery.
+        assert sanitize_sqlite_fts_terms(tokens) == ['"system"', '"config"']
+        assert sanitize_sqlite_fts_terms(tokens, 'russian') == ['"system"', '"config"']
+        # german/simple: kept as literal terms, mirroring plainto_tsquery('german'/'simple', ...).
+        kept = ['"system"', '"and"', '"or"', '"not"', '"config"']
+        assert sanitize_sqlite_fts_terms(tokens, 'german') == kept
+        assert sanitize_sqlite_fts_terms(tokens, 'simple') == kept
+
+    def test_transform_match_keeps_operator_barewords_for_non_english_language(self, repo: FtsRepository) -> None:
+        """match mode keeps and/or/not as literal terms for a non-stopword language.
+
+        The default (english) drops them; a german deployment keeps them because
+        plainto_tsquery('german', 'system and configuration') compiles all three lexemes, so SQLite
+        must require them too for cross-backend parity.
+        """
+        assert repo._transform_query_sqlite('system and configuration', 'match') == '"system" "configuration"'
+        assert (
+            repo._transform_query_sqlite('system and configuration', 'match', 'german')
+            == '"system" "and" "configuration"'
+        )
+
+    def test_transform_prefix_keeps_operator_barewords_for_non_english_language(self, repo: FtsRepository) -> None:
+        """prefix mode applies the same per-language operator-bareword gate as match mode."""
+        assert repo._transform_query_sqlite('and config', 'prefix') == '"config"*'
+        assert repo._transform_query_sqlite('and config', 'prefix', 'german') == '"and"* "config"*'
+
+    def test_transform_non_english_operator_terms_run_on_real_fts5(self, repo: FtsRepository) -> None:
+        """The kept operator-bareword literal terms EXECUTE on a real FTS5 table without a syntax
+        error and match a row containing the word (parity with PostgreSQL requiring the lexeme)."""
+        import sqlite3
+
+        db = sqlite3.connect(':memory:')
+        db.execute("CREATE VIRTUAL TABLE d USING fts5(b, tokenize='unicode61')")
+        db.execute("INSERT INTO d(b) VALUES('system and configuration')")
+        fts = repo._transform_query_sqlite('system and configuration', 'match', 'german')
+        assert fts == '"system" "and" "configuration"'
+        assert db.execute('SELECT rowid FROM d WHERE d MATCH ?', (fts,)).fetchall() == [(1,)]
+
 
 class TestFtsRepositoryPostgreSQLQueryTransform:
     """Test PostgreSQL query transformation for different modes."""

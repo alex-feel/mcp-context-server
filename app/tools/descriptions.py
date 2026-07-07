@@ -213,5 +213,6 @@ boolean: Boolean operators with websearch syntax.
   Grouping: Parentheses for grouping
   IMPORTANT:
     - There is NO "AND" or "NOT" keyword. Use space for AND, "-" for NOT.
-    - Words "and"/"not" are English stop words and will be removed.
+    - Words "and"/"not" typed as terms are removed as stop words under English (and configs whose
+      ASCII words use the English stop list); other languages keep them as ordinary terms.
   Use double quotes for phrases: '"error handling" python\''''

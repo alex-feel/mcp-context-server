@@ -1029,6 +1029,7 @@ def _prepare_hybrid_fts_query(
     query: str,
     or_threshold: int,
     backend_type: str,
+    language: str = 'english',
 ) -> tuple[str, Literal['match', 'boolean']]:
     """Prepare FTS query with adaptive AND/OR logic for hybrid search.
 
@@ -1043,6 +1044,9 @@ def _prepare_hybrid_fts_query(
         query: Original search query.
         or_threshold: Minimum significant terms to switch to OR mode.
         backend_type: Storage backend type ('sqlite' or 'postgresql').
+        language: Configured FTS_LANGUAGE; governs whether and/or/not operator barewords are
+            dropped as stopwords on the SQLite OR-join path (to mirror PostgreSQL for that
+            language, so the two backends do not diverge for a non-English deployment).
 
     Returns:
         Tuple of (transformed_query, fts_mode) where fts_mode is
@@ -1068,7 +1072,7 @@ def _prepare_hybrid_fts_query(
         # same input. Returning the raw query defers all escaping to the one downstream pass.
         if not use_or:
             return query, 'match'
-        terms = sanitize_sqlite_fts_terms(significant)
+        terms = sanitize_sqlite_fts_terms(significant, language)
         if not terms:
             # Every term was an operator/stopword bareword: return the '' match-nothing
             # sentinel (re-transformed by _search_sqlite to an empty result), in parity with
@@ -1307,6 +1311,7 @@ async def hybrid_search_context(
             query=query,
             or_threshold=settings.hybrid_search.fts_or_threshold,
             backend_type=settings.storage.backend_type,
+            language=settings.fts.language,
         )
 
         async def run_fts_search() -> None:
