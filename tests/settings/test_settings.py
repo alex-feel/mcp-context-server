@@ -313,6 +313,48 @@ class TestStoragePoolLimits:
             StorageSettings()
 
 
+class TestPostgresqlPortBounds:
+    """POSTGRESQL_PORT is bounded to a valid TCP port range at the config boundary.
+
+    A port typo (0, negative, >65535) that passes pydantic surfaces only at the
+    socket layer as an OSError the backend classifies as a retryable
+    DependencyError (exit 69, supervisor restart-loops forever) instead of a
+    permanent ConfigurationError (exit 78). The ge/le bound rejects it up front,
+    mirroring FASTMCP_PORT.
+    """
+
+    def test_default_port_is_valid(self) -> None:
+        from app.settings import StorageSettings
+
+        assert StorageSettings().postgresql_port == 5432
+
+    def test_zero_port_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_PORT', '0'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_negative_port_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_PORT', '-1'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_above_max_port_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_PORT', '70000'), pytest.raises(ValidationError):
+            StorageSettings()
+
+    def test_boundary_ports_accepted(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('POSTGRESQL_PORT', '1'):
+            assert StorageSettings().postgresql_port == 1
+        with env_var('POSTGRESQL_PORT', '65535'):
+            assert StorageSettings().postgresql_port == 65535
+
+
 class TestPostgresqlPoolLimits:
     """POSTGRESQL_POOL_MIN / POSTGRESQL_POOL_MAX bounds at the config boundary.
 
