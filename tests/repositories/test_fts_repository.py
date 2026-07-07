@@ -227,6 +227,25 @@ class TestFtsRepositoryPostgreSQLFunctions:
         assert 'plainto_tsquery' in result
         assert 'english' in result
 
+    def test_is_available_pg_probe_is_schema_aware(self) -> None:
+        """The PG availability probe resolves context_entries via search_path.
+
+        A schema-blind information_schema.columns query (no table_schema filter)
+        reported the FTS column present when it existed in ANY visible schema
+        (e.g. a colliding public.context_entries), defeating the schema-aware
+        FTS backstop on a non-default POSTGRESQL_SCHEMA. The probe must resolve
+        the relation via to_regclass (search_path) like the FTS reads/writes.
+        """
+        import inspect
+
+        src = inspect.getsource(FtsRepository.is_available)
+        assert 'to_regclass' in src
+        assert 'pg_attribute' in src
+        # The old schema-blind lookup query (FROM information_schema.columns with
+        # no table_schema filter) must be gone from the SQL itself.
+        assert 'FROM information_schema.columns' not in src
+        assert 'FROM\n                        information_schema.columns' not in src
+
     def test_get_tsquery_function_phrase(self, repo: FtsRepository) -> None:
         """Test phrase mode uses phraseto_tsquery."""
         result = repo._get_tsquery_function('phrase', 'english')
