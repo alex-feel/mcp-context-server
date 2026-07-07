@@ -403,7 +403,7 @@
           "name": "POSTGRESQL_SCHEMA"
         },
         {
-          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it and logs a warning when no provider is available; false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
+          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it when a provider is available, otherwise logs a warning and skips registration (it does not force the tool on without a provider); false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -629,7 +629,7 @@
           "name": "FTS_RERANK_GAP_MERGE"
         },
         {
-          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto registers hybrid search when at least one of FTS or semantic search is available; true forces registration; false skips it.",
+          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto and true both register hybrid search when at least one of FTS or semantic search is available (otherwise a warning is logged and it is skipped, since hybrid has no underlying mode to fuse and true cannot force it on with neither); false skips it.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1515,7 +1515,7 @@
           "name": "POSTGRESQL_SCHEMA"
         },
         {
-          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it and logs a warning when no provider is available; false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
+          "description": "Semantic search tool registration. Tri-state: auto (default), true, or false. auto registers the semantic_search_context tool when an embedding provider is available (and stays silent otherwise); true registers it when a provider is available, otherwise logs a warning and skips registration (it does not force the tool on without a provider); false skips registration. Embedding storage is provisioned by ENABLE_EMBEDDING_GENERATION, independently of this toggle.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,
@@ -1741,7 +1741,7 @@
           "name": "FTS_RERANK_GAP_MERGE"
         },
         {
-          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto registers hybrid search when at least one of FTS or semantic search is available; true forces registration; false skips it.",
+          "description": "Hybrid search tool registration (combines FTS and semantic search with RRF fusion). Tri-state: auto (default), true, or false. auto and true both register hybrid search when at least one of FTS or semantic search is available (otherwise a warning is logged and it is skipped, since hybrid has no underlying mode to fuse and true cannot force it on with neither); false skips it.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,

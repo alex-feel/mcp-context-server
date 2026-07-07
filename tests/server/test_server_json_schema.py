@@ -383,6 +383,42 @@ class TestServerJsonSchemaValidation:
                     + '\n'.join(errors),
                 )
 
+    def test_all_packages_have_identical_environment_variable_descriptions(
+        self,
+        server_json_content: dict[str, Any],
+    ) -> None:
+        """Verify every package describes each environment variable identically.
+
+        server.json duplicates the environment-variable list across the PyPI and OCI package
+        blocks. The name-set check above catches a variable missing from one block, but not a
+        DESCRIPTION corrected in one block and left stale in the other -- a recurring drift when a
+        toggle's registration semantics change (e.g. a tri-state toggle whose 'true' no longer
+        forces registration). Asserting description equality across packages closes that gap so
+        the two blocks cannot silently diverge in wording.
+        """
+        packages = server_json_content.get('packages', [])
+        if len(packages) < 2:
+            pytest.skip('Only one package present, nothing to compare')
+
+        def _descriptions(pkg: dict[str, Any]) -> dict[str, str]:
+            return {env['name']: env.get('description', '') for env in pkg.get('environmentVariables', [])}
+
+        reference_type = packages[0].get('registryType', 'package-0')
+        reference = _descriptions(packages[0])
+        for i, pkg in enumerate(packages[1:], start=1):
+            pkg_type = pkg.get('registryType', f'package-{i}')
+            current = _descriptions(pkg)
+            mismatches = sorted(name for name in reference.keys() & current.keys() if reference[name] != current[name])
+            if mismatches:
+                detail = '\n'.join(
+                    f'  {name}:\n    {reference_type}: {reference[name]!r}\n    {pkg_type}: {current[name]!r}'
+                    for name in mismatches
+                )
+                pytest.fail(
+                    f'Environment variable descriptions differ between {reference_type} and '
+                    f'{pkg_type} (they must be identical across packages):\n{detail}',
+                )
+
     def test_server_json_schema_matches_schema_id(
         self,
         server_json_content: dict[str, Any],

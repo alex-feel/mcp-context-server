@@ -574,9 +574,10 @@ class SemanticSearchSettings(FeatureToggleSettings):
     mode: Literal['auto', 'true', 'false'] = Field(
         default='auto',
         alias='ENABLE_SEMANTIC_SEARCH',
-        description='Semantic search tool registration: auto (register when an '
-                    'embedding provider is available), true (force on, warn if '
-                    'unavailable), false (force off).',
+        description='Semantic search tool registration: auto and true both register the '
+                    'tool when an embedding provider is available (a warning is logged for '
+                    'true when none is, since semantic search has no backend without a '
+                    'provider), false (force off).',
     )
 
 
