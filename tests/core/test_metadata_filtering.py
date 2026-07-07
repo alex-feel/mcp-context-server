@@ -259,8 +259,41 @@ class TestMetadataQueryBuilder:
         assert f'>= {overflow}' in clause
         assert f'<= -{overflow}' in clause
         assert '1.7976931348623157e308' not in clause
+        # This asserts SQL TEXT only, never cross-engine runtime agreement at the boundary.
+        # The midpoint is PostgreSQL's exact float8 overflow point and agrees with SQLite
+        # builds that flip there (<= 3.40.x), but newer SQLite (observed 3.47.x/3.49.x) reads
+        # a stored integer in a narrow band at/above the midpoint as a FINITE DBL_MAX while
+        # this guard maps it to Infinity -- a version-dependent, irreducible residual (no
+        # single literal tracks SQLite's flip point), so no cross-engine behavior is asserted.
         # The exact-form probe still routes through ::text (Ryu shortest-repr).
         assert '::float8)::text::NUMERIC' in clause
+
+    def test_pg_float_discriminator_clamps_underflow_to_zero(self) -> None:
+        """safe_float8 clamps the symmetric low-magnitude underflow band to 0.
+
+        A nonzero stored NUMERIC of magnitude <= 2**-1075 (the IEEE round-to-zero boundary)
+        underflows to 0.0 when cast to float8; PostgreSQL raises 22003 and aborts the WHOLE
+        query, while SQLite reads the same stored value as 0.0. The float discriminator's
+        double branch maps that band to 0 so the query neither aborts nor diverges -- the
+        symmetric twin of the high-magnitude overflow clamp. The threshold MUST be exact: the
+        smallest denormal (2**-1074) just above it is a legal float8 both engines keep, so an
+        approximate boundary would either clamp a value PostgreSQL and SQLite both preserve or
+        leave a residual abort gap just below the boundary.
+        """
+        b = MetadataQueryBuilder(backend_type='postgresql')
+        b.add_advanced_filter(MetadataFilter(key='n', operator=MetadataOperator.LT, value=0.5))
+        clause, _ = b.build_where_clause()
+        tiny = MetadataQueryBuilder._FLOAT8_TINY
+        # The underflow clamp is present, keyed on the exact boundary and excluding a genuine 0.
+        assert f'BETWEEN -{tiny} AND {tiny}' in clause
+        assert '<> 0' in clause
+        assert 'THEN (0)::float8' in clause
+        # _FLOAT8_TINY is EXACTLY 2**-1075 = 5**1075 / 10**1075 (a fixed-point string with 1075
+        # fractional digits), NOT the Python float 2**-1075 (which underflows to 0.0) nor a
+        # context-rounded Decimal.
+        assert tiny.startswith('0.')
+        assert len(tiny[2:]) == 1075
+        assert int(tiny[2:]) == 5**1075
 
     def test_pg_array_contains_float_member_uses_shared_discriminator(self) -> None:
         """A float array_contains member matches numeric elements via the shared discriminator.

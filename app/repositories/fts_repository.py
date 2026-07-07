@@ -25,16 +25,31 @@ HYPHENATED_WORD_PATTERN = re.compile(r'\b(\w+(?:-\w+)+)\b')
 _FTS_TOKEN_RE = re.compile(r'"[^"]*"|\S+')
 
 
-def sanitize_sqlite_fts_terms(tokens: list[str]) -> list[str]:
+# PostgreSQL text-search configs whose ``asciiword`` tokens route through the ``english_stem``
+# dictionary, so ``plainto_tsquery`` drops the English operator barewords and/or/not as stopwords.
+# The SQLite sanitizer mirrors that drop ONLY for these languages to preserve cross-backend recall
+# parity; for EVERY other configured language PostgreSQL keeps and/or/not as ordinary lexemes, so
+# SQLite must keep them too (as literal terms) or the two backends return different result sets.
+# Verified against PostgreSQL 18: ``plainto_tsquery(cfg, 'and or not')`` is empty ONLY for english,
+# hindi, and russian; all other configs (including 'simple') return the three lexemes.
+_ENGLISH_STOPWORD_FTS_LANGUAGES = frozenset({'english', 'hindi', 'russian'})
+
+
+def sanitize_sqlite_fts_terms(tokens: list[str], language: str = 'english') -> list[str]:
     """Sanitize query tokens into crash-safe SQLite FTS5 terms.
 
     SQLite FTS5 MATCH treats AND/OR/NOT/NEAR as case-sensitive operators and rejects bare
     special characters, so an unsanitized token can raise ``fts5: syntax error`` in match,
     prefix, or boolean-OR contexts. Each token is made safe and aligned with PostgreSQL's
-    plainto_tsquery (which drops operator stopwords and ANDs the remaining lexemes):
+    plainto_tsquery for the CONFIGURED language (which ANDs the remaining lexemes and, for a
+    language whose ASCII words route through ``english_stem``, drops the operator stopwords):
 
     - A quoted-phrase token (``"..."``) is preserved as-is.
-    - An operator bareword (and/or/not, case-insensitive) is DROPPED.
+    - An operator bareword (and/or/not, case-insensitive) is DROPPED only when ``language`` is one
+      whose PostgreSQL config treats them as stopwords (english/hindi/russian -- see
+      ``_ENGLISH_STOPWORD_FTS_LANGUAGES``); for every other language it is KEPT as a literal term,
+      because PostgreSQL keeps it as a required lexeme and dropping it on SQLite alone would make
+      the two backends return different rows.
     - Every other bare term is wrapped as an FTS5 string literal (embedded quotes doubled), so
       an operator-cased NEAR or a special char ( ( ) " : * ^ ) is a LITERAL term, never syntax.
       A quoted single word is still tokenized/stemmed, so ordinary-word recall is unchanged.
@@ -44,10 +59,14 @@ def sanitize_sqlite_fts_terms(tokens: list[str]) -> list[str]:
 
     Args:
         tokens: Raw whitespace/quote tokens from the query.
+        language: The configured FTS_LANGUAGE, deciding whether and/or/not are dropped as
+            stopwords (to mirror PostgreSQL's plainto_tsquery for that language).
 
     Returns:
-        The list of safe FTS5 term strings (operator barewords removed).
+        The list of safe FTS5 term strings (operator barewords removed only for the
+        stopword-dropping languages).
     """
+    drop_operator_barewords = language.lower() in _ENGLISH_STOPWORD_FTS_LANGUAGES
     terms: list[str] = []
     for token in tokens:
         # Require >= 2 chars: a LONE '"' satisfies both startswith AND endswith (they test the
@@ -58,7 +77,9 @@ def sanitize_sqlite_fts_terms(tokens: list[str]) -> list[str]:
             terms.append(token)
             continue
         clean = token.replace('-', ' ').strip()
-        if not clean or clean.lower() in ('and', 'or', 'not'):
+        if not clean:
+            continue
+        if drop_operator_barewords and clean.lower() in ('and', 'or', 'not'):
             continue
         terms.append('"' + clean.replace('"', '""') + '"')
     return terms
@@ -218,10 +239,10 @@ class FtsRepository(BaseRepository):
             if language != 'english':
                 logger.warning(
                     'SQLite FTS5 does not support language-specific stemming. '
-                    "The language parameter '%s' is ignored. "
-                    'SQLite uses unicode61 tokenizer which provides multilingual '
-                    'tokenization but no stemming (e.g., "running" will NOT match "run"). '
-                    'Use PostgreSQL backend for full language-specific stemming support.',
+                    "The language parameter '%s' does not enable stemming here (SQLite uses the "
+                    'unicode61 tokenizer: multilingual tokenization, no stemming, so "running" '
+                    'will NOT match "run"). It still governs operator-stopword parity with '
+                    'PostgreSQL. Use the PostgreSQL backend for full language-specific stemming.',
                     language,
                 )
             return await self._search_sqlite(
@@ -238,6 +259,7 @@ class FtsRepository(BaseRepository):
                 metadata=metadata,
                 metadata_filters=metadata_filters,
                 highlight=highlight,
+                language=language,
                 explain_query=explain_query,
             )
         # postgresql
@@ -274,6 +296,7 @@ class FtsRepository(BaseRepository):
         metadata: dict[str, str | int | float | bool] | None,
         metadata_filters: list[dict[str, Any]] | None,
         highlight: bool,
+        language: str = 'english',
         explain_query: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """SQLite FTS5 search implementation."""
@@ -288,7 +311,7 @@ class FtsRepository(BaseRepository):
             # Transform query based on mode. An empty transformed query (every token
             # sanitized to an operator/stopword bareword) is short-circuited to an empty
             # result set BELOW, AFTER metadata validation -- see the note at that guard.
-            fts_query = self._transform_query_sqlite(query, mode)
+            fts_query = self._transform_query_sqlite(query, mode, language)
 
             filter_conditions: list[str] = []
             filter_params: list[Any] = []
@@ -829,18 +852,26 @@ class FtsRepository(BaseRepository):
         self,
         query: str,
         mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+        language: str = 'english',
     ) -> str:
         """Transform query string for SQLite FTS5 based on mode.
 
         Args:
             query: Original search query
             mode: Search mode
+            language: Configured FTS_LANGUAGE; governs whether and/or/not operator barewords are
+                dropped as stopwords (to mirror PostgreSQL's plainto_tsquery for that language).
 
         Returns:
             Transformed query for FTS5 MATCH
         """
         # Clean the query
         query = query.strip()
+        # Drop the English operator barewords and/or/not ONLY for a language whose PostgreSQL
+        # config treats them as stopwords; otherwise keep them as literal terms (see
+        # sanitize_sqlite_fts_terms / _ENGLISH_STOPWORD_FTS_LANGUAGES) so SQLite and PostgreSQL
+        # return the same rows.
+        drop_operator_barewords = language.lower() in _ENGLISH_STOPWORD_FTS_LANGUAGES
 
         if mode == 'phrase':
             # Exact phrase matching - wrap in double quotes
@@ -862,7 +893,9 @@ class FtsRepository(BaseRepository):
                     prefix_terms.append(f'{token}*')
                     continue
                 clean = token.replace('-', ' ').rstrip('*').strip()
-                if not clean or clean.lower() in ('and', 'or', 'not'):
+                if not clean:
+                    continue
+                if drop_operator_barewords and clean.lower() in ('and', 'or', 'not'):
                     continue
                 prefix_terms.append('"' + clean.replace('"', '""') + '"*')
             if not prefix_terms:
@@ -889,9 +922,10 @@ class FtsRepository(BaseRepository):
         # 'match' - default (AND logic). Sanitize each token to a safe FTS5 string literal so a
         # bare FTS5 operator (AND/OR/NOT, case-sensitive) or special char ((): "*^) becomes a
         # LITERAL term -- never 'fts5: syntax error'. This matches PostgreSQL's plainto_tsquery
-        # (drops operator stopwords, ANDs the remaining lexemes); a quoted single word is still
-        # stemmed, so ordinary-word recall is unchanged. Shared with the hybrid query builder.
-        terms = sanitize_sqlite_fts_terms(_FTS_TOKEN_RE.findall(query))
+        # (drops operator stopwords for the stopword-dropping languages, keeps them as literal
+        # terms otherwise, and ANDs the remaining lexemes); a quoted single word is still stemmed,
+        # so ordinary-word recall is unchanged. Shared with the hybrid query builder.
+        terms = sanitize_sqlite_fts_terms(_FTS_TOKEN_RE.findall(query), language)
         if not terms:
             # Every token was an operator/stopword bareword: match NOTHING (empty result), in
             # parity with PostgreSQL's empty plainto_tsquery for the same input. '' is the

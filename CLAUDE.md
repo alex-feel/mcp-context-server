@@ -236,7 +236,7 @@ Build args: `EMBEDDING_EXTRA` (default `embeddings-ollama`), `SUMMARY_EXTRA` (de
 
 `server.json` enables MCP client discovery. Every `Field(alias=...)` in `app/settings.py` MUST have a matching entry in `server.json` `environmentVariables` — enforced by `test_server_json_environment_variables_match_settings`. Release Please auto-updates version.
 
-When adding or modifying environment variables in `app/settings.py`, update **both** `server.json` **and** `docs/environment-variables.md`.
+When adding or modifying environment variables in `app/settings.py`, update **both** `server.json` **and** `docs/environment-variables.md`. Operator-relevant environment variables that are intentionally NOT in `app/settings.py` (the `FASTMCP_*` governance class consumed at FastMCP import time — see [FASTMCP_* Env Var Governance](#fastmcp_-env-var-governance)) still MUST be documented in `docs/environment-variables.md` (the self-declared complete reference), even though they are correctly absent from `server.json`; a non-Docker (PyPI/uvx) operator has no other place to discover them.
 
 ## Environment Variables
 
