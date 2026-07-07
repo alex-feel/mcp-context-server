@@ -143,6 +143,36 @@ class TestValidateAndNormalizeImages:
         assert content_type == 'multimodal'
         assert errors == []
 
+    def test_json_string_image_metadata_passes(self) -> None:
+        """A JSON-encoded-string metadata value (the string-valued tool contract) passes.
+
+        Per-image dicts are dict[str, str]: callers pass structured image metadata as a
+        JSON-encoded string, which carries no bare float and is not rejected.
+        """
+        img = {'data': VALID_BASE64_PNG, 'mime_type': 'image/png', 'metadata': '{"position": 1}'}
+        _, content_type, errors = validate_and_normalize_images([img])
+        assert content_type == 'multimodal'
+        assert errors == []
+
+    def test_raise_mode_non_finite_image_metadata(self) -> None:
+        """A dict-valued image metadata (untyped batch path) with NaN/Infinity is rejected.
+
+        json.dumps emits the invalid-JSON tokens NaN/Infinity, which PostgreSQL's jsonb
+        image_metadata column rejects while SQLite stores them -- a cross-backend parity
+        divergence caught in Phase 1, before the generation pass and the transaction.
+        """
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'metadata': {'score': float('nan')}}])
+        with pytest.raises(ToolError, match='Image 0 metadata:'):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_collect_mode_non_finite_image_metadata_nested(self) -> None:
+        """collect mode reports a non-finite image-metadata error nested at any depth."""
+        imgs = cast('list[dict[str, str]]', [{'data': VALID_BASE64_PNG, 'metadata': {'deep': {'x': float('inf')}}}])
+        _, content_type, errors = validate_and_normalize_images(imgs, error_mode='collect')
+        assert content_type == 'text'
+        assert len(errors) == 1
+        assert 'Image 0 metadata:' in errors[0]
+
     def test_raise_mode_missing_data(self) -> None:
         """error_mode='raise' raises ToolError for missing data field."""
         with pytest.raises(ToolError, match='Image 0 is missing required "data" field'):

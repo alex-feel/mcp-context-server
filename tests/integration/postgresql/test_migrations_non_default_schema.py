@@ -721,6 +721,79 @@ def test_function_ddl_quotes_mixed_case_schema(
         )), f'the function must not fold into a lowercased schema {mixed.lower()!r}'
 
 
+def test_patch_metadata_runtime_quotes_mixed_case_schema(
+    pg_non_default_schema_db: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """patch_metadata's RUNTIME jsonb_merge_patch() call must quote a mixed-case schema.
+
+    Quoting only the DDL that CREATEs the function makes a mixed-case schema boot, but the
+    runtime caller in ContextRepository.patch_metadata interpolated the schema UNQUOTED, so
+    every metadata_patch case-folded to a nonexistent lowercase schema (SQLSTATE 3F000/
+    42883) -- a loud boot failure converted into a latent per-request failure. The runtime
+    call must resolve to the SAME quoted "MixedCaseSchema".jsonb_merge_patch the DDL created.
+    """
+    from app.repositories import RepositoryContainer
+
+    mixed = 'MixedCaseSchema'
+
+    async def _create_mixed_schema() -> None:
+        conn = await asyncpg.connect(pg_non_default_schema_db)
+        try:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{mixed}"')
+        finally:
+            await conn.close()
+
+    asyncio.run(_create_mixed_schema())
+
+    monkeypatch.setenv('STORAGE_BACKEND', 'postgresql')
+    monkeypatch.setenv('POSTGRESQL_CONNECTION_STRING', pg_non_default_schema_db)
+    monkeypatch.setenv('POSTGRESQL_SCHEMA', mixed)
+    monkeypatch.setenv('EMBEDDING_DIM', '1024')
+    get_settings.cache_clear()
+    _refresh_module_settings(monkeypatch)
+
+    result: dict[str, object] = {}
+
+    async def _scenario() -> None:
+        backend = create_backend(
+            backend_type='postgresql',
+            connection_string=pg_non_default_schema_db,
+        )
+        await backend.initialize()
+        try:
+            await init_database(backend=backend)
+            await apply_jsonb_merge_patch_migration(backend=backend)
+            repos = RepositoryContainer(backend)
+            context_id, _ = await repos.context.store_with_deduplication(
+                thread_id='mixed-patch', source='user', content_type='text',
+                text_content='patch target', metadata=None,
+            )
+            # Pre-fix this raises SQLSTATE 3F000/42883 (mixedcaseschema.jsonb_merge_patch
+            # does not exist); post-fix it resolves to the quoted "MixedCaseSchema" object.
+            success, fields = await repos.context.patch_metadata(context_id, {'b': 2})
+            result['success'] = success
+            result['fields'] = fields
+            entries = await repos.context.get_by_ids([context_id])
+            result['metadata'] = entries[0]['metadata'] if entries else None
+        finally:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(backend.shutdown(), timeout=10.0)
+
+    asyncio.run(_scenario())
+
+    # success=True + the updated field prove the runtime jsonb_merge_patch() resolved to the
+    # quoted "MixedCaseSchema" function instead of raising SQLSTATE 3F000/42883 -- the fix.
+    assert result['success'] is True
+    assert result['fields'] == ['metadata']
+    import json as _json
+
+    merged = result['metadata']
+    if isinstance(merged, str):
+        merged = _json.loads(merged)
+    assert merged == {'b': 2}
+
+
 def test_generation_off_infra_present_reprovisions_vector_layout(
     pg_non_default_schema_db: str,
     monkeypatch: pytest.MonkeyPatch,

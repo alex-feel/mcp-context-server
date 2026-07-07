@@ -1640,6 +1640,7 @@ class ContextRepository(BaseRepository):
         # PostgreSQL implementation - RFC 7396 compliant using jsonb_merge_patch() function
         async def _patch_metadata_postgresql(conn: 'asyncpg.Connection') -> tuple[bool, list[str]]:
             # Import settings here to avoid circular import and ensure schema is retrieved at call time
+            from app.backends.postgresql_backend import quote_pg_identifier
             from app.settings import get_settings
 
             # Verify entry exists before attempting update
@@ -1667,7 +1668,12 @@ class ContextRepository(BaseRepository):
             #
             # IMPORTANT: Use schema-qualified function name to ensure the function is found
             # regardless of PostgreSQL search_path configuration (critical for Supabase).
-            schema = get_settings().storage.postgresql_schema
+            # Quote the schema identically to the DDL that CREATEs the function (via
+            # quote_pg_identifier) so a mixed-case, reserved-word, or hyphenated
+            # POSTGRESQL_SCHEMA resolves to the SAME object: an unquoted mixed-case
+            # qualifier case-folds to a schema that does not exist (SQLSTATE 3F000/42883)
+            # and a reserved/hyphenated name is a syntax error.
+            schema = quote_pg_identifier(get_settings().storage.postgresql_schema)
             p1 = self._placeholder(1)
             p2 = self._placeholder(2)
             result = await conn.execute(

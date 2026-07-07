@@ -488,18 +488,40 @@ class PostgreSQLBackend:
             # Default to DependencyError for unknown errors (safer - allows retry)
             raise DependencyError(f'pgvector extension is required but could not be created: {e}') from e
 
-    async def _embedding_metadata_present(self) -> bool:
-        """Return True when ``embedding_metadata`` is reachable in the configured schema.
+    async def _resolve_provision_vector(self) -> bool:
+        """Decide whether the pgvector extension and vector codec are needed at boot.
 
-        Probed on a temporary connection carrying the configured search_path (via
-        ``build_asyncpg_connect_kwargs``) with ``to_regclass``, so the answer matches
-        exactly what the semantic/chunking migrations' infra-present fallthrough will
-        see. A connection failure returns False -- the pool creation that follows
-        surfaces the same error with proper classification.
+        The ``vector`` type is used ONLY by the fp32 ``vec_context_embeddings`` layout, so
+        the extension and codec are needed when that layout WILL be provisioned or ALREADY
+        exists:
+
+        - ``generation`` on: always provision. The compression-off server provisions the fp32
+          layout, and the migration CLI's ``force=True`` init ALWAYS builds the full fp32
+          layout regardless of ``compression`` (``initialize_target_postgresql``), so the
+          extension must exist before its ``vector(dim)`` DDL runs. A compression-on
+          generation-on server does not use the type, but provisioning it is harmless (the
+          extension merely exists) and this same ``initialize`` runs for both callers.
+        - the fp32 ``vec_context_embeddings`` table already exists: it is read via the
+          vector codec (an fp32 archive, or the ``--compress`` CLI reading it before it
+          replaces it with the compressed table).
+        - ``compression`` off + ``generation`` off + ``embedding_metadata`` present: the
+          infra-present fallthrough re-provisions the fp32 layout, which needs the type.
+
+        The regression this closes: a compressed (BYTEA-only) GENERATION-OFF archive whose
+        active payload table is compressed (``skip_fp32_vec`` strips every vector statement)
+        and whose read/write path binds no vector -- restored on a host that lacks pgvector
+        -- must NOT be forced to create the unused extension. Keying on ``embedding_metadata``
+        presence alone could not tell the two payload formats apart (that table exists under
+        both), which is why the fp32 table itself is probed when generation is off. A
+        connection failure returns False; the pool creation that follows surfaces the same
+        error with proper classification.
 
         Returns:
-            True when an unqualified ``embedding_metadata`` reference resolves.
+            True when the pgvector extension and vector codec must be provisioned.
         """
+        if settings.embedding.generation_enabled:
+            return True
+        compression_enabled = settings.compression.enabled
         connect_kwargs = build_asyncpg_connect_kwargs()
         try:
             conn = await asyncpg.connect(
@@ -508,9 +530,18 @@ class PostgreSQLBackend:
                 **connect_kwargs,
             )
         except Exception as e:
-            logger.debug('embedding_metadata probe could not connect (deferring to pool init): %s', e)
+            logger.debug('vector-provision probe could not connect (deferring to pool init): %s', e)
             return False
         try:
+            fp32_present = bool(
+                await conn.fetchval("SELECT to_regclass('vec_context_embeddings') IS NOT NULL"),
+            )
+            if fp32_present:
+                return True
+            if compression_enabled:
+                return False
+            # compression off + generation off: the semantic/chunking infra-present
+            # fallthrough re-provisions the fp32 vector layout iff embedding_metadata exists.
             return bool(await conn.fetchval("SELECT to_regclass('embedding_metadata') IS NOT NULL"))
         finally:
             await conn.close()
@@ -520,17 +551,13 @@ class PostgreSQLBackend:
         logger.info(f'Initializing PostgreSQL backend: {self.backend_type}')
 
         try:
-            # Resolve whether the fp32 vector layout will be provisioned. With
-            # generation off, the semantic/chunking migrations still re-provision
-            # the vector-typed layout on a database that already carries embedding
-            # infrastructure (embedding_metadata exists), so the pgvector extension
-            # and the vector codec are needed there too -- otherwise that migration
-            # raises 'type "vector" does not exist' and boot crashes, a regression
-            # against the migration provisioning gate. A fresh generation-off
-            # database (no embedding infra) still skips both.
-            self._provision_vector = (
-                settings.embedding.generation_enabled or await self._embedding_metadata_present()
-            )
+            # Resolve whether the pgvector extension and vector codec are needed. The
+            # vector type is used ONLY by the fp32 vec_context_embeddings layout, so a
+            # compressed (BYTEA-only) database -- including a generation-off archive
+            # restored on a host without pgvector -- must NOT be forced to create the
+            # unused extension, while a compression-off database that will provision or
+            # already carries the fp32 layout still must. See _resolve_provision_vector.
+            self._provision_vector = await self._resolve_provision_vector()
 
             # Pre-create pgvector extension when the vector layout will be
             # provisioned. This prevents "unknown type: public.vector" warnings

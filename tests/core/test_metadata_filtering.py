@@ -251,7 +251,14 @@ class TestMetadataQueryBuilder:
         # safe-float8 maps out-of-range magnitudes to +/-inf (no 22003 abort).
         assert "'infinity'::float8" in clause
         assert "'-infinity'::float8" in clause
-        assert '1.7976931348623157e308' in clause
+        # The infinity threshold is the TRUE float8 overflow boundary (2**1024 - 2**970),
+        # crossed with >= / <= -- NOT DBL_MAX's shortest-repr decimal, which is strictly
+        # smaller and would misclassify the finite band (DBL_MAX, overflow) as Infinity.
+        overflow = str(2**1024 - 2**970)
+        assert overflow == MetadataQueryBuilder._FLOAT8_OVERFLOW
+        assert f'>= {overflow}' in clause
+        assert f'<= -{overflow}' in clause
+        assert '1.7976931348623157e308' not in clause
         # The exact-form probe still routes through ::text (Ryu shortest-repr).
         assert '::float8)::text::NUMERIC' in clause
 
