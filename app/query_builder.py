@@ -382,13 +382,30 @@ class MetadataQueryBuilder:
     _INT64_MAX = '9223372036854775807'
     # float8 overflow threshold = 2**1024 - 2**970, the exact midpoint between DBL_MAX
     # and 2**1024: a NUMERIC of magnitude >= this rounds to +/-Infinity on a ``::float8``
-    # cast (SQLSTATE 22003), so map it to +/-inf -- matching SQLite reading a huge JSON
-    # integer as REAL inf -- rather than aborting the whole query. It MUST be the true
-    # overflow boundary, NOT DBL_MAX's shortest-repr decimal (1.7976931348623157e308,
-    # strictly smaller): a stored value in the finite band (DBL_MAX, midpoint) casts to a
-    # FINITE DBL_MAX on BOTH engines, so mapping it to Infinity would flip every
-    # comparison against a DBL_MAX-range param on PostgreSQL only.
+    # cast (SQLSTATE 22003), so map it to +/-inf -- matching PostgreSQL's own float8
+    # overflow point -- rather than aborting the whole query. It MUST be the true overflow
+    # boundary, NOT DBL_MAX's shortest-repr decimal (1.7976931348623157e308, strictly
+    # smaller): a stored value in the finite band (DBL_MAX, midpoint) casts to a FINITE
+    # DBL_MAX on PostgreSQL, so mapping it to Infinity would flip every comparison against a
+    # DBL_MAX-range param on PostgreSQL only. This literal is authoritative for PostgreSQL
+    # and for SQLite builds whose strtod flips at the IEEE midpoint (<= 3.40.x, e.g. the
+    # shipped Docker image); newer SQLite builds (observed 3.47.x/3.49.x) round a stored
+    # integer in a narrow band at/above the midpoint to a FINITE DBL_MAX instead of inf, so
+    # on those runtimes the guard compares that value as Infinity while SQLite compares it
+    # finite -- a version-dependent, irreducible residual documented in _pg_numeric_compare,
+    # since no single literal tracks SQLite's version-specific flip point.
     _FLOAT8_OVERFLOW = str(2**1024 - 2**970)
+
+    # Exact decimal of 2**-1075, the IEEE round-half-to-even boundary at/below which a
+    # finite NUMERIC underflows to 0.0 when cast to float8. PostgreSQL raises 22003 on that
+    # underflow (aborting the whole query -- the symmetric low-magnitude twin of the
+    # overflow abort above), while SQLite reads the same stored value as 0.0, so safe_float8
+    # maps this band to 0 to restore both the no-abort contract and cross-backend parity.
+    # Built as an exact string: ``2**-1075`` underflows to 0.0 as a Python float, and
+    # ``Decimal.scaleb`` rounds to context precision, so neither yields the exact boundary --
+    # and the value just above it (the smallest denormal, 2**-1074) is a legal float8 both
+    # engines keep, so the threshold must be exact, not approximate.
+    _FLOAT8_TINY = '0.' + '0' * (1075 - len(str(5**1075))) + str(5**1075)
 
     def _pg_numeric_compare(self, num: str, sql_op: str, placeholder: str, value: float) -> str:
         """Compare a NUMERIC stored expression to a numeric param, matching SQLite's semantics.
@@ -421,8 +438,14 @@ class MetadataQueryBuilder:
           threshold (``_FLOAT8_OVERFLOW`` = 2**1024 - 2**970), so it runs ONLY in the within-int64
           nested branch (CASE guarantees only the matching branch is evaluated, unlike ``AND`` which
           PostgreSQL may not short-circuit), and the double branch maps a NUMERIC at/beyond that
-          threshold to +/-inf to mirror SQLite's REAL read of a huge JSON integer while leaving the
-          finite band (DBL_MAX, threshold) to cast to a finite DBL_MAX on both engines. A
+          overflow threshold to +/-inf to mirror SQLite's REAL read of a huge JSON integer while
+          leaving the finite band (DBL_MAX, threshold) to cast to a finite DBL_MAX on PostgreSQL and
+          on SQLite builds that flip at the IEEE midpoint (<= 3.40.x; newer builds keep a narrow band
+          above the midpoint finite -- an irreducible residual below). ``safe_float8`` ALSO clamps the
+          symmetric low-magnitude band -- a nonzero NUMERIC of magnitude <= ``_FLOAT8_TINY`` (2**-1075,
+          the round-to-zero boundary) -- to 0, because such a value underflows to 0.0 when cast and
+          PostgreSQL raises 22003 while SQLite reads it as 0.0, so clamping restores both parity and
+          the no-abort contract. A
           stored ``0.3`` still equals a ``0.3`` param, a stored integer ``2**53+1`` is never
           collapsed onto a ``2**53`` param, a stored ``float(2**55)`` matches its own value, an
           out-of-int64 integer compares by double (matching SQLite), and a 309-digit integer no
@@ -443,6 +466,14 @@ class MetadataQueryBuilder:
           reduce this: it merely shifts the same-size window to the positive corner (a stored
           ``2**63`` against a ``2**63-1`` param) while also corrupting large in-range params, so
           exact ``NUMERIC`` is retained as the minimum-divergence option.
+        - Overflow boundary (SQLite version): ``_FLOAT8_OVERFLOW`` = 2**1024 - 2**970 is PostgreSQL's
+          exact float8 overflow point, so a stored integer >= it maps to +/-inf on both engines when
+          SQLite's strtod also flips there (<= 3.40.x, e.g. the shipped Docker image). Newer SQLite
+          builds (observed 3.47.x/3.49.x) round a stored integer in a narrow band at/above the midpoint
+          to a FINITE DBL_MAX, so on those runtimes this guard compares it as Infinity while SQLite
+          compares it finite. No single literal tracks SQLite's version-specific flip point, and the
+          midpoint is authoritative for PostgreSQL (and correct for glibc/Python and older SQLite), so
+          it is retained; the divergence is a narrow, host-dependent residual.
 
         Args:
             num: A SQL expression yielding the stored value as ``NUMERIC``.
@@ -467,6 +498,8 @@ class MetadataQueryBuilder:
         safe_f8 = (
             f"CASE WHEN {num} >= {self._FLOAT8_OVERFLOW} THEN 'infinity'::float8 "
             f"WHEN {num} <= -{self._FLOAT8_OVERFLOW} THEN '-infinity'::float8 "
+            f'WHEN {num} <> 0 AND {num} BETWEEN -{self._FLOAT8_TINY} AND {self._FLOAT8_TINY} '
+            f'THEN (0)::float8 '
             f'ELSE {num}::float8 END'
         )
         double_cmp = f'{safe_f8} {sql_op} ({placeholder})::float8'
