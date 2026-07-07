@@ -846,3 +846,103 @@ class TestExecuteWriteStatementTimeoutRetry:
 
         with pytest.raises(asyncpg.exceptions.QueryCanceledError):
             await backend.execute_write(operation)
+
+
+class TestResolveProvisionVector:
+    """The pgvector-provisioning gate keys on the ACTIVE payload format.
+
+    The vector type is used ONLY by the fp32 vec_context_embeddings layout, so a
+    compressed (BYTEA-only) database -- including a generation-off archive restored on a
+    host without pgvector -- must NOT be forced to create the unused extension, while a
+    compression-off database that will provision or already carries the fp32 layout must.
+    """
+
+    @staticmethod
+    def _backend() -> PostgreSQLBackend:
+        return PostgreSQLBackend(connection_string='postgresql://u:p@localhost:5432/db')
+
+    @staticmethod
+    def _settings(*, compression: bool, generation: bool) -> MagicMock:
+        s = MagicMock()
+        s.compression.enabled = compression
+        s.embedding.generation_enabled = generation
+        s.storage.postgresql_connect_timeout_s = 5.0
+        return s
+
+    @staticmethod
+    def _conn(*, fp32: bool, embedding_metadata: bool) -> AsyncMock:
+        async def _fetchval(sql: str) -> bool:
+            if 'vec_context_embeddings' in sql:
+                return fp32
+            if 'embedding_metadata' in sql:
+                return embedding_metadata
+            raise AssertionError(f'unexpected probe SQL: {sql}')
+
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(side_effect=_fetchval)
+        conn.close = AsyncMock()
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_generation_on_provisions_without_probe_even_under_compression(self) -> None:
+        """generation on -> always provision; no probe needed.
+
+        Covers the migration-CLI force-init path (initialize_target_postgresql always builds
+        the fp32 vector layout regardless of compression) and the compression-off server;
+        keying the gate on compression here would leave the CLI's vector(dim) DDL with no
+        pgvector extension.
+        """
+        for compression in (True, False):
+            connect = AsyncMock()
+            with unittest.mock.patch(
+                'app.backends.postgresql_backend.settings', self._settings(compression=compression, generation=True),
+            ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=connect):
+                assert await self._backend()._resolve_provision_vector() is True
+                connect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_compressed_generation_off_no_fp32_skips_pgvector(self) -> None:
+        """The regression: a compressed archive (embedding_metadata, no fp32) skips pgvector."""
+        conn = self._conn(fp32=False, embedding_metadata=True)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=True, generation=False),
+        ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(return_value=conn)):
+            assert await self._backend()._resolve_provision_vector() is False
+        conn.close.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fp32_table_present_provisions(self) -> None:
+        """An fp32 vec table present (fp32 archive, or the --compress CLI reading it) -> provision."""
+        conn = self._conn(fp32=True, embedding_metadata=True)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=True, generation=False),
+        ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(return_value=conn)):
+            assert await self._backend()._resolve_provision_vector() is True
+
+    @pytest.mark.asyncio
+    async def test_compression_off_gen_off_infra_present_reprovisions(self) -> None:
+        """compression off + generation off + embedding_metadata present -> fp32 reprovisioned."""
+        conn = self._conn(fp32=False, embedding_metadata=True)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=False, generation=False),
+        ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(return_value=conn)):
+            assert await self._backend()._resolve_provision_vector() is True
+
+    @pytest.mark.asyncio
+    async def test_fresh_generation_off_skips(self) -> None:
+        """A fresh generation-off database (no fp32, no embedding_metadata) skips pgvector."""
+        conn = self._conn(fp32=False, embedding_metadata=False)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=False, generation=False),
+        ), unittest.mock.patch('app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(return_value=conn)):
+            assert await self._backend()._resolve_provision_vector() is False
+
+    @pytest.mark.asyncio
+    async def test_probe_connection_failure_defers_to_pool(self) -> None:
+        """A generation-off probe connection failure returns False; pool init surfaces it."""
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.settings', self._settings(compression=True, generation=False),
+        ), unittest.mock.patch(
+            'app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(side_effect=OSError('unreachable')),
+        ):
+            assert await self._backend()._resolve_provision_vector() is False
