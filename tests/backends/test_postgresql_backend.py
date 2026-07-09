@@ -16,6 +16,7 @@ import asyncpg
 import pytest
 
 from app.backends.postgresql_backend import PostgreSQLBackend
+from app.errors import ControlFlowError
 
 
 class TestBackendType:
@@ -846,6 +847,51 @@ class TestExecuteWriteStatementTimeoutRetry:
 
         with pytest.raises(asyncpg.exceptions.QueryCanceledError):
             await backend.execute_write(operation)
+
+
+class TestGetConnectionBreakerControlFlowExemption:
+    """get_connection exempts ControlFlowError from circuit-breaker failure accounting.
+
+    A client-input validation failure raised inside the connection scope is normal
+    control flow, not a database fault: recording it as a breaker failure would let a
+    client repeatedly sending invalid input open the breaker and reject every other
+    caller's healthy requests on the process-wide backend singleton.
+    """
+
+    @staticmethod
+    def _backend_with_fake_pool() -> PostgreSQLBackend:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        backend._shutdown = False
+        mock_conn = MagicMock()
+
+        @contextlib.asynccontextmanager
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        pool = MagicMock()
+        pool.acquire = MagicMock(side_effect=_fake_acquire)
+        backend._pool = pool
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_control_flow_error_does_not_record_breaker_failure(self) -> None:
+        """A ControlFlowError escaping the connection scope leaves the breaker untouched."""
+        backend = self._backend_with_fake_pool()
+        with pytest.raises(ControlFlowError):
+            async with backend.get_connection():
+                raise ControlFlowError('client input invalid')
+        assert backend.circuit_breaker.failures == 0
+
+    @pytest.mark.asyncio
+    async def test_ordinary_exception_still_records_breaker_failure(self) -> None:
+        """A genuine fault escaping the connection scope still trips breaker accounting."""
+        backend = self._backend_with_fake_pool()
+        with pytest.raises(RuntimeError, match='db fault'):
+            async with backend.get_connection():
+                raise RuntimeError('db fault')
+        assert backend.circuit_breaker.failures == 1
 
 
 class TestResolveProvisionVector:

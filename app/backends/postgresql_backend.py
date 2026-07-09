@@ -1013,6 +1013,8 @@ class PostgreSQLBackend:
 
         Raises:
             RuntimeError: If backend is shut down or circuit breaker is open
+            ControlFlowError: Re-raised from the connection scope without recording a
+                circuit-breaker failure (normal control flow, not a database fault)
         """
         # Parameters readonly and allow_write are part of StorageBackend protocol
         # but not used in PostgreSQL implementation (handled via transactions)
@@ -1040,6 +1042,12 @@ class PostgreSQLBackend:
                 yield conn
                 if record_breaker:
                     await self.circuit_breaker.record_success()
+            except ControlFlowError:
+                # Normal control flow (e.g. a client-input validation error raised
+                # inside the connection scope), NOT a database fault: do not record
+                # a breaker failure, or a client repeatedly sending invalid input
+                # opens the breaker and rejects every caller's healthy requests.
+                raise
             except Exception:
                 if record_breaker:
                     await self.circuit_breaker.record_failure()

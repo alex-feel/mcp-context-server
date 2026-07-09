@@ -15,6 +15,7 @@ from typing import Literal
 from typing import cast
 
 from app.backends.base import StorageBackend
+from app.errors import ControlFlowError
 from app.repositories.base import BaseRepository
 
 # Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
@@ -142,11 +143,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class FtsValidationError(Exception):
+class FtsValidationError(ControlFlowError):
     """Exception raised when FTS query or filters fail validation.
 
     This exception enables unified error handling between fts_search_context
     and other search tools.
+
+    Subclasses ``ControlFlowError`` because a client-input validation failure is
+    normal control flow, not a database fault: the backend connection wrappers
+    exempt ``ControlFlowError`` from circuit-breaker failure accounting, so a
+    client repeatedly sending an invalid query or filter cannot open the breaker
+    and reject every other caller's healthy requests.
     """
 
     def __init__(self, message: str, validation_errors: list[str]) -> None:
@@ -233,7 +240,26 @@ class FtsRepository(BaseRepository):
 
         Returns:
             Tuple of (search results list, statistics dictionary)
+
+        Raises:
+            FtsValidationError: If the query contains an embedded NUL character,
+                which neither FTS5 nor the PostgreSQL wire protocol can parse.
         """
+        # Reject embedded NUL bytes at the shared boundary, BEFORE backend dispatch.
+        # A NUL passes JSON and Pydantic validation, but FTS5's MATCH parser reads the
+        # bound query as a NUL-terminated C string (truncating a quoted literal into an
+        # 'unterminated string' grammar error that quoting cannot neutralize), and
+        # asyncpg rejects any NUL-carrying text bind parameter on PostgreSQL. Raising
+        # the structured validation error here keeps the failure a CLIENT error on both
+        # backends: the tools layer converts it to a clean error response, and its
+        # ControlFlowError parentage keeps it out of circuit-breaker failure accounting
+        # (an unparseable query can never succeed, so it says nothing about DB health).
+        if '\x00' in query:
+            raise FtsValidationError(
+                'FTS query validation failed',
+                ['Query contains an embedded NUL (U+0000) character, which full-text search cannot parse'],
+            )
+
         if self.backend.backend_type == 'sqlite':
             # Log warning if non-English language is requested with SQLite backend
             if language != 'english':
@@ -484,21 +510,39 @@ class FtsRepository(BaseRepository):
                 cursor = conn.execute(sql_query, params)
                 rows = cursor.fetchall()
             except sqlite3.OperationalError as exc:
-                # Boolean mode forwards the raw query to FTS5 MATCH so native FTS5 boolean syntax
-                # (AND/OR/NOT, parentheses, quoted phrases) reaches the engine intact -- it is the
-                # one SQLite mode not pre-sanitized. A MALFORMED boolean query (unbalanced parens,
-                # a dangling operator, a stray ':' column filter) makes FTS5 raise a grammar error;
-                # PostgreSQL's websearch_to_tsquery never raises for the same input, so without
-                # this guard the identical fts_search_context(mode='boolean') call hard-errors on
-                # SQLite but succeeds on PostgreSQL and leaks the raw engine message to the client.
-                # Degrade a malformed boolean query to the crash-safe sanitized term match (the
-                # shared 'match' transform): a VALID boolean query executed above and never reaches
-                # here, while a malformed one returns best-effort results instead of erroring --
-                # matching PostgreSQL's tolerant contract without altering the documented native
-                # syntax. Any non-grammar OperationalError (locked DB, disk I/O) propagates.
-                if mode != 'boolean' or not _is_fts5_grammar_error(exc):
+                # Any non-grammar OperationalError (locked DB, disk I/O) is an operational
+                # fault and propagates unchanged (it participates in breaker accounting).
+                # Grammar errors are CLIENT-INPUT failures and are handled per mode below.
+                #
+                # Boolean mode forwards the raw query to FTS5 MATCH so native FTS5 boolean
+                # syntax (AND/OR/NOT, parentheses, quoted phrases) reaches the engine intact
+                # -- it is the one SQLite mode not pre-sanitized. A MALFORMED boolean query
+                # (unbalanced parens, a dangling operator, a stray ':' column filter) makes
+                # FTS5 raise a grammar error; PostgreSQL's websearch_to_tsquery never raises
+                # for the same input, so without the degradation below the identical
+                # fts_search_context(mode='boolean') call hard-errors on SQLite but succeeds
+                # on PostgreSQL and leaks the raw engine message to the client. Degrade a
+                # malformed boolean query to the crash-safe sanitized term match (the shared
+                # 'match' transform, with the configured language so the operator-bareword
+                # drop keeps cross-backend parity): a VALID boolean query executed above and
+                # never reaches here, while a malformed one returns best-effort results
+                # instead of erroring -- matching PostgreSQL's tolerant contract without
+                # altering the documented native syntax.
+                if not _is_fts5_grammar_error(exc):
                     raise
-                safe_query = self._transform_query_sqlite(query, 'match')
+                if mode != 'boolean':
+                    # The match/prefix/phrase transforms sanitize every token into a
+                    # quoted FTS5 literal, so a grammar error here means the input
+                    # contains something quoting provably cannot neutralize. Retrying
+                    # can never succeed, so classify it as a CLIENT validation error:
+                    # the structured message replaces the raw engine text (no internal
+                    # leak) and the ControlFlowError parentage keeps this repeatable
+                    # client failure out of circuit-breaker failure accounting.
+                    raise FtsValidationError(
+                        'FTS query validation failed',
+                        ['Query contains characters the full-text search engine cannot parse'],
+                    ) from exc
+                safe_query = self._transform_query_sqlite(query, 'match', language)
                 if not safe_query.strip():
                     return _empty_result(
                         'Query short-circuited: malformed boolean query reduced to no '

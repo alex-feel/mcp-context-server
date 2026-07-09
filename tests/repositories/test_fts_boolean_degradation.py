@@ -1,4 +1,4 @@
-"""Tests for SQLite FTS5 boolean-mode malformed-query graceful degradation.
+"""Tests for FTS malformed-query handling: degradation, NUL rejection, and breaker safety.
 
 Boolean mode forwards the user's raw query to FTS5 ``MATCH`` so native FTS5 boolean
 syntax (AND/OR/NOT, parentheses, quoted phrases) works. It is the one SQLite mode that is
@@ -6,20 +6,33 @@ NOT pre-sanitized, so a malformed boolean query (unbalanced parentheses, a dangl
 operator, a stray ':') used to raise ``sqlite3.OperationalError`` ("fts5: syntax error" /
 "no such column") and leak the raw engine message to the client, while PostgreSQL's
 ``websearch_to_tsquery`` tolerates the same input. ``_search_sqlite`` now catches that
-grammar error and degrades to the crash-safe sanitized term match, so a VALID boolean query
-is unaffected while a malformed one returns best-effort results instead of erroring.
+grammar error and degrades to the crash-safe sanitized term match (with the configured
+language, so the operator-bareword drop keeps cross-backend parity), so a VALID boolean
+query is unaffected while a malformed one returns best-effort results instead of erroring.
+
+An embedded NUL is the one input token-quoting provably cannot neutralize (FTS5 reads the
+bound query as a NUL-terminated C string, and asyncpg rejects NUL-carrying text bind
+parameters), so the shared ``search()`` boundary rejects it with ``FtsValidationError`` on
+both backends. Because ``FtsValidationError`` subclasses ``ControlFlowError``, none of
+these client-input failures participates in circuit-breaker failure accounting -- a client
+repeatedly sending an unparseable query or an invalid metadata filter can no longer open
+the breaker into a process-wide outage.
 """
 
 import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Literal
 
 import pytest
 import pytest_asyncio
 
 from app.backends import create_backend
+from app.backends.sqlite_backend import SQLiteBackend
+from app.errors import ControlFlowError
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
+from app.repositories.fts_repository import FtsValidationError
 from app.repositories.fts_repository import _is_fts5_grammar_error
 
 # A single document containing both 'error' and 'handling' so a malformed boolean query whose
@@ -152,3 +165,152 @@ class TestFtsBooleanMalformedDegradation:
         )
         assert len(results) >= 1
         assert 'query_plan' in stats
+
+
+def _sqlite_breaker_failures(repos: RepositoryContainer) -> int:
+    """Return the SQLite backend's current circuit-breaker failure count.
+
+    Args:
+        repos: Repository container whose backend is the SQLite backend under test.
+
+    Returns:
+        The circuit breaker's consecutive-failure count.
+    """
+    backend = repos.fts.backend
+    assert isinstance(backend, SQLiteBackend)
+    return backend.circuit_breaker.failures
+
+
+class TestBooleanDegradationLanguageParity:
+    """The boolean-degradation fallback honors the configured FTS language.
+
+    PostgreSQL keeps and/or/not as required lexemes for every text-search config except
+    english/hindi/russian, so the degraded SQLite term match must keep them as literal
+    terms for those languages too, or the identical malformed boolean query returns
+    different result sets on the two backends.
+    """
+
+    @pytest.mark.asyncio
+    async def test_degraded_fallback_drops_operator_barewords_for_english(
+        self,
+        fts_repos: RepositoryContainer,
+    ) -> None:
+        """Under English the degraded match transform drops the bare 'and' (stopword parity)."""
+        results, _ = await fts_repos.fts.search(
+            query='error and (handling',
+            mode='boolean',
+            limit=10,
+            language='english',
+        )
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_degraded_fallback_keeps_operator_barewords_for_german(
+        self,
+        fts_repos: RepositoryContainer,
+    ) -> None:
+        """Under German the degraded match transform keeps 'and' as a required literal term.
+
+        The seeded document does not contain the word 'and', so keeping it as a term
+        yields zero rows -- matching PostgreSQL, whose german config keeps 'and' as a
+        required lexeme for the same degraded query.
+        """
+        results, _ = await fts_repos.fts.search(
+            query='error and (handling',
+            mode='boolean',
+            limit=10,
+            language='german',
+        )
+        assert len(results) == 0
+
+
+class TestFtsNulQueryRejection:
+    """An embedded NUL is rejected at the shared search() boundary on every mode."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('mode', ['match', 'prefix', 'phrase', 'boolean'])
+    async def test_nul_query_raises_structured_validation_error(
+        self,
+        fts_repos: RepositoryContainer,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+    ) -> None:
+        """A NUL-carrying query raises FtsValidationError instead of an engine error."""
+        with pytest.raises(FtsValidationError) as excinfo:
+            await fts_repos.fts.search(query='a\x00b', mode=mode, limit=10)
+        assert any('NUL' in err for err in excinfo.value.validation_errors)
+
+    def test_fts_validation_error_is_control_flow(self) -> None:
+        """FtsValidationError is a ControlFlowError so it never trips the circuit breaker."""
+        assert issubclass(FtsValidationError, ControlFlowError)
+
+    @pytest.mark.asyncio
+    async def test_repeated_nul_queries_do_not_open_the_breaker(
+        self,
+        fts_repos: RepositoryContainer,
+    ) -> None:
+        """Sending NUL queries past the failure threshold leaves the breaker closed.
+
+        Before the boundary rejection, ten such calls opened the shared circuit breaker
+        and every subsequent tool call on the backend failed for the breaker window.
+        """
+        for _ in range(12):
+            with pytest.raises(FtsValidationError):
+                await fts_repos.fts.search(query='\x00', mode='match', limit=10)
+        assert _sqlite_breaker_failures(fts_repos) == 0
+        results, _ = await fts_repos.fts.search(query='error', mode='match', limit=10)
+        assert len(results) == 1
+
+
+class TestClientInputErrorsBypassBreaker:
+    """Client-input failures raised inside the read path never count as breaker failures."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_metadata_filter_does_not_trip_breaker(
+        self,
+        fts_repos: RepositoryContainer,
+    ) -> None:
+        """An invalid metadata filter raises FtsValidationError without breaker accounting.
+
+        This error is raised INSIDE the read callable (within get_connection's scope), so
+        it exercises the readonly-path ControlFlowError exemption end-to-end: before the
+        exemption every such call incremented the breaker failure count.
+        """
+        for _ in range(12):
+            with pytest.raises(FtsValidationError):
+                await fts_repos.fts.search(
+                    query='error',
+                    mode='match',
+                    limit=10,
+                    metadata_filters=[{'key': 'x', 'operator': 'bogus-operator', 'value': 1}],
+                )
+        assert _sqlite_breaker_failures(fts_repos) == 0
+
+    @pytest.mark.asyncio
+    async def test_non_boolean_grammar_error_becomes_validation_error(
+        self,
+        fts_repos: RepositoryContainer,
+    ) -> None:
+        """A grammar error in a sanitized mode classifies as a client validation error.
+
+        Calls the SQLite search implementation directly (below the boundary NUL check) so
+        the NUL reaches FTS5 and raises its grammar error; the handler must convert it to
+        FtsValidationError (no raw engine message leak, no breaker failure) instead of
+        propagating sqlite3.OperationalError.
+        """
+        with pytest.raises(FtsValidationError):
+            await fts_repos.fts._search_sqlite(
+                query='a\x00b',
+                mode='match',
+                limit=10,
+                offset=0,
+                thread_id=None,
+                source=None,
+                content_type=None,
+                tags=None,
+                start_date=None,
+                end_date=None,
+                metadata=None,
+                metadata_filters=None,
+                highlight=False,
+            )
+        assert _sqlite_breaker_failures(fts_repos) == 0
