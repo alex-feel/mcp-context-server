@@ -1235,9 +1235,17 @@ class MetadataQueryBuilder:
                 # number array elements: guard json_each.type so it never matches a JSON
                 # boolean element (whose json_each.value is 1/0, the same value an integer
                 # 1/0 element yields), matching PostgreSQL's type-exact ``@> '<num>'::jsonb``.
-                # A case-sensitive string member already cannot match a 1/0 boolean element
-                # (text param != integer value), so it needs no extra guard.
-                type_guard = "json_each.type IN ('integer', 'real') AND " if isinstance(value, (int, float)) else ''
+                # A case-sensitive string member matches only JSON-string elements: without
+                # the type='text' guard, json_each.value renders a NESTED array/object
+                # element as its minified JSON text, which a string member CAN equal (e.g.
+                # value '["x","y"]' against element ["x","y"]), while PostgreSQL's
+                # type-exact ``@> '"<str>"'::jsonb`` containment never matches a string
+                # against a container element. Mirrors the case-insensitive branch above.
+                type_guard = (
+                    "json_each.type IN ('integer', 'real') AND "
+                    if isinstance(value, (int, float))
+                    else "json_each.type = 'text' AND "
+                )
                 self.conditions.append(
                     f"(json_type(metadata, '{json_path}') = 'array' AND "
                     f"EXISTS (SELECT 1 FROM json_each(metadata, '{json_path}') "

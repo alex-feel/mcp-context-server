@@ -440,6 +440,61 @@ class TestMetadataQueryBuilder:
         clause, _ = builder.build_where_clause()
         assert "json_each.type IN ('true', 'false')" in clause
 
+    def test_array_contains_case_sensitive_string_is_type_guarded_sqlite(self) -> None:
+        """array_contains with a case-sensitive string member guards json_each.type='text'.
+
+        SQLite's json_each.value renders a NESTED array/object element as its minified
+        JSON text, which a string member CAN equal (value '["x","y"]' against element
+        ["x","y"]), while PostgreSQL's type-exact ``@> '"<str>"'::jsonb`` containment
+        never matches a string against a container element. The text guard closes that
+        cross-backend divergence and mirrors the case-insensitive branch.
+        """
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(
+            MetadataFilter(key='refs', operator=MetadataOperator.ARRAY_CONTAINS, value='x', case_sensitive=True),
+        )
+        clause, params = builder.build_where_clause()
+        assert "json_each.type = 'text'" in clause
+        assert params == ['x']
+
+    def test_array_contains_string_does_not_match_container_element_sqlite(self) -> None:
+        """A string equal to a container's minified JSON text does not match on SQLite.
+
+        Functional end-to-end check of the text guard against a real SQLite session:
+        the entry's array holds a nested array element whose json_each.value text is
+        exactly the filter value, and it still must not match (PostgreSQL parity).
+        """
+        import json
+        import sqlite3
+
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_advanced_filter(
+            MetadataFilter(
+                key='refs',
+                operator=MetadataOperator.ARRAY_CONTAINS,
+                value='["x","y"]',
+                case_sensitive=True,
+            ),
+        )
+        clause, params = builder.build_where_clause()
+
+        with sqlite3.connect(':memory:') as conn:
+            conn.execute('CREATE TABLE t (metadata TEXT)')
+            conn.execute(
+                'INSERT INTO t (metadata) VALUES (?)',
+                (json.dumps({'refs': ['a', ['x', 'y']]}),),
+            )
+            matches = conn.execute(f'SELECT COUNT(*) FROM t WHERE {clause}', params).fetchone()[0]
+            assert matches == 0
+
+            # A genuine string element with the same characters still matches.
+            conn.execute(
+                'INSERT INTO t (metadata) VALUES (?)',
+                (json.dumps({'refs': ['a', '["x","y"]']}),),
+            )
+            matches = conn.execute(f'SELECT COUNT(*) FROM t WHERE {clause}', params).fetchone()[0]
+            assert matches == 1
+
     def test_operator_eq(self) -> None:
         """Test equality operator."""
         builder = MetadataQueryBuilder()
