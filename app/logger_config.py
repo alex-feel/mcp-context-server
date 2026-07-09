@@ -20,6 +20,15 @@ def config_logger(log_level: str) -> None:
     Uses a formatter that strips package-directory prefixes
     (site-packages, dist-packages) from record.pathname and
     caps the result at a fixed number of trailing path segments.
+
+    Also aligns the 'fastmcp' logger tree with the same level: FastMCP
+    configures that tree at package-import time as NON-PROPAGATING with its own
+    handler and level (from FASTMCP_LOG_LEVEL, default INFO), so configuring
+    the root logger alone left FastMCP-internal INFO/WARNING lines printing
+    regardless of LOG_LEVEL. Aligning it here makes LOG_LEVEL the single
+    effective verbosity control; FASTMCP_LOG_ENABLED=false (removes the
+    handler entirely) and FASTMCP_ENABLE_RICH_LOGGING (handler format) keep
+    their import-time effects.
     """
     numeric_level = getattr(logging, log_level.upper(), logging.ERROR)
 
@@ -55,6 +64,14 @@ def config_logger(log_level: str) -> None:
         '[%(shortpathname)s:%(lineno)d] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S %z',
     )
+
+    # The fastmcp tree does not propagate to root, so it needs its own level;
+    # its handlers are leveled too so a pre-leveled handler cannot re-widen
+    # the effective verbosity.
+    fastmcp_logger = logging.getLogger('fastmcp')
+    fastmcp_logger.setLevel(numeric_level)
+    for fastmcp_handler in fastmcp_logger.handlers:
+        fastmcp_handler.setLevel(numeric_level)
 
     root = logging.getLogger()
     root.setLevel(numeric_level)
