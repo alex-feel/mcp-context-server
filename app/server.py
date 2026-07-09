@@ -781,12 +781,20 @@ def main() -> None:
 
         # Create FastMCP server with lifespan management and explicit auth
         # mask_error_details=False exposes validation errors for LLM autocorrection
+        # strict_input_validation=False is pinned explicitly (not left to the
+        # FASTMCP_STRICT_INPUT_VALIDATION env fallback): lax scalar coercion is
+        # LOAD-BEARING for this server. Real MCP clients intermittently send
+        # scalar params as JSON-encoded strings, and the project's
+        # JsonStringDeserializerMiddleware deliberately repairs only array and
+        # object params -- scalars rely on FastMCP's default coercion, which
+        # strict mode disables (rejecting previously working tool calls).
         mcp = FastMCP(
             name='mcp-context-server',
             version=SERVER_VERSION,
             instructions=instructions_text or None,
             lifespan=lifespan,
             mask_error_details=False,
+            strict_input_validation=False,
             auth=auth_provider,
         )
 

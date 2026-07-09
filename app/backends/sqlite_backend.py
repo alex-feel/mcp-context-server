@@ -1088,6 +1088,8 @@ class SQLiteBackend:
 
         Raises:
             RuntimeError: If connection manager is shutting down or circuit breaker is open
+            ControlFlowError: Re-raised from the connection scope without recording a
+                circuit-breaker failure (normal control flow, not a database fault)
         """
         assert self._reader_semaphore is not None, 'Backend not initialized, call initialize() first'
         assert self._writer_lock is not None, 'Backend not initialized, call initialize() first'
@@ -1113,6 +1115,12 @@ class SQLiteBackend:
                 try:
                     yield conn
                     self.circuit_breaker.record_success()
+                except ControlFlowError:
+                    # Normal control flow (e.g. a client-input validation error raised
+                    # inside a read callable), NOT a database fault: do not record a
+                    # breaker failure, or a client repeatedly sending invalid input
+                    # opens the breaker and rejects every caller's healthy requests.
+                    raise
                 except Exception:
                     self.circuit_breaker.record_failure()
                     raise

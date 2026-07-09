@@ -55,7 +55,7 @@ For detailed instructions including all providers (Ollama, OpenAI, Anthropic), m
 
 ## Semantic Search
 
-Semantic search is auto-enabled by default (`ENABLE_SEMANTIC_SEARCH=auto`): the `semantic_search_context` tool registers automatically whenever an embedding provider is available (embedding generation is on by default), and skips quietly otherwise. For detailed instructions on the multiple embedding providers (Ollama, OpenAI, Azure, HuggingFace, Voyage) and how to force the tool on or off, see the [Semantic Search Guide](docs/semantic-search.md).
+Semantic search is auto-enabled by default (`ENABLE_SEMANTIC_SEARCH=auto`): the `semantic_search_context` tool registers automatically whenever an embedding provider is available (embedding generation is on by default), and skips quietly otherwise. For detailed instructions on the multiple embedding providers (Ollama, OpenAI, Azure, HuggingFace, Voyage) and how to control the toggle explicitly, see the [Semantic Search Guide](docs/semantic-search.md).
 
 ## Full-Text Search
 

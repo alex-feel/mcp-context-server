@@ -24,7 +24,7 @@ Hybrid Search requires at least one underlying search method to be available. Bo
 - **Full-Text Search (FTS)**: `ENABLE_FTS=auto` (default; no additional dependencies, so it is normally available)
 - **Semantic Search**: `ENABLE_SEMANTIC_SEARCH=auto` (default; available whenever an embedding provider is present, which it is when embedding generation is on by default)
 
-With the defaults, hybrid search works out of the box. The explicit force-on form remains available:
+With the defaults, hybrid search works out of the box. The explicit `true` form remains available (for the prerequisite-gated toggles it registers the tool only when the prerequisites are present, logging a warning otherwise):
 
 ```bash
 ENABLE_FTS=true
@@ -68,7 +68,7 @@ Hybrid search is controlled by the following environment variables in your MCP c
 
 - **Type**: Tri-state
 - **Default**: `auto`
-- **Description**: Controls registration of the `hybrid_search_context` tool. `auto` (default) registers it automatically when at least one underlying search method is available; `true` forces it on; `false` forces it off, for the minimal tool surface. The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted (`true` maps to force-on, `false` to force-off).
+- **Description**: Controls registration of the `hybrid_search_context` tool. `auto` (default) and `true` both register it when at least one underlying search method is available, otherwise skip it with a warning (hybrid has no underlying mode to fuse, so `true` cannot force the tool on with neither); `false` forces it off, for the minimal tool surface. The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted (they map to `true`/`false`).
 - **Example**: `"ENABLE_HYBRID_SEARCH": "false"` (only needed to disable; default already registers the tool)
 
 **Note**: Hybrid search still requires at least one underlying search method to be available. With the defaults (`ENABLE_FTS=auto`, `ENABLE_SEMANTIC_SEARCH=auto`), this condition is normally satisfied; if you force both underlying methods off, the hybrid tool is skipped even when `ENABLE_HYBRID_SEARCH=true`.

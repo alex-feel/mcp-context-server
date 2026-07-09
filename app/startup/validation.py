@@ -11,6 +11,7 @@ and normalize input parameters before processing.
 """
 
 import logging
+from datetime import UTC
 from datetime import date
 from datetime import datetime as dt
 
@@ -111,11 +112,18 @@ def truncate_text(text: str | None, max_length: int = 300) -> tuple[str | None, 
 
 
 def validate_date_param(date_str: str | None, param_name: str) -> str | None:
-    """Validate and normalize date parameter for database filtering.
+    """Validate and canonicalize a date parameter for database filtering.
 
-    Accepts ISO 8601 format dates and returns the validated string for database use.
-    Both date-only (YYYY-MM-DD) and datetime (YYYY-MM-DDTHH:MM:SS) formats are supported.
-    Timezone suffixes (Z or +HH:MM) are also accepted.
+    Accepts every ISO 8601 form Python's ``fromisoformat`` parses (extended
+    'YYYY-MM-DD' / 'YYYY-MM-DDTHH:MM:SS', the space-separated datetime, the
+    basic/compact form '20250601', week dates '2025-W23-1', and timezone
+    suffixes Z or +HH:MM) and returns the value RE-SERIALIZED in the extended
+    ISO 8601 form. Canonicalization is load-bearing for cross-backend parity:
+    the raw accepted superset is wider than what the storage layer parses
+    (SQLite's ``datetime()`` returns NULL for compact and week-date forms,
+    silently filtering out every row, and the PostgreSQL parameter parser keys
+    its branch on the 'T' separator), so both backends must receive one
+    normalized representation.
 
     For end_date with date-only format: automatically expands to end-of-day (T23:59:59)
     to match user expectations. This follows Elasticsearch's precedent where missing time
@@ -127,7 +135,8 @@ def validate_date_param(date_str: str | None, param_name: str) -> str | None:
         param_name: Parameter name for error messages (e.g., 'start_date', 'end_date')
 
     Returns:
-        Validated date string (possibly expanded for end_date) or None if input was None
+        The canonical extended-ISO date string (expanded to end-of-day for a
+        date-only end_date) or None if input was None
 
     Raises:
         ToolError: If date format is invalid
@@ -136,19 +145,22 @@ def validate_date_param(date_str: str | None, param_name: str) -> str | None:
         return None
 
     # Detect date-only format by checking for absence of time separators
-    # Date-only: '2025-11-29' (no 'T' or space separator)
+    # Date-only: '2025-11-29' or '20250601' (no 'T' or space separator)
     # Datetime: '2025-11-29T10:00:00' or '2025-11-29 10:00:00'
     is_date_only = 'T' not in date_str and ' ' not in date_str
 
-    # Validate the date string
+    # Validate AND canonicalize: isoformat() re-serializes the parsed value in
+    # the extended form ('2025-06-01' / '2025-11-29T10:00:00[+HH:MM]'), so a
+    # compact, week-date, or space-separated input reaches the backends in the
+    # one representation both parse.
+    # Python 3.11+ handles the 'Z' suffix natively on the datetime branch; an
+    # aware input keeps its offset (serialized as +HH:MM).
     try:
-        if is_date_only:
-            # Parse as date-only format (YYYY-MM-DD)
-            date.fromisoformat(date_str)
-        else:
-            # Parse as datetime format (with optional timezone)
-            # Python 3.11+ handles 'Z' natively
-            dt.fromisoformat(date_str)
+        canonical = (
+            date.fromisoformat(date_str).isoformat()
+            if is_date_only
+            else dt.fromisoformat(date_str).isoformat()
+        )
     except ValueError:
         raise ToolError(
             f'Invalid {param_name} format: "{date_str}". '
@@ -165,9 +177,9 @@ def validate_date_param(date_str: str | None, param_name: str) -> str | None:
     # so T23:59:59 (microsecond=0) would exclude entries at 23:59:59.xxx.
     # SQLite is unaffected as CURRENT_TIMESTAMP stores second precision only.
     if param_name == 'end_date' and is_date_only:
-        date_str = f'{date_str}T23:59:59.999999'
+        canonical = f'{canonical}T23:59:59.999999'
 
-    return date_str
+    return canonical
 
 
 def validate_date_range(start_date: str | None, end_date: str | None) -> None:
@@ -182,24 +194,31 @@ def validate_date_range(start_date: str | None, end_date: str | None) -> None:
     """
 
     def _parse_and_normalize(date_str: str) -> dt:
-        """Parse date string and normalize to naive datetime for comparison.
+        """Parse date string and normalize to a UTC instant for comparison.
 
         Handles all ISO 8601 formats: date-only, datetime, datetime+tz, datetime+Z.
-        Strips timezone info to allow comparison between mixed formats.
+        Aware datetimes are CONVERTED to UTC and naive ones interpreted AS UTC --
+        matching the storage layer, which compares absolute UTC instants on both
+        backends (SQLite's ``datetime()`` converts offsets to UTC; the PostgreSQL
+        parameter parser applies the same naive-as-UTC convention). Stripping the
+        offset instead would compare wall-clock values and contradict the filter
+        semantics for mixed-offset ranges in both directions (rejecting valid
+        ranges and accepting inverted ones).
 
         Returns:
-            Naive datetime object for comparison purposes.
+            Timezone-aware UTC datetime object for comparison purposes.
         """
         # Handle Z suffix - replace with +00:00 for fromisoformat
         normalized = date_str.replace('Z', '+00:00') if date_str.endswith('Z') else date_str
 
         try:
             parsed = dt.fromisoformat(normalized)
-            # Strip timezone info for comparison (we just need relative ordering)
-            return parsed.replace(tzinfo=None)
         except ValueError:
             # Date-only format - convert to datetime for comparison
-            return dt.combine(date.fromisoformat(date_str), dt.min.time())
+            return dt.combine(date.fromisoformat(date_str), dt.min.time(), tzinfo=UTC)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     if start_date and end_date:
         start_dt = _parse_and_normalize(start_date)

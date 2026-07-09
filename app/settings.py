@@ -538,8 +538,10 @@ class FeatureToggleSettings(CommonSettings):
     semantic search; nothing extra for full-text search, which uses built-in
     database capabilities) exposes the corresponding tool with no configuration,
     while a deployment that lacks the prerequisites silently skips it. The
-    explicit 'true'/'false' values let operators force a tool on (warning when its
-    prerequisites are missing) or off (minimal tool surface). Embedding storage is
+    explicit 'true' registers the tool exactly when its prerequisites are present
+    -- for a prerequisite-gated tool a missing prerequisite logs a warning and the
+    tool is still NOT registered (a prerequisite-free tool simply registers) --
+    and 'false' forces the tool off (minimal tool surface). Embedding storage is
     provisioned from ENABLE_EMBEDDING_GENERATION independently of these toggles,
     so enabling a search tool later never requires re-embedding.
 

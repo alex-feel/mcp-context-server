@@ -428,7 +428,8 @@ class TestLifespanErrorHandling:
         mock_settings.chunking.enabled = False
         mock_settings.summary.generation_enabled = False
         # Step 24 registration reads semantic_search.mode (tri-state string);
-        # 'true' forces the tool on (warns when no provider).
+        # 'true' registers the tool only when a provider is available (this test
+        # supplies one); a missing provider logs a warning and skips registration.
         mock_settings.semantic_search.mode = 'true'
         mock_settings.semantic_search.enabled = True
         mock_settings.fts.enabled = False

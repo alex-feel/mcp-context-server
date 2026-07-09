@@ -186,3 +186,25 @@ class TestConfigLogger:
         config_logger('DEBUG')
         assert len(logging.getLogger().handlers) == handler_count
         assert logging.getLogger().level == logging.DEBUG
+
+    def test_aligns_fastmcp_logger_tree(self) -> None:
+        """config_logger aligns the non-propagating 'fastmcp' logger with LOG_LEVEL.
+
+        FastMCP configures logging.getLogger('fastmcp') at package-import time
+        (propagate=False, its own handler, level from FASTMCP_LOG_LEVEL, default
+        INFO), so configuring only the root logger left FastMCP-internal
+        INFO/WARNING lines printing regardless of LOG_LEVEL.
+        """
+        fastmcp_logger = logging.getLogger('fastmcp')
+        # Simulate FastMCP's import-time configuration state.
+        fastmcp_logger.propagate = False
+        fastmcp_logger.setLevel(logging.INFO)
+        stale_handler = logging.StreamHandler()
+        stale_handler.setLevel(logging.INFO)
+        fastmcp_logger.addHandler(stale_handler)
+        try:
+            config_logger('ERROR')
+            assert fastmcp_logger.level == logging.ERROR
+            assert all(h.level == logging.ERROR for h in fastmcp_logger.handlers)
+        finally:
+            fastmcp_logger.removeHandler(stale_handler)
