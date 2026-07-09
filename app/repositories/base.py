@@ -198,10 +198,19 @@ class BaseRepository:
 
         Args:
             date_str: ISO 8601 date string (e.g., '2025-11-29', '2025-11-29T10:00:00',
-                     '2025-11-29T10:00:00Z', '2025-11-29T10:00:00+02:00') or None
+                     '2025-11-29 10:00:00', '2025-11-29T10:00:00Z',
+                     '2025-11-29T10:00:00+02:00') or None
 
         Returns:
             datetime object with timezone info or None if input is None
+
+        Raises:
+            ValueError: If the string parses as neither a date nor a datetime.
+                The tool boundary (validate_date_param) canonicalizes every
+                accepted input into a form this parser handles, so a failure
+                here is parser drift -- it must surface loudly instead of
+                degrading to None, which every caller would bind as
+                ``created_at >= NULL`` (a filter that silently matches nothing).
 
         Example:
             _parse_date_for_postgresql('2025-11-29')
@@ -222,13 +231,15 @@ class BaseRepository:
         # Handle Z suffix for UTC (Python 3.11+ handles this natively)
         normalized = date_str.replace('Z', '+00:00') if date_str.endswith('Z') else date_str
 
-        # Check if it's a date-only string (no 'T' separator)
-        # Date-only strings should be converted to datetime at start of day UTC
-        is_date_only = 'T' not in date_str
+        # Check if it's a date-only string: no 'T' AND no space separator, the
+        # SAME predicate validate_date_param uses. Keying on 'T' alone routed
+        # the space-separated datetime form ('2025-11-29 10:00:00') into the
+        # date-only branch, where it failed to parse.
+        is_date_only = 'T' not in date_str and ' ' not in date_str
 
-        if is_date_only:
-            # Parse as date-only and convert to datetime at start of day UTC
-            try:
+        try:
+            if is_date_only:
+                # Parse as date-only and convert to datetime at start of day UTC
                 parsed_date = datetime.date.fromisoformat(date_str)
                 return datetime.datetime(
                     parsed_date.year,
@@ -236,20 +247,16 @@ class BaseRepository:
                     parsed_date.day,
                     tzinfo=datetime.UTC,
                 )
-            except ValueError:
-                pass
-        else:
             # Parse as full datetime
-            try:
-                parsed = datetime.datetime.fromisoformat(normalized)
-                # Naive datetime - interpret as UTC (industry standard)
-                # This matches Elasticsearch, MongoDB, DynamoDB, Firestore behavior
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=datetime.UTC)
-                return parsed
-            except ValueError:
-                pass
-
-        # If all parsing fails, return None
-        # This should not happen if validation was done at the tool level
-        return None
+            parsed = datetime.datetime.fromisoformat(normalized)
+        except ValueError as exc:
+            raise ValueError(
+                f'Unparseable date parameter {date_str!r} reached the PostgreSQL '
+                'repository layer; validate_date_param must canonicalize every '
+                'input it accepts into a form this parser handles',
+            ) from exc
+        # Naive datetime - interpret as UTC (industry standard)
+        # This matches Elasticsearch, MongoDB, DynamoDB, Firestore behavior
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.UTC)
+        return parsed

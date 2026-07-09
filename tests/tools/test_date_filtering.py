@@ -50,15 +50,16 @@ class TestDateValidation:
         """Test end_date with full datetime format is NOT expanded.
 
         Only date-only end_date values should be expanded to end-of-day.
-        Explicit datetime values should be preserved as-is.
+        Explicit datetime values keep their instant (the Z suffix is
+        canonicalized to the equivalent +00:00 offset).
         """
         # With T separator
         result = validate_date_param('2025-11-29T14:00:00', 'end_date')
         assert result == '2025-11-29T14:00:00'
 
-        # With timezone
+        # With timezone (Z canonicalizes to +00:00)
         result = validate_date_param('2025-11-29T14:00:00Z', 'end_date')
-        assert result == '2025-11-29T14:00:00Z'
+        assert result == '2025-11-29T14:00:00+00:00'
 
         # With timezone offset
         result = validate_date_param('2025-11-29T14:00:00+02:00', 'end_date')
@@ -80,9 +81,9 @@ class TestDateValidation:
         assert result == '2025-11-29T10:00:00-05:00'
 
     def test_valid_datetime_utc_z_suffix(self) -> None:
-        """Test datetime with Z suffix for UTC."""
+        """Test datetime with Z suffix canonicalizes to the +00:00 offset form."""
         result = validate_date_param('2025-11-29T10:00:00Z', 'start_date')
-        assert result == '2025-11-29T10:00:00Z'
+        assert result == '2025-11-29T10:00:00+00:00'
 
     def test_valid_datetime_with_microseconds(self) -> None:
         """Test datetime with microseconds."""
@@ -132,6 +133,56 @@ class TestDateValidation:
         assert 'Invalid end_date format' in str(exc_info.value)
 
 
+class TestDateCanonicalization:
+    """validate_date_param re-serializes every accepted input in extended ISO form.
+
+    Python's fromisoformat accepts a superset (compact '20250601', week dates
+    '2025-W23-1', the space-separated datetime) of what the storage layer parses:
+    SQLite's datetime() returns NULL for the compact and week-date forms (silently
+    filtering out every row) and the PostgreSQL parameter parser keys its branch on
+    the 'T' separator. Canonicalization guarantees both backends receive one
+    representation they parse.
+    """
+
+    def test_space_separated_datetime_canonicalizes_to_t(self) -> None:
+        """The documented space-separated datetime form gains the 'T' separator."""
+        result = validate_date_param('2025-11-29 10:00:00', 'start_date')
+        assert result == '2025-11-29T10:00:00'
+
+    def test_compact_date_canonicalizes_to_extended(self) -> None:
+        """The ISO 8601 basic/compact date form is expanded to the extended form."""
+        result = validate_date_param('20250601', 'start_date')
+        assert result == '2025-06-01'
+
+    def test_week_date_canonicalizes_to_extended(self) -> None:
+        """An ISO 8601 week date is resolved to its extended calendar date."""
+        result = validate_date_param('2025-W23-1', 'start_date')
+        assert result == '2025-06-02'
+
+    def test_compact_end_date_expansion_is_not_mixed_format(self) -> None:
+        """A compact end_date expands on the CANONICAL form, not the raw input."""
+        result = validate_date_param('20250601', 'end_date')
+        assert result == '2025-06-01T23:59:59.999999'
+
+    @pytest.mark.parametrize(
+        'raw',
+        ['20250601', '2025-W23-1', '2025-11-29 10:00:00', '2025-11-29T10:00:00Z'],
+    )
+    def test_canonical_output_parses_in_sqlite_datetime(self, raw: str) -> None:
+        """Every canonicalized value parses in SQLite's datetime() (non-NULL).
+
+        The raw compact and week-date inputs return NULL from datetime(), which
+        turned the WHERE clause into a filter that matched nothing on the default
+        backend while PostgreSQL parsed the same input correctly.
+        """
+        import sqlite3
+
+        canonical = validate_date_param(raw, 'start_date')
+        with sqlite3.connect(':memory:') as conn:
+            parsed = conn.execute('SELECT datetime(?)', (canonical,)).fetchone()[0]
+        assert parsed is not None
+
+
 class TestDateRangeValidation:
     """Test date range validation (start_date <= end_date)."""
 
@@ -178,6 +229,35 @@ class TestDateRangeValidation:
         """Test both dates None is valid."""
         # Should not raise
         validate_date_range(None, None)
+
+    def test_mixed_offset_valid_range_accepted(self) -> None:
+        """A valid range whose bounds carry different UTC offsets is accepted.
+
+        start is 18:00 UTC and end is 20:00 UTC -- a valid two-hour range. The
+        old tz-stripping comparison read the wall-clock values (23:00 > 20:00)
+        and wrongly rejected it.
+        """
+        # Should not raise
+        validate_date_range('2025-06-01T23:00:00+05:00', '2025-06-01T20:00:00Z')
+
+    def test_mixed_offset_inverted_range_rejected(self) -> None:
+        """A truly inverted mixed-offset range is rejected.
+
+        start is 10:00 UTC and end is 06:00 UTC -- inverted. The old
+        tz-stripping comparison read the wall-clock values (10:00 < 11:00) and
+        wrongly accepted it, silently returning empty results downstream.
+        """
+        with pytest.raises(ToolError) as exc_info:
+            validate_date_range('2025-06-01T10:00:00Z', '2025-06-01T11:00:00+05:00')
+        assert 'Invalid date range' in str(exc_info.value)
+
+    def test_naive_and_aware_bounds_compare_as_utc(self) -> None:
+        """A naive bound is interpreted as UTC when compared with an aware bound."""
+        # naive 10:00 (=10:00 UTC) <= aware 12:00+00:00 -- valid; should not raise
+        validate_date_range('2025-06-01T10:00:00', '2025-06-01T12:00:00+00:00')
+        # naive 13:00 (=13:00 UTC) > aware 12:00+00:00 -- inverted
+        with pytest.raises(ToolError):
+            validate_date_range('2025-06-01T13:00:00', '2025-06-01T12:00:00+00:00')
 
 
 @pytest.mark.usefixtures('mock_server_dependencies')
@@ -740,6 +820,26 @@ class TestParseDateForPostgresql:
 
         result = BaseRepository._parse_date_for_postgresql(None)
         assert result is None
+
+    def test_space_separated_datetime_parses_as_datetime(self) -> None:
+        """The space-separated form routes to the datetime branch, not date-only.
+
+        The old predicate keyed on 'T' alone, routed this form into the
+        date-only branch where parsing failed, and degraded to None -- which
+        every caller bound as created_at >= NULL, silently returning zero rows
+        on PostgreSQL while SQLite handled the same input correctly.
+        """
+        from app.repositories.base import BaseRepository
+
+        parsed = BaseRepository._parse_date_for_postgresql('2025-11-29 10:00:00')
+        assert parsed == datetime(2025, 11, 29, 10, 0, 0, tzinfo=UTC)
+
+    def test_unparseable_input_raises_instead_of_returning_none(self) -> None:
+        """Parser drift surfaces loudly instead of degrading to a NULL bind."""
+        from app.repositories.base import BaseRepository
+
+        with pytest.raises(ValueError, match='validate_date_param'):
+            BaseRepository._parse_date_for_postgresql('not-a-date')
 
     def test_date_only_returns_datetime_utc(self) -> None:
         """Test date-only format returns datetime at start of day UTC."""
