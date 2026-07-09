@@ -16,10 +16,10 @@ Semantic search is **auto-enabled by default** and supports multiple embedding p
 The `semantic_search_context` tool is controlled by the tri-state `ENABLE_SEMANTIC_SEARCH` variable:
 
 - `auto` (default): the tool registers automatically whenever an embedding provider is available. When installed with an embedding provider extra (as in the examples below), a provider is present and semantic search registers automatically. With the bare package and no provider, set `ENABLE_EMBEDDING_GENERATION=false` (otherwise the server exits because the configured provider is unavailable).
-- `true`: force the tool on. If no embedding provider is available, the server logs a warning and the tool is not registered.
+- `true`: register the tool when an embedding provider is available. If none is, the server logs a warning and the tool is NOT registered (`true` cannot force it on without a provider).
 - `false`: force the tool off, for the minimal tool surface.
 
-The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted (`true` maps to force-on, `false` to force-off).
+The boolean spellings `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off` are also accepted (they map to `true`/`false`).
 
 You still need the provider prerequisites below (an embedding provider plus its dependencies, and `sqlite-vec`/`pgvector` for vector storage) for semantic search to function; `auto` only governs whether the tool is exposed once those prerequisites are met. Embedding storage (the vector tables and chunk columns) is provisioned from `ENABLE_EMBEDDING_GENERATION`, decoupled from this toggle, so turning semantic search on later never requires re-embedding.
 
