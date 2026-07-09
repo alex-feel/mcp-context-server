@@ -19,6 +19,7 @@ def create_backend(
     backend_type: Literal['sqlite', 'postgresql'] | None = None,
     db_path: Path | str | None = None,
     connection_string: str | None = None,
+    provision_vector: bool | None = None,
 ) -> StorageBackend:
     """
     Create a storage backend instance based on type.
@@ -33,6 +34,11 @@ def create_backend(
         db_path: Path to database file (SQLite only). If None, uses settings.storage.db_path
         connection_string: PostgreSQL connection string (PostgreSQL only).
                           If None, builds from settings.storage.postgresql_* settings
+        provision_vector: Explicit pgvector-provisioning decision (PostgreSQL only).
+                          When set, overrides the backend's settings-and-probe resolution;
+                          used by callers that know up front whether the database carries
+                          the fp32 vector layout (e.g. the migration CLI's target init).
+                          If None, the backend resolves it at initialize() time.
 
     Returns:
         StorageBackend implementation (SQLiteBackend, PostgreSQLBackend)
@@ -87,4 +93,7 @@ def create_backend(
 
     # backend_type == 'postgresql'
     # Create PostgreSQL backend
-    return PostgreSQLBackend(connection_string=connection_string)
+    return PostgreSQLBackend(
+        connection_string=connection_string,
+        provision_vector=provision_vector,
+    )

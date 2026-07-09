@@ -322,12 +322,21 @@ class PostgreSQLBackend:
         self,
         connection_string: str | None = None,
         retry_config: RetryConfig | None = None,
+        provision_vector: bool | None = None,
     ) -> None:
         # Build connection string from settings if not provided
         if connection_string is None:
             connection_string = self._build_connection_string()
 
         self.connection_string = connection_string
+
+        # Explicit pgvector-provisioning override. The migration CLI knows
+        # up front whether the target will carry the fp32 vector layout
+        # (with_semantic), so it bypasses the settings-and-probe resolution
+        # in initialize() -- which reads the CLI process's env, not the
+        # target's actual needs -- with a deterministic decision. None means
+        # resolve normally at initialize() time.
+        self._provision_vector_override = provision_vector
 
         # Build retry config from settings if not supplied
         if retry_config is None:
@@ -504,11 +513,12 @@ class PostgreSQLBackend:
           EXTENSION vector`` and CRASH boot on a host that lacks pgvector -- exactly the pgvector-free
           deployment the compression docs promote -- so fall through to the fp32-table probe and
           provision ONLY if a stray fp32 table actually exists (it needs the codec). The migration
-          CLI's ``force=True`` init builds the full fp32 layout even under compression, but does NOT
-          rely on this gate: ``initialize_target_postgresql`` creates the extension itself before its
-          ``vector(dim)`` DDL, and its backend runs DDL only (no vector value I/O), while the paths
-          that DO read fp32 vectors (``--compress``, a PG->PG copy) operate on a database where the
-          fp32 table already exists, so the probe returns True for them.
+          CLI does NOT rely on this gate at all: ``initialize_target_postgresql`` passes the
+          explicit ``provision_vector`` constructor override keyed on ``with_semantic`` (and
+          creates the extension itself, before its ``vector(dim)`` DDL, exactly when the fp32
+          layout will be built), while the paths that DO read fp32 vectors (``--compress``, a
+          PG->PG copy) operate on a database where the fp32 table already exists, so the probe
+          returns True for them.
         - the fp32 ``vec_context_embeddings`` table already exists: it is read via the vector codec
           (an fp32 archive, or the ``--compress`` CLI reading it before it replaces it with the
           compressed table).
@@ -563,8 +573,14 @@ class PostgreSQLBackend:
             # generation-off archive restored on a host without pgvector -- must NOT be
             # forced to create the unused extension, while a compression-off database that
             # will provision or already carries the fp32 layout still must. See
-            # _resolve_provision_vector.
-            self._provision_vector = await self._resolve_provision_vector()
+            # _resolve_provision_vector. A caller that knows the answer up front (the
+            # migration CLI's target init, keyed on with_semantic) supplies the explicit
+            # constructor override instead, so a vector-free target never pays the
+            # settings-driven gate of a process whose env does not describe the target.
+            if self._provision_vector_override is not None:
+                self._provision_vector = self._provision_vector_override
+            else:
+                self._provision_vector = await self._resolve_provision_vector()
 
             # Pre-create pgvector extension when the vector layout will be
             # provisioned. This prevents "unknown type: public.vector" warnings

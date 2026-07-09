@@ -13,6 +13,7 @@ import sqlite3
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -1523,3 +1524,186 @@ async def test_pg_pg_migration_closes_source_when_target_connect_fails(
         await run_migration_postgresql(options)
     # The source was closed by the finally; no UnboundLocalError / None.close().
     assert closed['source'] is True
+
+
+class TestInitializeTargetPostgresqlVectorGating:
+    """initialize_target_postgresql touches pgvector only for a vector-carrying target.
+
+    A cross-backend migration drops embeddings (with_semantic=False), so its target
+    init must complete on a pgvector-less PostgreSQL host: no CREATE EXTENSION, and
+    the backend built for the migrations must not let the CLI process's env-driven
+    gate force pgvector provisioning. The schema, by contrast, is always created
+    (schema-qualified function DDL needs it), and it must not be skipped when a
+    later extension statement fails.
+    """
+
+    @staticmethod
+    def _install_pipeline_mocks(
+        monkeypatch: pytest.MonkeyPatch,
+        executed: list[str],
+        extension_error: Exception | None = None,
+        schema_error: Exception | None = None,
+    ) -> dict[str, mock.AsyncMock | mock.MagicMock]:
+        """Fake the target connection, backend factory, and migration pipeline.
+
+        Args:
+            monkeypatch: The pytest monkeypatch fixture.
+            executed: Mutated with each SQL statement the fake connection runs.
+            extension_error: When set, raised by the fake CREATE EXTENSION.
+            schema_error: When set, raised by the fake CREATE SCHEMA.
+
+        Returns:
+            Mapping of mock names to the installed mock objects.
+        """
+        import asyncpg as asyncpg_mod
+
+        import app.backends as backends_mod
+        import app.migrations.chunking as chunking_mod
+        import app.migrations.fts as fts_mod
+        import app.migrations.index_tree as index_tree_mod
+        import app.migrations.semantic as semantic_mod
+        import app.startup as startup_mod
+
+        class _FakeExtConn:
+            async def execute(self, sql: str) -> None:
+                if schema_error is not None and 'CREATE SCHEMA' in sql:
+                    raise schema_error
+                if extension_error is not None and 'CREATE EXTENSION' in sql:
+                    raise extension_error
+                executed.append(sql)
+
+            async def close(self) -> None:
+                return None
+
+        async def _fake_connect(_url: str, **_kwargs: object) -> _FakeExtConn:
+            return _FakeExtConn()
+
+        monkeypatch.setattr(asyncpg_mod, 'connect', _fake_connect)
+
+        backend = mock.MagicMock()
+        backend.initialize = mock.AsyncMock()
+        backend.shutdown = mock.AsyncMock()
+        mocks: dict[str, mock.AsyncMock | mock.MagicMock] = {
+            'create_backend': mock.MagicMock(return_value=backend),
+            'init_database': mock.AsyncMock(),
+            'semantic': mock.AsyncMock(),
+            'jsonb': mock.AsyncMock(),
+            'search_path': mock.AsyncMock(),
+            'fts': mock.AsyncMock(),
+            'chunking': mock.AsyncMock(),
+            'index_tree': mock.AsyncMock(),
+        }
+        monkeypatch.setattr(backends_mod, 'create_backend', mocks['create_backend'])
+        monkeypatch.setattr(startup_mod, 'init_database', mocks['init_database'])
+        monkeypatch.setattr(semantic_mod, 'apply_semantic_search_migration', mocks['semantic'])
+        monkeypatch.setattr(semantic_mod, 'apply_jsonb_merge_patch_migration', mocks['jsonb'])
+        monkeypatch.setattr(semantic_mod, 'apply_function_search_path_migration', mocks['search_path'])
+        monkeypatch.setattr(fts_mod, 'apply_fts_migration', mocks['fts'])
+        monkeypatch.setattr(chunking_mod, 'apply_chunking_migration', mocks['chunking'])
+        monkeypatch.setattr(index_tree_mod, 'apply_index_tree_migration', mocks['index_tree'])
+        return mocks
+
+    @pytest.mark.asyncio
+    async def test_without_semantic_never_touches_pgvector(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A with_semantic=False init issues no CREATE EXTENSION and disables provisioning."""
+        from app.cli.migrate import initialize_target_postgresql
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        await initialize_target_postgresql(
+            'postgresql://u:p@localhost:5432/tgt',
+            embedding_dim=None,
+            with_semantic=False,
+            source_has_fts=False,
+            stats=stats,
+        )
+
+        assert any('CREATE SCHEMA' in sql for sql in executed)
+        assert not any('CREATE EXTENSION' in sql for sql in executed)
+        assert mocks['create_backend'].call_args.kwargs['provision_vector'] is False
+        mocks['semantic'].assert_not_called()
+        mocks['chunking'].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_with_semantic_creates_schema_then_extension(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A with_semantic=True init creates the schema first, then the extension."""
+        from app.cli.migrate import initialize_target_postgresql
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        await initialize_target_postgresql(
+            'postgresql://u:p@localhost:5432/tgt',
+            embedding_dim=1024,
+            with_semantic=True,
+            source_has_fts=True,
+            stats=stats,
+        )
+
+        schema_idx = next(i for i, sql in enumerate(executed) if 'CREATE SCHEMA' in sql)
+        ext_idx = next(i for i, sql in enumerate(executed) if 'CREATE EXTENSION' in sql)
+        assert schema_idx < ext_idx
+        assert mocks['create_backend'].call_args.kwargs['provision_vector'] is True
+        mocks['semantic'].assert_called_once()
+        mocks['chunking'].assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_pgvector_extension_raises_actionable_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """pgvector absent from the host (58P01) surfaces actionable guidance, not a traceback."""
+        import asyncpg as asyncpg_mod
+
+        from app.cli.migrate import initialize_target_postgresql
+
+        executed: list[str] = []
+        self._install_pipeline_mocks(
+            monkeypatch,
+            executed,
+            extension_error=asyncpg_mod.UndefinedFileError('could not open extension control file'),
+        )
+        stats = MigrationStats()
+
+        with pytest.raises(RuntimeError, match='pgvector extension is not installed'):
+            await initialize_target_postgresql(
+                'postgresql://u:p@localhost:5432/tgt',
+                embedding_dim=1024,
+                with_semantic=True,
+                source_has_fts=False,
+                stats=stats,
+            )
+        # The schema was still created before the extension failure.
+        assert any('CREATE SCHEMA' in sql for sql in executed)
+
+    @pytest.mark.asyncio
+    async def test_schema_privilege_failure_raises_actionable_error(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unprivileged CREATE SCHEMA surfaces guidance naming the schema statement."""
+        import asyncpg as asyncpg_mod
+
+        from app.cli.migrate import initialize_target_postgresql
+
+        executed: list[str] = []
+        self._install_pipeline_mocks(
+            monkeypatch,
+            executed,
+            schema_error=asyncpg_mod.InsufficientPrivilegeError('permission denied'),
+        )
+        stats = MigrationStats()
+
+        with pytest.raises(RuntimeError, match='CREATE SCHEMA'):
+            await initialize_target_postgresql(
+                'postgresql://u:p@localhost:5432/tgt',
+                embedding_dim=None,
+                with_semantic=False,
+                source_has_fts=False,
+                stats=stats,
+            )

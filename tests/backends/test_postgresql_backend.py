@@ -933,9 +933,9 @@ class TestResolveProvisionVector:
     async def test_generation_on_compression_off_provisions_without_probe(self) -> None:
         """generation on + compression off -> always provision the fp32 layout; no probe.
 
-        Covers the compression-off server and the migration-CLI force-init path
-        (initialize_target_postgresql always builds the fp32 vector(dim) layout); keying the
-        gate on compression here would leave that DDL with no pgvector extension.
+        Covers the compression-off server (the migration CLI's target init no longer relies
+        on this gate: it passes the explicit provision_vector constructor override keyed on
+        with_semantic).
         """
         connect = AsyncMock()
         with unittest.mock.patch(
@@ -1018,3 +1018,75 @@ class TestResolveProvisionVector:
             'app.backends.postgresql_backend.asyncpg.connect', new=AsyncMock(side_effect=OSError('unreachable')),
         ):
             assert await self._backend()._resolve_provision_vector() is False
+
+
+class TestProvisionVectorOverride:
+    """The explicit provision_vector constructor override bypasses the boot gate.
+
+    The migration CLI knows up front whether its target carries the fp32 vector
+    layout (with_semantic), so it must not depend on the CLI process's env-driven
+    settings gate: a vector-free target initialized under a compression-off env
+    would otherwise force CREATE EXTENSION vector and crash on a pgvector-less host.
+    """
+
+    @staticmethod
+    def _initialize_ready_backend(
+        monkeypatch: pytest.MonkeyPatch,
+        provision_vector: bool | None,
+    ) -> tuple[PostgreSQLBackend, AsyncMock, AsyncMock]:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://u:p@localhost:5432/db',
+            provision_vector=provision_vector,
+        )
+        resolve = AsyncMock(return_value=True)
+        ensure = AsyncMock()
+        monkeypatch.setattr(backend, '_resolve_provision_vector', resolve)
+        monkeypatch.setattr(backend, '_ensure_pgvector_extension', ensure)
+        monkeypatch.setattr(backend, '_detect_pgpool_ii', AsyncMock())
+        monkeypatch.setattr(backend, '_detect_session_mode_pooler', MagicMock())
+        return backend, resolve, ensure
+
+    @pytest.mark.asyncio
+    async def test_explicit_false_skips_resolution_and_extension(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """provision_vector=False initializes without probing or touching pgvector."""
+        backend, resolve, ensure = self._initialize_ready_backend(monkeypatch, provision_vector=False)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.asyncpg.create_pool',
+            new=AsyncMock(return_value=MagicMock()),
+        ):
+            await backend.initialize()
+        assert backend._provision_vector is False
+        resolve.assert_not_called()
+        ensure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_explicit_true_provisions_without_probe(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """provision_vector=True pre-creates the extension without the settings gate."""
+        backend, resolve, ensure = self._initialize_ready_backend(monkeypatch, provision_vector=True)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.asyncpg.create_pool',
+            new=AsyncMock(return_value=MagicMock()),
+        ):
+            await backend.initialize()
+        assert backend._provision_vector is True
+        resolve.assert_not_called()
+        ensure.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_default_none_resolves_via_gate(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without the override, initialize() resolves via _resolve_provision_vector."""
+        backend, resolve, ensure = self._initialize_ready_backend(monkeypatch, provision_vector=None)
+        with unittest.mock.patch(
+            'app.backends.postgresql_backend.asyncpg.create_pool',
+            new=AsyncMock(return_value=MagicMock()),
+        ):
+            await backend.initialize()
+        assert backend._provision_vector is True
+        resolve.assert_awaited_once()
+        ensure.assert_awaited_once()

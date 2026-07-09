@@ -1722,8 +1722,12 @@ async def initialize_target_postgresql(
             auto-init.
 
     Raises:
-        RuntimeError: If the pgvector extension cannot be created (for example,
-            insufficient privileges on a managed service such as Supabase).
+        RuntimeError: If the target schema cannot be created, or -- on a
+            ``with_semantic`` run -- if the pgvector extension cannot be created
+            (insufficient privileges on a managed service such as Supabase, or
+            pgvector not installed on the host at all). A ``with_semantic=False``
+            run never touches pgvector, so it initializes cleanly on a
+            pgvector-less host.
     """
     import asyncpg
 
@@ -1743,30 +1747,62 @@ async def initialize_target_postgresql(
 
     schema = get_settings().storage.postgresql_schema
 
-    # The pgvector extension must exist before the backend pool is created: the
-    # pool's per-connection init registers the vector type and raises when the
-    # extension is absent (whenever the pgvector package is installed). The
-    # target schema must also exist before the schema-qualified function DDL in
+    # The target schema must exist before the schema-qualified function DDL in
     # the base schema / migrations runs (CREATE FUNCTION "<schema>".update_...);
-    # PostgreSQL does not auto-create a non-default schema. Both are created
-    # idempotently up front; surface a clear, actionable error on managed
-    # services where DDL privileges are restricted.
+    # PostgreSQL does not auto-create a non-default schema, so it is created
+    # first and UNCONDITIONALLY. The pgvector extension is needed ONLY when the
+    # fp32 vector layout will be built (with_semantic): a cross-backend
+    # migration drops embeddings and must initialize cleanly on a pgvector-less
+    # host (the pgvector-free compressed deployment shape), so it never issues
+    # CREATE EXTENSION at all. When the extension IS needed it must exist
+    # before the semantic migration's vector(dim) DDL and the backend pool's
+    # vector-codec registration. Surface a clear, actionable error on managed
+    # services where DDL privileges are restricted and on hosts where the
+    # pgvector extension is not installed at all (missing control file --
+    # IF NOT EXISTS does not suppress that failure).
     ext_conn = await asyncpg.connect(target_url, **pg_kwargs)
     try:
-        await ext_conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
-        await ext_conn.execute(f'CREATE SCHEMA IF NOT EXISTS {quote_pg_identifier(schema)}')
-    except asyncpg.InsufficientPrivilegeError as exc:
-        raise RuntimeError(
-            'Cannot initialize the target database (insufficient privileges to '
-            'CREATE EXTENSION vector or CREATE SCHEMA). Enable pgvector and the '
-            f'"{schema}" schema first, then rerun: on Supabase use Dashboard -> '
-            'Database -> Extensions -> vector; on self-hosted PostgreSQL run '
-            '"CREATE EXTENSION vector;" and "CREATE SCHEMA <schema>;" as a superuser.',
-        ) from exc
+        try:
+            await ext_conn.execute(f'CREATE SCHEMA IF NOT EXISTS {quote_pg_identifier(schema)}')
+        except asyncpg.InsufficientPrivilegeError as exc:
+            raise RuntimeError(
+                'Cannot initialize the target database (insufficient privileges '
+                f'to CREATE SCHEMA "{schema}"). Create the schema first, then '
+                f'rerun: execute \'CREATE SCHEMA "{schema}";\' as a privileged user.',
+            ) from exc
+        if with_semantic:
+            try:
+                await ext_conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
+            except asyncpg.InsufficientPrivilegeError as exc:
+                raise RuntimeError(
+                    'Cannot initialize the target database (insufficient '
+                    'privileges to CREATE EXTENSION vector). This migration '
+                    'copies embeddings, which require pgvector. Enable it first, '
+                    'then rerun: on Supabase use Dashboard -> Database -> '
+                    'Extensions -> vector; on self-hosted PostgreSQL run '
+                    '"CREATE EXTENSION vector;" as a superuser.',
+                ) from exc
+            except asyncpg.UndefinedFileError as exc:
+                raise RuntimeError(
+                    'Cannot initialize the target database: the pgvector '
+                    'extension is not installed on the target PostgreSQL host. '
+                    'This migration copies embeddings, which require pgvector. '
+                    'Install it on the host first (for example use a '
+                    'pgvector/pgvector image or the PostgreSQL pgvector package), '
+                    'then rerun.',
+                ) from exc
     finally:
         await ext_conn.close()
 
-    backend = create_backend(backend_type='postgresql', connection_string=target_url)
+    # provision_vector mirrors with_semantic: a vector-carrying target has its
+    # extension guaranteed by the block above (created or failed loudly), while
+    # a vector-free target must not let the CLI process's env-driven gate force
+    # pgvector provisioning it cannot satisfy on a pgvector-less host.
+    backend = create_backend(
+        backend_type='postgresql',
+        connection_string=target_url,
+        provision_vector=with_semantic,
+    )
     await backend.initialize()
     try:
         await init_database(backend=backend)
@@ -1853,7 +1889,15 @@ async def ensure_target_pg_fts(
     from app.backends import create_backend
     from app.migrations.fts import apply_fts_migration
 
-    backend = create_backend(backend_type='postgresql', connection_string=target_url)
+    # provision_vector=False: this backend runs FTS DDL only (tsvector column +
+    # GIN index), which never touches the vector type, and the pre-existing
+    # target may be a pgvector-less host (a compressed deployment) -- the CLI
+    # process's env-driven gate must not force pgvector provisioning here.
+    backend = create_backend(
+        backend_type='postgresql',
+        connection_string=target_url,
+        provision_vector=False,
+    )
     await backend.initialize()
     try:
         await apply_fts_migration(backend, force=True)
