@@ -49,6 +49,7 @@ from numpy.typing import NDArray
 
 from app.backends import StorageBackend
 from app.backends import create_backend
+from app.backends.postgresql_backend import build_asyncpg_connect_kwargs
 from app.cli.migrate import mask_credentials
 from app.cli.migrate import parse_backend_url
 from app.compression.base import CompressionProvider
@@ -143,24 +144,90 @@ def _print_plan(
     print('\n'.join(lines), file=sys.stderr)
 
 
-def _make_backend(source_url: str) -> StorageBackend:
+def _make_backend(
+    source_url: str, *, provision_vector: bool | None = None,
+) -> StorageBackend:
     """Build a backend pointed at ``source_url``.
 
     Args:
         source_url: URL passed to ``--source-url``.
+        provision_vector: Explicit pgvector-provisioning decision forwarded to
+            the PostgreSQL backend (ignored for SQLite, whose sqlite-vec load is
+            unconditional). ``None`` lets the backend resolve it from settings
+            and a probe at ``initialize()`` time; ``False`` skips ``CREATE
+            EXTENSION vector`` so the zero-data reverse path runs on a
+            pgvector-less host; ``True`` provisions the extension for the fp32
+            rebuild. See :func:`_decompress_needs_vector`.
 
     Returns:
-        Initialized :class:`StorageBackend` matching the URL scheme. The
-        URL classification is performed by :func:`parse_backend_url`
-        which raises ``ValueError`` for unrecognized schemes; the
-        exception propagates to the caller.
+        Constructed (not yet initialized) :class:`StorageBackend` matching the
+        URL scheme. The URL classification is performed by
+        :func:`parse_backend_url` which raises ``ValueError`` for unrecognized
+        schemes; the exception propagates to the caller.
     """
     backend_kind, address = parse_backend_url(source_url)
     if backend_kind == 'sqlite':
         return create_backend(backend_type='sqlite', db_path=address)
     return create_backend(
-        backend_type='postgresql', connection_string=address,
+        backend_type='postgresql',
+        connection_string=address,
+        provision_vector=provision_vector,
     )
+
+
+async def _decompress_needs_vector(address: str) -> bool:
+    """Probe whether ``--decompress`` on a PostgreSQL database needs pgvector.
+
+    Runs BEFORE ``backend.initialize()`` on a throwaway PLAIN asyncpg
+    connection -- no pool, no vector-codec registration, and crucially no
+    ``CREATE EXTENSION vector`` -- so it works on a host that lacks pgvector.
+    The extension and the vector codec are needed only when the full reverse
+    path rebuilds the fp32 ``vec_context_embeddings`` table and its HNSW index,
+    which happens exactly when at least one compressed row will be decoded.
+    With no compressed rows the zero-data reverse path
+    (:func:`_execute_decompress_empty`) runs instead: it only DROPs the empty
+    compressed table and DELETEs the provenance row, needing neither the vector
+    type nor the extension. Provisioning pgvector in that case would force
+    ``CREATE EXTENSION vector`` and crash ``initialize()`` -- before the
+    compressed-row count is ever taken -- wedging the disable direction on a
+    pgvector-less deployment (the compression validator seeds a provenance row
+    with zero compressed rows, so a fresh compressed database that never wrote
+    an embedding lands exactly here).
+
+    The connection reuses :func:`build_asyncpg_connect_kwargs` so the
+    ``search_path`` matches the bare-name DML the reverse path runs, and
+    ``EXISTS`` is used instead of ``COUNT(*)`` so the probe stops at the first
+    row rather than scanning a large compressed table.
+
+    Args:
+        address: PostgreSQL connection string (the parsed ``--source-url``).
+
+    Returns:
+        True when a compressed row exists (the full fp32 rebuild needs
+        pgvector); False when the compressed table is absent or empty (the
+        zero-data reverse path needs no vector type).
+    """
+    connect_kwargs = build_asyncpg_connect_kwargs()
+    conn = await asyncpg.connect(
+        address,
+        timeout=get_settings().storage.postgresql_connect_timeout_s,
+        **connect_kwargs,
+    )
+    try:
+        reachable = bool(
+            await conn.fetchval(
+                "SELECT to_regclass('vec_context_embeddings_compressed') IS NOT NULL",
+            ),
+        )
+        if not reachable:
+            return False
+        return bool(
+            await conn.fetchval(
+                'SELECT EXISTS(SELECT 1 FROM vec_context_embeddings_compressed)',
+            ),
+        )
+    finally:
+        await conn.close()
 
 
 async def _shutdown(backend: StorageBackend) -> None:
@@ -501,7 +568,20 @@ async def _compress_async(source_url: str, *, dry_run: bool) -> int:
 async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
     """Async body for :func:`run_decompress`."""
     masked = mask_credentials(source_url)
-    backend = _make_backend(source_url)
+    backend_kind, address = parse_backend_url(source_url)
+    # Decide pgvector provisioning BEFORE constructing/initializing the backend.
+    # On PostgreSQL the backend's own settings-and-probe resolution returns True
+    # for the decompress env shape (compression off, embedding generation on),
+    # so initialize() would run CREATE EXTENSION vector and crash on a
+    # pgvector-less host BEFORE the compressed-row count is taken -- wedging the
+    # zero-data reverse path (_execute_decompress_empty), which needs no vector
+    # type. Probe the compressed-row count up front on a throwaway plain
+    # connection and provision pgvector only when the fp32 rebuild will actually
+    # run. See _decompress_needs_vector.
+    provision_vector: bool | None = None
+    if backend_kind == 'postgresql':
+        provision_vector = await _decompress_needs_vector(address)
+    backend = _make_backend(source_url, provision_vector=provision_vector)
     await backend.initialize()
     try:
         existing = await read_compression_metadata(backend)
