@@ -2316,3 +2316,90 @@ class TestNotInNumericNonNumberParity:
         sql = f'SELECT id FROM context_entries WHERE {where_clause} ORDER BY id'
         kept = [row[0] for row in db.execute(sql, params).fetchall()]
         assert kept == [1, 2, 4]
+
+
+class TestNulAndSurrogateRejection:
+    """A NUL (U+0000) or unpaired UTF-16 surrogate in a string is rejected uniformly.
+
+    Both sequences store and match on SQLite but abort the query on PostgreSQL
+    (asyncpg rejects the bind or the jsonb parser rejects the escape), and the
+    driver error -- not a ControlFlowError -- charges the circuit breaker. Rejecting
+    them at the filter-value guards (reject_nul) and the store/update walker
+    (unstorable_string_error) makes both backends fail fast and identically,
+    mirroring the reject_non_finite / reject_out_of_int64 parity guards.
+    """
+
+    def test_pg_bind_reject_reason_detects_nul_and_surrogate(self) -> None:
+        """The low-level predicate flags a NUL and a lone surrogate, passes clean text."""
+        from app.metadata_types import _pg_bind_reject_reason
+
+        assert _pg_bind_reject_reason('clean text') is None
+        assert _pg_bind_reject_reason('') is None
+        nul_reason = _pg_bind_reject_reason('a\x00b')
+        assert nul_reason is not None
+        assert 'NUL' in nul_reason
+        surrogate_reason = _pg_bind_reject_reason('a\ud800b')
+        assert surrogate_reason is not None
+        assert 'surrogate' in surrogate_reason
+
+    @pytest.mark.parametrize('bad', ['done\x00', 'x\ud800'])
+    def test_reject_nul_filter_value_rejected_both_paths(self, bad: str) -> None:
+        """A NUL/surrogate filter value is rejected on the advanced and simple paths.
+
+        The value binds and matches on SQLite but aborts the query and charges the
+        circuit breaker on PostgreSQL, so it is rejected on both for parity.
+        """
+        with pytest.raises(ValueError, match='NUL|surrogate'):
+            MetadataFilter(key='status', operator=MetadataOperator.EQ, value=bad)
+
+        with pytest.raises(ValueError, match='NUL|surrogate'):
+            MetadataQueryBuilder(backend_type='sqlite').add_simple_filter('status', bad)
+
+        # A NUL/surrogate member inside an IN list is rejected too.
+        with pytest.raises(ValueError, match='NUL|surrogate'):
+            MetadataFilter(key='status', operator=MetadataOperator.IN, value=['ok', bad])
+
+    def test_reject_nul_allows_clean_values_and_non_strings(self) -> None:
+        """reject_nul is a no-op for clean strings, numbers, booleans, None, and clean lists."""
+        from app.metadata_types import reject_nul
+
+        reject_nul('clean')
+        reject_nul('unicode-é中')
+        reject_nul(2.5)
+        reject_nul(True)
+        reject_nul(None)
+        clean_list: list[str | int | float | bool] = ['a', 'b']
+        reject_nul(clean_list)
+
+    def test_unstorable_string_error_walks_keys_values_and_lists(self) -> None:
+        """The store/update walker catches a NUL/surrogate in a scalar, a value, a KEY, or a list."""
+        from app.metadata_types import unstorable_string_error
+
+        assert unstorable_string_error('plain text') is None
+        assert unstorable_string_error({'a': 1, 'b': ['ok', {'c': 'fine'}], 'd': True}) is None
+        assert unstorable_string_error(['tag-one', 'tag-two']) is None
+
+        assert unstorable_string_error('bad\x00text') is not None
+        assert unstorable_string_error('bad\ud800text') is not None
+        # NUL in a nested value.
+        assert unstorable_string_error({'note': {'deep': 'x\x00y'}}) is not None
+        # NUL in a metadata KEY (not only values) -- PostgreSQL jsonb rejects it too.
+        key_message = unstorable_string_error({'k\x00ey': 'value'})
+        assert key_message is not None
+        assert 'key' in key_message
+        # NUL in a list member (e.g. a tag list).
+        assert unstorable_string_error(['ok', 'ta\x00g']) is not None
+
+    def test_sqlite_binds_nul_string_documenting_the_divergence(self) -> None:
+        """SQLite binds and round-trips a NUL-bearing string (the exact divergence guarded).
+
+        PostgreSQL's asyncpg rejects the same bind, so without the guards the two
+        backends diverge; this pins the SQLite half of the divergence the guards close.
+        """
+        import sqlite3
+
+        db = sqlite3.connect(':memory:')
+        db.execute('CREATE TABLE t (v TEXT)')
+        db.execute('INSERT INTO t (v) VALUES (?)', ('a\x00b',))
+        stored = db.execute('SELECT v FROM t').fetchone()[0]
+        assert stored == 'a\x00b'

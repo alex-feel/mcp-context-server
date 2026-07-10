@@ -70,6 +70,7 @@ from app.errors import ConfigurationError
 # precision). Upstream tracker on the parameter's units:
 # https://github.com/aminalaee/uuid-utils/issues/73
 from app.ids import generate_id_with_timestamp
+from app.metadata_types import unstorable_string_error
 
 if TYPE_CHECKING:
     import asyncpg
@@ -706,6 +707,69 @@ def rewrite_metadata_references(
         return metadata_json
     _walk_and_rewrite(parsed, id_mapping, stats, row_pk, seen=set())
     return json.dumps(parsed, ensure_ascii=False)
+
+
+def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | None:
+    """Return why a SQLite value cannot be stored on the PostgreSQL target, else None.
+
+    An embedded NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite
+    TEXT value but fatal on PostgreSQL: asyncpg rejects a NUL text bind
+    (``CharacterNotInRepertoireError``, SQLSTATE 22021) and an unpaired surrogate
+    is not UTF-8-encodable at all. A ``jsonb`` column has a second failure mode --
+    the store path serializes a metadata NUL as the JSON escape ``\\u0000`` (six
+    ASCII characters, not a literal byte), which passes the raw-string check yet
+    is rejected by PostgreSQL's jsonb parser (SQLSTATE 22P05). This runs the
+    shared :func:`app.metadata_types.unstorable_string_error` walker on the raw
+    serialized string (catching a literal NUL/surrogate in the bind) and, for a
+    ``jsonb`` column, ALSO on the decoded structure (``json.loads`` restores the
+    ``\\u0000`` escape to a real U+0000 the walker detects). Unparseable JSON is
+    treated as carrying no detectable NUL here, because the module records and
+    preserves malformed metadata JSON on its own path.
+
+    Args:
+        value: The raw SQLite column value (already serialized to a JSON string
+            for a ``jsonb`` column), or ``None``.
+        is_jsonb: True when ``value`` is bound into a PostgreSQL ``jsonb`` column,
+            enabling the decoded-escape check in addition to the raw-string check.
+
+    Returns:
+        The shared walker's operator-facing message for the first offending
+        sequence found, else None.
+    """
+    if value is None:
+        return None
+    raw_reason = unstorable_string_error(value)
+    if raw_reason is not None:
+        return raw_reason
+    if not is_jsonb:
+        return None
+    try:
+        decoded: object = json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return unstorable_string_error(decoded)
+
+
+def _first_pg_unstorable_column(
+    columns: Iterable[tuple[str, str | None, bool]],
+) -> tuple[str, str] | None:
+    """Return the first ``(column, reason)`` a PostgreSQL target cannot store, else None.
+
+    Each candidate is a ``(name, value, is_jsonb)`` triple. Columns are checked in
+    the given order and the first offending one short-circuits, so a caller can
+    identify the exact column that would abort the row's INSERT on PostgreSQL.
+
+    Args:
+        columns: Ordered ``(column_name, value, is_jsonb)`` candidates for one row.
+
+    Returns:
+        The ``(column_name, reason)`` of the first unstorable column, else None.
+    """
+    for name, value, is_jsonb in columns:
+        reason = _pg_unstorable_column_reason(value, is_jsonb=is_jsonb)
+        if reason is not None:
+            return name, reason
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2335,6 +2399,13 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                 f'{summary_col_src}, {content_hash_col_src}, created_at, updated_at FROM context_entries '
                 f'ORDER BY created_at ASC, id ASC',
             )
+            # Source ids of context_entries rows skipped for a PostgreSQL-unstorable
+            # value. Their tags/image_attachments children must be skipped too: the
+            # parent id stays in id_mapping (so the orphan-FK check would not catch
+            # them), and inserting a child that references a never-inserted parent
+            # would raise an FK violation on PostgreSQL -- relocating the very abort
+            # this guard prevents.
+            skipped_context_ids: set[int] = set()
             for row in entry_cursor:
                 source_id = int(row['id'])
                 new_id = id_mapping[source_id]
@@ -2344,6 +2415,30 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     stats,
                     source_id,
                 )
+                # A NUL (U+0000) or unpaired UTF-16 surrogate is legal in a SQLite
+                # TEXT value but fatal on the PostgreSQL target: without this check
+                # the asyncpg bind raises mid-transaction, ROLLBACKs the whole run,
+                # and reports only the raw driver error with no row identification.
+                # Checked UNCONDITIONALLY (not behind dry_run) so --dry-run surfaces
+                # every affected row before a real run; the offending row is
+                # identified and skipped, mirroring the orphan-FK skip-and-warn.
+                row_thread_id = row['thread_id']
+                unstorable = _first_pg_unstorable_column(
+                    (
+                        ('thread_id', row_thread_id, False),
+                        ('text_content', row['text_content'], False),
+                        ('summary', row['summary'], False),
+                        ('metadata', rewritten_metadata, True),
+                    ),
+                )
+                if unstorable is not None:
+                    column, reason = unstorable
+                    stats.errors.append(
+                        f'context_entries row id={source_id} thread_id={row_thread_id!r} '
+                        f'column {column!r} skipped: {reason}',
+                    )
+                    skipped_context_ids.add(source_id)
+                    continue
                 if not options.dry_run:
                     await target_conn.execute(
                         'INSERT INTO context_entries '
@@ -2377,6 +2472,23 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                             f'tags row references missing context_entry_id={sid}; skipped',
                         )
                         continue
+                    if sid in skipped_context_ids:
+                        stats.warnings.append(
+                            f'tags row context_entry_id={sid} skipped: parent context_entries row was skipped',
+                        )
+                        continue
+                    # Skip a tag carrying a PostgreSQL-unstorable NUL/surrogate
+                    # (see the context_entries guard above), unconditionally so
+                    # --dry-run surfaces it too.
+                    tag_unstorable = _first_pg_unstorable_column(
+                        (('tag', tag_row['tag'], False),),
+                    )
+                    if tag_unstorable is not None:
+                        column, reason = tag_unstorable
+                        stats.errors.append(
+                            f'tags row context_entry_id={sid} column {column!r} skipped: {reason}',
+                        )
+                        continue
                     if not options.dry_run:
                         await target_conn.execute(
                             'INSERT INTO tags (context_entry_id, tag) VALUES ($1::uuid, $2)',
@@ -2396,6 +2508,27 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                     if mapped is None:
                         stats.warnings.append(
                             f'image_attachments row references missing context_entry_id={sid}; skipped',
+                        )
+                        continue
+                    if sid in skipped_context_ids:
+                        stats.warnings.append(
+                            f'image_attachments row context_entry_id={sid} skipped: '
+                            f'parent context_entries row was skipped',
+                        )
+                        continue
+                    # Skip an attachment whose mime_type or image_metadata carries a
+                    # PostgreSQL-unstorable NUL/surrogate (see the context_entries
+                    # guard above), unconditionally so --dry-run surfaces it too.
+                    img_unstorable = _first_pg_unstorable_column(
+                        (
+                            ('mime_type', img['mime_type'], False),
+                            ('image_metadata', img['image_metadata'], True),
+                        ),
+                    )
+                    if img_unstorable is not None:
+                        column, reason = img_unstorable
+                        stats.errors.append(
+                            f'image_attachments row context_entry_id={sid} column {column!r} skipped: {reason}',
                         )
                         continue
                     # A NULL or malformed created_at is preserved as NULL rather

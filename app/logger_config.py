@@ -21,14 +21,19 @@ def config_logger(log_level: str) -> None:
     (site-packages, dist-packages) from record.pathname and
     caps the result at a fixed number of trailing path segments.
 
-    Also aligns the 'fastmcp' logger tree with the same level: FastMCP
-    configures that tree at package-import time as NON-PROPAGATING with its own
-    handler and level (from FASTMCP_LOG_LEVEL, default INFO), so configuring
-    the root logger alone left FastMCP-internal INFO/WARNING lines printing
-    regardless of LOG_LEVEL. Aligning it here makes LOG_LEVEL the single
-    effective verbosity control; FASTMCP_LOG_ENABLED=false (removes the
-    handler entirely) and FASTMCP_ENABLE_RICH_LOGGING (handler format) keep
-    their import-time effects.
+    Also aligns the 'fastmcp' logger tree with the same level. When
+    FASTMCP_LOG_ENABLED is true (default), FastMCP configures that tree at
+    package-import time as NON-PROPAGATING with its own handler and level (from
+    FASTMCP_LOG_LEVEL, default INFO), so configuring the root logger alone left
+    FastMCP-internal INFO/WARNING lines printing regardless of LOG_LEVEL;
+    aligning it here makes LOG_LEVEL the single effective verbosity control.
+    When FASTMCP_LOG_ENABLED is false, FastMCP leaves the tree unconfigured
+    (propagating, no handler), which would let FastMCP-internal records reach the
+    root handler and print; this function then silences the tree (propagate off
+    plus a NullHandler) to honor the documented "removes FastMCP-internal log
+    output entirely" contract. FASTMCP_ENABLE_RICH_LOGGING (handler format) keeps
+    its import-time effect. This governs only the in-process 'fastmcp' tree; the
+    HTTP transports' uvicorn loggers are set by passing log_level to mcp.run().
     """
     numeric_level = getattr(logging, log_level.upper(), logging.ERROR)
 
@@ -65,13 +70,28 @@ def config_logger(log_level: str) -> None:
         datefmt='%Y-%m-%d %H:%M:%S %z',
     )
 
-    # The fastmcp tree does not propagate to root, so it needs its own level;
-    # its handlers are leveled too so a pre-leveled handler cannot re-widen
-    # the effective verbosity.
+    # Align the 'fastmcp' logger tree with LOG_LEVEL. Two import-time states are
+    # possible, and they need opposite handling:
+    #   * FASTMCP_LOG_ENABLED is true (default): FastMCP configured the tree as
+    #     NON-PROPAGATING with its own handler, so it needs its own level and its
+    #     handlers leveled too (a pre-leveled handler could otherwise re-widen the
+    #     effective verbosity).
+    #   * FASTMCP_LOG_ENABLED is false: FastMCP left the tree UNCONFIGURED
+    #     (propagate=True, no handler), so a FastMCP-internal record at or above
+    #     LOG_LEVEL would propagate to the root handler and print -- the opposite
+    #     of the documented "removes FastMCP-internal log output entirely". Silence
+    #     the tree to honor that contract: stop propagation and attach a
+    #     NullHandler so no record escapes to root and no "no handlers" warning fires.
+    # config_logger runs at server import AFTER FastMCP is imported, so an empty
+    # handler list reliably means the disabled case rather than an unimported one.
     fastmcp_logger = logging.getLogger('fastmcp')
     fastmcp_logger.setLevel(numeric_level)
-    for fastmcp_handler in fastmcp_logger.handlers:
-        fastmcp_handler.setLevel(numeric_level)
+    if fastmcp_logger.handlers:
+        for fastmcp_handler in fastmcp_logger.handlers:
+            fastmcp_handler.setLevel(numeric_level)
+    else:
+        fastmcp_logger.propagate = False
+        fastmcp_logger.addHandler(logging.NullHandler())
 
     root = logging.getLogger()
     root.setLevel(numeric_level)

@@ -41,6 +41,7 @@ from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
 from app.metadata_types import non_finite_metadata_error
+from app.metadata_types import unstorable_string_error
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -59,6 +60,7 @@ from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import node_layer_active
+from app.tools._shared import reject_unstorable_input
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
 from app.types import BulkDeleteResponseDict
@@ -209,6 +211,21 @@ async def store_context_batch(
                 not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
             ):
                 validation_errors.append((idx, 'tags must be a list of strings'))
+                continue
+
+            # Reject an embedded NUL or unpaired UTF-16 surrogate in any user string
+            # (thread_id, text, tags, metadata) before generation: PostgreSQL cannot
+            # store it, so the entry would store on SQLite but hard-fail on PostgreSQL
+            # after a wasted generation pass, charging the circuit breaker inside the
+            # transaction. Mirrors the single-entry store_context boundary guard.
+            unstorable_error = (
+                unstorable_string_error(thread_id)
+                or unstorable_string_error(text)
+                or unstorable_string_error(cast('object', tags))
+                or unstorable_string_error(cast('object', metadata))
+            )
+            if unstorable_error is not None:
+                validation_errors.append((idx, unstorable_error))
                 continue
 
             # Prepare validated entry. tags/images keep their None-ness so the
@@ -1051,6 +1068,21 @@ async def update_context_batch(
                 validation_errors.append((idx, context_id, non_finite_error))
                 continue
 
+            # Reject an embedded NUL or unpaired UTF-16 surrogate in any user string
+            # (text, tags, metadata, metadata_patch) before generation, mirroring the
+            # single-entry update_context boundary guard: PostgreSQL cannot store it,
+            # so the update would succeed on SQLite but hard-fail on PostgreSQL after a
+            # wasted generation pass, charging the circuit breaker inside the transaction.
+            unstorable_error = (
+                unstorable_string_error(text)
+                or unstorable_string_error(cast('object', tags_field))
+                or unstorable_string_error(cast('object', metadata_field))
+                or unstorable_string_error(cast('object', metadata_patch_field))
+            )
+            if unstorable_error is not None:
+                validation_errors.append((idx, context_id, unstorable_error))
+                continue
+
             # Prepare validated update
             validated_updates.append({
                 'index': idx,
@@ -1128,12 +1160,17 @@ async def update_context_batch(
                     error=error,
                 ))
 
-        # Filter out non-existent entries in non-atomic mode
+        # Filter out non-existent entries in non-atomic mode by ORIGINAL INDEX, not by
+        # context_id: two updates may target the same context_id in one non-atomic batch,
+        # and filtering by a context_id set would also drop the sibling that DID exist
+        # (dropping it silently, with no result item for its index -- so len(results) <
+        # total and a client mapping results by index cannot find it). Mirrors the
+        # generation-error filter below and store_context_batch.
         if not atomic and existence_errors:
-            missing_ctx_ids = {ctx_id for _, ctx_id, _ in existence_errors}
+            missing_indices = {original_idx for original_idx, _, _ in existence_errors}
             validated_updates_filtered = [
                 (vu_idx, u) for vu_idx, u in enumerate(validated_updates)
-                if u['context_id'] not in missing_ctx_ids
+                if u['index'] not in missing_indices
             ]
         else:
             validated_updates_filtered = list(enumerate(validated_updates))
@@ -1683,6 +1720,11 @@ async def delete_context_batch(
                 'source filter must be combined with another criterion '
                 '(context_ids, thread_ids, or older_than_days)',
             )
+
+        # Reject an embedded NUL or unpaired UTF-16 surrogate in any thread_id before it
+        # reaches delete_by_thread's bind, where asyncpg would raise a non-ControlFlowError
+        # that charges the circuit breaker (SQLite binds it silently -- a divergence).
+        reject_unstorable_input(thread_ids=cast('object', thread_ids))
 
         if ctx:
             criteria_summary: list[str] = []

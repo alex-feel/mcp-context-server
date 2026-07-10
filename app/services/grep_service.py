@@ -153,6 +153,16 @@ def extract_ascii_literal(pattern: str, *, is_regex: bool, case_sensitive: bool)
         return None
     if not pattern or not pattern.isascii():
         return None
+    # A NUL (U+0000) is ASCII and letter-free, so it would otherwise pass the guards
+    # above and be returned as the LIKE/ILIKE pre-filter literal. PostgreSQL's asyncpg
+    # rejects any NUL-carrying text bind (charging the circuit breaker on a
+    # client-controlled pattern), while SQLite binds it and truncates the LIKE at the
+    # NUL. Return None so the pre-filter is skipped and the authoritative Python scan
+    # (which handles the NUL correctly and identically on both backends) runs unaided.
+    # An unpaired UTF-16 surrogate is non-ASCII, so the isascii() guard above already
+    # excludes it.
+    if '\x00' in pattern:
+        return None
     if not case_sensitive and any(char.isalpha() for char in pattern):
         return None
     return pattern

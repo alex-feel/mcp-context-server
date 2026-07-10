@@ -208,3 +208,26 @@ class TestConfigLogger:
             assert all(h.level == logging.ERROR for h in fastmcp_logger.handlers)
         finally:
             fastmcp_logger.removeHandler(stale_handler)
+
+    def test_silences_unconfigured_fastmcp_tree(self) -> None:
+        """When FastMCP left its tree unconfigured (FASTMCP_LOG_ENABLED=false), the tree is silenced.
+
+        FastMCP sets propagate=False only when log_enabled is true; with it false the
+        'fastmcp' logger keeps Python defaults (propagate=True, no handler), so a
+        FastMCP-internal record would propagate to the root handler and print. config_logger
+        must stop propagation and attach a NullHandler to honor the documented
+        'removes FastMCP-internal log output entirely' contract.
+        """
+        fastmcp_logger = logging.getLogger('fastmcp')
+        # Simulate the FASTMCP_LOG_ENABLED=false import-time state: no handler, propagating.
+        saved_handlers = fastmcp_logger.handlers[:]
+        saved_propagate = fastmcp_logger.propagate
+        fastmcp_logger.handlers = []
+        fastmcp_logger.propagate = True
+        try:
+            config_logger('ERROR')
+            assert fastmcp_logger.propagate is False
+            assert any(isinstance(h, logging.NullHandler) for h in fastmcp_logger.handlers)
+        finally:
+            fastmcp_logger.handlers = saved_handlers
+            fastmcp_logger.propagate = saved_propagate

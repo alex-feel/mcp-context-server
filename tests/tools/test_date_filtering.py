@@ -182,6 +182,32 @@ class TestDateCanonicalization:
             parsed = conn.execute('SELECT datetime(?)', (canonical,)).fetchone()[0]
         assert parsed is not None
 
+    def test_sub_minute_offset_rejected(self) -> None:
+        """A timezone offset carrying sub-minute precision is rejected loudly.
+
+        Python's fromisoformat accepts '+05:30:15' and isoformat() re-serializes it
+        verbatim, but SQLite's datetime() understands only a whole-minute '[+-]HH:MM'
+        offset and returns NULL for anything finer, so the filter would silently match
+        zero rows on SQLite while PostgreSQL filtered correctly. The validator rejects
+        it rather than silently rounding the instant.
+        """
+        with pytest.raises(ToolError, match='sub-minute'):
+            validate_date_param('2025-11-29T10:00:00+05:30:15', 'start_date')
+
+    def test_whole_minute_offset_accepted_and_parses_in_sqlite(self) -> None:
+        """A whole-minute offset (e.g. +05:30) is accepted and parses in SQLite datetime().
+
+        Guards against over-rejecting a legitimate half-hour offset alongside the
+        sub-minute rejection above.
+        """
+        import sqlite3
+
+        canonical = validate_date_param('2025-11-29T10:00:00+05:30', 'start_date')
+        assert canonical == '2025-11-29T10:00:00+05:30'
+        with sqlite3.connect(':memory:') as conn:
+            parsed = conn.execute('SELECT datetime(?)', (canonical,)).fetchone()[0]
+        assert parsed is not None
+
 
 class TestDateRangeValidation:
     """Test date range validation (start_date <= end_date)."""

@@ -36,6 +36,7 @@ from app.startup import get_reranking_provider
 from app.startup.validation import truncate_text
 from app.startup.validation import validate_date_param
 from app.startup.validation import validate_date_range
+from app.tools._shared import reject_unstorable_input
 from app.types import ContextEntryDict
 
 logger = logging.getLogger(__name__)
@@ -499,6 +500,11 @@ async def search_context(
         end_date = validate_date_param(end_date, 'end_date')
         validate_date_range(start_date, end_date)
 
+        # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id/tags before
+        # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
+        # that charges the circuit breaker (SQLite binds them silently -- a divergence).
+        reject_unstorable_input(thread_id=thread_id, tags=tags)
+
         if ctx:
             await ctx.info(f'Searching context with filters: thread_id={thread_id}, source={source}')
 
@@ -660,6 +666,11 @@ async def semantic_search_context(
     start_date = validate_date_param(start_date, 'start_date')
     end_date = validate_date_param(end_date, 'end_date')
     validate_date_range(start_date, end_date)
+
+    # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id/tags before
+    # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
+    # that charges the circuit breaker (SQLite binds them silently -- a divergence).
+    reject_unstorable_input(thread_id=thread_id, tags=tags)
 
     try:
         # Clamp limit to prevent excessive memory use (Postel's Law for LLM clients)
@@ -860,6 +871,11 @@ async def fts_search_context(
     start_date = validate_date_param(start_date, 'start_date')
     end_date = validate_date_param(end_date, 'end_date')
     validate_date_range(start_date, end_date)
+
+    # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id/tags before
+    # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
+    # that charges the circuit breaker (SQLite binds them silently -- a divergence).
+    reject_unstorable_input(thread_id=thread_id, tags=tags)
 
     # Check if migration is in progress - return informative response for graceful degradation
     fts_status = get_fts_migration_status()
@@ -1215,6 +1231,11 @@ async def hybrid_search_context(
     start_date = validate_date_param(start_date, 'start_date')
     end_date = validate_date_param(end_date, 'end_date')
     validate_date_range(start_date, end_date)
+
+    # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id/tags before
+    # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
+    # that charges the circuit breaker (SQLite binds them silently -- a divergence).
+    reject_unstorable_input(thread_id=thread_id, tags=tags)
 
     # Check if hybrid search is enabled
     if not settings.hybrid_search.enabled:

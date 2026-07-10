@@ -37,6 +37,7 @@ from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import ControlFlowError
 from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
+from app.metadata_types import unstorable_string_error
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.services.outline_service import OutlineNode
@@ -52,6 +53,36 @@ from app.summary.retry import compute_summary_total_timeout
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+def reject_unstorable_input(**fields: object) -> None:
+    """Raise ``ToolError`` if any user-supplied field carries a PostgreSQL-unstorable string.
+
+    A ``thread_id``, ``text``, tag, or metadata string carrying an embedded NUL
+    (U+0000) or an unpaired UTF-16 surrogate stores on SQLite but is rejected by
+    PostgreSQL (TEXT bind or jsonb parse), so the same request diverges across
+    backends and -- on the store/update write path -- the failure surfaces only
+    after a wasted generation pass, inside the transaction where a
+    non-ControlFlowError charges the circuit breaker. Rejecting at the tool
+    boundary in the input-validation phase (before any generation or connection
+    scope) fails both backends fast and identically with a clean client error and
+    zero breaker charge, mirroring the ``non_finite_metadata_error`` guard.
+    ``unstorable_string_error`` walks metadata dict keys/values and tag lists, so
+    a scalar string and a nested structure are both validated.
+
+    Args:
+        **fields: Named user-supplied values to validate; the name is surfaced in
+            the error message so the caller learns which field is at fault.
+
+    Raises:
+        ToolError: On the first field containing an unstorable string.
+    """
+    for name, value in fields.items():
+        if value is None:
+            continue
+        message = unstorable_string_error(value)
+        if message is not None:
+            raise ToolError(f'{name}: {message}')
 
 
 class EmbeddingsReconcileRequiredError(ControlFlowError):
@@ -940,6 +971,19 @@ def validate_and_normalize_images(
         metadata_error = non_finite_metadata_error(cast(object, img.get('metadata')))
         if metadata_error is not None:
             msg = f'Image {idx} metadata: {metadata_error}'
+            if error_mode == 'raise':
+                raise ToolError(msg)
+            errors.append(msg)
+            return images, 'text', errors
+
+        # A per-image 'metadata' key or value carrying an embedded NUL (U+0000) or an
+        # unpaired UTF-16 surrogate stores on SQLite but is rejected by PostgreSQL's jsonb
+        # image_metadata column -- the same cross-backend divergence and breaker-charging
+        # failure unstorable_string_error guards for entry metadata, applied here for the
+        # untyped batch path's per-image metadata.
+        unstorable_error = unstorable_string_error(cast(object, img.get('metadata')))
+        if unstorable_error is not None:
+            msg = f'Image {idx} metadata: {unstorable_error}'
             if error_mode == 'raise':
                 raise ToolError(msg)
             errors.append(msg)

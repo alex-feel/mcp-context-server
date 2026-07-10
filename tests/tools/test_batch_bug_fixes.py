@@ -872,3 +872,69 @@ class TestUpdateBatchSiblingNotDropped:
         assert result['total'] == 2
         assert result['succeeded'] == 1
         assert result['failed'] == 1
+
+    @pytest.mark.asyncio
+    async def test_nonatomic_missing_entry_keeps_existing_sibling_same_context_id(self):
+        """The EXISTENCE filter drops only the missing index, not its same-context_id sibling.
+
+        Two non-atomic updates target the same context_id; a concurrent delete makes the
+        SECOND existence check fail while the FIRST passed. The filter must drop only the
+        missing entry by ORIGINAL INDEX. The previous context_id-set filter dropped BOTH,
+        so the sibling that existed got no result item (len(results) < total) and was never
+        applied. This mirrors the generation-error filter fix for the existence path.
+        """
+        from app.tools.batch import store_context_batch
+        from app.tools.batch import update_context_batch
+
+        store_result = await store_context_batch(
+            entries=[{
+                'thread_id': 'existence-divergence-thread',
+                'source': 'user',
+                'text': 'B' * 600,
+            }],
+        )
+        cid = store_result['results'][0]['context_id']
+        assert cid is not None
+
+        _, mock_begin_transaction = _make_mock_txn()
+
+        # index 0's existence check passes; index 1's fails, as if a concurrent delete of
+        # the shared context_id committed between the two sequential checks.
+        exists_results = [(True, 'user', 0), (False, None, None)]
+
+        async def exists_side_effect(_context_id):
+            return exists_results.pop(0)
+
+        with (
+            patch('app.tools.batch.ensure_repositories') as mock_repos_fn,
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+        ):
+            mock_repos = AsyncMock()
+            mock_repos_fn.return_value = mock_repos
+            mock_repos.context.check_entry_exists = AsyncMock(side_effect=exists_side_effect)
+            mock_repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
+            mock_repos.images.count_images_for_context = AsyncMock(return_value=0)
+
+            mock_backend = MagicMock()
+            mock_backend.backend_type = 'sqlite'
+            mock_backend.begin_transaction = mock_begin_transaction
+            mock_repos.context.backend = mock_backend
+
+            result = await update_context_batch(
+                updates=[
+                    {'context_id': cid, 'metadata_patch': {'first': True}},
+                    {'context_id': cid, 'metadata_patch': {'second': True}},
+                ],
+                atomic=False,
+            )
+
+        by_index = {r['index']: r for r in result['results']}
+        # Every input index gets exactly one result item -- the sibling is not silently lost.
+        assert set(by_index) == {0, 1}
+        assert len(result['results']) == 2
+        assert by_index[0]['success'] is True   # existence check passed -> applied
+        assert by_index[1]['success'] is False  # concurrent delete -> not found
+        assert result['total'] == 2
+        assert result['succeeded'] == 1
+        assert result['failed'] == 1

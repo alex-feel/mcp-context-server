@@ -9,6 +9,7 @@ from typing import Any
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 from app.metadata_types import reject_non_finite
+from app.metadata_types import reject_nul
 from app.metadata_types import reject_out_of_int64
 
 # Match the metadata COLUMN token only, so a table alias can qualify the column
@@ -90,13 +91,16 @@ class MetadataQueryBuilder:
             raise ValueError(f'Invalid metadata key: {key}')
 
         # The simple metadata={} equality path bypasses MetadataFilter validation,
-        # so reject out-of-int64 integers AND non-finite floats here too: without
-        # these guards an out-of-range int aborts the search on SQLite while
-        # PostgreSQL matches it, and a NaN param matches nothing on SQLite but
-        # every number row on PostgreSQL -- the cross-backend divergences the
-        # advanced metadata_filters path already rejects via the same helpers.
+        # so reject out-of-int64 integers, non-finite floats, AND strings carrying
+        # a NUL or unpaired UTF-16 surrogate here too: without these guards an
+        # out-of-range int aborts the search on SQLite while PostgreSQL matches it,
+        # a NaN param matches nothing on SQLite but every number row on PostgreSQL,
+        # and a NUL-bearing string matches on SQLite but aborts the query and
+        # charges the circuit breaker on PostgreSQL -- the cross-backend
+        # divergences the advanced metadata_filters path rejects via the same helpers.
         reject_out_of_int64(value)
         reject_non_finite(value)
+        reject_nul(value)
 
         json_path = self._build_json_path(key)
         placeholder = self._placeholder()

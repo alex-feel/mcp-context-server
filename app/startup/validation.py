@@ -14,6 +14,7 @@ import logging
 from datetime import UTC
 from datetime import date
 from datetime import datetime as dt
+from datetime import timedelta
 
 from fastmcp.exceptions import ToolError
 
@@ -155,17 +156,35 @@ def validate_date_param(date_str: str | None, param_name: str) -> str | None:
     # one representation both parse.
     # Python 3.11+ handles the 'Z' suffix natively on the datetime branch; an
     # aware input keeps its offset (serialized as +HH:MM).
+    parsed_offset: timedelta | None = None
     try:
-        canonical = (
-            date.fromisoformat(date_str).isoformat()
-            if is_date_only
-            else dt.fromisoformat(date_str).isoformat()
-        )
+        if is_date_only:
+            canonical = date.fromisoformat(date_str).isoformat()
+        else:
+            parsed_dt = dt.fromisoformat(date_str)
+            parsed_offset = parsed_dt.utcoffset()
+            canonical = parsed_dt.isoformat()
     except ValueError:
         raise ToolError(
             f'Invalid {param_name} format: "{date_str}". '
             f'Use ISO 8601 format (e.g., "2025-11-29" or "2025-11-29T10:00:00")',
         ) from None
+
+    # Reject a timezone offset carrying sub-minute precision (seconds or a
+    # fractional part), e.g. '+05:30:15'. Python's fromisoformat accepts it and
+    # isoformat() re-serializes it verbatim, but SQLite's datetime() understands
+    # only a whole-minute '[+-]HH:MM' offset and returns NULL for anything finer,
+    # so `created_at >= datetime(?)` would silently match zero rows on SQLite
+    # while PostgreSQL filters correctly -- a cross-backend divergence. Rejecting
+    # loudly (rather than silently rounding the instant) keeps the validator's
+    # contract that both backends receive one representation both parse.
+    if parsed_offset is not None and (parsed_offset.seconds % 60 != 0 or parsed_offset.microseconds != 0):
+        raise ToolError(
+            f'Invalid {param_name} format: "{date_str}". A timezone offset with sub-minute '
+            f'precision (seconds or a fractional part) is not supported: SQLite evaluates it to '
+            f'NULL (silently matching zero rows) while PostgreSQL accepts it, so it is rejected '
+            f'for cross-backend parity. Use a whole-minute offset (e.g. "+05:30").',
+        )
 
     # For end_date with date-only format: expand to end-of-day with microsecond precision
     # This follows Elasticsearch precedent where missing time components are replaced
