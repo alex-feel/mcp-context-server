@@ -49,6 +49,7 @@ from app.services.text_lines import line_index_for_offset
 from app.services.text_lines import split_lines_with_offsets
 from app.settings import get_settings
 from app.startup import ensure_repositories
+from app.tools._shared import reject_unstorable_input
 from app.types import GrepContentMatchDict
 from app.types import GrepContextResultDict
 from app.types import GrepCountDict
@@ -248,6 +249,13 @@ async def grep_context(
     """
     try:
         repos = await ensure_repositories()
+
+        # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id before it
+        # reaches the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
+        # that charges the circuit breaker (SQLite binds it silently -- a divergence).
+        # A NUL in the grep pattern is handled separately by extract_ascii_literal, which
+        # returns None for it so the pattern never reaches the LIKE/ILIKE pre-filter bind.
+        reject_unstorable_input(thread_id=thread_id)
         grep_settings = settings.grep_context
         max_matches = min(max_matches, grep_settings.max_matches_cap)
         context_lines = min(context_lines, grep_settings.max_context_lines)

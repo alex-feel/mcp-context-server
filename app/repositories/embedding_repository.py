@@ -17,6 +17,7 @@ from typing import Literal
 from typing import cast
 
 from app.backends.base import StorageBackend
+from app.errors import ControlFlowError
 from app.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
@@ -193,11 +194,23 @@ class ChunkEmbedding:
     payload: bytes | None = None
 
 
-class MetadataFilterValidationError(Exception):
+class MetadataFilterValidationError(ControlFlowError):
     """Exception raised when metadata filters fail validation.
 
     This exception enables unified error handling between search_context
     and semantic_search_context tools.
+
+    Subclasses ``ControlFlowError`` -- mirroring its sibling
+    :class:`~app.repositories.fts_repository.FtsValidationError` -- because an
+    invalid metadata filter is a client-input validation failure, normal control
+    flow rather than a database fault. It is raised inside the read callables that
+    run under ``get_connection`` (both backends, both compression modes), whose
+    wrappers exempt ``ControlFlowError`` from circuit-breaker failure accounting;
+    without this parentage a client repeatedly sending an invalid ``metadata_filters``
+    to semantic/hybrid search would open the breaker into a process-wide outage.
+    ``ControlFlowError`` subclasses ``Exception``, so every existing handler
+    (including the tool-layer ``except MetadataFilterValidationError`` catches)
+    still works unchanged.
     """
 
     def __init__(self, message: str, validation_errors: list[str]) -> None:

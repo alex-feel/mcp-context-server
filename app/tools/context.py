@@ -60,6 +60,7 @@ from app.tools._shared import generate_index_nodes_with_timeout
 from app.tools._shared import generate_summary_with_timeout
 from app.tools._shared import is_connection_error
 from app.tools._shared import node_layer_active
+from app.tools._shared import reject_unstorable_input
 from app.tools._shared import run_generation
 from app.tools._shared import validate_and_normalize_images
 from app.types import ContextEntryDict
@@ -151,6 +152,13 @@ async def store_context(
             metadata_error = non_finite_metadata_error(metadata)
             if metadata_error is not None:
                 raise ToolError(metadata_error)
+
+        # Reject an embedded NUL or unpaired UTF-16 surrogate in any user-supplied
+        # string (thread_id, text, tags, metadata) BEFORE generation: PostgreSQL
+        # cannot store it, so the same entry would store on SQLite but hard-fail on
+        # PostgreSQL after a wasted generation pass, inside the transaction where a
+        # non-ControlFlowError charges the circuit breaker.
+        reject_unstorable_input(thread_id=thread_id, text=text, tags=tags, metadata=metadata)
 
         # === PHASE 2: Generate embeddings, summary, and index_tree node summaries ===
         # All generation happens BEFORE any database operation: if an
@@ -502,6 +510,12 @@ async def delete_context(
         if not context_ids and not thread_id:
             raise ToolError('Must provide either context_ids or thread_id')
 
+        # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id before it
+        # reaches delete_by_thread's bind: on PostgreSQL asyncpg would raise a
+        # non-ControlFlowError that charges the circuit breaker, while SQLite would
+        # bind it silently -- a cross-backend divergence on a client-controlled value.
+        reject_unstorable_input(thread_id=thread_id)
+
         # Get repositories first; prefix resolution below needs the context repo.
         repos = await ensure_repositories()
 
@@ -679,6 +693,11 @@ async def update_context(
                 metadata_error = non_finite_metadata_error(meta_value)
                 if metadata_error is not None:
                     raise ToolError(metadata_error)
+
+        # Reject an embedded NUL or unpaired UTF-16 surrogate in any user-supplied
+        # string (text, tags, metadata, metadata_patch) BEFORE generation, for the
+        # same cross-backend-parity and circuit-breaker reason as the store path.
+        reject_unstorable_input(text=text, tags=tags, metadata=metadata, metadata_patch=metadata_patch)
 
         # === PHASE 2: Generate Summary + Embedding FIRST (Outside Transaction) ===
         # CRITICAL: All generation happens BEFORE any database modification.

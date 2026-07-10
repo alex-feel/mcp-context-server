@@ -108,6 +108,15 @@ class TestExtractAsciiLiteral:
         assert compiled.search('ſ') is not None
         assert extract_ascii_literal('s', is_regex=False, case_sensitive=False) is None
 
+    def test_nul_bearing_literal_forces_full_scan(self) -> None:
+        # A NUL (U+0000) is ASCII and letter-free, so without this guard it would be
+        # returned as the LIKE/ILIKE pre-narrow literal and reach the PostgreSQL bind,
+        # where asyncpg rejects a NUL text parameter (charging the circuit breaker on a
+        # client-controlled pattern) while SQLite truncates the LIKE at the NUL. Returning
+        # None forces the parity-safe full Python scan, which handles the NUL identically.
+        assert extract_ascii_literal('1\x002', is_regex=False, case_sensitive=True) is None
+        assert extract_ascii_literal('\x00', is_regex=False, case_sensitive=False) is None
+
 
 class TestMatchEntry:
     """match_entry locates matches with code-point offsets and context lines."""

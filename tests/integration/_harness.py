@@ -3996,6 +3996,73 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_nul_input_does_not_trip_breaker(self) -> bool:
+        """A burst of NUL-bearing client input is rejected without opening the circuit breaker.
+
+        A NUL (U+0000) in a string parameter aborts a PostgreSQL bind (a
+        non-ControlFlowError), and before the boundary guards it was charged to the
+        circuit breaker: ten such calls opened it into a process-wide outage, while
+        SQLite silently stored the NUL (a cross-backend divergence). The guards now
+        reject the input as a clean client error on BOTH backends and leave the breaker
+        closed, so healthy traffic still succeeds afterward. On PostgreSQL this proves
+        the breaker stays closed; on SQLite it proves the parity rejection (the NUL is
+        no longer silently stored).
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'nul_input_breaker_safe'
+        assert self.client is not None  # Type guard for Pyright
+        nul = '\x00'
+        # Four always-registered NUL vectors that each reach a string bind before the
+        # guards: store text, store thread_id, search thread_id, grep thread_id.
+        bad_calls: list[tuple[str, dict[str, Any]]] = [
+            ('store_context', {'thread_id': 'nul-burst', 'source': 'agent', 'text': f'x{nul}y'}),
+            ('store_context', {'thread_id': f'thr{nul}', 'source': 'agent', 'text': 'x'}),
+            ('search_context', {'thread_id': f'thr{nul}', 'limit': 5}),
+            ('grep_context', {'pattern': 'needle', 'thread_id': f'thr{nul}'}),
+        ]
+        try:
+            # 4 vectors x 4 rounds = 16 failing calls, well past the default breaker
+            # threshold of 10.
+            for _ in range(4):
+                for tool_name, args in bad_calls:
+                    try:
+                        result = await self.client.call_tool(tool_name, args)
+                        data = self._extract_content(result)
+                        # A raised ToolError is the expected rejection; a returned dict must
+                        # NOT report success (which would mean the NUL was accepted/stored).
+                        if data.get('success') is True:
+                            self.test_results.append(
+                                (test_name, False, f'{tool_name} accepted NUL input: {data}'),
+                            )
+                            return False
+                    except Exception:
+                        # A client-side ToolError is the expected rejection outcome.
+                        continue
+            # The breaker must still be CLOSED: a healthy store must succeed.
+            healthy = await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': f'{self.test_thread_id}_nul_healthy',
+                    'source': 'agent',
+                    'text': 'healthy store after the NUL burst',
+                },
+            )
+            healthy_data = self._extract_content(healthy)
+            if not healthy_data.get('success'):
+                self.test_results.append(
+                    (test_name, False, f'Healthy store failed after NUL burst (breaker open?): {healthy_data}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'NUL input rejected on both backends; breaker stayed closed'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_semantic_search_invalid_filter_returns_error(self) -> bool:
         """Test that semantic_search_context returns explicit error for invalid metadata filter.
 
@@ -12009,6 +12076,7 @@ class MCPServerIntegrationTest:
             ('Semantic Search Date Filtering', self.test_semantic_search_context_with_date_filtering),
             ('Semantic Search Metadata Filtering', self.test_semantic_search_context_with_metadata_filters),
             ('Search Context Invalid Filter Error', self.test_search_context_invalid_filter_returns_error),
+            ('NUL Input Does Not Trip Breaker', self.test_nul_input_does_not_trip_breaker),
             ('Semantic Search Invalid Filter Error', self.test_semantic_search_invalid_filter_returns_error),
             ('FTS Search', self.test_fts_search_context),
             ('FTS Search Invalid Filter Error', self.test_fts_search_invalid_filter_returns_error),

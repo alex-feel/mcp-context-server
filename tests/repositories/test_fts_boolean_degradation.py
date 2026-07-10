@@ -314,3 +314,15 @@ class TestClientInputErrorsBypassBreaker:
                 highlight=False,
             )
         assert _sqlite_breaker_failures(fts_repos) == 0
+
+    def test_metadata_filter_validation_error_is_control_flow(self) -> None:
+        """MetadataFilterValidationError subclasses ControlFlowError, like its FTS sibling.
+
+        It is raised inside the embedding repository's read callables (both backends,
+        both compression modes), so without this parentage an invalid metadata_filters
+        on semantic/hybrid search would be charged to the circuit breaker and ten such
+        calls would open it into a process-wide outage. This pins the exemption parity.
+        """
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+
+        assert issubclass(MetadataFilterValidationError, ControlFlowError)
