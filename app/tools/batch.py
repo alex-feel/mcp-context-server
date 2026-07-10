@@ -1160,12 +1160,17 @@ async def update_context_batch(
                     error=error,
                 ))
 
-        # Filter out non-existent entries in non-atomic mode
+        # Filter out non-existent entries in non-atomic mode by ORIGINAL INDEX, not by
+        # context_id: two updates may target the same context_id in one non-atomic batch,
+        # and filtering by a context_id set would also drop the sibling that DID exist
+        # (dropping it silently, with no result item for its index -- so len(results) <
+        # total and a client mapping results by index cannot find it). Mirrors the
+        # generation-error filter below and store_context_batch.
         if not atomic and existence_errors:
-            missing_ctx_ids = {ctx_id for _, ctx_id, _ in existence_errors}
+            missing_indices = {original_idx for original_idx, _, _ in existence_errors}
             validated_updates_filtered = [
                 (vu_idx, u) for vu_idx, u in enumerate(validated_updates)
-                if u['context_id'] not in missing_ctx_ids
+                if u['index'] not in missing_indices
             ]
         else:
             validated_updates_filtered = list(enumerate(validated_updates))
