@@ -824,6 +824,13 @@ def main() -> None:
                     host=host,
                     port=port,
                     stateless_http=stateless_http,
+                    # FastMCP forwards log_level to the uvicorn.Config it builds, whose
+                    # __init__ dictConfig-installs the non-propagating uvicorn/uvicorn.access
+                    # loggers at run time. Without this, uvicorn falls back to
+                    # FASTMCP_LOG_LEVEL (default INFO) and prints its startup banner and one
+                    # access line per request regardless of LOG_LEVEL. Passing it makes
+                    # LOG_LEVEL govern the uvicorn tree too (uvicorn wants a lowercase name).
+                    log_level=settings.logging.level.lower(),
                     show_banner=False,
                 )
             else:
@@ -846,6 +853,9 @@ def main() -> None:
                     host=host,
                     port=port,
                     stateless_http=False,
+                    # Pass LOG_LEVEL through so the uvicorn logger tree follows it on the SSE
+                    # transport too (see the streamable-http branch above for the rationale).
+                    log_level=settings.logging.level.lower(),
                     show_banner=False,
                 )
 
