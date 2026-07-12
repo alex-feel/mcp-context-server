@@ -250,12 +250,14 @@ async def grep_context(
     try:
         repos = await ensure_repositories()
 
-        # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id before it
-        # reaches the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
-        # that charges the circuit breaker (SQLite binds it silently -- a divergence).
+        # Reject an embedded NUL or unpaired UTF-16 surrogate in thread_id or a tag before
+        # it reaches the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
+        # that charges the circuit breaker (SQLite binds it silently -- a divergence). Both
+        # feed grep_scan_text_contents below (thread_id and tags both parameterize the scan
+        # query), so both must be screened, matching the sibling search tools.
         # A NUL in the grep pattern is handled separately by extract_ascii_literal, which
         # returns None for it so the pattern never reaches the LIKE/ILIKE pre-filter bind.
-        reject_unstorable_input(thread_id=thread_id)
+        reject_unstorable_input(thread_id=thread_id, tags=tags)
         grep_settings = settings.grep_context
         max_matches = min(max_matches, grep_settings.max_matches_cap)
         context_lines = min(context_lines, grep_settings.max_context_lines)
