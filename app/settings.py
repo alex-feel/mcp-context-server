@@ -1,6 +1,7 @@
 
 import logging
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -15,6 +16,14 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+
+# A metadata field name is safe to index only when it is a plain SQL identifier:
+# it is interpolated verbatim into a generated ``idx_metadata_<field>`` index name
+# and into a JSON path/key literal on both backends, so any character outside this
+# grammar (a hyphen, dot, whitespace, or quote) either yields an invalid identifier
+# that crashes schema startup or breaks out of the literal. Enforced at the settings
+# boundary by ``StorageSettings._validate_metadata_indexed_field_names``.
+_SAFE_METADATA_FIELD_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 
 class CommonSettings(BaseSettings):
@@ -1167,6 +1176,45 @@ class StorageSettings(BaseSettings):
             else:
                 result[item] = 'string'
         return result
+
+    @field_validator('metadata_indexed_fields_raw', mode='after')
+    @classmethod
+    def _validate_metadata_indexed_field_names(cls, value: str) -> str:
+        """Reject metadata index field names that are not plain SQL identifiers.
+
+        Each configured field name is interpolated verbatim into a generated
+        CREATE INDEX statement -- into the ``idx_metadata_<field>`` index name and
+        into the JSON path/key literal on both backends. A name outside the
+        ``[A-Za-z_][A-Za-z0-9_]*`` identifier grammar (a hyphen, dot, whitespace, or
+        quote) would produce an invalid identifier that crashes schema startup, and
+        an embedded quote would break out of the single-quoted literal, so an unsafe
+        name is rejected at the configuration boundary rather than reaching the DDL
+        generator. Only the field name is validated here; the type hint after ``:``
+        is checked when the property parses the value.
+
+        Args:
+            value: The raw METADATA_INDEXED_FIELDS string.
+
+        Returns:
+            The value unchanged when every field name is a valid identifier.
+
+        Raises:
+            ValueError: If any field name is not a plain SQL identifier.
+        """
+        if not value or not value.strip():
+            return value
+        for item in value.split(','):
+            item = item.strip()
+            if not item:
+                continue
+            field = item.split(':', 1)[0].strip() if ':' in item else item
+            if not _SAFE_METADATA_FIELD_NAME.match(field):
+                raise ValueError(
+                    f'METADATA_INDEXED_FIELDS contains an invalid field name {field!r}: '
+                    f'names must match [A-Za-z_][A-Za-z0-9_]* (a letter or underscore '
+                    f'followed by letters, digits, or underscores)',
+                )
+        return value
 
     @property
     def resolved_busy_timeout_ms(self) -> int:

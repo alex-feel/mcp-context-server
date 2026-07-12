@@ -21,19 +21,38 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _escape_sql_string_literal(value: str) -> str:
+    """Double single quotes so a value is safe inside a single-quoted SQL literal.
+
+    Defense in depth for the generated JSON path/key literals below: the field names
+    are already constrained to plain SQL identifiers at the configuration boundary
+    (``StorageSettings._validate_metadata_indexed_field_names``), so no quote can
+    reach here in practice, but escaping the literal keeps the DDL generator safe on
+    its own rather than relying solely on the upstream validator.
+
+    Args:
+        value: The value to embed inside a single-quoted SQL string literal.
+
+    Returns:
+        The value with every single quote doubled.
+    """
+    return value.replace("'", "''")
+
+
 def _generate_create_index_sqlite(field: str) -> str:
     """Generate SQLite CREATE INDEX statement for metadata field.
 
     Args:
-        field: Metadata field name.
+        field: Metadata field name (a validated SQL identifier).
 
     Returns:
         SQL CREATE INDEX statement using json_extract for expression index.
     """
+    path_literal = _escape_sql_string_literal(f'$.{field}')
     return f'''
 CREATE INDEX IF NOT EXISTS idx_metadata_{field}
-ON context_entries(json_extract(metadata, '$.{field}'))
-WHERE json_extract(metadata, '$.{field}') IS NOT NULL;
+ON context_entries(json_extract(metadata, '{path_literal}'))
+WHERE json_extract(metadata, '{path_literal}') IS NOT NULL;
 '''
 
 
@@ -41,7 +60,7 @@ def _generate_create_index_postgresql(field: str, type_hint: str) -> str:
     """Generate PostgreSQL CREATE INDEX statement for metadata field.
 
     Args:
-        field: Metadata field name.
+        field: Metadata field name (a validated SQL identifier).
         type_hint: Type hint for casting (string, integer, boolean, float).
 
     Returns:
@@ -55,17 +74,18 @@ def _generate_create_index_postgresql(field: str, type_hint: str) -> str:
         'string': '',
     }
     type_cast = type_cast_map.get(type_hint, '')
+    key_literal = _escape_sql_string_literal(field)
 
     if type_cast:
         return f'''
 CREATE INDEX IF NOT EXISTS idx_metadata_{field}
-ON context_entries(((metadata->>'{field}'){type_cast}))
-WHERE metadata->>'{field}' IS NOT NULL;
+ON context_entries(((metadata->>'{key_literal}'){type_cast}))
+WHERE metadata->>'{key_literal}' IS NOT NULL;
 '''
     return f'''
 CREATE INDEX IF NOT EXISTS idx_metadata_{field}
-ON context_entries((metadata->>'{field}'))
-WHERE metadata->>'{field}' IS NOT NULL;
+ON context_entries((metadata->>'{key_literal}'))
+WHERE metadata->>'{key_literal}' IS NOT NULL;
 '''
 
 
