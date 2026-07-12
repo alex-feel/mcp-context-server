@@ -876,6 +876,15 @@ def is_connection_error(exc: Exception) -> bool:
        per-chunk INSERT performs in-transaction HNSW maintenance) the operator
        must also raise POSTGRESQL_COMMAND_TIMEOUT_S or keep compression ON. See
        docs/database-backends.md.
+    3. Transaction-rollback failures: asyncpg.exceptions.TransactionRollbackError
+       (SQLSTATE class 40 -- deadlock_detected 40P01, serialization_failure 40001,
+       and siblings). PostgreSQL aborts one transaction to break a deadlock or a
+       serialization cycle; by definition the loser is expected to retry, and the
+       retry succeeds once the competing transaction has committed. Without this
+       class a deadlock (e.g. two atomic update batches that lock the same rows in
+       opposite order) is neither a ControlFlowError nor a connection error, so it
+       would charge the circuit breaker instead of retrying -- turning a routine,
+       self-clearing lock cycle into an outage.
 
     QueryCanceledError is PostgreSQL-only; the isinstance check is harmless on
     SQLite, which never raises it (SQLite write contention surfaces as
