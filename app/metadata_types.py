@@ -140,7 +140,7 @@ def non_finite_metadata_error(metadata: object) -> str | None:
     return None
 
 
-def _pg_bind_reject_reason(text: str) -> str | None:
+def pg_bind_reject_reason(text: str) -> str | None:
     """Return why a string cannot be stored or bound on PostgreSQL, else None.
 
     Two byte sequences that Python strings, SQLite, and JSON all accept are fatal
@@ -196,7 +196,7 @@ def reject_nul(
     candidates: list[object] = list(value) if isinstance(value, list) else [value]
     for candidate in candidates:
         if isinstance(candidate, str):
-            reason = _pg_bind_reject_reason(candidate)
+            reason = pg_bind_reject_reason(candidate)
             if reason is not None:
                 raise ValueError(
                     f'String metadata-filter value contains {reason}, which PostgreSQL cannot bind '
@@ -229,7 +229,7 @@ def unstorable_string_error(value: object) -> str | None:
         An operator-facing message on the first offending string found, else None.
     """
     if isinstance(value, str):
-        reason = _pg_bind_reject_reason(value)
+        reason = pg_bind_reject_reason(value)
         if reason is not None:
             return (
                 f'A string value contains {reason}: PostgreSQL cannot store it, so the same entry '
@@ -239,7 +239,7 @@ def unstorable_string_error(value: object) -> str | None:
     if isinstance(value, dict):
         for key, item in cast('dict[object, object]', value).items():
             if isinstance(key, str):
-                reason = _pg_bind_reject_reason(key)
+                reason = pg_bind_reject_reason(key)
                 if reason is not None:
                     return (
                         f'A metadata key contains {reason}: PostgreSQL cannot store it, so the same '

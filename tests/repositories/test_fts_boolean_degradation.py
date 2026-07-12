@@ -239,6 +239,24 @@ class TestFtsNulQueryRejection:
             await fts_repos.fts.search(query='a\x00b', mode=mode, limit=10)
         assert any('NUL' in err for err in excinfo.value.validation_errors)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('mode', ['match', 'prefix', 'phrase', 'boolean'])
+    async def test_unpaired_surrogate_query_raises_structured_validation_error(
+        self,
+        fts_repos: RepositoryContainer,
+        mode: Literal['match', 'prefix', 'phrase', 'boolean'],
+    ) -> None:
+        """A lone-surrogate query is rejected at the boundary, not left to abort the bind.
+
+        A bare '\\x00' scan misses an unpaired UTF-16 surrogate, which is not
+        UTF-8-encodable, so it would pass the old check and abort the PostgreSQL wire
+        bind (a non-ControlFlowError charged to the circuit breaker) while SQLite ran it.
+        The shared pg_bind_reject_reason probe catches it on both backends.
+        """
+        with pytest.raises(FtsValidationError) as excinfo:
+            await fts_repos.fts.search(query='a\ud800b', mode=mode, limit=10)
+        assert any('surrogate' in err for err in excinfo.value.validation_errors)
+
     def test_fts_validation_error_is_control_flow(self) -> None:
         """FtsValidationError is a ControlFlowError so it never trips the circuit breaker."""
         assert issubclass(FtsValidationError, ControlFlowError)
