@@ -971,6 +971,21 @@ def validate_and_normalize_images(
                     raise ToolError(msg)
                 errors.append(msg)
                 return images, 'text', errors
+            # A mime_type STRING carrying an embedded NUL (U+0000) or an unpaired
+            # UTF-16 surrogate binds into the image_attachments.mime_type TEXT NOT
+            # NULL column inside the transaction -- SQLite stores it while
+            # PostgreSQL raises a DataError AFTER a full generation pass, charging
+            # the circuit breaker. The Pydantic list[dict[str, str]] contract on the
+            # single-entry path enforces str TYPE but not this byte content, so the
+            # guard must live here (shared by both paths), mirroring the per-image
+            # metadata check below.
+            mime_unstorable = unstorable_string_error(mime_val)
+            if mime_unstorable is not None:
+                msg = f'Image {idx} mime_type: {mime_unstorable}'
+                if error_mode == 'raise':
+                    raise ToolError(msg)
+                errors.append(msg)
+                return images, 'text', errors
 
         # A per-image 'metadata' value carrying a non-finite float (NaN/Infinity) serializes
         # to invalid JSON that PostgreSQL's jsonb image_metadata column REJECTS while SQLite
