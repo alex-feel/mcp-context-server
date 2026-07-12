@@ -1671,6 +1671,47 @@ class AppSettings(CommonSettings):
 
         return self
 
+    @model_validator(mode='after')
+    def validate_pgvector_dimension_limit(self) -> Self:
+        """Reject an fp32 PostgreSQL configuration whose embedding dimension exceeds pgvector's index cap.
+
+        pgvector caps HNSW (and IVFFlat) index dimensionality at 2000 for the
+        ``vector`` type. On PostgreSQL with embedding generation enabled and
+        compression OFF, the fp32 write path provisions ``vec_context_embeddings``
+        as ``vector(dim)`` and builds ``idx_vec_context_embeddings_hnsw`` over it,
+        so an EMBEDDING_DIM above 2000 makes the semantic-search migration crash at
+        CREATE INDEX time -- a boot failure for a setting that is already invalid
+        the moment it is read. Enabling compression removes the constraint
+        (compressed payloads are stored as BYTEA with no pgvector index), and
+        SQLite's sqlite-vec has no equivalent per-dimension index cap, so the guard
+        is scoped to the PostgreSQL fp32 path. Rejecting it here turns the deferred
+        migration crash into a clean configuration error the supervisor will not
+        restart-loop on.
+
+        Returns:
+            The validated settings instance.
+
+        Raises:
+            ValueError: If the PostgreSQL fp32 path is configured with an embedding
+                dimension above the pgvector index limit.
+        """
+        pgvector_index_dim_limit = 2000
+        if (
+            self.storage.backend_type == 'postgresql'
+            and self.embedding.generation_enabled
+            and not self.compression.enabled
+            and self.embedding.dim > pgvector_index_dim_limit
+        ):
+            raise ValueError(
+                f'EMBEDDING_DIM ({self.embedding.dim}) exceeds the pgvector index limit of '
+                f'{pgvector_index_dim_limit} dimensions for fp32 vectors on PostgreSQL. '
+                f'The semantic-search migration would fail building the HNSW index on '
+                f'vec_context_embeddings. Either reduce EMBEDDING_DIM to '
+                f'{pgvector_index_dim_limit} or below, or set ENABLE_EMBEDDING_COMPRESSION=true '
+                f'(compressed payloads are stored as BYTEA with no pgvector dimension cap).',
+            )
+        return self
+
     def _get_truncation_setting_for_provider(self) -> bool:
         """Get current truncation setting for the configured provider.
 

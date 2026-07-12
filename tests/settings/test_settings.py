@@ -478,3 +478,67 @@ class TestPostgresqlPoolLimits:
 
         with env_var(env_name, value):
             StorageSettings()
+
+
+class TestPgvectorDimensionLimit:
+    """EMBEDDING_DIM against the pgvector index cap on the fp32 PostgreSQL path.
+
+    pgvector caps HNSW/IVFFlat index dimensionality at 2000 for the vector type.
+    The fp32 PostgreSQL path always builds an HNSW index over vector(dim), so a
+    dimension above 2000 passes pydantic's le=4096 field bound yet crashes the
+    semantic-search migration at CREATE INDEX. Enabling compression (BYTEA
+    payloads, no pgvector index) or using SQLite (sqlite-vec has no such cap)
+    removes the constraint, so the guard is scoped to PostgreSQL + fp32 + embedding
+    generation on and rejects the misconfiguration at the settings boundary.
+    """
+
+    def test_fp32_postgresql_dim_above_limit_rejected(self) -> None:
+        """PostgreSQL + compression off + dim above 2000 is rejected before boot."""
+        with (
+            env_var('STORAGE_BACKEND', 'postgresql'),
+            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
+            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
+            env_var('EMBEDDING_DIM', '2500'),
+            pytest.raises(ValidationError, match='pgvector index limit'),
+        ):
+            AppSettings()
+
+    def test_fp32_postgresql_dim_at_limit_accepted(self) -> None:
+        """The exact 2000-dimension boundary is a valid fp32 PostgreSQL configuration."""
+        with (
+            env_var('STORAGE_BACKEND', 'postgresql'),
+            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
+            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
+            env_var('EMBEDDING_DIM', '2000'),
+        ):
+            assert AppSettings().embedding.dim == 2000
+
+    def test_compressed_postgresql_dim_above_limit_accepted(self) -> None:
+        """With compression on, the vector is stored as BYTEA and the dim cap does not apply."""
+        with (
+            env_var('STORAGE_BACKEND', 'postgresql'),
+            env_var('ENABLE_EMBEDDING_COMPRESSION', 'true'),
+            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
+            env_var('EMBEDDING_DIM', '2500'),
+        ):
+            assert AppSettings().embedding.dim == 2500
+
+    def test_sqlite_dim_above_limit_accepted(self) -> None:
+        """SQLite's sqlite-vec has no per-dimension index cap, so the guard does not fire."""
+        with (
+            env_var('STORAGE_BACKEND', 'sqlite'),
+            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
+            env_var('ENABLE_EMBEDDING_GENERATION', 'true'),
+            env_var('EMBEDDING_DIM', '2500'),
+        ):
+            assert AppSettings().embedding.dim == 2500
+
+    def test_generation_off_postgresql_dim_above_limit_accepted(self) -> None:
+        """With generation off, no fresh fp32 vector table is provisioned, so the guard defers."""
+        with (
+            env_var('STORAGE_BACKEND', 'postgresql'),
+            env_var('ENABLE_EMBEDDING_COMPRESSION', 'false'),
+            env_var('ENABLE_EMBEDDING_GENERATION', 'false'),
+            env_var('EMBEDDING_DIM', '2500'),
+        ):
+            assert AppSettings().embedding.dim == 2500
