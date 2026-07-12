@@ -237,11 +237,11 @@ class TestUpdateContextErrors:
 
     @pytest.mark.asyncio
     async def test_update_failure(self, mock_server_dependencies):
-        """Test that update failure raises ToolError."""
+        """A no-such-row update (repository reports no matching row) surfaces a clean not-found error."""
         mock_server_dependencies.context.check_entry_exists.return_value = (True, 'agent', 0)
         mock_server_dependencies.context.update_context_entry.return_value = (False, [])
 
-        with pytest.raises(ToolError, match='Failed to update context entry'):
+        with pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd00000001 not found'):
             await update_context(
                 context_id='0190abcdef1234567890abcd00000001',
                 text='new text',

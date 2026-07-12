@@ -50,6 +50,7 @@ from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
 from app.tools._shared import EmbeddingsReconcileRequiredError
+from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import execute_store_in_transaction
@@ -1470,6 +1471,13 @@ async def update_context_batch(
                     raise ToolError(
                         f'Concurrent modification during atomic batch update: {e}. Retry the request.',
                     ) from None
+                except EntryNotFoundError as e:
+                    # One target entry no longer exists (deleted concurrently or a
+                    # stale id). Atomic mode is all-or-nothing, so abort the whole
+                    # batch with a clear error; EntryNotFoundError is a
+                    # ControlFlowError, so the failed write did not charge the
+                    # circuit breaker, and no retry can resurrect a deleted row.
+                    raise ToolError(f'{e}. No entries were updated (atomic batch).') from None
                 except ToolError:
                     raise  # Logical error -- do not retry
                 except Exception as e:
@@ -1592,6 +1600,21 @@ async def update_context_batch(
                         assert current_version is not None  # exists=True guarantees a version
                         live_versions[context_id] = current_version
                         continue
+                    except EntryNotFoundError as e:
+                        # This entry no longer exists (deleted concurrently or a
+                        # stale id). Record a per-entry not-found failure and move
+                        # on; no retry can resurrect a deleted row, and
+                        # EntryNotFoundError is a ControlFlowError so the failed
+                        # write did not charge the circuit breaker.
+                        results.append(BulkUpdateResultItemDict(
+                            index=original_idx,
+                            context_id=context_id,
+                            success=False,
+                            updated_fields=None,
+                            error=format_exception_message(e),
+                        ))
+                        discard_generation_counts(vu_idx)
+                        break
                     except ToolError as e:
                         # Logical error -- do not retry, record as failure
                         logger.error(f'Failed to update entry at index {original_idx}: {e}')

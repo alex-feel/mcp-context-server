@@ -51,6 +51,7 @@ from app.startup import ensure_repositories
 from app.startup import get_embedding_provider
 from app.startup import get_summary_provider
 from app.tools._shared import EmbeddingsReconcileRequiredError
+from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_store_response_message
 from app.tools._shared import build_update_response_message
 from app.tools._shared import embed_then_compress
@@ -833,6 +834,14 @@ async def update_context(
                     context_id, version_conflicts, max_version_conflicts,
                 )
                 continue
+
+            except EntryNotFoundError:
+                # The entry was deleted concurrently between the pre-generation
+                # existence check and this transaction (or the id is stale). Surface
+                # a clean not-found error; EntryNotFoundError is a ControlFlowError,
+                # so the failed write never charged the circuit breaker, and it is
+                # terminal -- no retry can resurrect a deleted row.
+                raise ToolError(f'Context entry with ID {context_id} not found') from None
 
             except ToolError:
                 raise  # ToolError is a logical error, not connection error -- do not retry

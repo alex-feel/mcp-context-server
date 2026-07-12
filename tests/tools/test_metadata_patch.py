@@ -475,7 +475,13 @@ class TestMetadataPatchValidation:
 
     @pytest.mark.asyncio
     async def test_patch_metadata_failure(self, mock_context, mock_repositories):
-        """Test handling of repository patch_metadata failure."""
+        """A patch against a missing row surfaces a clean not-found error.
+
+        patch_metadata returns success=False only when no row matches its
+        WHERE id=? (the entry was deleted concurrently, or the id is stale),
+        so the tool converts that outcome into a not-found ToolError naming
+        the context_id rather than a generic failure message.
+        """
         mock_repositories.context.patch_metadata.return_value = (False, [])
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
@@ -490,7 +496,9 @@ class TestMetadataPatchValidation:
                     ctx=mock_context,
                 )
 
-            assert 'failed' in str(exc_info.value).lower()
+            error_message = str(exc_info.value)
+            assert 'not found' in error_message.lower()
+            assert '0190abcdef1234567890abcd00000457' in error_message
 
 
 class TestMetadataPatchWithOtherFields:

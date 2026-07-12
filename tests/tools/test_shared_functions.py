@@ -20,6 +20,7 @@ from fastmcp.exceptions import ToolError
 
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.tools._shared import EmbeddingsReconcileRequiredError
+from app.tools._shared import EntryNotFoundError
 from app.tools._shared import build_batch_store_response_message
 from app.tools._shared import build_batch_update_response_message
 from app.tools._shared import build_store_response_message
@@ -834,6 +835,7 @@ class TestExecuteUpdateInTransaction:
         repos.context.patch_metadata = AsyncMock(return_value=(True, ['metadata']))
         repos.context.update_content_type = AsyncMock()
         repos.context.get_content_type = AsyncMock(return_value='text')
+        repos.context.entry_exists = AsyncMock(return_value=True)
         repos.tags.replace_tags_for_context = AsyncMock()
         repos.images.replace_images_for_context = AsyncMock()
         repos.images.count_images_for_context = AsyncMock(return_value=0)
@@ -1041,9 +1043,9 @@ class TestExecuteUpdateInTransaction:
     async def test_update_raises_on_failed_entry_update(
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
-        """Raises ToolError when update_context_entry returns success=False."""
+        """Raises EntryNotFoundError when update_context_entry reports no such row."""
         mock_repos.context.update_context_entry = AsyncMock(return_value=(False, []))
-        with pytest.raises(ToolError, match='Failed to update context entry'):
+        with pytest.raises(EntryNotFoundError, match='not found'):
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
                 context_id='0190abcdef1234567890abcd00000001',
@@ -1063,9 +1065,9 @@ class TestExecuteUpdateInTransaction:
     async def test_update_raises_on_failed_metadata_patch(
         self, mock_repos: MagicMock, mock_txn: MagicMock,
     ) -> None:
-        """Raises ToolError when patch_metadata returns success=False."""
+        """Raises EntryNotFoundError when patch_metadata reports no such row."""
         mock_repos.context.patch_metadata = AsyncMock(return_value=(False, []))
-        with pytest.raises(ToolError, match='Failed to patch metadata'):
+        with pytest.raises(EntryNotFoundError, match='not found'):
             await execute_update_in_transaction(
                 mock_repos, mock_txn,
                 context_id='0190abcdef1234567890abcd00000001',
@@ -1080,6 +1082,61 @@ class TestExecuteUpdateInTransaction:
                 chunk_embeddings=None,
                 embedding_model='m',
             )
+
+    @pytest.mark.asyncio
+    async def test_tags_only_update_missing_parent_raises_not_found(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """A tags-only update against a vanished parent row raises EntryNotFoundError.
+
+        The parent can disappear between the pre-generation existence check and this
+        transaction (concurrent delete). Without the guard the tags write would fire a
+        foreign-key insert against a missing parent, charging the circuit breaker.
+        """
+        mock_repos.context.entry_exists = AsyncMock(return_value=False)
+        with pytest.raises(EntryNotFoundError, match='not found'):
+            await execute_update_in_transaction(
+                mock_repos, mock_txn,
+                context_id='0190abcdef1234567890abcd00000001',
+                text=None,
+                metadata=None,
+                metadata_patch=None,
+                summary=None,
+                clear_summary=False,
+                tags=['new-tag'],
+                images=None,
+                validated_images=[],
+                chunk_embeddings=None,
+                embedding_model='m',
+            )
+        mock_repos.tags.replace_tags_for_context.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_images_only_update_missing_parent_raises_not_found(
+        self, mock_repos: MagicMock, mock_txn: MagicMock,
+    ) -> None:
+        """An images-only update against a vanished parent row raises EntryNotFoundError.
+
+        Same concurrent-delete race as the tags-only path; the guard stops the image
+        write from touching a missing parent and charging the circuit breaker.
+        """
+        mock_repos.context.entry_exists = AsyncMock(return_value=False)
+        with pytest.raises(EntryNotFoundError, match='not found'):
+            await execute_update_in_transaction(
+                mock_repos, mock_txn,
+                context_id='0190abcdef1234567890abcd00000001',
+                text=None,
+                metadata=None,
+                metadata_patch=None,
+                summary=None,
+                clear_summary=False,
+                tags=None,
+                images=[],
+                validated_images=[],
+                chunk_embeddings=None,
+                embedding_model='m',
+            )
+        mock_repos.images.replace_images_for_context.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_summary_cleared_flag(

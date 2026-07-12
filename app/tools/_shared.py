@@ -111,6 +111,25 @@ class EmbeddingsReconcileRequiredError(ControlFlowError):
         self.text_content = text_content
 
 
+class EntryNotFoundError(ControlFlowError):
+    """Internal control-flow signal: the target context entry does not exist.
+
+    Raised INSIDE an update transaction when a write targets a row that is gone
+    (deleted concurrently, or a stale/wrong id): update_context_entry or
+    patch_metadata reports no such row, or the tags-only / images-only path finds
+    the parent missing before replacing its children. It is deliberately a
+    ``ControlFlowError`` -- NOT a ``ToolError`` (so the ``except ToolError``
+    fast-path does not swallow it) and NOT a connection error -- so the failed
+    write is a clean client-input outcome that is NOT charged to the circuit
+    breaker (a missing row is not a backend fault). The update tools catch it
+    OUTSIDE the transaction and convert it to a not-found ``ToolError``.
+    """
+
+    def __init__(self, context_id: str) -> None:
+        super().__init__(f'Context entry with ID {context_id} not found')
+        self.context_id = context_id
+
+
 # ---------------------------------------------------------------------------
 # Concurrency limiters for embedding / summary / compression generation
 # ---------------------------------------------------------------------------
@@ -1459,7 +1478,11 @@ async def execute_update_in_transaction(
         - summary_cleared: True if summary was cleared (for response message)
 
     Raises:
-        ToolError: If update_context_entry or patch_metadata returns success=False.
+        EntryNotFoundError: If the target entry does not exist -- update_context_entry
+            or patch_metadata reports no matching row, or the tags-only / images-only
+            path finds the parent missing. A ControlFlowError, so the failed write is
+            not charged to the circuit breaker; the caller catches it outside the
+            transaction and converts it to a not-found ToolError.
     """
     updated_fields: list[str] = []
 
@@ -1480,7 +1503,10 @@ async def execute_update_in_transaction(
         )
 
         if not success:
-            raise ToolError(f'Failed to update context entry {context_id}')
+            # update_context_entry returns success=False only when no row matched
+            # its WHERE id=? (a version mismatch is raised, not returned), i.e. the
+            # entry was deleted concurrently or the id is stale.
+            raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
 
@@ -1493,9 +1519,26 @@ async def execute_update_in_transaction(
         )
 
         if not success:
-            raise ToolError(f'Failed to patch metadata for context {context_id}')
+            # patch_metadata returns success=False only when the row is gone.
+            raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
+
+    # A tags-only or images-only update issues no write that first confirms the
+    # parent exists: the text/metadata and metadata_patch branches each SELECT the
+    # row (and raise EntryNotFoundError above when it is gone), but neither ran
+    # here. Without that guard, replacing tags/images against a deleted parent
+    # violates the child foreign key -- a non-ControlFlowError that charges the
+    # circuit breaker -- or, with FK enforcement off, orphans the replacement
+    # rows. Confirm the parent explicitly and raise the same breaker-exempt signal.
+    if (
+        text is None
+        and metadata is None
+        and metadata_patch is None
+        and (tags is not None or images is not None)
+        and not await repos.context.entry_exists(context_id, txn=txn)
+    ):
+        raise EntryNotFoundError(context_id)
 
     # Heartbeat between operation groups
     await transaction_heartbeat(txn)

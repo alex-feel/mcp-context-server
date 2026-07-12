@@ -84,6 +84,7 @@ def mock_repositories():
     repos.context = Mock()
     repos.context.backend = mock_backend
     repos.context.check_entry_exists = AsyncMock(return_value=(True, 'agent', 0))
+    repos.context.entry_exists = AsyncMock(return_value=True)
     repos.context.update_context_entry = AsyncMock(return_value=(True, ['text_content']))
     repos.context.get_content_type = AsyncMock(return_value='text')
     repos.context.update_content_type = AsyncMock(return_value=True)
@@ -440,12 +441,12 @@ class TestUpdateContext:
 
     @pytest.mark.asyncio
     async def test_repository_update_failure(self, mock_context, mock_repositories):
-        """Test handling of repository update failure."""
+        """A no-such-row update (repository reports no matching row) surfaces a clean not-found error."""
         mock_repositories.context.update_context_entry.return_value = (False, [])
 
         with (
             patch('app.tools.context.ensure_repositories', return_value=mock_repositories),
-            pytest.raises(ToolError, match='Failed to update context entry'),
+            pytest.raises(ToolError, match='Context entry with ID 0190abcdef1234567890abcd000003e7 not found'),
         ):
             await update_context(
                 context_id='0190abcdef1234567890abcd000003e7',
@@ -956,7 +957,7 @@ class TestMetadataPatchIntegration:
 
     @pytest.mark.asyncio
     async def test_metadata_patch_failure_handling(self, mock_context, mock_repositories):
-        """Test handling of patch_metadata repository failure."""
+        """A metadata_patch against a missing entry surfaces a clean not-found error."""
         mock_repositories.context.patch_metadata.return_value = (False, [])
 
         with patch('app.tools.context.ensure_repositories', return_value=mock_repositories):
@@ -971,7 +972,7 @@ class TestMetadataPatchIntegration:
                     ctx=mock_context,
                 )
 
-            assert 'failed' in str(exc_info.value).lower()
+            assert 'not found' in str(exc_info.value).lower()
 
     @pytest.mark.asyncio
     async def test_metadata_patch_with_tags(self, mock_context, mock_repositories):

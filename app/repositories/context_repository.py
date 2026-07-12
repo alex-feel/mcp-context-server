@@ -1460,6 +1460,53 @@ class ContextRepository(BaseRepository):
 
         return await self.backend.execute_read(_check_exists_postgresql)
 
+    async def entry_exists(self, context_id: str, txn: 'TransactionContext | None' = None) -> bool:
+        """Return whether a context entry exists, optionally on a transaction connection.
+
+        A lightweight companion to check_entry_exists for callers that need only
+        presence (not source/version) and must run inside an open transaction.
+        execute_update_in_transaction uses it to confirm the parent row before a
+        tags-only or images-only update, whose child writes would otherwise
+        violate the foreign key against a missing parent (charging the circuit
+        breaker) or orphan the rows.
+
+        Args:
+            context_id: ID of the context entry.
+            txn: Optional transaction context. When provided the read runs on the
+                transaction's own connection instead of acquiring a second pooled
+                connection, avoiding a nested pool acquire while a transaction
+                connection is already held (PostgreSQL pool-starvation hazard).
+
+        Returns:
+            True if the entry exists, False otherwise.
+        """
+        backend_type = txn.backend_type if txn else self.backend.backend_type
+        if backend_type == 'sqlite':
+
+            def _entry_exists_sqlite(conn: sqlite3.Connection) -> bool:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                    (context_id,),
+                )
+                return cursor.fetchone() is not None
+
+            if txn is not None:
+                return await self._run_sqlite_txn(_entry_exists_sqlite, cast(sqlite3.Connection, txn.connection))
+            return await self.backend.execute_read(_entry_exists_sqlite)
+
+        # PostgreSQL
+        async def _entry_exists_postgresql(conn: 'asyncpg.Connection') -> bool:
+            row = await conn.fetchrow(
+                f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                context_id,
+            )
+            return row is not None
+
+        if txn is not None:
+            return await _entry_exists_postgresql(cast('asyncpg.Connection', txn.connection))
+        return await self.backend.execute_read(_entry_exists_postgresql)
+
     async def get_content_type(self, context_id: str, txn: 'TransactionContext | None' = None) -> str | None:
         """Get the content type of a context entry.
 

@@ -776,6 +776,22 @@ class TestContextRepositoryUpdate:
         assert no_version is None
 
     @pytest.mark.asyncio
+    async def test_entry_exists(
+        self,
+        repos: RepositoryContainer,
+    ) -> None:
+        """entry_exists returns True for a stored id and False for an absent one."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='entry_exists_thread',
+            source='user',
+            content_type='text',
+            text_content='Exists',
+        )
+
+        assert await repos.context.entry_exists(ctx_id) is True
+        assert await repos.context.entry_exists(generate_id()) is False
+
+    @pytest.mark.asyncio
     async def test_get_content_type(
         self,
         repos: RepositoryContainer,
