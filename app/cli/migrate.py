@@ -722,9 +722,13 @@ def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | 
     shared :func:`app.metadata_types.unstorable_string_error` walker on the raw
     serialized string (catching a literal NUL/surrogate in the bind) and, for a
     ``jsonb`` column, ALSO on the decoded structure (``json.loads`` restores the
-    ``\\u0000`` escape to a real U+0000 the walker detects). Unparseable JSON is
-    treated as carrying no detectable NUL here, because the module records and
-    preserves malformed metadata JSON on its own path.
+    ``\\u0000`` escape to a real U+0000 the walker detects). For a ``jsonb`` column a value ``json.loads`` cannot
+    parse is itself unstorable: the target binds it through a ``$n::jsonb`` cast
+    that PostgreSQL rejects mid-transaction (SQLSTATE 22P02), aborting the whole
+    migration with no row identification -- the exact failure this pre-check
+    exists to convert into a skip-and-warn -- so malformed JSON returns a reason
+    rather than passing as storable. (A raw TEXT column has no such cast, so
+    unparseable content is not rejected there.)
 
     Args:
         value: The raw SQLite column value (already serialized to a JSON string
@@ -745,8 +749,12 @@ def _pg_unstorable_column_reason(value: str | None, *, is_jsonb: bool) -> str | 
         return None
     try:
         decoded: object = json.loads(value)
-    except (json.JSONDecodeError, ValueError):
-        return None
+    except (json.JSONDecodeError, ValueError) as exc:
+        return (
+            f'value is not valid JSON, so the target rejects the jsonb bind '
+            f'mid-transaction (SQLSTATE 22P02): {exc}. SQLite stores the same '
+            f'malformed metadata verbatim.'
+        )
     return unstorable_string_error(decoded)
 
 
