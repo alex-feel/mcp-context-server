@@ -37,6 +37,7 @@ from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import ControlFlowError
 from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
+from app.metadata_types import sanitize_pg_unstorable_text
 from app.metadata_types import unstorable_string_error
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -462,8 +463,14 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
         if not result.strip():
             logger.warning('Summary provider returned empty/whitespace-only response, treating as None')
             return None
-        logger.info('Summary generated: text_len=%d, summary_len=%d', len(text), len(result))
-        return result
+        # The summary is model-generated, not client-supplied: a stray NUL or unpaired
+        # surrogate in the provider's output would store on SQLite yet abort the
+        # PostgreSQL bind inside the (abort-mandatory) transaction, charging the breaker.
+        # Repair rather than reject -- the client's own text is valid and must not be
+        # refused for a provider quirk.
+        sanitized = sanitize_pg_unstorable_text(result)
+        logger.info('Summary generated: text_len=%d, summary_len=%d', len(text), len(sanitized))
+        return sanitized
     except TimeoutError:
         raise ToolError(
             f'Summary generation exceeded total timeout ({total_timeout:.0f}s). '
@@ -555,7 +562,10 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
         except Exception as e:
             logger.warning('Index-tree node summary failed for %s (skipped): %s', node.node_id, e)
             return None
-        summary = result.strip()
+        # Repair a model-emitted NUL/unpaired surrogate before it binds into
+        # context_index_nodes.node_summary (same abort-mandatory PostgreSQL bind as
+        # the flat summary); an all-NUL result sanitizes to empty and is skipped.
+        summary = sanitize_pg_unstorable_text(result.strip())
         if not summary:
             return None
         return IndexNodeRow(

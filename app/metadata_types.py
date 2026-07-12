@@ -256,6 +256,39 @@ def unstorable_string_error(value: object) -> str | None:
     return None
 
 
+def sanitize_pg_unstorable_text(value: str) -> str:
+    """Repair a PostgreSQL-unstorable string so it binds identically on both backends.
+
+    The counterpart to :func:`unstorable_string_error` for a DIFFERENT source of the
+    same divergence. ``unstorable_string_error`` REJECTS a client-supplied string,
+    because the client can fix its own input. This function REPAIRS a value the
+    server itself GENERATED -- a model-produced summary or per-node summary -- where
+    rejection would be wrong: the client's own text is valid, so an abort-mandatory
+    store must not be refused because the summary model happened to emit a stray NUL
+    (U+0000) or an unpaired UTF-16 surrogate. Left unrepaired, such a byte stores on
+    SQLite yet aborts the PostgreSQL bind inside the transaction, charging the
+    circuit breaker for a provider quirk the client did not cause.
+
+    The repair is idempotent and a no-op for a clean string (the common case): the
+    :func:`pg_bind_reject_reason` probe returns fast when there is nothing to fix.
+
+    Args:
+        value: A server-generated string to make storable on both backends.
+
+    Returns:
+        ``value`` unchanged when it is already storable, otherwise a copy with
+        embedded NULs stripped and any unpaired surrogate replaced by a placeholder,
+        which is guaranteed NUL-free and UTF-8-encodable.
+    """
+    if pg_bind_reject_reason(value) is None:
+        return value
+    # Drop embedded NULs, then round-trip through UTF-8 with the ``replace`` error
+    # handler so any unpaired UTF-16 surrogate becomes a placeholder; the result is
+    # guaranteed NUL-free and UTF-8-encodable, so both backends store it identically.
+    repaired = value.replace('\x00', '')
+    return repaired.encode('utf-8', 'replace').decode('utf-8')
+
+
 class MetadataOperator(StrEnum):
     """Comprehensive metadata comparison operators.
 
