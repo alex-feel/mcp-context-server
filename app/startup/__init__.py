@@ -43,6 +43,7 @@ import asyncpg
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.embeddings import EmbeddingProvider
+from app.migrations._pg_ddl import begin_migration
 from app.repositories import RepositoryContainer
 from app.reranking import RerankingProvider
 from app.services import ChunkingService
@@ -215,12 +216,18 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
                 await backend.execute_write(_init_schema_sqlite)
             else:  # postgresql
+                migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
                 async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
-                    # Acquire transaction-level advisory lock for multi-pod safety.
-                    # Serializes DDL execution across concurrent Kubernetes pods.
-                    # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+                    # Raise the transaction-scoped statement_timeout to the migration budget
+                    # and take the shared schema-init advisory lock UNDER it, serializing DDL
+                    # across concurrent Kubernetes pods. A multi-pod peer running the first-time
+                    # schema build can hold the lock longer than the pool's regular command
+                    # timeout; acquiring it under the raised client- and server-side deadlines
+                    # waits the peer out instead of being cancelled client-side and crash-looping
+                    # the booting pod. The SET LOCAL and the transaction-scoped lock both
+                    # auto-revert/release on COMMIT/ROLLBACK (no explicit unlock needed).
+                    await begin_migration(conn, migration_timeout_s)
 
                     # PostgreSQL: parse and execute statements individually
                     statements: list[str] = []
@@ -272,12 +279,18 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
                     await temp_manager.execute_write(_init_schema_sqlite)
                 else:  # postgresql
+                    migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
                     async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
-                        # Acquire transaction-level advisory lock for multi-pod safety.
-                        # Serializes DDL execution across concurrent Kubernetes pods.
-                        # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
-                        await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+                        # Raise the transaction-scoped statement_timeout to the migration budget
+                        # and take the shared schema-init advisory lock UNDER it, serializing DDL
+                        # across concurrent pods. A peer running the first-time schema build can
+                        # hold the lock longer than the pool's regular command timeout; acquiring
+                        # it under the raised client- and server-side deadlines waits the peer out
+                        # instead of being cancelled client-side and crash-looping the booting pod.
+                        # The SET LOCAL and the transaction-scoped lock both auto-revert/release on
+                        # COMMIT/ROLLBACK (no explicit unlock needed).
+                        await begin_migration(conn, migration_timeout_s)
 
                         # PostgreSQL: parse and execute statements individually
                         statements: list[str] = []

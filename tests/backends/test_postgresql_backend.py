@@ -345,21 +345,34 @@ class TestAdvisoryLockDDL:
     def test_migration_uses_same_lock_key(self) -> None:
         """Verify all DDL operations use the same advisory lock key.
 
-        All DDL operations (schema init, migrations) must use the same lock
-        key to serialize against each other in multi-pod deployments.
+        Schema init and the migrations share one lock so they serialize against
+        each other in multi-pod deployments. That single key lives in the shared
+        begin_migration() helper, which init_database() calls to open each
+        PostgreSQL schema-init transaction; verifying the delegation plus the
+        helper's lock literal confirms both take the same transaction-level lock.
         """
         import inspect
 
+        from app.migrations._pg_ddl import SCHEMA_INIT_ADVISORY_LOCK_SQL
+        from app.migrations._pg_ddl import begin_migration
         from app.startup import init_database
 
-        source = inspect.getsource(init_database)
-
-        # init_database() must use transaction-level advisory lock
-        assert 'pg_advisory_xact_lock' in source, (
-            'init_database() must use pg_advisory_xact_lock for multi-pod safety'
+        init_source = inspect.getsource(init_database)
+        assert 'begin_migration' in init_source, (
+            'init_database() must acquire the shared migration lock via begin_migration() '
+            'for multi-pod safety'
         )
-        assert "hashtext('mcp_context_schema_init')" in source, (
-            'init_database() must use the standard lock key'
+
+        begin_source = inspect.getsource(begin_migration)
+        assert 'SCHEMA_INIT_ADVISORY_LOCK_SQL' in begin_source, (
+            'begin_migration() must acquire the shared schema-init advisory lock'
+        )
+        # The one lock key, used by both schema init and the migrations.
+        assert 'pg_advisory_xact_lock' in SCHEMA_INIT_ADVISORY_LOCK_SQL, (
+            'the shared migration lock must use pg_advisory_xact_lock for multi-pod safety'
+        )
+        assert "hashtext('mcp_context_schema_init')" in SCHEMA_INIT_ADVISORY_LOCK_SQL, (
+            'the shared migration lock must use the standard lock key'
         )
 
 
