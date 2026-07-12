@@ -294,6 +294,7 @@ class MetadataFilter(BaseModel):
     operator: MetadataOperator = Field(default=MetadataOperator.EQ, description='Comparison operator')
     value: str | int | float | bool | list[str | int | float | bool] | None = Field(
         default=None,
+        validate_default=True,
         description='Value to compare against (not needed for EXISTS, IS_NULL, etc.)',
     )
     case_sensitive: bool = Field(default=False, description='Case sensitivity for string operations')
