@@ -2331,14 +2331,14 @@ class TestNulAndSurrogateRejection:
 
     def test_pg_bind_reject_reason_detects_nul_and_surrogate(self) -> None:
         """The low-level predicate flags a NUL and a lone surrogate, passes clean text."""
-        from app.metadata_types import _pg_bind_reject_reason
+        from app.metadata_types import pg_bind_reject_reason
 
-        assert _pg_bind_reject_reason('clean text') is None
-        assert _pg_bind_reject_reason('') is None
-        nul_reason = _pg_bind_reject_reason('a\x00b')
+        assert pg_bind_reject_reason('clean text') is None
+        assert pg_bind_reject_reason('') is None
+        nul_reason = pg_bind_reject_reason('a\x00b')
         assert nul_reason is not None
         assert 'NUL' in nul_reason
-        surrogate_reason = _pg_bind_reject_reason('a\ud800b')
+        surrogate_reason = pg_bind_reject_reason('a\ud800b')
         assert surrogate_reason is not None
         assert 'surrogate' in surrogate_reason
 

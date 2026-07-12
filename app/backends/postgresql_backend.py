@@ -384,8 +384,9 @@ class PostgreSQLBackend:
         Supports both self-hosted PostgreSQL and Supabase via standard PostgreSQL settings.
         For Supabase, use POSTGRESQL_CONNECTION_STRING or individual settings with Supabase host.
 
-        URL-encodes password to handle special characters like #, @, :, /, etc. that would
-        otherwise break URL parsing in asyncpg connection strings.
+        URL-encodes the user, password, and database name to handle special characters
+        like #, @, :, /, ? that would otherwise break URL parsing in asyncpg connection
+        strings.
 
         Returns:
             Connection string for asyncpg with properly URL-encoded credentials
@@ -401,13 +402,18 @@ class PostgreSQLBackend:
         password = settings.storage.postgresql_password.get_secret_value()
         database = settings.storage.postgresql_database
 
-        # URL-encode password to handle special characters like #, @, :, /, etc.
-        # safe='' ensures ALL special characters are encoded (e.g., # becomes %23)
-        # asyncpg automatically URL-decodes the connection string
+        # URL-encode every user-controlled component of the DSN, not only the password: a
+        # colon in the user reads as the start of the password, an @ in the user or database
+        # reads as the host boundary, and a / or ? in the database reads as the start of the
+        # path or query string -- any of which corrupts the parsed DSN. safe='' encodes ALL
+        # special characters (e.g. # becomes %23); asyncpg automatically URL-decodes the
+        # connection string.
+        encoded_user = quote(user, safe='')
         encoded_password = quote(password, safe='')
+        encoded_database = quote(database, safe='')
 
-        # Build connection string with encoded password
-        conn_str = f'postgresql://{user}:{encoded_password}@{host}:{port}/{database}'
+        # Build connection string with encoded components
+        conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host}:{port}/{encoded_database}'
 
         # Add SSL mode if specified
         if settings.storage.postgresql_ssl_mode != 'prefer':

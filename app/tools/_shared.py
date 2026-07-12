@@ -37,6 +37,7 @@ from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import ControlFlowError
 from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
+from app.metadata_types import sanitize_pg_unstorable_text
 from app.metadata_types import unstorable_string_error
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
@@ -108,6 +109,25 @@ class EmbeddingsReconcileRequiredError(ControlFlowError):
     def __init__(self, text_content: str) -> None:
         super().__init__('Embedding reconciliation required after deduplication divergence')
         self.text_content = text_content
+
+
+class EntryNotFoundError(ControlFlowError):
+    """Internal control-flow signal: the target context entry does not exist.
+
+    Raised INSIDE an update transaction when a write targets a row that is gone
+    (deleted concurrently, or a stale/wrong id): update_context_entry or
+    patch_metadata reports no such row, or the tags-only / images-only path finds
+    the parent missing before replacing its children. It is deliberately a
+    ``ControlFlowError`` -- NOT a ``ToolError`` (so the ``except ToolError``
+    fast-path does not swallow it) and NOT a connection error -- so the failed
+    write is a clean client-input outcome that is NOT charged to the circuit
+    breaker (a missing row is not a backend fault). The update tools catch it
+    OUTSIDE the transaction and convert it to a not-found ``ToolError``.
+    """
+
+    def __init__(self, context_id: str) -> None:
+        super().__init__(f'Context entry with ID {context_id} not found')
+        self.context_id = context_id
 
 
 # ---------------------------------------------------------------------------
@@ -462,8 +482,14 @@ async def generate_summary_with_timeout(text: str, source: str) -> str | None:
         if not result.strip():
             logger.warning('Summary provider returned empty/whitespace-only response, treating as None')
             return None
-        logger.info('Summary generated: text_len=%d, summary_len=%d', len(text), len(result))
-        return result
+        # The summary is model-generated, not client-supplied: a stray NUL or unpaired
+        # surrogate in the provider's output would store on SQLite yet abort the
+        # PostgreSQL bind inside the (abort-mandatory) transaction, charging the breaker.
+        # Repair rather than reject -- the client's own text is valid and must not be
+        # refused for a provider quirk.
+        sanitized = sanitize_pg_unstorable_text(result)
+        logger.info('Summary generated: text_len=%d, summary_len=%d', len(text), len(sanitized))
+        return sanitized
     except TimeoutError:
         raise ToolError(
             f'Summary generation exceeded total timeout ({total_timeout:.0f}s). '
@@ -555,7 +581,10 @@ async def generate_index_nodes_with_timeout(text: str) -> list[IndexNodeRow] | N
         except Exception as e:
             logger.warning('Index-tree node summary failed for %s (skipped): %s', node.node_id, e)
             return None
-        summary = result.strip()
+        # Repair a model-emitted NUL/unpaired surrogate before it binds into
+        # context_index_nodes.node_summary (same abort-mandatory PostgreSQL bind as
+        # the flat summary); an all-NUL result sanitizes to empty and is skipped.
+        summary = sanitize_pg_unstorable_text(result.strip())
         if not summary:
             return None
         return IndexNodeRow(
@@ -847,6 +876,15 @@ def is_connection_error(exc: Exception) -> bool:
        per-chunk INSERT performs in-transaction HNSW maintenance) the operator
        must also raise POSTGRESQL_COMMAND_TIMEOUT_S or keep compression ON. See
        docs/database-backends.md.
+    3. Transaction-rollback failures: asyncpg.exceptions.TransactionRollbackError
+       (SQLSTATE class 40 -- deadlock_detected 40P01, serialization_failure 40001,
+       and siblings). PostgreSQL aborts one transaction to break a deadlock or a
+       serialization cycle; by definition the loser is expected to retry, and the
+       retry succeeds once the competing transaction has committed. Without this
+       class a deadlock (e.g. two atomic update batches that lock the same rows in
+       opposite order) is neither a ControlFlowError nor a connection error, so it
+       would charge the circuit breaker instead of retrying -- turning a routine,
+       self-clearing lock cycle into an outage.
 
     QueryCanceledError is PostgreSQL-only; the isinstance check is harmless on
     SQLite, which never raises it (SQLite write contention surfaces as
@@ -957,6 +995,21 @@ def validate_and_normalize_images(
             mime_val = cast(object, img['mime_type'])
             if not isinstance(mime_val, str):
                 msg = f'Image {idx} has a non-string "mime_type" field'
+                if error_mode == 'raise':
+                    raise ToolError(msg)
+                errors.append(msg)
+                return images, 'text', errors
+            # A mime_type STRING carrying an embedded NUL (U+0000) or an unpaired
+            # UTF-16 surrogate binds into the image_attachments.mime_type TEXT NOT
+            # NULL column inside the transaction -- SQLite stores it while
+            # PostgreSQL raises a DataError AFTER a full generation pass, charging
+            # the circuit breaker. The Pydantic list[dict[str, str]] contract on the
+            # single-entry path enforces str TYPE but not this byte content, so the
+            # guard must live here (shared by both paths), mirroring the per-image
+            # metadata check below.
+            mime_unstorable = unstorable_string_error(mime_val)
+            if mime_unstorable is not None:
+                msg = f'Image {idx} mime_type: {mime_unstorable}'
                 if error_mode == 'raise':
                     raise ToolError(msg)
                 errors.append(msg)
@@ -1434,7 +1487,11 @@ async def execute_update_in_transaction(
         - summary_cleared: True if summary was cleared (for response message)
 
     Raises:
-        ToolError: If update_context_entry or patch_metadata returns success=False.
+        EntryNotFoundError: If the target entry does not exist -- update_context_entry
+            or patch_metadata reports no matching row, or the tags-only / images-only
+            path finds the parent missing. A ControlFlowError, so the failed write is
+            not charged to the circuit breaker; the caller catches it outside the
+            transaction and converts it to a not-found ToolError.
     """
     updated_fields: list[str] = []
 
@@ -1455,7 +1512,10 @@ async def execute_update_in_transaction(
         )
 
         if not success:
-            raise ToolError(f'Failed to update context entry {context_id}')
+            # update_context_entry returns success=False only when no row matched
+            # its WHERE id=? (a version mismatch is raised, not returned), i.e. the
+            # entry was deleted concurrently or the id is stale.
+            raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
 
@@ -1468,9 +1528,26 @@ async def execute_update_in_transaction(
         )
 
         if not success:
-            raise ToolError(f'Failed to patch metadata for context {context_id}')
+            # patch_metadata returns success=False only when the row is gone.
+            raise EntryNotFoundError(context_id)
 
         updated_fields.extend(fields)
+
+    # A tags-only or images-only update issues no write that first confirms the
+    # parent exists: the text/metadata and metadata_patch branches each SELECT the
+    # row (and raise EntryNotFoundError above when it is gone), but neither ran
+    # here. Without that guard, replacing tags/images against a deleted parent
+    # violates the child foreign key -- a non-ControlFlowError that charges the
+    # circuit breaker -- or, with FK enforcement off, orphans the replacement
+    # rows. Confirm the parent explicitly and raise the same breaker-exempt signal.
+    if (
+        text is None
+        and metadata is None
+        and metadata_patch is None
+        and (tags is not None or images is not None)
+        and not await repos.context.entry_exists(context_id, txn=txn)
+    ):
+        raise EntryNotFoundError(context_id)
 
     # Heartbeat between operation groups
     await transaction_heartbeat(txn)

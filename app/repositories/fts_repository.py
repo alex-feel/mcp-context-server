@@ -16,6 +16,7 @@ from typing import cast
 
 from app.backends.base import StorageBackend
 from app.errors import ControlFlowError
+from app.metadata_types import pg_bind_reject_reason
 from app.repositories.base import BaseRepository
 
 # Regex pattern to match hyphenated words (e.g., "full-text", "pre-commit", "user-friendly")
@@ -242,22 +243,27 @@ class FtsRepository(BaseRepository):
             Tuple of (search results list, statistics dictionary)
 
         Raises:
-            FtsValidationError: If the query contains an embedded NUL character,
-                which neither FTS5 nor the PostgreSQL wire protocol can parse.
+            FtsValidationError: If the query contains an embedded NUL (U+0000) or an
+                unpaired UTF-16 surrogate, which neither FTS5 nor the PostgreSQL wire
+                protocol can parse.
         """
-        # Reject embedded NUL bytes at the shared boundary, BEFORE backend dispatch.
-        # A NUL passes JSON and Pydantic validation, but FTS5's MATCH parser reads the
-        # bound query as a NUL-terminated C string (truncating a quoted literal into an
-        # 'unterminated string' grammar error that quoting cannot neutralize), and
-        # asyncpg rejects any NUL-carrying text bind parameter on PostgreSQL. Raising
-        # the structured validation error here keeps the failure a CLIENT error on both
+        # Reject strings PostgreSQL cannot bind at the shared boundary, BEFORE backend
+        # dispatch. An embedded NUL (U+0000) and an unpaired UTF-16 surrogate both pass
+        # JSON and Pydantic validation yet are fatal on the query path: FTS5's MATCH
+        # parser reads the bound query as a NUL-terminated C string (truncating a quoted
+        # literal into an 'unterminated string' grammar error that quoting cannot
+        # neutralize), and asyncpg rejects any NUL-carrying or non-UTF-8-encodable text
+        # bind parameter on PostgreSQL. The shared pg_bind_reject_reason probe catches
+        # both sequences (a lone surrogate a bare '\x00' scan misses). Raising the
+        # structured validation error here keeps the failure a CLIENT error on both
         # backends: the tools layer converts it to a clean error response, and its
         # ControlFlowError parentage keeps it out of circuit-breaker failure accounting
         # (an unparseable query can never succeed, so it says nothing about DB health).
-        if '\x00' in query:
+        bind_reason = pg_bind_reject_reason(query)
+        if bind_reason is not None:
             raise FtsValidationError(
                 'FTS query validation failed',
-                ['Query contains an embedded NUL (U+0000) character, which full-text search cannot parse'],
+                [f'Query contains {bind_reason}, which full-text search cannot parse'],
             )
 
         if self.backend.backend_type == 'sqlite':

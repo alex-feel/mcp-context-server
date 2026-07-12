@@ -263,10 +263,12 @@ class TestUnstorableColumnReason:
         assert _pg_unstorable_column_reason(escaped, is_jsonb=True) is not None
 
     def test_jsonb_literal_nul_and_malformed_json(self) -> None:
-        """A literal NUL in the serialized jsonb is flagged; unparseable JSON is treated
-        as carrying no detectable NUL here (handled on the module's malformed-JSON path)."""
+        """A literal NUL in the serialized jsonb is flagged; unparseable JSON destined for a
+        jsonb column is itself unstorable (the ``::jsonb`` cast rejects it mid-transaction),
+        while the same unparseable content in a raw TEXT column has no cast and passes."""
         assert _pg_unstorable_column_reason('{"k": "a\x00b"}', is_jsonb=True) is not None
-        assert _pg_unstorable_column_reason('{not valid json', is_jsonb=True) is None
+        assert _pg_unstorable_column_reason('{not valid json', is_jsonb=True) is not None
+        assert _pg_unstorable_column_reason('{not valid json', is_jsonb=False) is None
 
 
 class TestSqliteToPostgresqlNulPrecheck:
@@ -328,3 +330,46 @@ class TestSqliteToPostgresqlNulPrecheck:
         assert 'COMMIT' not in conn.statements()
         # The clean row is still counted (matching existing dry-run counting semantics).
         assert stats.rows_migrated == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_metadata_json_skipped_not_bound_to_jsonb(self, tmp_path: Path) -> None:
+        """A row whose metadata is unparseable JSON is identified and skipped, never bound into
+        the target's ``metadata::jsonb`` cast (which would reject it mid-transaction and abort
+        the whole run). The clean row still migrates and the run commits.
+        """
+        source = tmp_path / 'malformed_metadata_source.db'
+        _seed_source(
+            source,
+            entries=[
+                {
+                    'id': 1, 'thread_id': 't1', 'source': 'user', 'content_type': 'text',
+                    'text_content': 'clean entry', 'metadata': {'a': 'b'},
+                    'created_at': '2025-01-01 12:00:00',
+                },
+                {
+                    'id': 2, 'thread_id': 't2', 'source': 'agent', 'content_type': 'text',
+                    'text_content': 'ok text', 'metadata': '{not valid json',
+                    'created_at': '2025-01-02 12:00:00',
+                },
+            ],
+        )
+
+        stats, conn = await _run_with_fake_target(source, dry_run=False)
+
+        # Only the clean row is copied; the malformed-metadata row is skipped.
+        assert stats.rows_migrated == 1
+        context_inserts = conn.inserts('context_entries')
+        assert len(context_inserts) == 1
+
+        # The malformed row is reported with its source id and the offending column.
+        errors = '\n'.join(stats.errors)
+        assert 'context_entries row id=2' in errors
+        assert "column 'metadata'" in errors
+
+        # The verbatim malformed string never reaches an INSERT bind: had it been bound to the
+        # $n::jsonb cast, PostgreSQL would have aborted the transaction mid-run.
+        assert all('{not valid json' not in args for args in context_inserts)
+
+        # The run committed rather than rolling back on a mid-transaction jsonb parse error.
+        assert 'COMMIT' in conn.statements()
+        assert 'ROLLBACK' not in conn.statements()

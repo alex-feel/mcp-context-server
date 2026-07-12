@@ -232,7 +232,7 @@ class TestUpdateBatchFailureHandling:
 
     @pytest.mark.asyncio
     async def test_update_batch_atomic_raises_on_update_entry_failure(self):
-        """Atomic mode raises ToolError on update_context_entry failure."""
+        """Atomic mode aborts the whole batch when the target entry no longer exists."""
         from app.tools.batch import store_context_batch
         from app.tools.batch import update_context_batch
 
@@ -259,7 +259,7 @@ class TestUpdateBatchFailureHandling:
             mock_backend.begin_transaction = mock_begin_transaction
             mock_repos.context.backend = mock_backend
 
-            with pytest.raises(ToolError, match='Failed to update context entry'):
+            with pytest.raises(ToolError, match=r'No entries were updated \(atomic batch\)'):
                 await update_context_batch(
                     updates=[{
                         'context_id': context_id,
@@ -270,7 +270,7 @@ class TestUpdateBatchFailureHandling:
 
     @pytest.mark.asyncio
     async def test_update_batch_atomic_raises_on_patch_metadata_failure(self):
-        """Atomic mode raises ToolError on patch_metadata failure."""
+        """Atomic mode aborts the whole batch when the target entry no longer exists on the patch path."""
         from app.tools.batch import store_context_batch
         from app.tools.batch import update_context_batch
 
@@ -297,7 +297,7 @@ class TestUpdateBatchFailureHandling:
             mock_backend.begin_transaction = mock_begin_transaction
             mock_repos.context.backend = mock_backend
 
-            with pytest.raises(ToolError, match='Failed to patch metadata'):
+            with pytest.raises(ToolError, match=r'No entries were updated \(atomic batch\)'):
                 await update_context_batch(
                     updates=[{
                         'context_id': context_id,
@@ -308,7 +308,7 @@ class TestUpdateBatchFailureHandling:
 
     @pytest.mark.asyncio
     async def test_update_batch_nonatomic_reports_update_entry_failure(self):
-        """Non-atomic mode records per-entry failure on update_context_entry failure."""
+        """Non-atomic mode records a per-entry not-found failure when the target entry no longer exists."""
         from app.tools.batch import store_context_batch
         from app.tools.batch import update_context_batch
 
@@ -349,7 +349,7 @@ class TestUpdateBatchFailureHandling:
 
     @pytest.mark.asyncio
     async def test_update_batch_nonatomic_reports_patch_metadata_failure(self):
-        """Non-atomic mode records per-entry failure on patch_metadata failure."""
+        """Non-atomic mode records a per-entry not-found failure when the target entry no longer exists on the patch path."""
         from app.tools.batch import store_context_batch
         from app.tools.batch import update_context_batch
 
@@ -387,7 +387,7 @@ class TestUpdateBatchFailureHandling:
             failed_entry = result['results'][0]
             assert failed_entry['success'] is False
             assert failed_entry['error'] is not None
-            assert 'Failed to patch metadata' in str(failed_entry['error'])
+            assert 'not found' in str(failed_entry['error'])
 
 
 # Connection retry

@@ -1,6 +1,7 @@
 
 import logging
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -15,6 +16,14 @@ from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+
+# A metadata field name is safe to index only when it is a plain SQL identifier:
+# it is interpolated verbatim into a generated ``idx_metadata_<field>`` index name
+# and into a JSON path/key literal on both backends, so any character outside this
+# grammar (a hyphen, dot, whitespace, or quote) either yields an invalid identifier
+# that crashes schema startup or breaks out of the literal. Enforced at the settings
+# boundary by ``StorageSettings._validate_metadata_indexed_field_names``.
+_SAFE_METADATA_FIELD_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 
 class CommonSettings(BaseSettings):
@@ -1168,6 +1177,45 @@ class StorageSettings(BaseSettings):
                 result[item] = 'string'
         return result
 
+    @field_validator('metadata_indexed_fields_raw', mode='after')
+    @classmethod
+    def _validate_metadata_indexed_field_names(cls, value: str) -> str:
+        """Reject metadata index field names that are not plain SQL identifiers.
+
+        Each configured field name is interpolated verbatim into a generated
+        CREATE INDEX statement -- into the ``idx_metadata_<field>`` index name and
+        into the JSON path/key literal on both backends. A name outside the
+        ``[A-Za-z_][A-Za-z0-9_]*`` identifier grammar (a hyphen, dot, whitespace, or
+        quote) would produce an invalid identifier that crashes schema startup, and
+        an embedded quote would break out of the single-quoted literal, so an unsafe
+        name is rejected at the configuration boundary rather than reaching the DDL
+        generator. Only the field name is validated here; the type hint after ``:``
+        is checked when the property parses the value.
+
+        Args:
+            value: The raw METADATA_INDEXED_FIELDS string.
+
+        Returns:
+            The value unchanged when every field name is a valid identifier.
+
+        Raises:
+            ValueError: If any field name is not a plain SQL identifier.
+        """
+        if not value or not value.strip():
+            return value
+        for item in value.split(','):
+            item = item.strip()
+            if not item:
+                continue
+            field = item.split(':', 1)[0].strip() if ':' in item else item
+            if not _SAFE_METADATA_FIELD_NAME.match(field):
+                raise ValueError(
+                    f'METADATA_INDEXED_FIELDS contains an invalid field name {field!r}: '
+                    f'names must match [A-Za-z_][A-Za-z0-9_]* (a letter or underscore '
+                    f'followed by letters, digits, or underscores)',
+                )
+        return value
+
     @property
     def resolved_busy_timeout_ms(self) -> int:
         """Resolve busy timeout to a valid integer value for SQLite."""
@@ -1176,6 +1224,31 @@ class StorageSettings(BaseSettings):
             return self.sqlite_busy_timeout_ms
         # Convert connection timeout from seconds to milliseconds
         return int(self.pool_connection_timeout_s * 1000)
+
+    @field_validator('db_path', mode='before')
+    @classmethod
+    def _reject_blank_db_path(cls, value: object) -> object:
+        """Reject an empty or whitespace-only DB_PATH.
+
+        An empty DB_PATH coerces to ``Path('.')`` (the current directory) and a
+        whitespace-only value to an all-blank path name; both are silent
+        misconfigurations that surface far from their cause when the SQLite backend
+        later tries to open the file. A blank value almost always means the variable
+        was set but left unfilled, so it is rejected at the configuration boundary.
+
+        Args:
+            value: The raw DB_PATH input (a string from the environment, an explicit
+                Path, or None).
+
+        Returns:
+            The value unchanged when it is not a blank string.
+
+        Raises:
+            ValueError: If DB_PATH is a string that is empty or only whitespace.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise ValueError('DB_PATH must not be empty or whitespace-only when set')
+        return value
 
     @model_validator(mode='after')
     def validate_pool_min_not_above_max(self) -> Self:
@@ -1621,6 +1694,47 @@ class AppSettings(CommonSettings):
                 f'2. Increase RERANKING_CHARS_PER_TOKEN if your content has longer words',
             )
 
+        return self
+
+    @model_validator(mode='after')
+    def validate_pgvector_dimension_limit(self) -> Self:
+        """Reject an fp32 PostgreSQL configuration whose embedding dimension exceeds pgvector's index cap.
+
+        pgvector caps HNSW (and IVFFlat) index dimensionality at 2000 for the
+        ``vector`` type. On PostgreSQL with embedding generation enabled and
+        compression OFF, the fp32 write path provisions ``vec_context_embeddings``
+        as ``vector(dim)`` and builds ``idx_vec_context_embeddings_hnsw`` over it,
+        so an EMBEDDING_DIM above 2000 makes the semantic-search migration crash at
+        CREATE INDEX time -- a boot failure for a setting that is already invalid
+        the moment it is read. Enabling compression removes the constraint
+        (compressed payloads are stored as BYTEA with no pgvector index), and
+        SQLite's sqlite-vec has no equivalent per-dimension index cap, so the guard
+        is scoped to the PostgreSQL fp32 path. Rejecting it here turns the deferred
+        migration crash into a clean configuration error the supervisor will not
+        restart-loop on.
+
+        Returns:
+            The validated settings instance.
+
+        Raises:
+            ValueError: If the PostgreSQL fp32 path is configured with an embedding
+                dimension above the pgvector index limit.
+        """
+        pgvector_index_dim_limit = 2000
+        if (
+            self.storage.backend_type == 'postgresql'
+            and self.embedding.generation_enabled
+            and not self.compression.enabled
+            and self.embedding.dim > pgvector_index_dim_limit
+        ):
+            raise ValueError(
+                f'EMBEDDING_DIM ({self.embedding.dim}) exceeds the pgvector index limit of '
+                f'{pgvector_index_dim_limit} dimensions for fp32 vectors on PostgreSQL. '
+                f'The semantic-search migration would fail building the HNSW index on '
+                f'vec_context_embeddings. Either reduce EMBEDDING_DIM to '
+                f'{pgvector_index_dim_limit} or below, or set ENABLE_EMBEDDING_COMPRESSION=true '
+                f'(compressed payloads are stored as BYTEA with no pgvector dimension cap).',
+            )
         return self
 
     def _get_truncation_setting_for_provider(self) -> bool:

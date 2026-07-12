@@ -665,6 +665,57 @@ class TestContextRepositoryDelete:
 
         assert deleted == 0
 
+    @pytest.mark.asyncio
+    async def test_delete_by_ids_spans_multiple_chunks(
+        self,
+        repos: RepositoryContainer,
+    ) -> None:
+        """delete_by_ids chunks an id list exceeding the per-statement bound-parameter limit.
+
+        A very large id list (e.g. every entry in a large thread) would exceed a
+        backend's per-statement bound-parameter ceiling if bound in a single IN
+        clause, so the delete is issued in bounded chunks. This exercises an id
+        list well past the chunk boundary with real ids interleaved on both sides
+        of it: every real row must be deleted exactly once, the non-existent ids
+        must contribute nothing to the count, and an unrelated entry stays intact.
+        """
+        keep_id, _ = await repos.context.store_with_deduplication(
+            thread_id='chunk_keep_thread',
+            source='user',
+            content_type='text',
+            text_content='Keep me',
+        )
+
+        real_ids: list[str] = []
+        for i in range(5):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='chunk_del_thread',
+                source='user',
+                content_type='text',
+                text_content=f'Chunk delete entry {i}',
+            )
+            real_ids.append(ctx_id)
+
+        # Build an id list well past the 900-id chunk boundary out of non-existent
+        # ids, then overwrite a few positions straddling that boundary with the
+        # real ids so deleted rows fall in more than one chunk.
+        mixed = [generate_id() for _ in range(1300)]
+        for pos, real_id in zip((0, 450, 899, 900, 1299), real_ids, strict=True):
+            mixed[pos] = real_id
+
+        deleted = await repos.context.delete_by_ids(mixed)
+
+        # Only the real rows are deleted; the non-existent ids match nothing.
+        assert deleted == len(real_ids)
+
+        # All real rows are gone.
+        assert await repos.context.get_by_ids(real_ids) == []
+
+        # The unrelated entry is untouched.
+        remaining = await repos.context.get_by_ids([keep_id])
+        assert len(remaining) == 1
+        assert remaining[0]['id'] == keep_id
+
 
 class TestContextRepositoryGetById:
     """Test get_by_ids operations."""
@@ -774,6 +825,22 @@ class TestContextRepositoryUpdate:
         assert not_exists is False
         assert no_source is None
         assert no_version is None
+
+    @pytest.mark.asyncio
+    async def test_entry_exists(
+        self,
+        repos: RepositoryContainer,
+    ) -> None:
+        """entry_exists returns True for a stored id and False for an absent one."""
+        ctx_id, _ = await repos.context.store_with_deduplication(
+            thread_id='entry_exists_thread',
+            source='user',
+            content_type='text',
+            text_content='Exists',
+        )
+
+        assert await repos.context.entry_exists(ctx_id) is True
+        assert await repos.context.entry_exists(generate_id()) is False
 
     @pytest.mark.asyncio
     async def test_get_content_type(

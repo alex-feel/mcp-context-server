@@ -476,13 +476,32 @@ class TestInitDatabaseAdvisoryLock:
     """Verify init_database() uses advisory lock for PostgreSQL multi-pod safety."""
 
     def test_postgresql_path_uses_advisory_xact_lock(self) -> None:
-        """Verify advisory lock is acquired before DDL execution in PostgreSQL path."""
+        """Verify the advisory lock is acquired before DDL in the PostgreSQL path.
+
+        The lock acquisition lives in the shared begin_migration() helper, which
+        init_database() calls at the start of each PostgreSQL schema-init
+        transaction. This checks both halves of that chain -- the delegation and
+        the helper's lock literal -- so the multi-pod serialization property is
+        genuinely verified rather than merely tracking where the string lives.
+        """
         import inspect
 
-        source = inspect.getsource(init_database)
-        assert 'pg_advisory_xact_lock' in source, (
-            'init_database() must use pg_advisory_xact_lock for multi-pod safety'
+        from app.migrations._pg_ddl import SCHEMA_INIT_ADVISORY_LOCK_SQL
+        from app.migrations._pg_ddl import begin_migration
+
+        init_source = inspect.getsource(init_database)
+        assert 'begin_migration' in init_source, (
+            'init_database() must acquire the shared migration lock via begin_migration() '
+            'for multi-pod safety'
         )
-        assert "hashtext('mcp_context_schema_init')" in source, (
-            'init_database() must use the same lock key for DDL serialization'
+
+        begin_source = inspect.getsource(begin_migration)
+        assert 'SCHEMA_INIT_ADVISORY_LOCK_SQL' in begin_source, (
+            'begin_migration() must acquire the shared schema-init advisory lock'
+        )
+        assert 'pg_advisory_xact_lock' in SCHEMA_INIT_ADVISORY_LOCK_SQL, (
+            'the shared migration lock must use pg_advisory_xact_lock for multi-pod safety'
+        )
+        assert "hashtext('mcp_context_schema_init')" in SCHEMA_INIT_ADVISORY_LOCK_SQL, (
+            'the shared migration lock must use the same lock key for DDL serialization'
         )

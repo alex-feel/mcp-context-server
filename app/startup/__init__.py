@@ -43,6 +43,7 @@ import asyncpg
 from app.backends import StorageBackend
 from app.backends import create_backend
 from app.embeddings import EmbeddingProvider
+from app.migrations._pg_ddl import begin_migration
 from app.repositories import RepositoryContainer
 from app.reranking import RerankingProvider
 from app.services import ChunkingService
@@ -165,19 +166,26 @@ async def init_database(backend: StorageBackend | None = None) -> None:
         RuntimeError: If no schema file found or backend initialization fails.
     """
     try:
-        # Ensure database path exists (only for file-based backends)
-        if DB_PATH:
-            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-            if not DB_PATH.exists():
-                DB_PATH.touch()
-
-        # Determine backend type to select correct schema file
+        # Determine backend type first: the database file is provisioned only for
+        # the file-based SQLite backend, so the backend type must be resolved before
+        # the mkdir/touch below decides whether to touch the SQLite path at all.
         if backend is not None:
             backend_type = backend.backend_type
         else:
             # Create temporary backend to determine type
             temp_backend = create_backend(backend_type=None, db_path=DB_PATH)
             backend_type = temp_backend.backend_type
+
+        # Ensure the database path exists, but ONLY for the file-based SQLite
+        # backend. A PostgreSQL deployment still carries a DB_PATH default, so
+        # gating on truthiness alone would create a stray SQLite file the backend
+        # never opens -- and, worse, crash at boot under a read-only root
+        # filesystem (EROFS) where that path is not writable, even though
+        # PostgreSQL never touches it.
+        if backend_type == 'sqlite' and DB_PATH:
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            if not DB_PATH.exists():
+                DB_PATH.touch()
 
         # Select schema file based on backend type
         schema_filename = 'postgresql_schema.sql' if backend_type == 'postgresql' else 'sqlite_schema.sql'
@@ -215,12 +223,18 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
                 await backend.execute_write(_init_schema_sqlite)
             else:  # postgresql
+                migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
                 async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
-                    # Acquire transaction-level advisory lock for multi-pod safety.
-                    # Serializes DDL execution across concurrent Kubernetes pods.
-                    # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+                    # Raise the transaction-scoped statement_timeout to the migration budget
+                    # and take the shared schema-init advisory lock UNDER it, serializing DDL
+                    # across concurrent Kubernetes pods. A multi-pod peer running the first-time
+                    # schema build can hold the lock longer than the pool's regular command
+                    # timeout; acquiring it under the raised client- and server-side deadlines
+                    # waits the peer out instead of being cancelled client-side and crash-looping
+                    # the booting pod. The SET LOCAL and the transaction-scoped lock both
+                    # auto-revert/release on COMMIT/ROLLBACK (no explicit unlock needed).
+                    await begin_migration(conn, migration_timeout_s)
 
                     # PostgreSQL: parse and execute statements individually
                     statements: list[str] = []
@@ -272,12 +286,18 @@ async def init_database(backend: StorageBackend | None = None) -> None:
 
                     await temp_manager.execute_write(_init_schema_sqlite)
                 else:  # postgresql
+                    migration_timeout_s = settings.storage.postgresql_migration_timeout_s
 
                     async def _init_schema_postgresql(conn: asyncpg.Connection) -> None:
-                        # Acquire transaction-level advisory lock for multi-pod safety.
-                        # Serializes DDL execution across concurrent Kubernetes pods.
-                        # Auto-releases on transaction COMMIT/ROLLBACK (no explicit unlock needed).
-                        await conn.execute("SELECT pg_advisory_xact_lock(hashtext('mcp_context_schema_init'))")
+                        # Raise the transaction-scoped statement_timeout to the migration budget
+                        # and take the shared schema-init advisory lock UNDER it, serializing DDL
+                        # across concurrent pods. A peer running the first-time schema build can
+                        # hold the lock longer than the pool's regular command timeout; acquiring
+                        # it under the raised client- and server-side deadlines waits the peer out
+                        # instead of being cancelled client-side and crash-looping the booting pod.
+                        # The SET LOCAL and the transaction-scoped lock both auto-revert/release on
+                        # COMMIT/ROLLBACK (no explicit unlock needed).
+                        await begin_migration(conn, migration_timeout_s)
 
                         # PostgreSQL: parse and execute statements individually
                         statements: list[str] = []
