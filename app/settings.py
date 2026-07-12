@@ -1225,6 +1225,31 @@ class StorageSettings(BaseSettings):
         # Convert connection timeout from seconds to milliseconds
         return int(self.pool_connection_timeout_s * 1000)
 
+    @field_validator('db_path', mode='before')
+    @classmethod
+    def _reject_blank_db_path(cls, value: object) -> object:
+        """Reject an empty or whitespace-only DB_PATH.
+
+        An empty DB_PATH coerces to ``Path('.')`` (the current directory) and a
+        whitespace-only value to an all-blank path name; both are silent
+        misconfigurations that surface far from their cause when the SQLite backend
+        later tries to open the file. A blank value almost always means the variable
+        was set but left unfilled, so it is rejected at the configuration boundary.
+
+        Args:
+            value: The raw DB_PATH input (a string from the environment, an explicit
+                Path, or None).
+
+        Returns:
+            The value unchanged when it is not a blank string.
+
+        Raises:
+            ValueError: If DB_PATH is a string that is empty or only whitespace.
+        """
+        if isinstance(value, str) and not value.strip():
+            raise ValueError('DB_PATH must not be empty or whitespace-only when set')
+        return value
+
     @model_validator(mode='after')
     def validate_pool_min_not_above_max(self) -> Self:
         """Reject a warm-pool floor above the pool ceiling.

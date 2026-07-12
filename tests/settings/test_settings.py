@@ -542,3 +542,39 @@ class TestPgvectorDimensionLimit:
             env_var('EMBEDDING_DIM', '2500'),
         ):
             assert AppSettings().embedding.dim == 2500
+
+
+class TestBlankDbPath:
+    """DB_PATH must not be blank when set.
+
+    An empty DB_PATH coerces to Path('.') (a directory) and a whitespace-only value
+    to an all-blank path name; either surfaces far from its cause when the SQLite
+    backend later opens the file. A blank value almost always means the variable was
+    set but left unfilled, so it is rejected at the configuration boundary.
+    """
+
+    def test_empty_db_path_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('DB_PATH', ''), pytest.raises(ValidationError, match='must not be empty'):
+            StorageSettings()
+
+    def test_whitespace_db_path_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('DB_PATH', '   '), pytest.raises(ValidationError, match='must not be empty'):
+            StorageSettings()
+
+    def test_valid_db_path_accepted(self) -> None:
+        from pathlib import Path
+
+        from app.settings import StorageSettings
+
+        with env_var('DB_PATH', '/tmp/context.db'):
+            assert StorageSettings().db_path == Path('/tmp/context.db')
+
+    def test_default_db_path_accepted(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('DB_PATH', None):
+            assert StorageSettings().db_path is not None
