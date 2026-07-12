@@ -588,9 +588,9 @@ Supported ISO 8601 formats:
 - Date-only: `2025-11-29`
 - DateTime: `2025-11-29T10:00:00`
 - UTC (Z suffix): `2025-11-29T10:00:00Z`
-- Timezone offset: `2025-11-29T10:00:00+02:00`
+- Timezone offset, whole-minute only: `2025-11-29T10:00:00+02:00` (or `+05:30`)
 
-**Note:** Date-only `end_date` values automatically expand to end-of-day (`T23:59:59.999999`) for intuitive "entire day" behavior. Naive datetime (without timezone) is interpreted as UTC.
+**Note:** Date-only `end_date` values automatically expand to end-of-day (`T23:59:59.999999`) for intuitive "entire day" behavior. Naive datetime (without timezone) is interpreted as UTC. A timezone offset must be whole-minute (`[+-]HH:MM`); an offset carrying sub-minute precision (seconds or a fractional part, such as `+05:30:15`) is rejected, because SQLite's `datetime()` evaluates such an offset to NULL and would silently match zero rows while PostgreSQL accepts it.
 
 ## Additional Resources
 
