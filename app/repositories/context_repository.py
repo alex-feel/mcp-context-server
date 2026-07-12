@@ -55,6 +55,13 @@ class VersionConflictError(ControlFlowError):
 # leaking into API responses.
 CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at'
 
+# Maximum number of ids bound into a single DELETE ... IN (...) statement. An id list can be
+# arbitrarily long (e.g. every entry in a large thread), so deletes are issued in bounded
+# chunks to stay under each backend's per-statement bound-parameter limit -- SQLite's
+# SQLITE_MAX_VARIABLE_NUMBER (historically as low as 999) and PostgreSQL's 65535 parameters.
+# 900 clears the lowest historical SQLite ceiling with margin.
+_DELETE_ID_CHUNK_SIZE = 900
+
 
 class DuplicateCandidate(NamedTuple):
     """Statement-level snapshot of a likely-duplicate entry found by the pre-check.
@@ -1186,16 +1193,27 @@ class ContextRepository(BaseRepository):
 
         backend_type = txn.backend_type if txn else self.backend.backend_type
 
+        # Issue the delete in bounded chunks so an arbitrarily long id list (e.g. every
+        # entry in a large thread) never exceeds a backend's per-statement bound-parameter
+        # limit. Each chunk restarts its placeholders at 1 and the per-chunk rowcounts sum.
+        chunks = [
+            context_ids[start : start + _DELETE_ID_CHUNK_SIZE]
+            for start in range(0, len(context_ids), _DELETE_ID_CHUNK_SIZE)
+        ]
+
         if backend_type == 'sqlite':
 
             def _delete_by_ids_sqlite(conn: sqlite3.Connection) -> int:
                 cursor = conn.cursor()
-                placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
-                cursor.execute(
-                    f'DELETE FROM context_entries WHERE id IN ({placeholders})',
-                    tuple(context_ids),
-                )
-                return cursor.rowcount
+                deleted = 0
+                for chunk in chunks:
+                    placeholders = ','.join([self._placeholder(i + 1) for i in range(len(chunk))])
+                    cursor.execute(
+                        f'DELETE FROM context_entries WHERE id IN ({placeholders})',
+                        tuple(chunk),
+                    )
+                    deleted += cursor.rowcount
+                return deleted
 
             if txn:
                 return await self._run_sqlite_txn(_delete_by_ids_sqlite, cast(sqlite3.Connection, txn.connection))
@@ -1203,13 +1221,16 @@ class ContextRepository(BaseRepository):
 
         # PostgreSQL
         async def _delete_by_ids_postgresql(conn: 'asyncpg.Connection') -> int:
-            placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
-            result = await conn.execute(
-                f'DELETE FROM context_entries WHERE id IN ({placeholders})',
-                *context_ids,
-            )
-            # asyncpg returns "DELETE N" where N is the count
-            return int(result.split()[-1]) if result else 0
+            deleted = 0
+            for chunk in chunks:
+                placeholders = ','.join([self._placeholder(i + 1) for i in range(len(chunk))])
+                result = await conn.execute(
+                    f'DELETE FROM context_entries WHERE id IN ({placeholders})',
+                    *chunk,
+                )
+                # asyncpg returns "DELETE N" where N is the count
+                deleted += int(result.split()[-1]) if result else 0
+            return deleted
 
         if txn:
             return await _delete_by_ids_postgresql(cast('asyncpg.Connection', txn.connection))

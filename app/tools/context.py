@@ -555,32 +555,40 @@ async def delete_context(
             logger.info(f'Deleted {deleted} context entries by IDs')
 
         elif thread_id:
-            # Embedding cleanup for the whole thread. On PostgreSQL the embedding
-            # rows cascade-delete with the context rows, so explicit cleanup is
-            # SQLite-only (vec0 virtual tables lack CASCADE). Use the UNBOUNDED
-            # criteria query rather than a capped search so a thread with more than
-            # 10000 entries does not leave orphaned embeddings.
-            # Gate on table PRESENCE (embedding_tables_exist), not the runtime
-            # toggles: a prior session's embeddings must still be cleaned even
-            # after generation/compression are turned off, or the FK-less vec0
-            # rows orphan. Mirrors the context_ids branch above.
-            if await repos.embeddings.embedding_tables_exist():
-                backend = repos.context.backend
-                if backend.backend_type == 'sqlite':
-                    try:
-                        thread_ids_to_clean = await repos.context.get_ids_matching_batch_criteria(
-                            thread_ids=[thread_id],
-                        )
-                        for cid in thread_ids_to_clean:
-                            try:
-                                await repos.embeddings.delete(cid)
-                            except Exception as e:
-                                logger.warning(f'Failed to delete embedding for context {cid}: {e}')
-                    except Exception as e:
-                        logger.warning(f'Failed to cleanup embeddings for thread {thread_id}: {e}')
-                        # Non-blocking: continue with context deletion
-
-            deleted = await repos.context.delete_by_thread(thread_id)
+            # Delete a whole thread. On PostgreSQL the embedding rows cascade-delete with
+            # the context rows, so a single WHERE thread_id = ? delete is atomic and needs
+            # no explicit embedding cleanup.
+            #
+            # On SQLite the vec0 virtual embedding tables have no FK CASCADE and are reached
+            # only through the embedding_chunks bridge; when a context row is deleted its
+            # bridge cascades away but the vec0 vectors it referenced orphan permanently
+            # unless cleaned first. A WHERE thread_id = ? delete re-evaluates the predicate
+            # independently of the pre-queried cleanup snapshot, so a store committing into
+            # the thread between the snapshot and the delete would be swept by the delete
+            # while its embeddings escaped the snapshot and orphaned. Constrain the delete to
+            # exactly the snapshot ids so the cleaned set and the deleted set are identical:
+            # an entry inserted after the snapshot is neither cleaned nor deleted (it simply
+            # survives the operation), which closes the orphan window without a wrapping
+            # transaction. delete_by_ids chunks the id list, so a very large thread is safe.
+            backend = repos.context.backend
+            if backend.backend_type == 'sqlite':
+                thread_ids_to_delete = await repos.context.get_ids_matching_batch_criteria(
+                    thread_ids=[thread_id],
+                )
+                # Gate embedding cleanup on table PRESENCE (embedding_tables_exist), not the
+                # runtime ENABLE_EMBEDDING_GENERATION/COMPRESSION toggles: a prior session's
+                # embeddings must still be cleaned even after generation/compression are turned
+                # off, or the FK-less vec0 rows orphan. Mirrors the context_ids branch above.
+                if thread_ids_to_delete and await repos.embeddings.embedding_tables_exist():
+                    for cid in thread_ids_to_delete:
+                        try:
+                            await repos.embeddings.delete(cid)
+                        except Exception as e:
+                            logger.warning(f'Failed to delete embedding for context {cid}: {e}')
+                            # Non-blocking: continue with context deletion
+                deleted = await repos.context.delete_by_ids(thread_ids_to_delete)
+            else:
+                deleted = await repos.context.delete_by_thread(thread_id)
             logger.info(f'Deleted {deleted} entries from thread {thread_id}')
 
         return {
