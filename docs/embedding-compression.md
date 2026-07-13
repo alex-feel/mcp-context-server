@@ -428,17 +428,17 @@ The native `pgvector` `vector(D)` HNSW index rejects dimensions above 2000, whic
 
 ## Byte-Alignment Matrix
 
-The bit-packing layout requires `dim * bits` to be a multiple of 8 for byte-aligned storage. All common embedding dimensions satisfy this for the supported bit widths:
+The bit-packing layout requires `dim * effective_bits` to be a multiple of 8, where `effective_bits` is **variant-dependent**: for `variant='ip'`, `effective_bits = COMPRESSION_BITS - 1` (one bit per coordinate is reserved for the QJL sign); for `variant='mse'`, `effective_bits = COMPRESSION_BITS`. This means the alignment constraint differs between the two variants when `COMPRESSION_BITS - 1` and `COMPRESSION_BITS` straddle a factor-of-8 boundary for a given `dim`. A violated constraint is detected by the startup validator before any data is written and raises `ConfigurationError` (exit 78); the server does not start. All common embedding dimensions (those that are multiples of 8) satisfy the constraint for every supported `(bits, variant)` combination:
 
-| dim  | bits=2 | bits=3 | bits=4 |
-|------|--------|--------|--------|
-| 768  | OK     | OK     | OK     |
-| 1024 | OK     | OK     | OK     |
-| 1536 | OK     | OK     | OK     |
-| 2048 | OK     | OK     | OK     |
-| 3072 | OK     | OK     | OK     |
+| dim  | bits=2 (ip: eff=1, mse: eff=2) | bits=3 (ip: eff=2, mse: eff=3) | bits=4 (ip: eff=3, mse: eff=4) |
+|------|--------------------------------|--------------------------------|--------------------------------|
+| 768  | OK (768, 1536)                 | OK (1536, 2304)                | OK (2304, 3072)                |
+| 1024 | OK (1024, 2048)                | OK (2048, 3072)                | OK (3072, 4096)                |
+| 1536 | OK (1536, 3072)                | OK (3072, 4608)                | OK (4608, 6144)                |
+| 2048 | OK (2048, 4096)                | OK (4096, 6144)                | OK (6144, 8192)                |
+| 3072 | OK (3072, 6144)                | OK (6144, 9216)                | OK (9216, 12288)               |
 
-Non-standard dimensions where `dim * bits` is not divisible by 8 will fail with a `ValueError` from the bit-packing layer. If you are using a non-listed dimension, pick a different dimension from the table or choose a different `bits` value that aligns.
+Each cell shows `OK (ip_product, mse_product)` where the listed products are `dim * effective_bits` for the `ip` and `mse` variants respectively; all are multiples of 8. Non-standard dimensions whose `dim * effective_bits` is not divisible by 8 for the configured variant are rejected at startup (exit 78) before any data is written. If you use a non-listed dimension, verify that `dim * (COMPRESSION_BITS - 1)` is a multiple of 8 for `variant='ip'` or that `dim * COMPRESSION_BITS` is a multiple of 8 for `variant='mse'`; if not, choose a different `dim` or `bits` value that satisfies the constraint for the active variant.
 
 ## Troubleshooting
 
