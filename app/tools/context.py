@@ -42,6 +42,7 @@ from app.errors import format_exception_message
 from app.ids import resolve_or_normalize_id
 from app.ids import resolve_or_normalize_ids
 from app.metadata_types import non_finite_metadata_error
+from app.models import MAX_IMAGES_PER_ENTRY
 from app.repositories.base import canonical_timestamp
 from app.repositories.context_repository import VersionConflictError
 from app.repositories.embedding_repository import ChunkEmbedding
@@ -79,7 +80,11 @@ async def store_context(
     text: Annotated[str, Field(min_length=1, description='Text content to store')],
     images: Annotated[
         list[dict[str, str]] | None,
-        Field(description='List of base64 encoded images with mime_type. Each image max 10MB, total max 100MB'),
+        Field(
+            max_length=MAX_IMAGES_PER_ENTRY,
+            description=f'List of base64 encoded images with mime_type. Max {MAX_IMAGES_PER_ENTRY} images, '
+            'each image max 10MB, total max 100MB',
+        ),
     ] = None,
     metadata: Annotated[
         MetadataDict | None,
@@ -624,7 +629,11 @@ async def update_context(
     tags: Annotated[list[str] | None, Field(description='New tags list (REPLACES all existing)')] = None,
     images: Annotated[
         list[dict[str, str]] | None,
-        Field(description='New images with base64 data and mime_type (REPLACES all existing)'),
+        Field(
+            max_length=MAX_IMAGES_PER_ENTRY,
+            description=f'New images with base64 data and mime_type (REPLACES all existing). '
+            f'Max {MAX_IMAGES_PER_ENTRY} images',
+        ),
     ] = None,
     ctx: Context | None = None,
 ) -> UpdateContextSuccessDict:

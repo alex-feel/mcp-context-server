@@ -3,6 +3,14 @@ Image repository for managing image attachments.
 
 This module handles all database operations related to image attachments,
 including storage and retrieval of base64-encoded images.
+
+Write-path base64 decodes are STRICT (base64.b64decode with validate=True):
+image payloads reach these methods already normalized to canonical
+standard-alphabet base64 by validate_and_normalize_images (app.tools._shared),
+so a strict decode guarantees the stored bytes are exactly the validated bytes.
+A decode failure here means a payload bypassed the validation chokepoint and is
+raised as ValueError (aborting the enclosing transaction) rather than silently
+storing mangled bytes or dropping the image.
 """
 
 
@@ -123,7 +131,7 @@ class ImageRepository(BaseRepository):
                         raise ValueError(f'Image {idx} has no data')
 
                     try:
-                        image_binary = base64.b64decode(img_data_str)
+                        image_binary = base64.b64decode(img_data_str, validate=True)
                     except Exception as e:
                         logger.error(f'Failed to decode base64 for image {idx} in context {context_id}: {e}')
                         raise ValueError(f'Invalid base64 data in image {idx}') from e
@@ -163,7 +171,7 @@ class ImageRepository(BaseRepository):
                         raise ValueError(f'Image {idx} has no data')
 
                     try:
-                        image_binary = base64.b64decode(img_data_str)
+                        image_binary = base64.b64decode(img_data_str, validate=True)
                     except Exception as e:
                         logger.error(f'Failed to decode base64 for image {idx} in context {context_id}: {e}')
                         raise ValueError(f'Invalid base64 data in image {idx}') from e
@@ -466,16 +474,20 @@ class ImageRepository(BaseRepository):
                 delete_query = f'DELETE FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
                 cursor.execute(delete_query, (context_id,))
 
+                # Raise (do not skip) on missing data or a decode failure,
+                # mirroring store_images: silently dropping an image the caller
+                # provided would corrupt the entry without any error surfaced.
                 for idx, img in enumerate(images):
                     img_data_str = img.get('data', '')
                     if not img_data_str:
-                        continue
+                        logger.error(f'Image {idx} for context {context_id} has no data - should have been validated')
+                        raise ValueError(f'Image {idx} has no data')
 
                     try:
-                        image_binary = base64.b64decode(img_data_str)
+                        image_binary = base64.b64decode(img_data_str, validate=True)
                     except Exception as e:
-                        logger.error(f'Failed to decode base64 image data: {e}')
-                        continue
+                        logger.error(f'Failed to decode base64 for image {idx} in context {context_id}: {e}')
+                        raise ValueError(f'Invalid base64 data in image {idx}') from e
 
                     insert_query = f'''
                         INSERT INTO image_attachments
@@ -504,16 +516,20 @@ class ImageRepository(BaseRepository):
                 delete_query = f'DELETE FROM image_attachments WHERE context_entry_id = {self._placeholder(1)}'
                 await conn.execute(delete_query, context_id)
 
+                # Raise (do not skip) on missing data or a decode failure,
+                # mirroring store_images: silently dropping an image the caller
+                # provided would corrupt the entry without any error surfaced.
                 for idx, img in enumerate(images):
                     img_data_str = img.get('data', '')
                     if not img_data_str:
-                        continue
+                        logger.error(f'Image {idx} for context {context_id} has no data - should have been validated')
+                        raise ValueError(f'Image {idx} has no data')
 
                     try:
-                        image_binary = base64.b64decode(img_data_str)
+                        image_binary = base64.b64decode(img_data_str, validate=True)
                     except Exception as e:
-                        logger.error(f'Failed to decode base64 image data: {e}')
-                        continue
+                        logger.error(f'Failed to decode base64 for image {idx} in context {context_id}: {e}')
+                        raise ValueError(f'Invalid base64 data in image {idx}') from e
 
                     insert_query = f'''
                         INSERT INTO image_attachments

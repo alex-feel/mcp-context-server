@@ -9,7 +9,10 @@ Contains:
 """
 
 import base64
+from collections.abc import Awaitable
+from collections.abc import Callable
 from typing import cast
+from typing import get_type_hints
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import PropertyMock
@@ -17,7 +20,9 @@ from unittest.mock import PropertyMock
 import asyncpg
 import pytest
 from fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter
 
+from app.models import MAX_IMAGES_PER_ENTRY
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.tools._shared import EmbeddingsReconcileRequiredError
 from app.tools._shared import EntryNotFoundError
@@ -30,6 +35,8 @@ from app.tools._shared import execute_update_in_transaction
 from app.tools._shared import is_connection_error
 from app.tools._shared import transaction_heartbeat
 from app.tools._shared import validate_and_normalize_images
+from app.tools.context import store_context
+from app.tools.context import update_context
 
 _ChunkEmbeddingList = list[ChunkEmbedding]
 
@@ -284,34 +291,132 @@ class TestValidateAndNormalizeImages:
         assert len(errors) == 1
         assert 'Image 0 has a non-string "data" field' in errors[0]
 
-    def test_raise_mode_garbage_decodes_to_zero_bytes(self) -> None:
-        """Garbage base64 (all non-alphabet, length a multiple of 4) decodes to 0 bytes and is rejected.
+    def test_raise_mode_garbage_rejected_by_strict_decode(self) -> None:
+        """Garbage input (all non-alphabet characters) fails loudly under the strict decode.
 
-        base64.b64decode is lenient (validate omitted), so a value like '!!!!' silently
-        discards every non-alphabet character and decodes to b''. Without an explicit
-        zero-length guard it would be stored as a 0-byte image, defeating the validator's
-        documented protection against silent 0-byte storage.
+        The lenient decode used previously silently discarded every character outside
+        the alphabet, so a value like '!!!!' decoded to b'' and was caught only by the
+        zero-byte guard. The strict decode (validate=True) rejects it directly with a
+        clear, deterministic per-image error.
         """
-        with pytest.raises(ToolError, match='Image 0 "data" decodes to zero bytes'):
+        with pytest.raises(ToolError, match='Image 0 has invalid base64 encoding: Invalid base64 data'):
             validate_and_normalize_images([{'data': '!!!!'}], error_mode='raise')
 
-    def test_collect_mode_garbage_decodes_to_zero_bytes(self) -> None:
-        """collect mode records the zero-byte error instead of raising or storing a 0-byte image."""
+    def test_collect_mode_garbage_rejected_by_strict_decode(self) -> None:
+        """collect mode records the strict-decode failure instead of raising."""
         _, content_type, errors = validate_and_normalize_images(
             [{'data': '@#$%'}], error_mode='collect',
         )
         assert content_type == 'text'
         assert len(errors) == 1
-        assert 'decodes to zero bytes' in errors[0]
+        assert 'invalid base64 encoding' in errors[0]
+
+    def test_raise_mode_empty_data_uri_payload_decodes_to_zero_bytes(self) -> None:
+        """A data-URI prefix with an empty payload normalizes to '' and is rejected as zero bytes."""
+        with pytest.raises(ToolError, match='Image 0 "data" decodes to zero bytes'):
+            validate_and_normalize_images([{'data': 'data:image/png;base64,'}], error_mode='raise')
 
     def test_whitespace_wrapped_base64_still_accepted(self) -> None:
-        """Newline-wrapped base64 still decodes (the decode stays lenient; only a 0-byte result is rejected)."""
+        """Newline-wrapped base64 is accepted: whitespace is removed by normalization before the strict decode."""
         wrapped = VALID_BASE64_PNG[:4] + '\n' + VALID_BASE64_PNG[4:]
-        _, content_type, errors = validate_and_normalize_images(
+        images, content_type, errors = validate_and_normalize_images(
             [{'data': wrapped, 'mime_type': 'image/png'}], error_mode='collect',
         )
         assert content_type == 'multimodal'
         assert errors == []
+        assert images[0]['data'] == VALID_BASE64_PNG
+
+    def test_data_uri_prefix_stripped_decodes_to_same_bytes(self) -> None:
+        """A data-URI-prefixed payload decodes to the same bytes as the bare payload.
+
+        Under the lenient decode, a prefix whose base64-alphabet character count is a
+        multiple of 4 (e.g. some jpeg data-URIs) decoded as garbage bytes silently
+        prepended to the image. Normalization strips the prefix so the stored bytes
+        are exactly the intended image.
+        """
+        prefixed = {'data': 'data:image/jpeg;base64,' + VALID_BASE64_PNG}
+        images, content_type, errors = validate_and_normalize_images([prefixed])
+        assert errors == []
+        assert content_type == 'multimodal'
+        assert images[0]['data'] == VALID_BASE64_PNG
+        assert base64.b64decode(images[0]['data'], validate=True) == base64.b64decode(VALID_BASE64_PNG, validate=True)
+
+    def test_url_safe_alphabet_normalized_to_standard(self) -> None:
+        """A URL-safe-alphabet payload is translated to the standard alphabet and decodes correctly."""
+        raw = bytes(range(251, 256)) * 6
+        standard = base64.b64encode(raw).decode()
+        url_safe = base64.urlsafe_b64encode(raw).decode()
+        assert url_safe != standard  # fixture sanity: the translation is actually exercised
+        images, content_type, errors = validate_and_normalize_images([{'data': url_safe}])
+        assert errors == []
+        assert content_type == 'multimodal'
+        assert images[0]['data'] == standard
+        assert base64.b64decode(images[0]['data'], validate=True) == raw
+
+    def test_url_safe_payload_without_padding_restored(self) -> None:
+        """A URL-safe payload with stripped '=' padding is repadded and decodes to the original bytes."""
+        raw = b'\xfb\xef\x01\x02'
+        stripped = base64.urlsafe_b64encode(raw).decode().rstrip('=')
+        images, _, errors = validate_and_normalize_images([{'data': stripped}])
+        assert errors == []
+        assert images[0]['data'] == base64.b64encode(raw).decode()
+        assert base64.b64decode(images[0]['data'], validate=True) == raw
+
+    def test_normalization_mutates_input_dict_in_place(self) -> None:
+        """The canonical payload is written back into the caller's dict.
+
+        The batch tools rely on this: they discard the returned list and later pass
+        the same dict objects to the transaction helpers, so the repository re-decode
+        must see the normalized payload through the original dict.
+        """
+        img = {'data': 'data:image/png;base64,' + VALID_BASE64_PNG}
+        validate_and_normalize_images([img])
+        assert img['data'] == VALID_BASE64_PNG
+
+    def test_count_over_limit_rejected_raise_mode(self) -> None:
+        """More than MAX_IMAGES_PER_ENTRY images is rejected at the shared chokepoint."""
+        imgs = [{'data': VALID_BASE64_PNG} for _ in range(MAX_IMAGES_PER_ENTRY + 1)]
+        expected = (
+            f'Too many images: {MAX_IMAGES_PER_ENTRY + 1} provided, '
+            f'maximum is {MAX_IMAGES_PER_ENTRY} per entry'
+        )
+        with pytest.raises(ToolError, match=expected):
+            validate_and_normalize_images(imgs, error_mode='raise')
+
+    def test_count_over_limit_rejected_collect_mode(self) -> None:
+        """collect mode records the count-limit error (covers the batch tools' untyped path)."""
+        imgs = [{'data': VALID_BASE64_PNG} for _ in range(MAX_IMAGES_PER_ENTRY + 1)]
+        _, content_type, errors = validate_and_normalize_images(imgs, error_mode='collect')
+        assert content_type == 'text'
+        assert len(errors) == 1
+        assert 'Too many images' in errors[0]
+
+    def test_count_at_limit_accepted(self) -> None:
+        """Exactly MAX_IMAGES_PER_ENTRY images passes validation."""
+        imgs = [{'data': VALID_BASE64_PNG} for _ in range(MAX_IMAGES_PER_ENTRY)]
+        images, content_type, errors = validate_and_normalize_images(imgs)
+        assert errors == []
+        assert content_type == 'multimodal'
+        assert len(images) == MAX_IMAGES_PER_ENTRY
+
+
+# ---------------------------------------------------------------------------
+# New: TestImageCountLimitToolSchema
+# ---------------------------------------------------------------------------
+
+
+class TestImageCountLimitToolSchema:
+    """The MCP wire schema advertises the image-count bound on the live tool params."""
+
+    @pytest.mark.parametrize('tool_fn', [store_context, update_context])
+    def test_images_param_advertises_max_items(self, tool_fn: Callable[..., Awaitable[object]]) -> None:
+        """The images parameter declares maxItems=MAX_IMAGES_PER_ENTRY in its JSON schema."""
+        hints = get_type_hints(tool_fn, include_extras=True)
+        schema = TypeAdapter(hints['images']).json_schema()
+        branches = schema.get('anyOf', [schema])
+        array_branches = [b for b in branches if isinstance(b, dict) and b.get('type') == 'array']
+        assert array_branches, f'no array branch in images schema: {schema}'
+        assert array_branches[0].get('maxItems') == MAX_IMAGES_PER_ENTRY
 
 
 # ---------------------------------------------------------------------------

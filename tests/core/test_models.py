@@ -11,8 +11,10 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from pydantic import ValidationError
 
+from app.models import MAX_IMAGES_PER_ENTRY
 from app.models import ContentType
 from app.models import ContextEntry
 from app.models import DeleteContextRequest
@@ -20,6 +22,58 @@ from app.models import ImageAttachment
 from app.models import SearchFilters
 from app.models import SourceType
 from app.models import StoreContextRequest
+from app.models import normalize_base64_image_data
+
+
+def _declared_max_length(model: type[BaseModel], field: str) -> int | None:
+    """Extract the max_length constraint declared on a model field."""
+    for meta in model.model_fields[field].metadata:
+        value = getattr(meta, 'max_length', None)
+        if value is not None:
+            return int(value)
+    return None
+
+
+class TestNormalizeBase64ImageData:
+    """Test the shared base64 payload normalizer."""
+
+    def test_canonical_payload_is_identity(self) -> None:
+        """Clean standard-alphabet base64 passes through unchanged."""
+        payload = base64.b64encode(b'canonical bytes').decode()
+        assert normalize_base64_image_data(payload) == payload
+
+    def test_data_uri_prefix_stripped(self) -> None:
+        """One leading RFC 2397 data-URI prefix is stripped."""
+        payload = base64.b64encode(b'image bytes').decode()
+        assert normalize_base64_image_data(f'data:image/png;base64,{payload}') == payload
+        assert normalize_base64_image_data(f'data:image/jpeg;base64,{payload}') == payload
+
+    def test_url_safe_alphabet_translated(self) -> None:
+        """URL-safe '-'/'_' characters are translated to standard '+'/'/'."""
+        raw = bytes(range(251, 256)) * 3
+        url_safe = base64.urlsafe_b64encode(raw).decode()
+        standard = base64.b64encode(raw).decode()
+        assert url_safe != standard  # fixture sanity: the translation is actually exercised
+        assert normalize_base64_image_data(url_safe) == standard
+
+    def test_ascii_whitespace_removed(self) -> None:
+        """Embedded ASCII whitespace (newlines, tabs, spaces) is removed."""
+        payload = base64.b64encode(b'wrapped payload bytes').decode()
+        wrapped = payload[:4] + '\r\n' + payload[4:8] + ' \t' + payload[8:]
+        assert normalize_base64_image_data(wrapped) == payload
+
+    def test_missing_padding_restored(self) -> None:
+        """Stripped '=' padding is restored to a multiple of 4."""
+        raw = b'\xfb\xef\x01\x02'
+        payload = base64.b64encode(raw).decode()
+        assert payload.endswith('=')
+        assert normalize_base64_image_data(payload.rstrip('=')) == payload
+
+    def test_non_base64_input_stays_strictly_rejectable(self) -> None:
+        """Genuinely non-base64 input still fails a strict decode after normalization."""
+        normalized = normalize_base64_image_data('!!!not base64!!!')
+        with pytest.raises(Exception, match='(?i)base64'):
+            base64.b64decode(normalized, validate=True)
 
 
 class TestSourceType:
@@ -76,6 +130,25 @@ class TestImageAttachment:
         with pytest.raises(ValidationError) as exc_info:
             ImageAttachment(data='not-valid-base64!', position=0)
         assert 'Invalid base64 encoded data' in str(exc_info.value)
+
+    def test_data_uri_payload_normalized_to_bare_base64(self) -> None:
+        """A data-URI-prefixed payload is normalized to the canonical bare payload."""
+        payload = base64.b64encode(b'attachment bytes').decode()
+        img = ImageAttachment(data=f'data:image/png;base64,{payload}', position=0)
+        assert img.data == payload
+
+    def test_url_safe_payload_normalized_to_standard_alphabet(self) -> None:
+        """A URL-safe payload is stored in the canonical standard alphabet."""
+        raw = bytes(range(251, 256)) * 3
+        img = ImageAttachment(data=base64.urlsafe_b64encode(raw).decode(), position=0)
+        assert img.data == base64.b64encode(raw).decode()
+        assert base64.b64decode(img.data, validate=True) == raw
+
+    def test_zero_byte_payload_rejected(self) -> None:
+        """A payload that decodes to zero bytes (empty data-URI payload) is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            ImageAttachment(data='data:image/png;base64,', position=0)
+        assert 'decodes to zero bytes' in str(exc_info.value)
 
     def test_mime_type_is_advisory_free_form(self) -> None:
         """mime_type is an advisory, client-supplied label -- not an allowlist.
@@ -196,7 +269,7 @@ class TestContextEntry:
         """Test exceeding max images limit."""
         images = [
             ImageAttachment(data=base64.b64encode(b'img').decode('utf-8'), position=0)
-            for _ in range(11)  # 11 images, max is 10
+            for _ in range(MAX_IMAGES_PER_ENTRY + 1)
         ]
         with pytest.raises(ValidationError) as exc_info:
             ContextEntry(
@@ -204,7 +277,12 @@ class TestContextEntry:
                 source=SourceType.USER,
                 images=images,
             )
-        assert 'List should have at most 10 items' in str(exc_info.value)
+        assert f'List should have at most {MAX_IMAGES_PER_ENTRY} items' in str(exc_info.value)
+
+    def test_images_max_length_matches_canonical_constant(self) -> None:
+        """Both image-carrying models declare the single canonical count limit."""
+        assert _declared_max_length(ContextEntry, 'images') == MAX_IMAGES_PER_ENTRY
+        assert _declared_max_length(StoreContextRequest, 'images') == MAX_IMAGES_PER_ENTRY
 
 
 class TestSearchFilters:
@@ -320,14 +398,17 @@ class TestStoreContextRequest:
 
     def test_too_many_images_in_request(self) -> None:
         """Test exceeding max images in store request."""
-        images = [ImageAttachment(data=base64.b64encode(b'img').decode('utf-8'), position=0) for _ in range(11)]
+        images = [
+            ImageAttachment(data=base64.b64encode(b'img').decode('utf-8'), position=0)
+            for _ in range(MAX_IMAGES_PER_ENTRY + 1)
+        ]
         with pytest.raises(ValidationError) as exc_info:
             StoreContextRequest(
                 thread_id='test',
                 source=SourceType.USER,
                 images=images,
             )
-        assert 'at most 10 items' in str(exc_info.value)
+        assert f'at most {MAX_IMAGES_PER_ENTRY} items' in str(exc_info.value)
 
 
 class TestDeleteContextRequest:

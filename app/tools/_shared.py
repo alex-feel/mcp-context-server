@@ -39,6 +39,8 @@ from app.errors import format_exception_message
 from app.metadata_types import non_finite_metadata_error
 from app.metadata_types import sanitize_pg_unstorable_text
 from app.metadata_types import unstorable_string_error
+from app.models import MAX_IMAGES_PER_ENTRY
+from app.models import normalize_base64_image_data
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.services.outline_service import OutlineNode
@@ -920,11 +922,18 @@ def validate_and_normalize_images(
     """Validate and normalize image attachments.
 
     Performs all image validation steps:
+    - Enforces the per-entry image count limit (MAX_IMAGES_PER_ENTRY)
     - Checks required 'data' field presence
     - Rejects a non-string 'data' or 'mime_type' value (the batch path is untyped)
     - Rejects empty/whitespace data (prevents silent 0-byte storage)
     - Defaults mime_type to 'image/png' when the key is absent
-    - Validates base64 encoding
+    - Normalizes each base64 payload to canonical standard-alphabet form
+      (data-URI prefix stripped, ASCII whitespace removed, URL-safe alphabet
+      translated, '=' padding restored) and REWRITES img['data'] in place to
+      that canonical string, so every later re-decode (ImageRepository write
+      paths) operates on the exact payload validated here
+    - Decodes STRICTLY (base64.b64decode with validate=True), so genuinely
+      non-base64 input fails loudly instead of being silently mangled
     - Enforces per-image size limit (MAX_IMAGE_SIZE_MB)
     - Enforces total size limit (MAX_TOTAL_SIZE_MB)
     - Rejects a non-finite-float per-image 'metadata' value (invalid jsonb)
@@ -952,6 +961,18 @@ def validate_and_normalize_images(
 
     errors: list[str] = []
     total_size: float = 0.0
+
+    # Enforce the documented per-entry count limit here at the single shared
+    # chokepoint so it covers store_context, update_context, AND both batch
+    # tools (whose per-entry image lists never pass through the Pydantic
+    # models). The tool-boundary Field declarations in app/tools/context.py
+    # advertise the same bound as maxItems in the MCP wire schema.
+    if len(images) > MAX_IMAGES_PER_ENTRY:
+        msg = f'Too many images: {len(images)} provided, maximum is {MAX_IMAGES_PER_ENTRY} per entry'
+        if error_mode == 'raise':
+            raise ToolError(msg)
+        errors.append(msg)
+        return images, 'text', errors
 
     for idx, img in enumerate(images):
         # Validate required data field
@@ -1043,21 +1064,37 @@ def validate_and_normalize_images(
             errors.append(msg)
             return images, 'text', errors
 
-        # Validate base64 encoding
+        # Normalize the payload to canonical standard-alphabet base64 BEFORE
+        # decoding: strip one RFC 2397 data-URI prefix, remove ASCII whitespace,
+        # translate the URL-safe alphabet, restore '=' padding. A lenient
+        # b64decode previously accepted these shapes and silently corrupted the
+        # bytes (a data-URI prefix whose base64-alphabet length is a multiple of
+        # 4 decodes as garbage prepended to the image; '-'/'_' were discarded,
+        # shifting every following byte). The STRICT decode (validate=True) then
+        # either yields exactly the intended bytes or fails loudly per image.
+        normalized_data = normalize_base64_image_data(img_data_str)
         try:
-            image_binary = base64.b64decode(img_data_str)
+            image_binary = base64.b64decode(normalized_data, validate=True)
         except Exception as e:
             if error_mode == 'raise':
-                raise ToolError(f'Image {idx} has invalid base64 encoding: {format_exception_message(e)}') from None
+                raise ToolError(
+                    f'Image {idx} has invalid base64 encoding: Invalid base64 data ({format_exception_message(e)})',
+                ) from None
             errors.append(f'Image {idx} has invalid base64 encoding')
             return images, 'text', errors
 
-        # A non-empty data string that decodes to zero bytes is not a real image:
-        # base64.b64decode (lenient) silently discards every character outside the
-        # alphabet, so a garbage value like '!!!!' decodes to b'' and would otherwise be
-        # stored as a 0-byte attachment -- exactly what the empty-data check above is meant
-        # to prevent. Reject it. The decode stays lenient so legitimately whitespace- or
-        # newline-wrapped base64 still works; only the empty decode result is rejected.
+        # Rewrite the payload in place to the canonical string so the write-path
+        # re-decode in ImageRepository (strict as well) operates on the exact
+        # payload validated here. The batch tools rely on this in-place mutation:
+        # they discard the returned list and later pass the same dict objects to
+        # the transaction helpers.
+        img['data'] = normalized_data
+
+        # A payload that normalizes to the empty string (e.g. a bare data-URI
+        # prefix with nothing after the comma) decodes to zero bytes and is not
+        # a real image; reject it rather than storing a 0-byte attachment.
+        # Non-alphabet garbage no longer reaches this guard -- the strict decode
+        # above rejects it loudly.
         if not image_binary:
             msg = f'Image {idx} "data" decodes to zero bytes (not valid base64 image content)'
             if error_mode == 'raise':
