@@ -63,6 +63,42 @@ CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, meta
 _DELETE_ID_CHUNK_SIZE = 900
 
 
+def describe_batch_delete_criteria(
+    context_ids: list[str] | None = None,
+    thread_ids: list[str] | None = None,
+    source: str | None = None,
+    older_than_days: int | None = None,
+) -> list[str]:
+    """Describe batch-delete criteria as human-readable ``criteria_used`` strings.
+
+    Single source of truth for the strings returned in batch-delete tool
+    responses. ``delete_contexts_batch`` builds them here for its criteria-based
+    delete, and the SQLite branch of the ``delete_context_batch`` tool builds
+    them here too, because it deletes by the pre-queried snapshot ids (see
+    ``get_ids_matching_batch_criteria``) and never reaches the criteria-building
+    closures.
+
+    Args:
+        context_ids: Specific context entry IDs targeted by the delete
+        thread_ids: Threads whose entries are targeted by the delete
+        source: Source filter ('user' or 'agent')
+        older_than_days: Age filter in days
+
+    Returns:
+        List of criteria descriptions in the order the filters are applied.
+    """
+    criteria_used: list[str] = []
+    if context_ids:
+        criteria_used.append(f'context_ids: {len(context_ids)} IDs')
+    if thread_ids:
+        criteria_used.append(f'thread_ids: {len(thread_ids)} threads')
+    if source:
+        criteria_used.append(f'source: {source}')
+    if older_than_days is not None:
+        criteria_used.append(f'older_than_days: {older_than_days}')
+    return criteria_used
+
+
 class DuplicateCandidate(NamedTuple):
     """Statement-level snapshot of a likely-duplicate entry found by the pre-check.
 
@@ -1807,15 +1843,19 @@ class ContextRepository(BaseRepository):
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
-        older_than_cutoff: str | None = None,
     ) -> list[str]:
         """Return context entry IDs matching batch deletion criteria.
 
         Builds the same AND-combined WHERE clause as delete_contexts_batch but
-        executes a SELECT instead of DELETE. Used to pre-query the exact IDs that a
-        delete will remove for embedding cleanup on SQLite (where vec0 virtual
-        tables lack CASCADE), so the cleanup targets only the to-be-deleted subset
-        and never orphans a surviving entry's embeddings.
+        executes a SELECT instead of DELETE. On the SQLite delete tool paths the
+        returned snapshot is the AUTHORITATIVE delete set: embedding cleanup
+        (vec0 virtual tables lack CASCADE) targets exactly these ids, and the
+        destructive step then deletes exactly these ids via ``delete_by_ids``
+        instead of re-running the criteria, so an entry committed after the
+        snapshot survives rather than being deleted without its embedding
+        cleanup. Because the criteria are evaluated exactly once, the
+        ``older_than_days`` age boundary needs no caller-resolved absolute
+        cutoff; the single statement's ``datetime('now')`` is race-free.
 
         Args:
             context_ids: Filter by these context IDs (intersected with the others)
@@ -1851,15 +1891,7 @@ class ContextRepository(BaseRepository):
                     conditions.append(f'source = {self._placeholder(len(params) + 1)}')
                     params.append(source)
 
-                if older_than_cutoff is not None:
-                    # Use a caller-resolved ABSOLUTE cutoff so this embedding-cleanup
-                    # pre-query and the subsequent DELETE share ONE age boundary.
-                    # datetime('now') re-evaluates per statement, so a row crossing the
-                    # boundary between the two would be deleted without its vec0
-                    # embeddings cleaned -- an orphan.
-                    conditions.append(f'created_at < {self._placeholder(len(params) + 1)}')
-                    params.append(older_than_cutoff)
-                elif older_than_days is not None:
+                if older_than_days is not None:
                     conditions.append(
                         f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
                     )
@@ -1885,7 +1917,6 @@ class ContextRepository(BaseRepository):
         thread_ids: list[str] | None = None,
         source: str | None = None,
         older_than_days: int | None = None,
-        older_than_cutoff: str | None = None,
     ) -> tuple[int, list[str]]:
         """Delete multiple context entries by various criteria.
 
@@ -1896,8 +1927,14 @@ class ContextRepository(BaseRepository):
         compression mode (fp32 ``vec_context_embeddings`` when compression
         is disabled; compressed ``vec_context_embeddings_compressed`` when
         enabled). On SQLite the vec0 virtual table is NOT covered by
-        CASCADE and requires explicit cleanup via the embedding repository;
-        the compressed ``vec_context_embeddings_compressed`` table IS covered
+        CASCADE and requires explicit cleanup via the embedding repository:
+        a caller needing that cleanup must pre-query the snapshot via
+        ``get_ids_matching_batch_criteria``, clean those ids, and delete
+        exactly that snapshot with ``delete_by_ids`` (as the
+        ``delete_context_batch`` tool does) instead of calling this method,
+        because this criteria-based DELETE re-evaluates the predicate and
+        would sweep rows committed after the cleanup snapshot. The
+        compressed ``vec_context_embeddings_compressed`` table IS covered
         by CASCADE on SQLite (it is a standard table, not a virtual one).
 
         Args:
@@ -1915,16 +1952,21 @@ class ContextRepository(BaseRepository):
                 cursor = conn.cursor()
                 conditions: list[str] = []
                 params: list[Any] = []
-                # Build per-invocation so transparent write-retries (e.g. on a
-                # transient "database is locked" error) do not accumulate
-                # duplicate criteria strings across attempts.
-                criteria_used: list[str] = []
+                # Built fresh per closure invocation (via the shared helper) so
+                # transparent write-retries (e.g. on a transient "database is
+                # locked" error) do not accumulate duplicate criteria strings
+                # across attempts.
+                criteria_used = describe_batch_delete_criteria(
+                    context_ids=context_ids,
+                    thread_ids=thread_ids,
+                    source=source,
+                    older_than_days=older_than_days,
+                )
 
                 if context_ids:
                     placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
                     conditions.append(f'id IN ({placeholders})')
                     params.extend(context_ids)
-                    criteria_used.append(f'context_ids: {len(context_ids)} IDs')
 
                 if thread_ids:
                     placeholders = ','.join([
@@ -1932,26 +1974,16 @@ class ContextRepository(BaseRepository):
                     ])
                     conditions.append(f'thread_id IN ({placeholders})')
                     params.extend(thread_ids)
-                    criteria_used.append(f'thread_ids: {len(thread_ids)} threads')
 
                 if source:
                     conditions.append(f'source = {self._placeholder(len(params) + 1)}')
                     params.append(source)
-                    criteria_used.append(f'source: {source}')
 
-                if older_than_cutoff is not None:
-                    # Shared absolute cutoff (see get_ids_matching_batch_criteria) so this
-                    # DELETE's age boundary is identical to the embedding-cleanup
-                    # pre-query, preventing a moving datetime('now') from orphaning vec0 rows.
-                    conditions.append(f'created_at < {self._placeholder(len(params) + 1)}')
-                    params.append(older_than_cutoff)
-                    criteria_used.append(f'older_than_days: {older_than_days}')
-                elif older_than_days is not None:
+                if older_than_days is not None:
                     conditions.append(
                         f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
                     )
                     params.append(f'-{older_than_days} days')
-                    criteria_used.append(f'older_than_days: {older_than_days}')
 
                 if not conditions:
                     return 0, criteria_used
@@ -1970,32 +2002,34 @@ class ContextRepository(BaseRepository):
         async def _delete_batch_postgresql(conn: 'asyncpg.Connection') -> tuple[int, list[str]]:
             conditions: list[str] = []
             params: list[Any] = []
-            # Build per-invocation (see the SQLite closure) so retried writes do
-            # not accumulate duplicate criteria strings across attempts.
-            criteria_used: list[str] = []
+            # Built fresh per closure invocation (see the SQLite closure) so
+            # retried writes do not accumulate duplicate criteria strings across
+            # attempts.
+            criteria_used = describe_batch_delete_criteria(
+                context_ids=context_ids,
+                thread_ids=thread_ids,
+                source=source,
+                older_than_days=older_than_days,
+            )
 
             if context_ids:
                 placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
                 conditions.append(f'id IN ({placeholders})')
                 params.extend(context_ids)
-                criteria_used.append(f'context_ids: {len(context_ids)} IDs')
 
             if thread_ids:
                 placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(thread_ids))])
                 conditions.append(f'thread_id IN ({placeholders})')
                 params.extend(thread_ids)
-                criteria_used.append(f'thread_ids: {len(thread_ids)} threads')
 
             if source:
                 conditions.append(f'source = {self._placeholder(len(params) + 1)}')
                 params.append(source)
-                criteria_used.append(f'source: {source}')
 
             if older_than_days is not None:
                 conditions.append(
                     f"created_at < (NOW() - INTERVAL '{older_than_days} days')",
                 )
-                criteria_used.append(f'older_than_days: {older_than_days}')
 
             if not conditions:
                 return 0, criteria_used
