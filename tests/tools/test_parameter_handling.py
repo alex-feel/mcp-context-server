@@ -14,12 +14,18 @@ The issue being tested:
 
 import base64
 import json
+from collections.abc import Callable
 from typing import Any
 from typing import Literal
 from typing import cast
+from typing import get_args
+from typing import get_type_hints
 
 import pytest
+from annotated_types import Ge
+from annotated_types import Le
 from fastmcp.exceptions import ToolError
+from pydantic.fields import FieldInfo
 
 import app.server
 from app.types import JsonValue
@@ -952,3 +958,121 @@ class TestParameterInteractions:
         assert entry['tags'] == []
         assert entry['metadata'] is None
         assert 'images' not in entry or entry['images'] == []
+
+
+_SEARCH_TOOLS: list[Callable[..., object]] = [
+    app.server.search_context,
+    app.server.semantic_search_context,
+    app.server.fts_search_context,
+    app.server.hybrid_search_context,
+]
+
+
+class TestSearchOffsetUpperBound:
+    """The offset parameter carries an explicit upper bound on every search tool.
+
+    Bounding offset at the tool boundary keeps a deep-pagination request a clean
+    client-facing validation error instead of letting the reranking/RRF overfetch
+    multipliers grow a LIMIT/OFFSET bind past the int64 column width inside
+    connection scope (which would charge the circuit breaker for invalid input).
+    """
+
+    @staticmethod
+    def _offset_field_info(fn: Callable[..., object]) -> FieldInfo:
+        """Extract the pydantic FieldInfo attached to a tool's ``offset`` parameter."""
+        hints = get_type_hints(fn, include_extras=True)
+        annotation = hints['offset']
+        for meta in get_args(annotation)[1:]:
+            if isinstance(meta, FieldInfo):
+                return meta
+        msg = f'offset annotation for {getattr(fn, "__name__", fn)!r} carries no FieldInfo'
+        raise AssertionError(msg)
+
+    @pytest.mark.parametrize('tool', _SEARCH_TOOLS)
+    def test_offset_declares_le_max_search_offset(self, tool: Callable[..., object]) -> None:
+        """Every search tool's offset Field declares le=MAX_SEARCH_OFFSET."""
+        from app.tools.search import MAX_SEARCH_OFFSET
+
+        tool_name = getattr(tool, '__name__', tool)
+        field_info = self._offset_field_info(tool)
+        le_values = [constraint.le for constraint in field_info.metadata if isinstance(constraint, Le)]
+        assert le_values == [MAX_SEARCH_OFFSET], (
+            f'{tool_name!r} offset must declare le=MAX_SEARCH_OFFSET, got {le_values}'
+        )
+
+    @pytest.mark.parametrize('tool', _SEARCH_TOOLS)
+    def test_offset_declares_ge_zero(self, tool: Callable[..., object]) -> None:
+        """The offset lower bound (ge=0) is preserved alongside the new upper bound."""
+        tool_name = getattr(tool, '__name__', tool)
+        field_info = self._offset_field_info(tool)
+        ge_values = [constraint.ge for constraint in field_info.metadata if isinstance(constraint, Ge)]
+        assert ge_values == [0], f'{tool_name!r} offset must declare ge=0, got {ge_values}'
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_offset_above_bound_rejected(self) -> None:
+        """An offset above MAX_SEARCH_OFFSET is rejected at the boundary.
+
+        Calling the tool through the pydantic-validated wrapper rejects the
+        out-of-range offset before any repository work runs; the le constraint
+        surfaces as a ValidationError naming the offset field and its ceiling.
+        """
+        from fastmcp.tools import Tool
+        from pydantic import ValidationError
+
+        from app.tools.search import MAX_SEARCH_OFFSET
+
+        validated = Tool.from_function(app.server.search_context)
+        with pytest.raises(ValidationError) as exc_info:
+            await validated.run({'offset': MAX_SEARCH_OFFSET + 1})
+        errors = exc_info.value.errors()
+        assert any(
+            err['type'] == 'less_than_equal' and err['loc'] == ('offset',)
+            for err in errors
+        ), errors
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_offset_at_bound_accepted(self) -> None:
+        """An offset exactly at MAX_SEARCH_OFFSET passes boundary validation.
+
+        The ceiling is inclusive (le), so the maximum legitimate value is
+        accepted and reaches the tool body (returning the normal response shape).
+        """
+        from fastmcp.tools import Tool
+
+        from app.tools.search import MAX_SEARCH_OFFSET
+
+        validated = Tool.from_function(app.server.search_context)
+        result = await validated.run({'thread_id': 'offset_bound_thread', 'offset': MAX_SEARCH_OFFSET})
+        payload = result.structured_content
+        assert payload is not None
+        assert payload['results'] == []
+        assert payload['count'] == 0
+
+
+class TestClampOverfetch:
+    """The overfetch window is clamped to a safe ceiling before it is bound.
+
+    The clamp is defense in depth: with offset already bounded it never trims a
+    valid request, but no future multiplier change can grow the row count reaching
+    a LIMIT/OFFSET bind out of range.
+    """
+
+    def test_clamps_value_above_ceiling(self) -> None:
+        """A window above MAX_OVERFETCH_ROWS is clamped down to the ceiling."""
+        from app.tools.search import MAX_OVERFETCH_ROWS
+        from app.tools.search import _clamp_overfetch
+
+        assert _clamp_overfetch(MAX_OVERFETCH_ROWS + 1) == MAX_OVERFETCH_ROWS
+        assert _clamp_overfetch(MAX_OVERFETCH_ROWS * 1000) == MAX_OVERFETCH_ROWS
+
+    def test_passes_value_below_ceiling_unchanged(self) -> None:
+        """A window at or below the ceiling passes through untouched."""
+        from app.tools.search import MAX_OVERFETCH_ROWS
+        from app.tools.search import _clamp_overfetch
+
+        assert _clamp_overfetch(0) == 0
+        assert _clamp_overfetch(42) == 42
+        assert _clamp_overfetch(MAX_OVERFETCH_ROWS - 1) == MAX_OVERFETCH_ROWS - 1
+        assert _clamp_overfetch(MAX_OVERFETCH_ROWS) == MAX_OVERFETCH_ROWS

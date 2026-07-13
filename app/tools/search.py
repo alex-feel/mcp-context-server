@@ -45,6 +45,35 @@ settings = get_settings()
 # Maximum allowed search results limit (Postel's Law: accept, clamp, warn)
 MAX_SEARCH_LIMIT = 100
 
+# Maximum allowed pagination offset, rejected at the tool boundary. A deep offset
+# is already an anti-pattern (the database still scans offset + limit rows), and an
+# unbounded offset multiplied by the reranking and RRF overfetch factors can grow a
+# LIMIT/OFFSET bind past the int64 column width. That failure surfaces INSIDE
+# connection scope and charges the circuit breaker for what is purely invalid client
+# input; bounding the offset here keeps it a clean client-facing validation error.
+MAX_SEARCH_OFFSET = 1_000_000
+
+# Hard ceiling for the computed overfetch window ((limit + offset) times the
+# reranking and RRF factors) before it reaches a LIMIT/OFFSET bind. The value is the
+# largest legitimate window: MAX_SEARCH_LIMIT + MAX_SEARCH_OFFSET rows times the
+# maximum overfetch factor chain (HYBRID_RRF_OVERFETCH max 10 times RERANKING_OVERFETCH
+# max 20 = 200). With the offset already bounded this never clamps a valid request; it
+# is defense in depth so no future factor change can grow the bind out of range.
+MAX_OVERFETCH_ROWS = (MAX_SEARCH_LIMIT + MAX_SEARCH_OFFSET) * 200
+
+
+def _clamp_overfetch(rows: int) -> int:
+    """Clamp a computed overfetch window to the safe ceiling before it is bound.
+
+    Args:
+        rows: The computed (limit + offset) * factors overfetch window.
+
+    Returns:
+        The window bounded to MAX_OVERFETCH_ROWS so the row count reaching a
+        LIMIT/OFFSET bind stays independent of the individual overfetch multipliers.
+    """
+    return min(rows, MAX_OVERFETCH_ROWS)
+
 
 async def _apply_reranking(
     query: str,
@@ -463,7 +492,7 @@ async def search_context(
             description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
         ),
     ] = None,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
@@ -597,7 +626,7 @@ async def search_context(
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
     content_type: Annotated[
@@ -689,8 +718,8 @@ async def semantic_search_context(
         # Over-fetch more results to give reranker better candidates
         reranking_provider = get_reranking_provider()
         need_reranking = reranking_provider is not None and settings.reranking.enabled
-        overfetch_limit = (
-            (limit + offset) * settings.reranking.overfetch if need_reranking else limit + offset
+        overfetch_limit = _clamp_overfetch(
+            (limit + offset) * settings.reranking.overfetch if need_reranking else limit + offset,
         )
 
         # Import exception here to avoid circular imports at module level
@@ -831,7 +860,7 @@ async def fts_search_context(
             'starts_with, ends_with, is_null, is_not_null, array_contains',
         ),
     ] = None,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
@@ -916,9 +945,9 @@ async def fts_search_context(
         # Calculate overfetch limit for reranking
         reranking_provider = get_reranking_provider()
         if reranking_provider is not None and settings.reranking.enabled:
-            overfetch_limit = (limit + offset) * settings.reranking.overfetch
+            overfetch_limit = _clamp_overfetch((limit + offset) * settings.reranking.overfetch)
         else:
-            overfetch_limit = limit + offset
+            overfetch_limit = _clamp_overfetch(limit + offset)
 
         # Determine if we need highlights for internal reranking
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
@@ -1138,7 +1167,7 @@ def _prepare_hybrid_fts_query(
 async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     fusion_method: Annotated[
         Literal['rrf'],
         Field(description="Fusion algorithm: 'rrf' (Reciprocal Rank Fusion, default)"),
@@ -1301,9 +1330,11 @@ async def hybrid_search_context(
         # Chain: limit * hybrid_rrf_overfetch * reranking.overfetch
         reranking_provider = get_reranking_provider()
         if reranking_provider is not None and settings.reranking.enabled:
-            over_fetch_limit = (limit + offset) * settings.hybrid_search.rrf_overfetch * settings.reranking.overfetch
+            over_fetch_limit = _clamp_overfetch(
+                (limit + offset) * settings.hybrid_search.rrf_overfetch * settings.reranking.overfetch,
+            )
         else:
-            over_fetch_limit = (limit + offset) * settings.hybrid_search.rrf_overfetch
+            over_fetch_limit = _clamp_overfetch((limit + offset) * settings.hybrid_search.rrf_overfetch)
 
         # Determine if we need highlights for internal reranking
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
@@ -1481,8 +1512,10 @@ async def hybrid_search_context(
 
         # Fuse results using RRF (no reranking yet - Layer 1 results only)
         # Get more than needed for reranking
-        fused_limit_for_reranking = (limit + offset) * (
-            settings.reranking.overfetch if reranking_provider is not None and settings.reranking.enabled else 1
+        fused_limit_for_reranking = _clamp_overfetch(
+            (limit + offset) * (
+                settings.reranking.overfetch if reranking_provider is not None and settings.reranking.enabled else 1
+            ),
         )
         fused_results = reciprocal_rank_fusion(
             fts_results=fts_results,
