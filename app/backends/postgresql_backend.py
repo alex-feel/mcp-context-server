@@ -412,8 +412,14 @@ class PostgreSQLBackend:
         encoded_password = quote(password, safe='')
         encoded_database = quote(database, safe='')
 
+        # An IPv6 host literal contains colons, which the DSN authority parses as the
+        # host:port separator; bracket it (RFC 3986 IP-literal) so ::1 or a full IPv6
+        # address interpolates as [::1]:port rather than corrupting the parse. A hostname
+        # or IPv4 literal has no colon and is left as-is.
+        host_part = f'[{host}]' if ':' in host else host
+
         # Build connection string with encoded components
-        conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host}:{port}/{encoded_database}'
+        conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host_part}:{port}/{encoded_database}'
 
         # Add SSL mode if specified
         if settings.storage.postgresql_ssl_mode != 'prefer':
