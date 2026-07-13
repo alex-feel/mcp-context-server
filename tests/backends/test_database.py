@@ -68,14 +68,16 @@ class TestDatabaseInitialization:
                 'idx_thread_source',
                 # Deduplication lookup index, provisioned from the base schema.
                 'idx_context_entries_dedup_hash',
-                # Metadata filtering indexes (configurable via METADATA_INDEXED_FIELDS)
-                'idx_metadata_status',
-                'idx_metadata_agent_name',
-                'idx_metadata_task_name',
-                'idx_metadata_project',
-                'idx_metadata_report_type',
             }
+            # The base schema no longer declares any metadata expression index.
+            # handle_metadata_indexes (run separately at server startup) is the
+            # single source of truth for the configurable idx_metadata_* set, so
+            # init_database on its own must leave a fresh database with none of
+            # them. A leftover idx_metadata_* here would reintroduce the two
+            # sources of truth that break strict-mode reconciliation on a fresh
+            # database configured with a custom METADATA_INDEXED_FIELDS.
             assert set(indexes) == expected_indexes
+            assert not any(name.startswith('idx_metadata_') for name in indexes)
 
     @pytest.mark.asyncio
     async def test_init_database_handles_errors(self, temp_db_path: Path) -> None:

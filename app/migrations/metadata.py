@@ -66,6 +66,8 @@ def _generate_create_index_postgresql(field: str, type_hint: str) -> str:
     Returns:
         SQL CREATE INDEX statement using JSONB operators.
     """
+    from app.backends.postgresql_backend import quote_pg_identifier
+
     # Type cast mapping for typed comparisons
     type_cast_map = {
         'integer': '::INTEGER',
@@ -75,15 +77,22 @@ def _generate_create_index_postgresql(field: str, type_hint: str) -> str:
     }
     type_cast = type_cast_map.get(type_hint, '')
     key_literal = _escape_sql_string_literal(field)
+    # Quote the generated index identifier so a mixed-case field name is stored
+    # case-preserved in the catalog. PostgreSQL folds an unquoted identifier to
+    # lowercase, which would make pg_indexes report a lowercased name that no
+    # longer round-trips against the case-preserved configured field, breaking
+    # the reconciliation diff (perpetual drop/recreate in auto mode, a permanent
+    # false positive in strict mode). The JSON key literal stays case-sensitive.
+    index_name = quote_pg_identifier(f'idx_metadata_{field}')
 
     if type_cast:
         return f'''
-CREATE INDEX IF NOT EXISTS idx_metadata_{field}
+CREATE INDEX IF NOT EXISTS {index_name}
 ON context_entries(((metadata->>'{key_literal}'){type_cast}))
 WHERE metadata->>'{key_literal}' IS NOT NULL;
 '''
     return f'''
-CREATE INDEX IF NOT EXISTS idx_metadata_{field}
+CREATE INDEX IF NOT EXISTS {index_name}
 ON context_entries((metadata->>'{key_literal}'))
 WHERE metadata->>'{key_literal}' IS NOT NULL;
 '''
@@ -258,14 +267,18 @@ async def _drop_metadata_index(backend: StorageBackend, field: str, *, is_compou
             # lock, can exceed the regular per-query budget, so both run under the migration
             # timeout, mirroring the schema migrations and the create path.
             await begin_migration(conn, migration_timeout_s)
-            # Quote the configured schema via the shared quote_pg_identifier helper so the
-            # qualified DROP targets the schema the index actually lives in. PostgreSQL folds an
-            # unquoted mixed-case or reserved schema name to lowercase, which would resolve to the
-            # wrong (or a nonexistent) schema and let IF EXISTS silently skip the real orphan index.
+            # Quote both the configured schema AND the generated index identifier via the shared
+            # quote_pg_identifier helper so the qualified DROP targets the exact object that the
+            # CREATE path created. PostgreSQL folds an unquoted mixed-case or reserved identifier
+            # to lowercase; an unquoted schema would resolve to the wrong (or a nonexistent) schema
+            # and an unquoted index name would target the lowercased name rather than the
+            # case-preserved one the quoted CREATE produced, either of which lets IF EXISTS
+            # silently skip the real index the reconciliation diff asked to drop.
             from app.backends.postgresql_backend import quote_pg_identifier
 
             schema = quote_pg_identifier(settings.storage.postgresql_schema)
-            sql = f'DROP INDEX IF EXISTS {schema}.{index_name};'
+            quoted_index_name = quote_pg_identifier(index_name)
+            sql = f'DROP INDEX IF EXISTS {schema}.{quoted_index_name};'
             await execute_migration_ddl(conn, sql, migration_timeout_s)
 
         await backend.execute_write(cast(Any, _drop_postgresql_index))

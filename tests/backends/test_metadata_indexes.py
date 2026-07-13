@@ -238,7 +238,8 @@ class TestSQLGeneration:
         from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('status', 'string')
-        assert 'CREATE INDEX IF NOT EXISTS idx_metadata_status' in sql
+        # The generated index identifier is quoted so PostgreSQL stores it case-preserved.
+        assert 'CREATE INDEX IF NOT EXISTS "idx_metadata_status"' in sql
         assert "metadata->>'status'" in sql
         assert '::' not in sql  # No type casting for strings
 
@@ -247,7 +248,7 @@ class TestSQLGeneration:
         from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('priority', 'integer')
-        assert 'CREATE INDEX IF NOT EXISTS idx_metadata_priority' in sql
+        assert 'CREATE INDEX IF NOT EXISTS "idx_metadata_priority"' in sql
         assert "metadata->>'priority'" in sql
         assert '::INTEGER' in sql
 
@@ -256,7 +257,7 @@ class TestSQLGeneration:
         from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('completed', 'boolean')
-        assert 'CREATE INDEX IF NOT EXISTS idx_metadata_completed' in sql
+        assert 'CREATE INDEX IF NOT EXISTS "idx_metadata_completed"' in sql
         assert '::BOOLEAN' in sql
 
     def test_generate_create_index_postgresql_float(self) -> None:
@@ -264,8 +265,39 @@ class TestSQLGeneration:
         from app.migrations.metadata import _generate_create_index_postgresql
 
         sql = _generate_create_index_postgresql('score', 'float')
-        assert 'CREATE INDEX IF NOT EXISTS idx_metadata_score' in sql
+        assert 'CREATE INDEX IF NOT EXISTS "idx_metadata_score"' in sql
         assert '::NUMERIC' in sql
+
+    def test_generate_create_index_postgresql_quotes_mixed_case_identifier(self) -> None:
+        """A mixed-case field yields a quoted, case-preserved index identifier on PostgreSQL.
+
+        PostgreSQL folds an UNQUOTED identifier to lowercase in the catalog. If the generated
+        idx_metadata_{field} were emitted unquoted, pg_indexes would report the lowercased name
+        while the reconciliation diff compares against the case-preserved configured field, so the
+        same index would look simultaneously missing and extra forever (strict-mode boot failure,
+        auto-mode drop/recreate churn). Quoting the identifier makes it round-trip case-preserved.
+        """
+        from app.migrations.metadata import _generate_create_index_postgresql
+
+        sql = _generate_create_index_postgresql('camelField', 'string')
+
+        # The generated identifier is double-quoted so PostgreSQL stores it case-preserved.
+        assert '"idx_metadata_camelField"' in sql
+        # The bare (fold-susceptible) form must NOT appear as the CREATE target.
+        assert 'CREATE INDEX IF NOT EXISTS idx_metadata_camelField' not in sql
+        # The JSON key accessor stays case-sensitive (JSON keys are case-sensitive), so the
+        # mixed-case field name is preserved verbatim in the metadata->> expression.
+        assert "metadata->>'camelField'" in sql
+
+    def test_generate_create_index_postgresql_quotes_typed_mixed_case_identifier(self) -> None:
+        """The quoted identifier is also emitted on the typed-cast CREATE branch."""
+        from app.migrations.metadata import _generate_create_index_postgresql
+
+        sql = _generate_create_index_postgresql('Priority', 'integer')
+
+        assert '"idx_metadata_Priority"' in sql
+        assert 'CREATE INDEX IF NOT EXISTS idx_metadata_Priority' not in sql
+        assert '::INTEGER' in sql
 
 
 # ============================================================================
@@ -278,8 +310,19 @@ class TestIndexDetection:
 
     @pytest_asyncio.fixture
     async def sqlite_backend_with_schema(self, tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
-        """Create SQLite backend with schema initialized."""
+        """Create SQLite backend with schema and the default metadata indexes.
+
+        The base schema no longer declares any idx_metadata_* index (that is the
+        single responsibility of handle_metadata_indexes). To keep the detection
+        assertions meaningful, this fixture provisions the five default scalar
+        indexes the way server startup does, via _create_metadata_index, right
+        after applying the base schema.
+
+        Yields:
+            An initialized SQLite backend with the default metadata indexes.
+        """
         from app.backends import create_backend
+        from app.migrations.metadata import _create_metadata_index
 
         db_path = tmp_path / 'test_indexes.db'
         backend = create_backend(backend_type='sqlite', db_path=db_path)
@@ -293,6 +336,12 @@ class TestIndexDetection:
             conn.executescript(schema_sql)
 
         await backend.execute_write(apply_schema)
+
+        # Provision the default scalar metadata indexes (formerly baked into the
+        # base schema) so detection tests observe the same set as a running
+        # server whose startup called handle_metadata_indexes.
+        for field in ('status', 'agent_name', 'task_name', 'project', 'report_type'):
+            await _create_metadata_index(backend, field, 'string')
 
         yield backend
 
@@ -797,3 +846,213 @@ class TestMetadataIndexingIntegration:
         # Check array/object fields have correct types
         assert fields.get('technologies') == 'array'
         assert fields.get('references') == 'object'
+
+
+# ============================================================================
+# Mixed-Case Field Reconciliation Round-Trip
+# ============================================================================
+
+
+class TestMixedCaseFieldReconciliation:
+    """A mixed-case metadata field must round-trip cleanly through reconciliation.
+
+    The created index identifier and the name read back from the catalog must
+    resolve to the SAME configured field, so a single startup run leaves the
+    diff empty (no perpetual drop/recreate in auto mode, no strict-mode false
+    positive). On PostgreSQL this depends on the quoted identifier landing
+    case-preserved in the catalog; on SQLite the identifier is preserved without
+    quoting. The behavior is exercised directly on SQLite here.
+    """
+
+    @pytest_asyncio.fixture
+    async def sqlite_backend_with_table(self, tmp_path: Path) -> AsyncGenerator[StorageBackend, None]:
+        """Create a SQLite backend with just the context_entries table.
+
+        Yields:
+            An initialized SQLite backend with an empty context_entries table.
+        """
+        from app.backends import create_backend
+
+        db_path = tmp_path / 'test_mixed_case.db'
+        backend = create_backend(backend_type='sqlite', db_path=db_path)
+        await backend.initialize()
+
+        def create_table(conn: sqlite3.Connection) -> None:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS context_entries (
+                    id INTEGER PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    text_content TEXT,
+                    metadata JSON
+                )
+            ''')
+
+        await backend.execute_write(create_table)
+
+        yield backend
+
+        await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_created_index_round_trips_to_configured_field(
+        self, sqlite_backend_with_table: StorageBackend,
+    ) -> None:
+        """A mixed-case field creates an index whose detected name equals the field."""
+        from app.migrations.metadata import _create_metadata_index
+        from app.migrations.metadata import _get_existing_metadata_indexes
+
+        await _create_metadata_index(sqlite_backend_with_table, 'camelField', 'string')
+
+        existing, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+        # The detected field name matches the configured (case-preserved) field, so the
+        # reconciliation diff can pair them and never report the same index as both
+        # missing and extra.
+        assert 'camelField' in existing
+
+    @pytest.mark.asyncio
+    async def test_additive_mode_is_stable_across_reboots_for_mixed_case(
+        self, sqlite_backend_with_table: StorageBackend,
+    ) -> None:
+        """Repeated additive runs on a mixed-case field cause no drop/recreate churn."""
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
+
+        with patch('app.migrations.metadata.settings') as mock_settings:
+            mock_settings.storage.metadata_indexed_fields = {'camelField': 'string'}
+            mock_settings.storage.metadata_index_sync_mode = 'additive'
+
+            await handle_metadata_indexes(sqlite_backend_with_table)
+            first, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+
+            # A second run must observe the SAME index already present, meaning the
+            # first run's created name round-tripped and the diff is empty.
+            await handle_metadata_indexes(sqlite_backend_with_table)
+            second, _ = await _get_existing_metadata_indexes(sqlite_backend_with_table)
+
+        assert first == {'camelField'}
+        assert second == {'camelField'}
+
+    @pytest.mark.asyncio
+    async def test_strict_mode_passes_when_mixed_case_field_indexed(
+        self, sqlite_backend_with_table: StorageBackend,
+    ) -> None:
+        """Strict mode does not raise a false positive for an already-indexed mixed-case field."""
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _create_metadata_index
+
+        # Provision the mixed-case index exactly as the additive/startup path would.
+        await _create_metadata_index(sqlite_backend_with_table, 'camelField', 'string')
+
+        with patch('app.migrations.metadata.settings') as mock_settings:
+            mock_settings.storage.metadata_indexed_fields = {'camelField': 'string'}
+            mock_settings.storage.metadata_index_sync_mode = 'strict'
+
+            # The created identifier round-trips to the configured field, so strict
+            # reconciliation sees neither a missing nor an extra index and must not raise.
+            await handle_metadata_indexes(sqlite_backend_with_table)
+
+
+# ============================================================================
+# Base Schema Metadata-Index Absence
+# ============================================================================
+
+
+class TestBaseSchemaHasNoMetadataIndexes:
+    """The base schema must not declare any metadata expression index.
+
+    handle_metadata_indexes is the single source of truth for the configurable
+    idx_metadata_* set. If the base schema also created them, a fresh database
+    configured with a custom METADATA_INDEXED_FIELDS would boot with the default
+    indexes that strict-mode reconciliation then rejects as "extra" (and auto
+    mode would create-then-drop on every fresh init).
+    """
+
+    @pytest.mark.asyncio
+    async def test_fresh_sqlite_schema_has_no_metadata_indexes(self, tmp_path: Path) -> None:
+        """Applying only the base SQLite schema leaves no idx_metadata_* index behind."""
+        from app.backends import create_backend
+        from app.migrations.metadata import _get_existing_metadata_indexes
+
+        db_path = tmp_path / 'test_base_schema.db'
+        backend = create_backend(backend_type='sqlite', db_path=db_path)
+        await backend.initialize()
+
+        schema_path = Path(__file__).parent.parent.parent / 'app' / 'schemas' / 'sqlite_schema.sql'
+        schema_sql = schema_path.read_text()
+
+        def apply_schema(conn: sqlite3.Connection) -> None:
+            conn.executescript(schema_sql)
+
+        await backend.execute_write(apply_schema)
+
+        # The base schema declares no metadata expression index; the sync layer has
+        # not run yet, so detection must report an empty set.
+        existing, orphan_compound = await _get_existing_metadata_indexes(backend)
+        assert existing == set()
+        assert orphan_compound == set()
+
+        await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_startup_provisioning_creates_default_indexes_on_fresh_schema(
+        self, tmp_path: Path,
+    ) -> None:
+        """After the base schema, handle_metadata_indexes provisions the default set."""
+        from app.backends import create_backend
+        from app.migrations import handle_metadata_indexes
+        from app.migrations.metadata import _get_existing_metadata_indexes
+
+        db_path = tmp_path / 'test_base_then_sync.db'
+        backend = create_backend(backend_type='sqlite', db_path=db_path)
+        await backend.initialize()
+
+        schema_path = Path(__file__).parent.parent.parent / 'app' / 'schemas' / 'sqlite_schema.sql'
+        schema_sql = schema_path.read_text()
+
+        def apply_schema(conn: sqlite3.Connection) -> None:
+            conn.executescript(schema_sql)
+
+        await backend.execute_write(apply_schema)
+
+        # Fresh schema starts with no metadata indexes.
+        existing, _ = await _get_existing_metadata_indexes(backend)
+        assert existing == set()
+
+        # The sync layer (mirroring server startup) provisions the default scalar set.
+        with patch('app.migrations.metadata.settings') as mock_settings:
+            mock_settings.storage.metadata_indexed_fields = {
+                'status': 'string',
+                'agent_name': 'string',
+                'task_name': 'string',
+                'project': 'string',
+                'report_type': 'string',
+            }
+            mock_settings.storage.metadata_index_sync_mode = 'additive'
+            await handle_metadata_indexes(backend)
+
+        existing, _ = await _get_existing_metadata_indexes(backend)
+        assert existing == {'status', 'agent_name', 'task_name', 'project', 'report_type'}
+
+        await backend.shutdown()
+
+    def test_base_schema_files_declare_no_scalar_metadata_index(self) -> None:
+        """Neither base schema file contains a hardcoded idx_metadata_{scalar} CREATE INDEX.
+
+        This static check guards the single-source-of-truth invariant directly against the
+        schema files, so a future edit that reintroduces a baked-in scalar metadata index is
+        caught even if no fresh-init test happens to exercise that field.
+        """
+        schemas_dir = Path(__file__).parent.parent.parent / 'app' / 'schemas'
+        for filename in ('sqlite_schema.sql', 'postgresql_schema.sql'):
+            sql = (schemas_dir / filename).read_text()
+            for scalar in ('status', 'agent_name', 'task_name', 'project', 'report_type'):
+                needle = f'idx_metadata_{scalar}'
+                assert needle not in sql, (
+                    f'{filename} still declares {needle!r}; scalar metadata indexes must be '
+                    f'provisioned exclusively by handle_metadata_indexes.'
+                )
+            # The PostgreSQL GIN index is NOT sync-managed and legitimately stays in the schema.
+            if filename == 'postgresql_schema.sql':
+                assert 'idx_metadata_gin' in sql
