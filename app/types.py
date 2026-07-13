@@ -669,7 +669,10 @@ class HybridFtsStatsDict(TypedDict, total=False):
     """Type definition for FTS statistics in hybrid search.
 
     Contains timing and filter information from the FTS portion
-    of hybrid search.
+    of hybrid search. This is also the shape of the ``stats`` payload the
+    standalone ``fts_search_context`` tool returns, including on its
+    validation-error path, so ``backend`` (the active storage backend type)
+    is always present alongside the timing and filter counters.
     """
 
     execution_time_ms: float
@@ -683,7 +686,11 @@ class HybridSemanticStatsDict(TypedDict, total=False):
     """Type definition for semantic search statistics in hybrid search.
 
     Contains timing and filter information from the semantic portion
-    of hybrid search.
+    of hybrid search. This is also the shape of the ``stats`` payload the
+    standalone ``semantic_search_context`` tool returns. ``embedding_generation_ms``
+    is the measured wall-clock duration (rounded, milliseconds) of the query
+    ``embed_query`` call, injected by ``_semantic_search_raw`` so both the
+    standalone tool and the semantic leg of hybrid search surface it.
     """
 
     execution_time_ms: float
@@ -739,4 +746,8 @@ class HybridSearchResponseDict(TypedDict, total=False):
     clamped_limit: ClampedLimitDict | None
     warnings: list[str] | None  # Degradation warnings when sub-searches fail (e.g., FTS or semantic)
     error: str | None  # Set when all available modes failed on filter validation
-    validation_errors: list[str] | None  # Per-filter details accompanying error
+    # Per-filter details captured from a failing sub-search. Present both when all
+    # available modes failed (alongside ``error``) and when the response is only
+    # partially degraded (one mode succeeded while the other failed validation), so a
+    # client can correct an invalid sub-query even when results were still returned.
+    validation_errors: list[str] | None

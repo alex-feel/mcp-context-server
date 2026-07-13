@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Coroutine
 from datetime import UTC
 from datetime import datetime
@@ -44,6 +45,35 @@ settings = get_settings()
 
 # Maximum allowed search results limit (Postel's Law: accept, clamp, warn)
 MAX_SEARCH_LIMIT = 100
+
+# Maximum allowed pagination offset, rejected at the tool boundary. A deep offset
+# is already an anti-pattern (the database still scans offset + limit rows), and an
+# unbounded offset multiplied by the reranking and RRF overfetch factors can grow a
+# LIMIT/OFFSET bind past the int64 column width. That failure surfaces INSIDE
+# connection scope and charges the circuit breaker for what is purely invalid client
+# input; bounding the offset here keeps it a clean client-facing validation error.
+MAX_SEARCH_OFFSET = 1_000_000
+
+# Hard ceiling for the computed overfetch window ((limit + offset) times the
+# reranking and RRF factors) before it reaches a LIMIT/OFFSET bind. The value is the
+# largest legitimate window: MAX_SEARCH_LIMIT + MAX_SEARCH_OFFSET rows times the
+# maximum overfetch factor chain (HYBRID_RRF_OVERFETCH max 10 times RERANKING_OVERFETCH
+# max 20 = 200). With the offset already bounded this never clamps a valid request; it
+# is defense in depth so no future factor change can grow the bind out of range.
+MAX_OVERFETCH_ROWS = (MAX_SEARCH_LIMIT + MAX_SEARCH_OFFSET) * 200
+
+
+def _clamp_overfetch(rows: int) -> int:
+    """Clamp a computed overfetch window to the safe ceiling before it is bound.
+
+    Args:
+        rows: The computed (limit + offset) * factors overfetch window.
+
+    Returns:
+        The window bounded to MAX_OVERFETCH_ROWS so the row count reaching a
+        LIMIT/OFFSET bind stays independent of the individual overfetch multipliers.
+    """
+    return min(rows, MAX_OVERFETCH_ROWS)
 
 
 async def _apply_reranking(
@@ -225,12 +255,15 @@ async def _semantic_search_raw(
     # Get repositories
     repos = await ensure_repositories()
 
-    # Generate embedding for query
+    # Generate embedding for query, measuring the call so callers can surface the
+    # documented embedding_generation_ms stat.
+    embedding_start = time.perf_counter()
     try:
         query_embedding = await embedding_provider.embed_query(query)
     except Exception as e:
         logger.error(f'Failed to generate query embedding: {e}')
         raise ToolError(f'Failed to generate embedding for query: {format_exception_message(e)}') from e
+    embedding_generation_ms = (time.perf_counter() - embedding_start) * 1000
 
     # Perform similarity search with optional filtering
     from app.repositories.embedding_repository import MetadataFilterValidationError
@@ -255,6 +288,11 @@ async def _semantic_search_raw(
     except Exception as e:
         logger.error(f'Semantic search failed: {e}')
         raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
+
+    # Surface the measured query-embedding duration in the stats contract
+    # (HybridSemanticStatsDict.embedding_generation_ms); hybrid search inherits it
+    # via semantic_stats.
+    search_stats['embedding_generation_ms'] = round(embedding_generation_ms, 2)
 
     # Post-process for reranking: extract chunk text from boundaries
     if _extract_rerank_text:
@@ -463,7 +501,7 @@ async def search_context(
             description='Filter by created_at <= date (ISO 8601 format, e.g., "2025-11-29" or "2025-11-29T23:59:59")',
         ),
     ] = None,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
     ctx: Context | None = None,
@@ -597,7 +635,7 @@ async def search_context(
 async def semantic_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     thread_id: Annotated[str | None, Field(min_length=1, description='Optional filter by thread')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Optional filter by source type')] = None,
     content_type: Annotated[
@@ -689,8 +727,8 @@ async def semantic_search_context(
         # Over-fetch more results to give reranker better candidates
         reranking_provider = get_reranking_provider()
         need_reranking = reranking_provider is not None and settings.reranking.enabled
-        overfetch_limit = (
-            (limit + offset) * settings.reranking.overfetch if need_reranking else limit + offset
+        overfetch_limit = _clamp_overfetch(
+            (limit + offset) * settings.reranking.overfetch if need_reranking else limit + offset,
         )
 
         # Import exception here to avoid circular imports at module level
@@ -831,7 +869,7 @@ async def fts_search_context(
             'starts_with, ends_with, is_null, is_not_null, array_contains',
         ),
     ] = None,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     highlight: Annotated[bool, Field(description='Include highlighted snippets in results')] = False,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
     explain_query: Annotated[bool, Field(description='Include query execution statistics')] = False,
@@ -916,9 +954,9 @@ async def fts_search_context(
         # Calculate overfetch limit for reranking
         reranking_provider = get_reranking_provider()
         if reranking_provider is not None and settings.reranking.enabled:
-            overfetch_limit = (limit + offset) * settings.reranking.overfetch
+            overfetch_limit = _clamp_overfetch((limit + offset) * settings.reranking.overfetch)
         else:
-            overfetch_limit = limit + offset
+            overfetch_limit = _clamp_overfetch(limit + offset)
 
         # Determine if we need highlights for internal reranking
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
@@ -961,6 +999,7 @@ async def fts_search_context(
                     'execution_time_ms': 0.0,
                     'filters_applied': 0,
                     'rows_returned': 0,
+                    'backend': settings.storage.backend_type,
                 }
             return error_response
 
@@ -1138,7 +1177,7 @@ def _prepare_hybrid_fts_query(
 async def hybrid_search_context(
     query: Annotated[str, Field(min_length=1, description='Natural language search query')],
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 5)')] = 5,
-    offset: Annotated[int, Field(ge=0, description='Pagination offset (default: 0)')] = 0,
+    offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
     fusion_method: Annotated[
         Literal['rrf'],
         Field(description="Fusion algorithm: 'rrf' (Reciprocal Rank Fusion, default)"),
@@ -1301,9 +1340,11 @@ async def hybrid_search_context(
         # Chain: limit * hybrid_rrf_overfetch * reranking.overfetch
         reranking_provider = get_reranking_provider()
         if reranking_provider is not None and settings.reranking.enabled:
-            over_fetch_limit = (limit + offset) * settings.hybrid_search.rrf_overfetch * settings.reranking.overfetch
+            over_fetch_limit = _clamp_overfetch(
+                (limit + offset) * settings.hybrid_search.rrf_overfetch * settings.reranking.overfetch,
+            )
         else:
-            over_fetch_limit = (limit + offset) * settings.hybrid_search.rrf_overfetch
+            over_fetch_limit = _clamp_overfetch((limit + offset) * settings.hybrid_search.rrf_overfetch)
 
         # Determine if we need highlights for internal reranking
         need_highlight_for_rerank = reranking_provider is not None and settings.reranking.enabled
@@ -1418,16 +1459,28 @@ async def hybrid_search_context(
                 semantic_error,
             )
 
-        # Build warnings list for client visibility when sub-searches degrade
+        # Build warnings list for client visibility when sub-searches degrade.
+        # Include the specific sub-search failure so a permanently-invalid
+        # sub-query (e.g. bad metadata_filters reaching only one mode) is
+        # correctable from the response instead of hidden behind a generic notice.
         search_warnings: list[str] = []
         if fts_error:
             search_warnings.append(
-                'FTS sub-search failed; results may be based on semantic search only',
+                f'FTS sub-search failed; results may be based on semantic search only. FTS: {fts_error}',
             )
         if semantic_error:
             search_warnings.append(
-                'Semantic sub-search failed; results may be based on FTS only',
+                f'Semantic sub-search failed; results may be based on FTS only. Semantic: {semantic_error}',
             )
+
+        # Deduplicate validation details captured from either sub-search once;
+        # both the all-modes-failed response below and the partial-degradation
+        # response surface them under the same validation_errors key.
+        combined_raw: list[str] = [
+            *(fts_validation_errors or []),
+            *(semantic_validation_errors or []),
+        ]
+        combined_validation_errors = list(dict.fromkeys(combined_raw))
 
         # Determine which available modes executed successfully (not errored).
         modes_used: list[str] = []
@@ -1453,12 +1506,7 @@ async def hybrid_search_context(
             # ToolError: the caller needs the per-filter details to correct the
             # query rather than retry a permanently-invalid request. Both modes
             # validate the SAME filters and build identical messages, so the
-            # order-preserving dedup keeps each defect listed once.
-            combined_raw: list[str] = [
-                *(fts_validation_errors or []),
-                *(semantic_validation_errors or []),
-            ]
-            combined_validation_errors = list(dict.fromkeys(combined_raw))
+            # order-preserving dedup above keeps each defect listed once.
             if combined_validation_errors:
                 return {
                     'query': query,
@@ -1481,8 +1529,10 @@ async def hybrid_search_context(
 
         # Fuse results using RRF (no reranking yet - Layer 1 results only)
         # Get more than needed for reranking
-        fused_limit_for_reranking = (limit + offset) * (
-            settings.reranking.overfetch if reranking_provider is not None and settings.reranking.enabled else 1
+        fused_limit_for_reranking = _clamp_overfetch(
+            (limit + offset) * (
+                settings.reranking.overfetch if reranking_provider is not None and settings.reranking.enabled else 1
+            ),
         )
         fused_results = reciprocal_rank_fusion(
             fts_results=fts_results,
@@ -1570,6 +1620,12 @@ async def hybrid_search_context(
             }
         if search_warnings:
             response['warnings'] = search_warnings
+        # A partially-degraded response carries the captured per-filter details
+        # under the same validation_errors key the all-modes-failed branch uses,
+        # so a client can fix an invalid sub-query even when the other mode
+        # produced results.
+        if combined_validation_errors:
+            response['validation_errors'] = combined_validation_errors
         return response
 
     except ToolError:

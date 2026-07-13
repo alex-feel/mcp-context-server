@@ -68,11 +68,12 @@ class _FakeRepos:
                 'delete_by_thread': AsyncMock(return_value=0),
                 'backend': type('_Backend', (), {'backend_type': 'sqlite'})(),
                 'search_contexts': AsyncMock(return_value=([], None)),
-                # The criteria query returns the ids the combined delete will remove;
-                # for these single-id tests that is exactly VALID_ID. The cleanup
-                # (SQLite-only) deletes embeddings for this returned subset.
+                # The criteria query returns the SNAPSHOT of ids the combined
+                # criteria match; for these single-id tests that is exactly
+                # VALID_ID. On SQLite the cleanup deletes embeddings for this
+                # subset and the destructive step (delete_by_ids) deletes exactly
+                # the same subset.
                 'get_ids_matching_batch_criteria': AsyncMock(return_value=[VALID_ID]),
-                'delete_contexts_batch': AsyncMock(return_value=(1, ['context_ids'])),
             },
         )()
 

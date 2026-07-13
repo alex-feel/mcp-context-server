@@ -1491,10 +1491,10 @@ async def test_pg_pg_migration_closes_source_when_target_connect_fails(
 ) -> None:
     """A failed target connect closes the source and propagates the original error.
 
-    Mutation guard for the R2 None-guard fix (run_migration_postgresql): target_conn
-    is opened INSIDE the try with a None-guarded finally, so a target connect failure
-    does NOT leak the already-open source connection and does NOT raise
-    UnboundLocalError / AttributeError from a None.close() in the finally.
+    Mutation guard for run_migration_postgresql's None-guarded target connection:
+    target_conn is opened INSIDE the try with a None-guarded finally, so a target
+    connect failure does NOT leak the already-open source connection and does NOT
+    raise UnboundLocalError / AttributeError from a None.close() in the finally.
     """
     import asyncpg as asyncpg_mod
 
@@ -1707,3 +1707,207 @@ class TestInitializeTargetPostgresqlVectorGating:
                 source_has_fts=False,
                 stats=stats,
             )
+
+    @pytest.mark.asyncio
+    async def test_semantic_init_refuses_dim_above_pgvector_index_cap(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An embedding_dim pgvector cannot index fails fast BEFORE any target DDL.
+
+        pgvector caps HNSW index dimensionality at 2000, and the semantic
+        migration templates the source-detected dimension into vector(dim) and
+        then builds that index; without the pre-flight the pipeline died at
+        CREATE INDEX and left the target schema partially initialized.
+        """
+        from app.cli.migrate import initialize_target_postgresql
+        from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        with pytest.raises(RuntimeError, match='pgvector index limit'):
+            await initialize_target_postgresql(
+                'postgresql://u:p@localhost:5432/tgt',
+                embedding_dim=PGVECTOR_INDEX_DIM_LIMIT + 1,
+                with_semantic=True,
+                source_has_fts=False,
+                stats=stats,
+            )
+
+        # No DDL of any kind ran: no schema/extension statements, no backend,
+        # no base-schema init, no migrations.
+        assert executed == []
+        mocks['create_backend'].assert_not_called()
+        mocks['init_database'].assert_not_awaited()
+        mocks['semantic'].assert_not_awaited()
+        mocks['chunking'].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_semantic_init_allows_dim_at_pgvector_index_cap(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An embedding_dim exactly at the pgvector index cap initializes normally."""
+        from app.cli.migrate import initialize_target_postgresql
+        from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        await initialize_target_postgresql(
+            'postgresql://u:p@localhost:5432/tgt',
+            embedding_dim=PGVECTOR_INDEX_DIM_LIMIT,
+            with_semantic=True,
+            source_has_fts=False,
+            stats=stats,
+        )
+
+        assert any('CREATE EXTENSION' in sql for sql in executed)
+        mocks['semantic'].assert_awaited_once()
+
+# ---------------------------------------------------------------------------
+# PG->PG runner pre-flight for the pgvector fp32 index dimension cap
+# ---------------------------------------------------------------------------
+
+
+class _FakeMigrationSourceConn:
+    """Minimal stand-in for the read-only PG->PG source connection."""
+
+    async def execute(self, _sql: str) -> None:
+        return None
+
+    async def fetchval(self, sql: str) -> object:
+        if 'COUNT(*)' in sql:
+            return 0
+        return 'integer'  # integer-keyed id column, so the migration proceeds
+
+    async def fetch(self, _sql: str) -> list[object]:
+        return []
+
+    async def close(self) -> None:
+        return None
+
+
+class _FakeMigrationTargetConn:
+    """Minimal stand-in for the PG->PG target connection."""
+
+    async def execute(self, _sql: str) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
+def _install_pg_runner_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source_dim: int,
+) -> mock.AsyncMock:
+    """Fake the PG->PG runner's connections and probes up to the auto-init decision.
+
+    Shapes the probes as: empty target (no context_entries), embedding-carrying
+    source (embedding_metadata + vec_context_embeddings present, no FTS), with
+    the given source-detected embedding dimension.
+
+    Args:
+        monkeypatch: The pytest monkeypatch fixture.
+        source_dim: Dimension returned by the faked source-dim detection.
+
+    Returns:
+        The AsyncMock installed in place of ``initialize_target_postgresql``.
+    """
+    import asyncpg as asyncpg_mod
+
+    import app.cli.migrate as migrate_mod
+
+    conns: list[object] = [_FakeMigrationSourceConn(), _FakeMigrationTargetConn()]
+
+    async def _fake_connect(_url: str, **_kwargs: object) -> object:
+        return conns.pop(0)
+
+    async def _fake_has_data(
+        _conn: object, *, schema: str | None = None,
+    ) -> bool:
+        del schema
+        return False
+
+    async def _fake_table_exists(
+        _conn: object, table_name: str, schema: str | None = None,
+    ) -> bool:
+        del schema
+        if table_name == 'context_entries':
+            return False  # the target is uninitialized -> auto-init path
+        return table_name in {'embedding_metadata', 'vec_context_embeddings'}
+
+    async def _fake_column_exists(
+        _conn: object, _table: str, _column: str, schema: str | None = None,
+    ) -> bool:
+        del schema
+        return False
+
+    async def _fake_detect_dim(_conn: object) -> int | None:
+        return source_dim
+
+    init_mock = mock.AsyncMock()
+    monkeypatch.setattr(asyncpg_mod, 'connect', _fake_connect)
+    monkeypatch.setattr(migrate_mod, '_target_pg_has_data', _fake_has_data)
+    monkeypatch.setattr(migrate_mod, '_pg_table_exists', _fake_table_exists)
+    monkeypatch.setattr(migrate_mod, '_pg_column_exists', _fake_column_exists)
+    monkeypatch.setattr(migrate_mod, '_detect_source_embedding_dim_pg', _fake_detect_dim)
+    monkeypatch.setattr(migrate_mod, 'initialize_target_postgresql', init_mock)
+    return init_mock
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_migration_refuses_auto_init_above_pgvector_index_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source dim above the pgvector index cap aborts with a recorded error before any target DDL.
+
+    Without the pre-flight the auto-init force-built the fp32 layout at the
+    source-detected dimension and crashed at the HNSW CREATE INDEX, exiting
+    with a partially initialized target schema.
+    """
+    from app.cli.migrate import run_migration_postgresql
+    from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+
+    init_mock = _install_pg_runner_fakes(
+        monkeypatch, source_dim=PGVECTOR_INDEX_DIM_LIMIT + 1,
+    )
+    options = MigrationOptions(
+        source_url='postgresql://u:p@localhost/src',
+        target_url='postgresql://u:p@localhost/tgt',
+    )
+
+    stats = await run_migration_postgresql(options)
+
+    assert any('pgvector index limit' in e for e in stats.errors)
+    assert any('Aborting before any target DDL' in e for e in stats.errors)
+    init_mock.assert_not_awaited()
+    assert stats.rows_migrated == 0
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_dry_run_reports_pgvector_index_cap_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run surfaces the dimension-cap refusal as a plan warning, not an error."""
+    from app.cli.migrate import run_migration_postgresql
+    from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+
+    init_mock = _install_pg_runner_fakes(
+        monkeypatch, source_dim=PGVECTOR_INDEX_DIM_LIMIT + 1,
+    )
+    options = MigrationOptions(
+        source_url='postgresql://u:p@localhost/src',
+        target_url='postgresql://u:p@localhost/tgt',
+        dry_run=True,
+    )
+
+    stats = await run_migration_postgresql(options)
+
+    assert not stats.errors
+    assert any('a real run would abort' in w for w in stats.warnings)
+    assert any('pgvector index limit' in w for w in stats.warnings)
+    init_mock.assert_not_awaited()

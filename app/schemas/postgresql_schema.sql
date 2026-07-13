@@ -76,34 +76,21 @@ CREATE TABLE IF NOT EXISTS image_attachments (
 
 CREATE INDEX IF NOT EXISTS idx_image_context ON image_attachments(context_entry_id);
 
--- Functional indexes for common metadata patterns using JSONB operators
--- These indexes extract specific JSON fields for faster querying
--- Note: Index configuration is managed via METADATA_INDEXED_FIELDS environment variable
-
--- Status-based filtering (most common use case)
-CREATE INDEX IF NOT EXISTS idx_metadata_status
-ON context_entries((metadata->>'status'))
-WHERE metadata->>'status' IS NOT NULL;
-
--- Agent name filtering (identify specific agents)
-CREATE INDEX IF NOT EXISTS idx_metadata_agent_name
-ON context_entries((metadata->>'agent_name'))
-WHERE metadata->>'agent_name' IS NOT NULL;
-
--- Task name filtering (search by task title/name)
-CREATE INDEX IF NOT EXISTS idx_metadata_task_name
-ON context_entries((metadata->>'task_name'))
-WHERE metadata->>'task_name' IS NOT NULL;
-
--- Project filtering (filter by project name)
-CREATE INDEX IF NOT EXISTS idx_metadata_project
-ON context_entries((metadata->>'project'))
-WHERE metadata->>'project' IS NOT NULL;
-
--- Report type filtering (filter by report type)
-CREATE INDEX IF NOT EXISTS idx_metadata_report_type
-ON context_entries((metadata->>'report_type'))
-WHERE metadata->>'report_type' IS NOT NULL;
+-- Scalar metadata field expression indexes are NOT declared here. They are the
+-- single responsibility of handle_metadata_indexes (app/migrations/metadata.py),
+-- which provisions exactly the typed btree indexes named in
+-- METADATA_INDEXED_FIELDS at server startup (the default field set reproduces
+-- the former five scalar indexes: status, agent_name, task_name, project,
+-- report_type). Keeping them out of the base schema makes the settings-driven
+-- sync layer the single source of truth, so a fresh database with a CUSTOM
+-- METADATA_INDEXED_FIELDS does not boot with the five defaults that strict-mode
+-- reconciliation would then reject as "extra" (and auto-mode would
+-- create-then-drop on every fresh init).
+--
+-- Consequence: a database initialized ONLY by the migration CLI (which does not
+-- run handle_metadata_indexes) has no scalar metadata expression indexes until
+-- its first server startup provisions them. The always-present GIN index below
+-- is NOT managed by the sync layer, so it stays declared in the base schema.
 
 -- GIN index for full JSONB search (enables containment queries)
 -- This allows efficient queries like: metadata @> '{"key": "value"}'

@@ -71,6 +71,8 @@ from app.errors import ConfigurationError
 # https://github.com/aminalaee/uuid-utils/issues/73
 from app.ids import generate_id_with_timestamp
 from app.metadata_types import unstorable_string_error
+from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+from app.pgvector_limits import exceeds_pgvector_index_dim_limit
 
 if TYPE_CHECKING:
     import asyncpg
@@ -1794,13 +1796,40 @@ async def initialize_target_postgresql(
             auto-init.
 
     Raises:
-        RuntimeError: If the target schema cannot be created, or -- on a
-            ``with_semantic`` run -- if the pgvector extension cannot be created
-            (insufficient privileges on a managed service such as Supabase, or
-            pgvector not installed on the host at all). A ``with_semantic=False``
-            run never touches pgvector, so it initializes cleanly on a
-            pgvector-less host.
+        RuntimeError: If a ``with_semantic`` run requests an ``embedding_dim``
+            above the pgvector index cap (raised BEFORE any target DDL, so the
+            target schema is never left partially initialized); if the target
+            schema cannot be created; or -- on a ``with_semantic`` run -- if the
+            pgvector extension cannot be created (insufficient privileges on a
+            managed service such as Supabase, or pgvector not installed on the
+            host at all). A ``with_semantic=False`` run never touches pgvector,
+            so it initializes cleanly on a pgvector-less host.
     """
+    # fp32 capability pre-flight, BEFORE any connection or target DDL: pgvector
+    # cannot build an HNSW index over vector columns wider than
+    # PGVECTOR_INDEX_DIM_LIMIT dimensions, and the semantic-search migration
+    # this function force-applies templates the SOURCE-detected dimension into
+    # vector(dim) and then builds that index. Without this check the run dies
+    # mid-pipeline at CREATE INDEX and leaves the target schema partially
+    # initialized (base tables created, vector layout half-built).
+    if (
+        with_semantic
+        and embedding_dim is not None
+        and exceeds_pgvector_index_dim_limit(embedding_dim)
+    ):
+        raise RuntimeError(
+            f'Cannot initialize the target database: the source embedding dimension '
+            f'({embedding_dim}) exceeds the pgvector index limit of '
+            f'{PGVECTOR_INDEX_DIM_LIMIT} dimensions for fp32 vectors, so building the '
+            f'fp32 vector layout would fail at the HNSW CREATE INDEX and leave the '
+            f'target schema partially initialized. Embeddings of this dimension cannot '
+            f'be copied into an fp32 target. Recovery: migrate from a source copy whose '
+            f'embedding tables (embedding_metadata, vec_context_embeddings) are dropped '
+            f'so the target initializes without the fp32 vector layout, then start the '
+            f'target server with ENABLE_EMBEDDING_COMPRESSION=true (compressed payloads '
+            f'have no pgvector dimension cap) and re-embed with --embed-missing.',
+        )
+
     import asyncpg
 
     from app.backends import create_backend
@@ -2084,7 +2113,38 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
         # separate, explicit --compress step afterward.
         target_initialized = await _pg_table_exists(target_conn, 'context_entries', schema=target_schema)
         if not target_initialized:
-            if options.dry_run:
+            # fp32 capability pre-flight for the auto-init: an embedding-carrying
+            # source whose dimension exceeds the pgvector index cap cannot be
+            # copied into the fp32 vector layout the auto-init would force-build
+            # (the HNSW CREATE INDEX would fail mid-pipeline and leave a
+            # partially initialized target). Refuse HERE, before any target DDL,
+            # with a recorded error (clean exit 1) instead of letting
+            # initialize_target_postgresql's own guard surface as an unhandled
+            # exception (exit 2); a dry run reports the same refusal as a plan
+            # warning, mirroring the pre-existing-target embeddings backstop.
+            if (
+                source_has_embeddings
+                and source_dim is not None
+                and exceeds_pgvector_index_dim_limit(source_dim)
+            ):
+                message = (
+                    f'source embedding dimension ({source_dim}) exceeds the pgvector '
+                    f'index limit of {PGVECTOR_INDEX_DIM_LIMIT} dimensions for fp32 '
+                    'vectors: auto-initializing the target would fail at the HNSW '
+                    'CREATE INDEX and leave the target schema partially initialized. '
+                    'Recovery: migrate from a source copy whose embedding tables '
+                    '(embedding_metadata, vec_context_embeddings) are dropped so the '
+                    'target initializes without the fp32 vector layout, then start the '
+                    'target server with ENABLE_EMBEDDING_COMPRESSION=true (compressed '
+                    'payloads have no pgvector dimension cap) and re-embed with '
+                    '--embed-missing.'
+                )
+                if options.dry_run:
+                    stats.warnings.append(f'{message} (a real run would abort)')
+                else:
+                    stats.errors.append(f'{message} Aborting before any target DDL.')
+                    return stats
+            elif options.dry_run:
                 stats.warnings.append(
                     'target PostgreSQL database has no context_entries table; '
                     'it would be auto-initialized on a real run',

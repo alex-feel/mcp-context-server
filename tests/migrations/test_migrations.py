@@ -968,9 +968,53 @@ class TestAdvisoryLockFix:
             )
 
         drop_sql = next(s for s in executed_statements if 'DROP INDEX' in s)
-        assert '"MyApp".idx_metadata_test_field' in drop_sql
-        # The unquoted form would be case-folded by PostgreSQL and silently miss the real index.
+        # Both the schema qualifier AND the generated index identifier are quoted so the
+        # qualified DROP targets the exact case-preserved object the quoted CREATE produced.
+        assert '"MyApp"."idx_metadata_test_field"' in drop_sql
+        # The unquoted schema form would be case-folded by PostgreSQL and silently miss the real index.
         assert 'MyApp.idx_metadata_test_field' not in drop_sql
+
+    @pytest.mark.asyncio
+    async def test_metadata_index_drop_quotes_mixed_case_index_identifier(self) -> None:
+        """A mixed-case field yields a quoted index identifier in the qualified DROP.
+
+        The CREATE path quotes idx_metadata_{field} so PostgreSQL stores it case-preserved. The
+        DROP must quote the SAME identifier, otherwise PostgreSQL folds the unquoted name to
+        lowercase and DROP INDEX IF EXISTS silently skips the case-preserved index the
+        reconciliation diff asked to remove, leaving auto-mode churning it every boot.
+        """
+        mock_backend = MagicMock()
+        mock_backend.backend_type = 'postgresql'
+
+        executed_statements: list[str] = []
+
+        async def mock_execute_write(operation, *_args, **_kwargs):
+            mock_conn = AsyncMock()
+
+            async def record_execute(stmt, *_a, **_kw):
+                executed_statements.append(stmt)
+
+            mock_conn.execute = record_execute
+            await operation(mock_conn)
+
+        mock_backend.execute_write = mock_execute_write
+
+        mock_settings = MagicMock()
+        mock_settings.storage.postgresql_schema = 'public'
+
+        with patch('app.migrations.metadata.settings', mock_settings):
+            from app.migrations.metadata import _drop_metadata_index
+
+            await _drop_metadata_index(
+                backend=mock_backend,
+                field='camelField',
+            )
+
+        drop_sql = next(s for s in executed_statements if 'DROP INDEX' in s)
+        # The generated index identifier is quoted, matching the quoted CREATE.
+        assert '"idx_metadata_camelField"' in drop_sql
+        # The bare (fold-susceptible) index name must NOT appear as the DROP target.
+        assert 'IF EXISTS "public".idx_metadata_camelField' not in drop_sql
 
     @pytest.mark.asyncio
     async def test_no_session_scoped_locks_in_migration_source(self) -> None:

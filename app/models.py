@@ -1,4 +1,7 @@
 
+import base64
+import re
+import string
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
@@ -10,6 +13,58 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from app.types import MetadataDict
+
+# Single source of truth for the per-entry image attachment count limit.
+# Enforced in three aligned places: the Pydantic models below (max_length),
+# the shared validation chokepoint (validate_and_normalize_images in
+# app/tools/_shared.py, covering store_context, update_context, and both
+# batch tools), and the tool-boundary Field declarations in
+# app/tools/context.py (so the MCP wire schema advertises the bound as
+# maxItems). It lives here because app.models imports nothing from app.tools,
+# so the tools layer can import it without an import cycle.
+MAX_IMAGES_PER_ENTRY = 10
+
+# One leading RFC 2397 data-URI prefix (any 'data:<mediatype>;base64,' form,
+# e.g. 'data:image/png;base64,'). Pure base64 never contains ':' or ',', so
+# stripping this prefix can never eat real payload characters.
+_DATA_URI_BASE64_PREFIX = re.compile(r'^data:[^,]*;base64,', re.IGNORECASE)
+
+# Translate the URL-safe base64 alphabet ('-'/'_') to the standard one
+# ('+'/'/') and delete ASCII whitespace in a single pass.
+_BASE64_CANONICAL_TABLE = str.maketrans('-_', '+/', string.whitespace)
+
+
+def normalize_base64_image_data(data: str) -> str:
+    """Normalize a base64 image payload to canonical standard-alphabet form.
+
+    Client payloads arrive in several near-base64 shapes that a lenient
+    ``base64.b64decode`` silently corrupts instead of rejecting: an RFC 2397
+    data URI (whenever the prefix's base64-alphabet character count is a
+    multiple of 4, the prefix decodes as garbage bytes prepended to the
+    image), the URL-safe alphabet (``-``/``_`` are discarded, shifting every
+    following byte), whitespace-wrapped transfer encodings, and payloads with
+    stripped ``=`` padding. This helper reduces all of them to one canonical
+    form so a subsequent STRICT decode (``validate=True``) either yields
+    exactly the intended bytes or fails loudly:
+
+    1. Strip one leading data-URI prefix (any ``data:...;base64,`` form).
+    2. Remove ASCII whitespace and translate the URL-safe alphabet to the
+       standard alphabet.
+    3. Restore ``=`` padding to a multiple of 4.
+
+    Args:
+        data: The raw client-supplied base64 payload.
+
+    Returns:
+        The canonical standard-alphabet base64 string. Genuinely non-base64
+        input is returned in a form that a strict decode rejects loudly.
+    """
+    normalized = _DATA_URI_BASE64_PREFIX.sub('', data, count=1)
+    normalized = normalized.translate(_BASE64_CANONICAL_TABLE)
+    remainder = len(normalized) % 4
+    if remainder:
+        normalized += '=' * (4 - remainder)
+    return normalized
 
 
 class SourceType(StrEnum):
@@ -43,14 +98,29 @@ class ImageAttachment(BaseModel):
     @field_validator('data')
     @classmethod
     def validate_base64(cls, v: str) -> str:
-        """Validate base64 format"""
-        import base64
+        """Normalize to canonical base64 and reject non-base64 data.
 
+        Mirrors the tool-boundary chokepoint (validate_and_normalize_images in
+        app/tools/_shared.py): normalize first, then decode STRICTLY, so a
+        data-URI prefix, URL-safe alphabet, or stripped padding is repaired
+        instead of silently decoding to corrupted bytes, and genuinely
+        non-base64 input fails loudly.
+
+        Returns:
+            The canonical standard-alphabet base64 string.
+
+        Raises:
+            ValueError: If the normalized payload is not valid base64 or
+                decodes to zero bytes.
+        """
+        normalized = normalize_base64_image_data(v)
         try:
-            base64.b64decode(v)
-            return v
+            decoded = base64.b64decode(normalized, validate=True)
         except Exception as e:
             raise ValueError('Invalid base64 encoded data') from e
+        if not decoded:
+            raise ValueError('Base64 data decodes to zero bytes (not valid image content)')
+        return normalized
 
 
 class ContextEntry(BaseModel):
@@ -74,7 +144,7 @@ class ContextEntry(BaseModel):
     source: SourceType = Field(..., description='Origin of the context')
     content_type: ContentType = Field(default=ContentType.TEXT)
     text_content: str | None = Field(default=None)
-    images: list[Any] = Field(default_factory=list, max_length=10)  # Pyright false positive - ImageAttachment is defined
+    images: list[Any] = Field(default_factory=list, max_length=MAX_IMAGES_PER_ENTRY)
     metadata: MetadataDict | None = Field(default=None)
     summary: str | None = Field(default=None, description='LLM-generated summary for search result display')
     tags: list[str] = Field(default_factory=list)
@@ -152,7 +222,7 @@ class StoreContextRequest(BaseModel):
     thread_id: str = Field(..., description='Thread ID for context scoping')
     source: SourceType = Field(..., description="Must be 'user' or 'agent'")
     text: str | None = Field(default=None)
-    images: list[ImageAttachment] | None = Field(default=None, max_length=10)
+    images: list[ImageAttachment] | None = Field(default=None, max_length=MAX_IMAGES_PER_ENTRY)
     metadata: MetadataDict | None = Field(default=None)
     tags: list[str] | None = Field(default=None)
 

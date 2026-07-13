@@ -10,6 +10,7 @@ End-to-end coverage with real SQLite/PostgreSQL databases lives in
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -18,6 +19,8 @@ from app.cli.migrate import main as cli_main
 from app.cli.migrate_compression import WARNING_BORDER
 from app.cli.migrate_compression import run_compress
 from app.cli.migrate_compression import run_decompress
+from app.compression.types import CompressionMetadata
+from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
 from app.repositories.embedding_repository import _reset_compression_cache
 from app.settings import get_settings
 from tests.conftest import requires_numpy
@@ -845,3 +848,176 @@ async def test_zero_data_drop_is_transactional_on_sqlite(
         conn.close()
     assert 'vec_context_embeddings_compressed' in tables
     assert provenance_count == 1
+
+
+# ---------------------------------------------------------------------------
+# fp32 rebuild pre-flight for the pgvector index dimension cap
+# ---------------------------------------------------------------------------
+
+
+def _install_decompress_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    backend_type: str,
+    dim: int,
+    row_count: int,
+) -> dict[str, mock.AsyncMock | mock.MagicMock]:
+    """Fake the decompress pipeline around the fp32 dimension pre-flight.
+
+    Installs a stub backend plus provenance/probe fakes in the
+    ``app.cli.migrate_compression`` namespace so ``run_decompress`` reaches the
+    dimension gate without a real database, pgvector host, or provider work.
+
+    Args:
+        monkeypatch: The pytest monkeypatch fixture.
+        backend_type: Backend the stub reports ('sqlite' or 'postgresql').
+        dim: Provenance dimension recorded in the faked metadata row.
+        row_count: Compressed-row count the faked counter reports.
+
+    Returns:
+        Mapping with the 'execute_decompress' AsyncMock and the 'provider_for'
+        MagicMock for call assertions.
+    """
+    import app.cli.migrate_compression as migrate_compression_mod
+
+    backend = mock.MagicMock()
+    backend.backend_type = backend_type
+    backend.initialize = mock.AsyncMock()
+    backend.shutdown = mock.AsyncMock()
+
+    meta = CompressionMetadata(
+        provider='turboquant', bits=4, variant='ip', seed=0, dim=dim,
+    )
+
+    async def _fake_needs_vector(_address: str) -> bool:
+        return row_count > 0
+
+    def _fake_make_backend(
+        _source_url: str, *, provision_vector: bool | None = None,
+    ) -> mock.MagicMock:
+        del provision_vector
+        return backend
+
+    async def _fake_read_metadata(_backend: object) -> CompressionMetadata:
+        return meta
+
+    async def _fake_table_exists(_backend: object, table_name: str) -> bool:
+        return table_name == 'vec_context_embeddings_compressed'
+
+    async def _fake_count_table(_backend: object, _table_name: str) -> int:
+        return row_count
+
+    async def _fake_read_probe(_backend: object, _n: int) -> list[object]:
+        return []
+
+    execute_decompress = mock.AsyncMock()
+    provider_for = mock.MagicMock()
+
+    monkeypatch.setattr(migrate_compression_mod, '_decompress_needs_vector', _fake_needs_vector)
+    monkeypatch.setattr(migrate_compression_mod, '_make_backend', _fake_make_backend)
+    monkeypatch.setattr(migrate_compression_mod, 'read_compression_metadata', _fake_read_metadata)
+    monkeypatch.setattr(migrate_compression_mod, '_table_exists', _fake_table_exists)
+    monkeypatch.setattr(migrate_compression_mod, '_count_table', _fake_count_table)
+    monkeypatch.setattr(migrate_compression_mod, '_read_compressed_probe', _fake_read_probe)
+    monkeypatch.setattr(migrate_compression_mod, '_provider_for', provider_for)
+    monkeypatch.setattr(migrate_compression_mod, '_execute_decompress', execute_decompress)
+    return {'execute_decompress': execute_decompress, 'provider_for': provider_for}
+
+
+def test_decompress_pg_refuses_dim_above_pgvector_index_cap_before_any_ddl(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PostgreSQL --decompress refuses a provenance dim pgvector cannot index, before any DDL.
+
+    Without the pre-flight the reverse migration streamed and decoded every
+    compressed row and only then died at the trailing HNSW CREATE INDEX
+    (pgvector caps indexable fp32 dimensionality at 2000): a rolled-back
+    exit 2 after the full decode pass, with only a raw pgvector error to
+    explain it.
+    """
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    mocks = _install_decompress_fakes(
+        monkeypatch,
+        backend_type='postgresql',
+        dim=PGVECTOR_INDEX_DIM_LIMIT + 1,
+        row_count=7,
+    )
+
+    rc = run_decompress('postgresql://u:p@localhost:5432/ctx', dry_run=False)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert 'pgvector index limit' in err
+    assert 'must stay compressed' in err
+    # Refused before any DDL or data streaming, and before provider construction.
+    mocks['execute_decompress'].assert_not_awaited()
+    mocks['provider_for'].assert_not_called()
+
+
+def test_decompress_sqlite_dim_above_pg_cap_is_not_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dimension gate is PostgreSQL-scoped: sqlite-vec has no per-dimension index cap."""
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    get_settings.cache_clear()
+    mocks = _install_decompress_fakes(
+        monkeypatch,
+        backend_type='sqlite',
+        dim=PGVECTOR_INDEX_DIM_LIMIT + 1,
+        row_count=7,
+    )
+
+    rc = run_decompress('sqlite:///ignored.db', dry_run=False)
+
+    assert rc == 0
+    mocks['execute_decompress'].assert_awaited_once()
+
+
+def test_decompress_invalid_env_surfaces_clean_cli_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A settings ValidationError surfaces as a one-line CLI error and EX_CONFIG, not a traceback.
+
+    The documented --decompress prerequisite (unset ENABLE_EMBEDDING_COMPRESSION)
+    recreates exactly the env shape the fp32 pgvector dimension validator rejects
+    on a PostgreSQL deployment whose EMBEDDING_DIM exceeds the index cap, so the
+    settings resolution inside run_decompress must not escape as a raw pydantic
+    traceback. Exit 78 mirrors main()'s classification of the same
+    ValidationError when it surfaces at module-import time.
+    """
+    from app.errors import ConfigurationError
+
+    monkeypatch.setenv('STORAGE_BACKEND', 'postgresql')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.setenv('EMBEDDING_DIM', str(PGVECTOR_INDEX_DIM_LIMIT + 1))
+    get_settings.cache_clear()
+
+    rc = run_decompress('postgresql://u:p@localhost:5432/ctx', dry_run=False)
+
+    assert rc == ConfigurationError.EXIT_CODE
+    err = capsys.readouterr().err
+    assert 'Configuration invalid' in err
+    assert 'pgvector index limit' in err
+
+
+def test_compress_invalid_env_surfaces_clean_cli_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """run_compress shares the clean env-validation error path with run_decompress."""
+    from app.errors import ConfigurationError
+
+    monkeypatch.setenv('STORAGE_BACKEND', 'postgresql')
+    monkeypatch.setenv('ENABLE_EMBEDDING_COMPRESSION', 'false')
+    monkeypatch.setenv('EMBEDDING_DIM', str(PGVECTOR_INDEX_DIM_LIMIT + 1))
+    get_settings.cache_clear()
+
+    rc = run_compress('postgresql://u:p@localhost:5432/ctx', dry_run=False)
+
+    assert rc == ConfigurationError.EXIT_CODE
+    err = capsys.readouterr().err
+    assert 'Configuration invalid' in err
+    assert 'pgvector index limit' in err

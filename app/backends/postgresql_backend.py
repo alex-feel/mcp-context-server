@@ -412,8 +412,14 @@ class PostgreSQLBackend:
         encoded_password = quote(password, safe='')
         encoded_database = quote(database, safe='')
 
+        # An IPv6 host literal contains colons, which the DSN authority parses as the
+        # host:port separator; bracket it (RFC 3986 IP-literal) so ::1 or a full IPv6
+        # address interpolates as [::1]:port rather than corrupting the parse. A hostname
+        # or IPv4 literal has no colon and is left as-is.
+        host_part = f'[{host}]' if ':' in host else host
+
         # Build connection string with encoded components
-        conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host}:{port}/{encoded_database}'
+        conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host_part}:{port}/{encoded_database}'
 
         # Add SSL mode if specified
         if settings.storage.postgresql_ssl_mode != 'prefer':
@@ -1140,6 +1146,8 @@ class PostgreSQLBackend:
         Raises:
             RuntimeError: If backend is shut down or circuit breaker is open
             asyncpg.exceptions.ConnectionDoesNotExistError: If connection validation fails
+            TimeoutError: If the connection pool stays saturated past the acquire deadline
+                (re-raised uncharged) or a statement exceeds the pool command_timeout
 
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
@@ -1160,8 +1168,15 @@ class PostgreSQLBackend:
         last_error: Exception | None = None
 
         for attempt in range(self.retry_config.max_retries):
+            # False until we hold a live connection. It distinguishes a pool-acquire
+            # timeout (the pool was saturated and we never obtained a connection -- not a
+            # database fault, must not charge the breaker, matching get_connection's own
+            # uncharged acquire) from an operation-level command_timeout (a statement ran
+            # on a live connection and exceeded the pool's command_timeout).
+            acquired = False
             try:
                 async with self.get_connection(readonly=False, record_breaker=False) as conn:
+                    acquired = True
                     # Validate connection state before critical operations
                     if validate_connection and not await self._validate_connection_state(conn):
                         raise asyncpg.exceptions.ConnectionDoesNotExistError(
@@ -1179,8 +1194,15 @@ class PostgreSQLBackend:
                     await self.circuit_breaker.record_success()
                     return result
 
-            except asyncpg.exceptions.SerializationError as e:
-                # Transient error - retry with backoff
+            except asyncpg.exceptions.TransactionRollbackError as e:
+                # Transaction-rollback failure (SQLSTATE class 40: serialization_failure
+                # 40001, deadlock_detected 40P01, and siblings). PostgreSQL aborted one
+                # transaction to break a serialization cycle or a deadlock; the loser is
+                # expected to retry, and the retry succeeds once the competing transaction
+                # commits. Catching the class-40 base (not only SerializationError) means a
+                # deadlock -- e.g. two atomic update batches locking the same rows in
+                # opposite order -- retries here instead of falling through to the generic
+                # arm and charging the breaker for a routine, self-clearing lock cycle.
                 last_error = e
                 delay = min(
                     self.retry_config.base_delay * (self.retry_config.backoff_factor**attempt),
@@ -1191,7 +1213,7 @@ class PostgreSQLBackend:
                     delay += random.uniform(0, delay * 0.3)
 
                 logger.warning(
-                    f'Serialization error on write, retrying in {delay:.2f}s '
+                    f'Transaction rollback (serialization/deadlock) on write, retrying in {delay:.2f}s '
                     f'(attempt {attempt + 1}/{self.retry_config.max_retries})',
                 )
                 await asyncio.sleep(delay)
@@ -1256,6 +1278,25 @@ class PostgreSQLBackend:
                     f'(attempt {attempt + 1}/{self.retry_config.max_retries}): {e}',
                 )
                 await asyncio.sleep(delay)
+
+            except TimeoutError as e:
+                # A pool-acquire TimeoutError (the pool stayed saturated for
+                # POSTGRESQL_POOL_TIMEOUT_S and we never obtained a connection) is a
+                # saturation signal, NOT a database fault. get_connection/begin_transaction
+                # leave their acquire uncharged because it sits outside the breaker scope;
+                # here the acquire sits INSIDE the retry-try, so distinguish by whether we
+                # reached a live connection. Not acquired -> re-raise WITHOUT charging.
+                # Acquired -> the statement exceeded the pool command_timeout (a genuine
+                # operation stall the server-side statement_timeout did not cancel first);
+                # charge exactly one breaker failure, as the generic arm did before.
+                if not acquired:
+                    raise
+                last_error = e
+                self.metrics.failed_queries += 1
+                self.metrics.last_error = str(e)
+                self.metrics.last_error_time = time.time()
+                await self.circuit_breaker.record_failure()
+                raise
 
             except Exception as e:
                 # A circuit-breaker rejection raised by get_connection mid-loop (e.g.
@@ -1412,6 +1453,18 @@ class PostgreSQLBackend:
                     # embedding reconciliation), NOT a database fault: rolled back
                     # automatically, but do NOT record a circuit-breaker failure, so
                     # normal write contention cannot open the breaker.
+                    raise
+                if isinstance(e, asyncpg.exceptions.TransactionRollbackError):
+                    # PostgreSQL aborted this transaction to break a deadlock or a
+                    # serialization cycle (SQLSTATE class 40) -- routine, self-clearing
+                    # write contention, not a database fault. The tool layer classifies
+                    # these as retryable and re-runs the transaction, so charging the
+                    # breaker per aborted attempt would let normal contention open it
+                    # and reject every caller's healthy requests. Rolled back
+                    # automatically; propagate uncharged for the caller to retry.
+                    logger.warning(
+                        f'Transaction rolled back by the server (deadlock/serialization), retry expected: {e}',
+                    )
                     raise
                 logger.warning(f'Transaction failed or commit failed, rolling back: {e}')
                 await self.circuit_breaker.record_failure()

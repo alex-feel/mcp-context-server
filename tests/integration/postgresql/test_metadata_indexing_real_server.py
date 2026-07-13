@@ -11,12 +11,20 @@ gets a typed expression btree index (``idx_metadata_{field}`` over
 
 The server applies the metadata-index migration during lifespan startup
 (``app/server.py`` -> ``handle_metadata_indexes``) in the default
-``additive`` sync mode, which CREATES the missing scalar indexes named in
-``METADATA_INDEXED_FIELDS``. After the server starts, the test connects to
-the isolated database with asyncpg and asserts ``pg_indexes`` contains the
-expected typed expression indexes and the GIN index, then drives a real
-``search_context`` ``metadata_filters`` query through the MCP client to
-confirm the indexed fields return correct rows end-to-end.
+``additive`` sync mode, which CREATES the scalar indexes named in
+``METADATA_INDEXED_FIELDS``. These scalar expression indexes are NOT
+declared in ``app/schemas/postgresql_schema.sql``; the sync layer is their
+single source of truth, so a database initialized only by the migrate CLI
+carries none of them until first server startup provisions them. The GIN
+index ``idx_metadata_gin`` is the one metadata index still declared in the
+base schema, because it is always required and not sync-managed. The scalar
+index identifiers are emitted quoted (``"idx_metadata_{field}"``); for the
+lowercase field names used here quoting yields the identical catalog name.
+After the server starts, the test connects to the isolated database with
+asyncpg and asserts ``pg_indexes`` contains the expected typed expression
+indexes and the GIN index, then drives a real ``search_context``
+``metadata_filters`` query through the MCP client to confirm the indexed
+fields return correct rows end-to-end.
 
 The run uses an ISOLATED PostgreSQL database (created fresh + dropped at
 teardown) so it never pollutes the shared ``mcp_test`` database nor the

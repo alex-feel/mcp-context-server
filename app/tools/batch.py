@@ -25,9 +25,6 @@ import json
 import logging
 import operator
 from collections.abc import Awaitable
-from datetime import UTC
-from datetime import datetime
-from datetime import timedelta
 from typing import Annotated
 from typing import Any
 from typing import Literal
@@ -43,6 +40,7 @@ from app.ids import resolve_or_normalize_ids
 from app.metadata_types import non_finite_metadata_error
 from app.metadata_types import unstorable_string_error
 from app.repositories.context_repository import VersionConflictError
+from app.repositories.context_repository import describe_batch_delete_criteria
 from app.repositories.embedding_repository import ChunkEmbedding
 from app.repositories.index_node_repository import IndexNodeRow
 from app.settings import get_settings
@@ -1745,7 +1743,7 @@ async def delete_context_batch(
             )
 
         # Reject an embedded NUL or unpaired UTF-16 surrogate in any thread_id before it
-        # reaches delete_by_thread's bind, where asyncpg would raise a non-ControlFlowError
+        # reaches the criteria delete's bind, where asyncpg would raise a non-ControlFlowError
         # that charges the circuit breaker (SQLite binds it silently -- a divergence).
         reject_unstorable_input(thread_ids=cast('object', thread_ids))
 
@@ -1771,57 +1769,59 @@ async def delete_context_batch(
             except ValueError as e:
                 raise ToolError(f'Invalid context ID: {e}') from e
 
-        # Delete embeddings for the contexts the COMBINED criteria will actually
-        # delete. On PostgreSQL the embedding rows cascade-delete with the context
-        # row (ON DELETE CASCADE on the surviving vec table for the active
-        # compression mode), so explicit cleanup is SQLite-only (vec0 virtual tables
-        # lack CASCADE). The cleanup pre-queries the exact to-be-deleted subset, so
-        # combining context_ids with source/older_than_days never deletes embeddings
-        # for a context_id those filters exclude (which would orphan a surviving
-        # entry). Gate on table PRESENCE (embedding_tables_exist), NOT the runtime
-        # generation/compression toggles: a prior session's embeddings must still
-        # be cleaned after the toggles flip off, or the FK-less vec0 rows orphan.
-        # Mirrors the stale-embedding cleanup on the update path.
+        # On PostgreSQL the embedding rows cascade-delete with the context rows
+        # inside the SAME atomic DELETE statement (ON DELETE CASCADE on the
+        # surviving vec table for the active compression mode), so the
+        # criteria-based delete needs no snapshot and no explicit cleanup.
+        #
+        # On SQLite the vec0 virtual embedding tables lack FK CASCADE, so the
+        # embedding cleanup pre-queries the exact ids the COMBINED criteria match
+        # (combining context_ids with source/older_than_days never cleans an
+        # excluded, surviving entry). Re-running the criteria in the destructive
+        # statement would re-evaluate the predicate in a second transaction, so a
+        # store committing a matching entry between the cleanup snapshot and the
+        # delete would be swept while its embeddings escaped the snapshot and
+        # orphaned permanently. Delete EXACTLY the snapshot ids instead, so the
+        # cleaned set and the deleted set are identical: an entry inserted after
+        # the snapshot is neither cleaned nor deleted (it simply survives the
+        # operation). The single predicate evaluation also makes the
+        # older_than_days age boundary race-free without a shared absolute cutoff.
+        # Mirrors delete_context's thread branch; delete_by_ids chunks the id
+        # list, so a criteria match of any size stays under the per-statement
+        # bound-parameter limit.
         backend = repos.context.backend
-        # Resolve older_than_days to ONE absolute UTC cutoff for SQLite so the
-        # embedding-cleanup pre-query and the row DELETE below share an identical age
-        # boundary. SQLite's datetime('now') re-evaluates per statement, so without a
-        # shared cutoff a row crossing the boundary between the pre-query and the delete
-        # would be deleted while its vec0 embeddings (no CASCADE on the virtual table)
-        # are left behind -- an orphan. created_at is stored as canonical UTC
-        # "YYYY-MM-DD HH:MM:SS"; matching that format keeps the TEXT comparison correct.
-        older_than_cutoff: str | None = None
-        if older_than_days is not None and backend.backend_type == 'sqlite':
-            older_than_cutoff = (
-                datetime.now(UTC) - timedelta(days=older_than_days)
-            ).strftime('%Y-%m-%d %H:%M:%S')
-
-        if backend.backend_type == 'sqlite' and await repos.embeddings.embedding_tables_exist():
-            try:
-                affected_ids = await repos.context.get_ids_matching_batch_criteria(
-                    context_ids=context_ids,
-                    thread_ids=thread_ids,
-                    source=source,
-                    older_than_days=older_than_days,
-                    older_than_cutoff=older_than_cutoff,
-                )
+        if backend.backend_type == 'sqlite':
+            affected_ids = await repos.context.get_ids_matching_batch_criteria(
+                context_ids=context_ids,
+                thread_ids=thread_ids,
+                source=source,
+                older_than_days=older_than_days,
+            )
+            # Gate embedding cleanup on table PRESENCE (embedding_tables_exist),
+            # NOT the runtime generation/compression toggles: a prior session's
+            # embeddings must still be cleaned after the toggles flip off, or the
+            # FK-less vec0 rows orphan. Mirrors the stale-embedding cleanup on the
+            # update path.
+            if affected_ids and await repos.embeddings.embedding_tables_exist():
                 for cid in affected_ids:
                     try:
                         await repos.embeddings.delete(cid)
                     except Exception as e:
                         logger.warning(f'Failed to delete embedding for context {cid}: {e}')
-            except Exception as e:
-                logger.warning(f'Failed to pre-query context IDs for embedding cleanup: {e}')
-
-        # Execute batch delete through repository (shares older_than_cutoff with the
-        # cleanup pre-query above so SQLite cannot orphan vec0 rows).
-        deleted_count, criteria_used = await repos.context.delete_contexts_batch(
-            context_ids=context_ids,
-            thread_ids=thread_ids,
-            source=source,
-            older_than_days=older_than_days,
-            older_than_cutoff=older_than_cutoff,
-        )
+            deleted_count = await repos.context.delete_by_ids(affected_ids)
+            criteria_used = describe_batch_delete_criteria(
+                context_ids=context_ids,
+                thread_ids=thread_ids,
+                source=source,
+                older_than_days=older_than_days,
+            )
+        else:
+            deleted_count, criteria_used = await repos.context.delete_contexts_batch(
+                context_ids=context_ids,
+                thread_ids=thread_ids,
+                source=source,
+                older_than_days=older_than_days,
+            )
 
         logger.info(f'Batch delete completed: {deleted_count} entries removed')
 
