@@ -46,6 +46,7 @@ from typing import cast
 import asyncpg
 import numpy as np
 from numpy.typing import NDArray
+from pydantic import ValidationError
 
 from app.backends import StorageBackend
 from app.backends import create_backend
@@ -55,10 +56,14 @@ from app.cli.migrate import parse_backend_url
 from app.compression.base import CompressionProvider
 from app.compression.provenance import read_compression_metadata
 from app.compression.types import CompressionMetadata
+from app.errors import ConfigurationError
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.migrations._pg_ddl import fetch_migration
 from app.migrations._pg_ddl import fetchval_migration
 from app.migrations._pg_ddl import migration_statement_timeout_ms
+from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+from app.pgvector_limits import exceeds_pgvector_index_dim_limit
+from app.settings import AppSettings
 from app.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -369,6 +374,41 @@ async def _count_table(backend: StorageBackend, table_name: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _load_cli_settings() -> AppSettings | None:
+    """Resolve settings for a CLI run, mapping env misconfiguration to a clean error.
+
+    ``get_settings()`` validates the WHOLE environment and raises a pydantic
+    ``ValidationError`` on any invalid combination. The documented
+    ``--decompress`` prerequisite (unset ``ENABLE_EMBEDDING_COMPRESSION``)
+    recreates exactly the env shape the fp32 pgvector dimension validator
+    rejects on a PostgreSQL deployment whose EMBEDDING_DIM exceeds the index
+    cap, so a direct invocation of :func:`run_compress`/:func:`run_decompress`
+    would die with a raw multi-line validation traceback instead of an
+    operator-facing CLI message. Condense the validation detail (field name
+    plus message per error) to one line on stderr; callers return
+    ``ConfigurationError.EXIT_CODE`` (78, EX_CONFIG) -- the same permanent-
+    misconfiguration classification ``main()`` applies when the same
+    ``ValidationError`` surfaces at module-import time.
+
+    Returns:
+        The resolved settings, or ``None`` when the environment is invalid
+        (the error detail has already been printed to stderr).
+    """
+    try:
+        return get_settings()
+    except ValidationError as exc:
+        parts: list[str] = []
+        for err in exc.errors():
+            loc = '.'.join(str(piece) for piece in err['loc'])
+            msg = str(err['msg'])
+            parts.append(f'{loc}: {msg}' if loc else msg)
+        print(
+            f'[ERROR] Configuration invalid: {"; ".join(parts)}',
+            file=sys.stderr,
+        )
+        return None
+
+
 def run_compress(source_url: str, *, dry_run: bool) -> int:
     """Compress fp32 embeddings into bit-packed payloads.
 
@@ -379,10 +419,13 @@ def run_compress(source_url: str, *, dry_run: bool) -> int:
 
     Returns:
         Process exit code (0 success or success-no-op, 1 invalid input,
-        2 unrecoverable failure).
+        2 unrecoverable failure, 78 EX_CONFIG on an invalid environment
+        configuration).
     """
     masked = mask_credentials(source_url)
-    settings = get_settings()
+    settings = _load_cli_settings()
+    if settings is None:
+        return ConfigurationError.EXIT_CODE
     comp = settings.compression
 
     _print_warning(
@@ -430,10 +473,13 @@ def run_decompress(source_url: str, *, dry_run: bool) -> int:
 
     Returns:
         Process exit code (0 success or success-no-op, 1 invalid input,
-        2 unrecoverable failure).
+        2 unrecoverable failure, 78 EX_CONFIG on an invalid environment
+        configuration).
     """
     masked = mask_credentials(source_url)
-    settings = get_settings()
+    settings = _load_cli_settings()
+    if settings is None:
+        return ConfigurationError.EXIT_CODE
     comp = settings.compression
 
     _print_warning(
@@ -610,13 +656,45 @@ async def _decompress_async(source_url: str, *, dry_run: bool) -> int:
             )
             return 1
 
-        # Build a provider whose configuration mirrors the stored row so
-        # decoding produces the original codebook geometry.
-        provider = _provider_for(existing)
-
         row_count = await _count_table(
             backend, 'vec_context_embeddings_compressed',
         )
+
+        # fp32 rebuild capability pre-flight, BEFORE any DDL or data streaming:
+        # pgvector cannot build an HNSW index over vector columns wider than
+        # PGVECTOR_INDEX_DIM_LIMIT dimensions, and the reverse migration's
+        # CREATE INDEX runs LAST -- after every compressed row has been
+        # streamed and decoded -- so without this check the run wastes the
+        # whole decode pass and dies at commit time with a raw pgvector error
+        # (the transaction rolls back; data is safe but unexplained). A
+        # compressed database legitimately holds such dimensions (BYTEA
+        # payloads carry no cap), which is exactly why fp32 cannot host them.
+        # Zero-row databases skip the gate: the zero-data reverse path drops
+        # the empty compressed table and clears the provenance row WITHOUT
+        # provisioning any fp32 infrastructure, so it stays available as the
+        # documented escape hatch. SQLite is exempt (sqlite-vec has no
+        # per-dimension index cap).
+        if (
+            backend.backend_type == 'postgresql'
+            and row_count > 0
+            and exceeds_pgvector_index_dim_limit(existing.dim)
+        ):
+            print(
+                f'[ERROR] compression_metadata records dim={existing.dim}, above the '
+                f'pgvector index limit of {PGVECTOR_INDEX_DIM_LIMIT} dimensions for '
+                'fp32 vectors on PostgreSQL: --decompress would rebuild '
+                'vec_context_embeddings and fail at the trailing HNSW CREATE INDEX '
+                'after decoding every row. This database must stay compressed; to '
+                'obtain an fp32 layout, re-embed at a dimension of at most '
+                f'{PGVECTOR_INDEX_DIM_LIMIT} (--re-embed with a suitable '
+                'EMBEDDING_MODEL/EMBEDDING_DIM) before decompressing.',
+                file=sys.stderr,
+            )
+            return 1
+
+        # Build a provider whose configuration mirrors the stored row so
+        # decoding produces the original codebook geometry.
+        provider = _provider_for(existing)
 
         # Guard against a cross-host codebook divergence BEFORE decoding any
         # payload or dropping the compressed source. The same (dim, seed) can

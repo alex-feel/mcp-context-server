@@ -15,6 +15,9 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from pydantic_settings import SettingsConfigDict
 
+from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+from app.pgvector_limits import exceeds_pgvector_index_dim_limit
+
 logger = logging.getLogger(__name__)
 
 # A metadata field name is safe to index only when it is a plain SQL identifier:
@@ -1700,11 +1703,14 @@ class AppSettings(CommonSettings):
     def validate_pgvector_dimension_limit(self) -> Self:
         """Reject an fp32 PostgreSQL configuration whose embedding dimension exceeds pgvector's index cap.
 
-        pgvector caps HNSW (and IVFFlat) index dimensionality at 2000 for the
-        ``vector`` type. On PostgreSQL with embedding generation enabled and
-        compression OFF, the fp32 write path provisions ``vec_context_embeddings``
-        as ``vector(dim)`` and builds ``idx_vec_context_embeddings_hnsw`` over it,
-        so an EMBEDDING_DIM above 2000 makes the semantic-search migration crash at
+        pgvector caps HNSW (and IVFFlat) index dimensionality at
+        ``PGVECTOR_INDEX_DIM_LIMIT`` (2000) for the ``vector`` type -- the cap is
+        shared via ``app.pgvector_limits`` with the migration CLIs, which
+        pre-flight the same limit before rebuilding the fp32 layout. On
+        PostgreSQL with embedding generation enabled and compression OFF, the
+        fp32 write path provisions ``vec_context_embeddings`` as ``vector(dim)``
+        and builds ``idx_vec_context_embeddings_hnsw`` over it, so an
+        EMBEDDING_DIM above the cap makes the semantic-search migration crash at
         CREATE INDEX time -- a boot failure for a setting that is already invalid
         the moment it is read. Enabling compression removes the constraint
         (compressed payloads are stored as BYTEA with no pgvector index), and
@@ -1720,19 +1726,18 @@ class AppSettings(CommonSettings):
             ValueError: If the PostgreSQL fp32 path is configured with an embedding
                 dimension above the pgvector index limit.
         """
-        pgvector_index_dim_limit = 2000
         if (
             self.storage.backend_type == 'postgresql'
             and self.embedding.generation_enabled
             and not self.compression.enabled
-            and self.embedding.dim > pgvector_index_dim_limit
+            and exceeds_pgvector_index_dim_limit(self.embedding.dim)
         ):
             raise ValueError(
                 f'EMBEDDING_DIM ({self.embedding.dim}) exceeds the pgvector index limit of '
-                f'{pgvector_index_dim_limit} dimensions for fp32 vectors on PostgreSQL. '
+                f'{PGVECTOR_INDEX_DIM_LIMIT} dimensions for fp32 vectors on PostgreSQL. '
                 f'The semantic-search migration would fail building the HNSW index on '
                 f'vec_context_embeddings. Either reduce EMBEDDING_DIM to '
-                f'{pgvector_index_dim_limit} or below, or set ENABLE_EMBEDDING_COMPRESSION=true '
+                f'{PGVECTOR_INDEX_DIM_LIMIT} or below, or set ENABLE_EMBEDDING_COMPRESSION=true '
                 f'(compressed payloads are stored as BYTEA with no pgvector dimension cap).',
             )
         return self
