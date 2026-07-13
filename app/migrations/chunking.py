@@ -30,19 +30,29 @@ settings = get_settings()
 async def _check_chunking_migration_applied_postgresql(conn: asyncpg.Connection) -> bool:
     """Check if chunking migration already applied for PostgreSQL.
 
+    The applied-marker is the ``chunk_count`` column the migration adds to
+    ``embedding_metadata`` (its final step), which exists in BOTH the fp32 and
+    the compressed layout -- the migration always runs that step regardless of
+    ``skip_fp32_vec``. The old marker ``vec_context_embeddings.id`` never exists
+    under compression (the compressed table replaces the fp32 one, and
+    ``skip_fp32_vec`` strips every ``vec_context_embeddings`` statement), so it
+    read as unapplied on every compressed-PG boot and re-ran the migration body
+    each time. Probing ``embedding_metadata.chunk_count`` short-circuits
+    correctly for both layouts.
+
     Args:
         conn: PostgreSQL connection
 
     Returns:
-        True if migration already applied (id column exists), False otherwise
+        True if migration already applied (chunk_count column exists), False otherwise
     """
     schema = settings.storage.postgresql_schema
     result = await conn.fetchval('''
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
             WHERE table_schema = $1
-              AND table_name = 'vec_context_embeddings'
-              AND column_name = 'id'
+              AND table_name = 'embedding_metadata'
+              AND column_name = 'chunk_count'
         )
     ''', schema)
     return bool(result)
