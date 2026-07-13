@@ -901,6 +901,7 @@ def is_connection_error(exc: Exception) -> bool:
         asyncpg.InterfaceError,
         asyncpg.ConnectionDoesNotExistError,
         asyncpg.exceptions.QueryCanceledError,
+        asyncpg.exceptions.TransactionRollbackError,
         ConnectionResetError,
         OSError,
     ))

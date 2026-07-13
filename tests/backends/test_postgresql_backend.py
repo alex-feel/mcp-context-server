@@ -862,6 +862,224 @@ class TestExecuteWriteStatementTimeoutRetry:
             await backend.execute_write(operation)
 
 
+class TestExecuteWriteDeadlockRetry:
+    """execute_write retries server-initiated rollbacks (SQLSTATE class 40) uncharged.
+
+    PostgreSQL aborts one transaction to break a deadlock (40P01) or a
+    serialization cycle (40001) and expects the loser to retry. Each aborted
+    attempt is routine write contention, not a database fault, so no attempt may
+    charge the circuit breaker; only retry exhaustion records the single failure
+    for the logical write.
+    """
+
+    @staticmethod
+    def _make_backend() -> PostgreSQLBackend:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        backend.retry_config.max_retries = 3
+        backend.retry_config.base_delay = 0.0
+        backend.retry_config.max_delay = 0.0
+        backend.retry_config.jitter = False
+        backend._shutdown = False
+        return backend
+
+    @staticmethod
+    def _install_fake_connection(
+        backend: PostgreSQLBackend, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        @contextlib.asynccontextmanager
+        async def _fake_transaction() -> AsyncIterator[None]:
+            yield None
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
+
+        @contextlib.asynccontextmanager
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
+
+    @pytest.mark.asyncio
+    async def test_deadlock_is_retried_and_never_charges_breaker(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A deadlocked attempt retries and succeeds with zero breaker failures."""
+        backend = self._make_backend()
+        self._install_fake_connection(backend, monkeypatch)
+        record_failure = AsyncMock()
+        monkeypatch.setattr(backend.circuit_breaker, 'record_failure', record_failure)
+
+        call_count = {'n': 0}
+
+        async def operation(_conn: object, value: str) -> str:
+            call_count['n'] += 1
+            if call_count['n'] == 1:
+                raise asyncpg.exceptions.DeadlockDetectedError('deadlock detected')
+            return value
+
+        result = await backend.execute_write(operation, 'committed-once')
+
+        assert result == 'committed-once'
+        assert call_count['n'] == 2
+        record_failure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_persistent_deadlock_exhausts_with_single_breaker_failure(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Retry exhaustion re-raises the rollback and charges exactly one failure."""
+        backend = self._make_backend()
+        backend.retry_config.max_retries = 2
+        self._install_fake_connection(backend, monkeypatch)
+        record_failure = AsyncMock()
+        monkeypatch.setattr(backend.circuit_breaker, 'record_failure', record_failure)
+
+        async def operation(_conn: object) -> None:
+            raise asyncpg.exceptions.DeadlockDetectedError('still deadlocked')
+
+        with pytest.raises(asyncpg.exceptions.DeadlockDetectedError):
+            await backend.execute_write(operation)
+
+        record_failure.assert_awaited_once()
+
+
+class TestExecuteWritePoolAcquireTimeout:
+    """execute_write does not charge the breaker for a pool-acquire TimeoutError.
+
+    A saturated pool is a capacity signal, not a database fault: get_connection
+    and begin_transaction leave their acquire uncharged, and execute_write must
+    match. A TimeoutError raised AFTER a live connection was obtained (statement
+    exceeded the pool command_timeout) still charges exactly one failure.
+    """
+
+    @staticmethod
+    def _make_backend() -> PostgreSQLBackend:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        backend.retry_config.max_retries = 3
+        backend.retry_config.base_delay = 0.0
+        backend.retry_config.max_delay = 0.0
+        backend.retry_config.jitter = False
+        backend._shutdown = False
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_pool_acquire_timeout_propagates_uncharged(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An acquire-phase TimeoutError re-raises without touching the breaker."""
+        backend = self._make_backend()
+        record_failure = AsyncMock()
+        monkeypatch.setattr(backend.circuit_breaker, 'record_failure', record_failure)
+
+        class _TimeoutOnEnter:
+            async def __aenter__(self) -> object:
+                raise TimeoutError('pool saturated')
+
+            async def __aexit__(self, *_exc: object) -> bool:
+                return False
+
+        def _acquire_times_out(*_args: object, **_kwargs: object) -> _TimeoutOnEnter:
+            return _TimeoutOnEnter()
+
+        monkeypatch.setattr(backend, 'get_connection', _acquire_times_out)
+
+        call_count = {'n': 0}
+
+        async def operation(_conn: object) -> None:
+            call_count['n'] += 1
+
+        with pytest.raises(TimeoutError):
+            await backend.execute_write(operation)
+
+        assert call_count['n'] == 0
+        record_failure.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_statement_timeout_after_acquire_charges_once(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A TimeoutError on a live connection still charges exactly one failure."""
+        backend = self._make_backend()
+        record_failure = AsyncMock()
+        monkeypatch.setattr(backend.circuit_breaker, 'record_failure', record_failure)
+
+        @contextlib.asynccontextmanager
+        async def _fake_transaction() -> AsyncIterator[None]:
+            yield None
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
+
+        @contextlib.asynccontextmanager
+        async def _fake_get_connection(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        monkeypatch.setattr(backend, 'get_connection', _fake_get_connection)
+
+        async def operation(_conn: object) -> None:
+            raise TimeoutError('statement exceeded pool command_timeout')
+
+        with pytest.raises(TimeoutError):
+            await backend.execute_write(operation)
+
+        record_failure.assert_awaited_once()
+
+
+class TestBeginTransactionDeadlockExemption:
+    """begin_transaction does not charge the breaker for server-initiated rollbacks.
+
+    The tool layer retries deadlock/serialization rollbacks (SQLSTATE class 40),
+    so charging the breaker per aborted attempt would let routine write
+    contention open it and reject every caller's healthy requests. A genuine
+    fault still charges.
+    """
+
+    @staticmethod
+    def _backend_with_fake_pool() -> PostgreSQLBackend:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        backend._shutdown = False
+
+        @contextlib.asynccontextmanager
+        async def _fake_transaction() -> AsyncIterator[None]:
+            yield None
+
+        mock_conn = MagicMock()
+        mock_conn.transaction = MagicMock(side_effect=_fake_transaction)
+
+        @contextlib.asynccontextmanager
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        pool = MagicMock()
+        pool.acquire = MagicMock(side_effect=_fake_acquire)
+        backend._pool = pool
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_deadlock_rollback_does_not_charge_breaker(self) -> None:
+        """A deadlock escaping the transaction body leaves the breaker untouched."""
+        backend = self._backend_with_fake_pool()
+        with pytest.raises(asyncpg.exceptions.DeadlockDetectedError):
+            async with backend.begin_transaction():
+                raise asyncpg.exceptions.DeadlockDetectedError('deadlock detected')
+        assert backend.circuit_breaker.failures == 0
+
+    @pytest.mark.asyncio
+    async def test_genuine_fault_still_charges_breaker(self) -> None:
+        """A non-rollback fault in the transaction body still records a failure."""
+        backend = self._backend_with_fake_pool()
+        with pytest.raises(RuntimeError, match='db fault'):
+            async with backend.begin_transaction():
+                raise RuntimeError('db fault')
+        assert backend.circuit_breaker.failures == 1
+
+
 class TestGetConnectionBreakerControlFlowExemption:
     """get_connection exempts ControlFlowError from circuit-breaker failure accounting.
 

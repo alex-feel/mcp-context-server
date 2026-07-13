@@ -102,6 +102,25 @@ class TestConnectionErrorClassification:
         """Document the SQLSTATE this classifier now treats as retryable."""
         assert asyncpg.exceptions.QueryCanceledError.sqlstate == '57014'
 
+    def test_transaction_rollback_errors_are_retryable(self) -> None:
+        """Server-initiated transaction rollbacks (SQLSTATE class 40) are retryable.
+
+        PostgreSQL aborts one transaction to break a deadlock (40P01) or a
+        serialization cycle (40001); the loser is expected to retry and succeeds
+        once the competing transaction commits. Classifying the class-40 base
+        as a connection-style transient makes the tool layer re-run the
+        transaction instead of surfacing routine lock contention to the client.
+        """
+        assert is_connection_error(asyncpg.exceptions.TransactionRollbackError('rollback'))
+        assert is_connection_error(asyncpg.exceptions.DeadlockDetectedError('deadlock detected'))
+        assert is_connection_error(asyncpg.exceptions.SerializationError('could not serialize access'))
+
+    def test_transaction_rollback_sqlstates_are_class_40(self) -> None:
+        """Document the SQLSTATEs this classifier treats as retryable rollbacks."""
+        assert asyncpg.exceptions.TransactionRollbackError.sqlstate == '40000'
+        assert asyncpg.exceptions.DeadlockDetectedError.sqlstate == '40P01'
+        assert asyncpg.exceptions.SerializationError.sqlstate == '40001'
+
 
 # ---------------------------------------------------------------------------
 # New: TestValidateAndNormalizeImages
