@@ -44,6 +44,7 @@ from app.backends import StorageBackend
 from app.backends import create_backend
 from app.embeddings import EmbeddingProvider
 from app.migrations._pg_ddl import begin_migration
+from app.migrations._pg_ddl import execute_migration_ddl
 from app.repositories import RepositoryContainer
 from app.reranking import RerankingProvider
 from app.services import ChunkingService
@@ -260,12 +261,18 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                     if current_stmt:
                         statements.append('\n'.join(current_stmt))
 
-                    # Execute each statement
+                    # Execute each statement under the migration budget. Route through
+                    # execute_migration_ddl so asyncpg's client-side per-call deadline
+                    # matches the raised server-side statement_timeout; a bare
+                    # conn.execute would inherit the pool's shorter command_timeout (60s)
+                    # and be cancelled client-side despite the raised migration budget,
+                    # crash-looping the boot on any first-time schema statement that runs
+                    # longer than 60s (large instance, slow disk, multi-pod contention).
                     for i, stmt in enumerate(statements):
                         stmt = stmt.strip()
                         if stmt and not stmt.startswith('--'):
                             try:
-                                await conn.execute(stmt)
+                                await execute_migration_ddl(conn, stmt, migration_timeout_s)
                                 logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
                             except Exception as e:
                                 logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
@@ -319,11 +326,16 @@ async def init_database(backend: StorageBackend | None = None) -> None:
                         if current_stmt:
                             statements.append('\n'.join(current_stmt))
 
+                        # Execute each statement under the migration budget via
+                        # execute_migration_ddl so the client-side per-call deadline
+                        # matches the raised server-side statement_timeout instead of
+                        # falling back to the pool's shorter command_timeout (see the
+                        # provided-backend closure above for the crash-loop rationale).
                         for i, stmt in enumerate(statements):
                             stmt = stmt.strip()
                             if stmt and not stmt.startswith('--'):
                                 try:
-                                    await conn.execute(stmt)
+                                    await execute_migration_ddl(conn, stmt, migration_timeout_s)
                                     logger.debug('Schema statement %d/%d: SUCCESS', i + 1, len(statements))
                                 except Exception as e:
                                     logger.error('Schema statement %d/%d FAILED: %s', i + 1, len(statements), e)
