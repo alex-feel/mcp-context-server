@@ -974,3 +974,115 @@ class TestHybridAllModesFailedValidationResponse:
         # Both sub-searches validated the same filters and produced identical
         # messages; the client must see each defect once.
         assert result['validation_errors'] == shared_messages
+
+
+class TestHybridPartialDegradationResponse:
+    """One sub-search fails validation while the other succeeds (graceful degradation).
+
+    Exercises the ACTUAL partial-degradation path of hybrid_search_context: the
+    surviving mode's results are returned, but the response also carries the
+    specific failure text in ``warnings`` and the per-filter details under the
+    same ``validation_errors`` key the all-failed branch uses, so a client can
+    correct an invalid sub-query even when results were still produced.
+    """
+
+    @staticmethod
+    def _repos_with_tags() -> MagicMock:
+        """A repository container whose tag lookup returns an empty list."""
+        repos = MagicMock()
+        repos.tags = MagicMock()
+        repos.tags.get_tags_for_context = AsyncMock(return_value=[])
+        return repos
+
+    @pytest.mark.asyncio
+    async def test_semantic_failure_surfaces_warning_and_validation_errors(self) -> None:
+        """Semantic fails validation, FTS succeeds: results returned, warning + details present."""
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.tools.search import hybrid_search_context
+
+        semantic_messages = [
+            "Invalid metadata filter {'key': 'a', 'operator': 'nope'}: unsupported operator",
+        ]
+        fts_rows: list[dict[str, Any]] = [
+            {
+                'id': 'a' * 32, 'thread_id': 't1', 'source': 'agent', 'content_type': 'text',
+                'text_content': 'python async guide', 'score': 9.0, 'metadata': None,
+                'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-01T00:00:00Z',
+            },
+        ]
+
+        with (
+            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=self._repos_with_tags())),
+            patch('app.tools.search.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch('app.tools.search._fts_search_raw', AsyncMock(return_value=(fts_rows, {}))),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(semantic_messages))),
+            ),
+        ):
+            result = await hybrid_search_context(
+                query='python async',
+                metadata_filters=[{'key': 'a', 'operator': 'nope', 'value': 1}],
+            )
+
+        # FTS survived, so results are still returned (graceful degradation).
+        assert result['count'] == 1
+        assert result['results'][0]['id'] == 'a' * 32
+        assert result['search_modes_used'] == ['fts']
+
+        # The warning embeds the SPECIFIC semantic failure text, not a generic notice.
+        warnings = result['warnings']
+        assert isinstance(warnings, list)
+        assert len(warnings) == 1
+        assert 'Semantic:' in warnings[0]
+        assert 'Invalid filters' in warnings[0]
+
+        # The per-filter details ride under the same validation_errors key the
+        # all-failed branch uses, so the client can fix the invalid sub-query.
+        assert result['validation_errors'] == semantic_messages
+        # No top-level error on partial degradation -- the request partly succeeded.
+        assert 'error' not in result
+
+    @pytest.mark.asyncio
+    async def test_fts_failure_surfaces_warning_and_validation_errors(self) -> None:
+        """FTS fails validation, semantic succeeds: mirror case with FTS-prefixed warning."""
+        from app.repositories.fts_repository import FtsValidationError
+        from app.tools.search import hybrid_search_context
+
+        fts_messages = ['invalid boolean expression near ")"']
+        semantic_rows: list[dict[str, Any]] = [
+            {
+                'id': 'b' * 32, 'thread_id': 't1', 'source': 'user', 'content_type': 'text',
+                'text_content': 'python async guide', 'distance': 0.2, 'metadata': None,
+                'created_at': '2025-01-01T00:00:00Z', 'updated_at': '2025-01-01T00:00:00Z',
+            },
+        ]
+
+        with (
+            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=self._repos_with_tags())),
+            patch('app.tools.search.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(side_effect=FtsValidationError('Invalid filters', list(fts_messages))),
+            ),
+            patch('app.tools.search._semantic_search_raw', AsyncMock(return_value=(semantic_rows, {}))),
+        ):
+            result = await hybrid_search_context(
+                query='python async',
+                metadata_filters=[{'key': 'a', 'operator': 'nope', 'value': 1}],
+            )
+
+        assert result['count'] == 1
+        assert result['results'][0]['id'] == 'b' * 32
+        assert result['search_modes_used'] == ['semantic']
+
+        warnings = result['warnings']
+        assert isinstance(warnings, list)
+        assert len(warnings) == 1
+        assert 'FTS:' in warnings[0]
+        assert 'Invalid filters' in warnings[0]
+
+        assert result['validation_errors'] == fts_messages
+        assert 'error' not in result

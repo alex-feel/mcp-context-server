@@ -11,6 +11,7 @@ Solution: CTE-based pre-filtering with vec_distance_l2() scalar function.
 """
 
 import importlib.util
+from typing import Any
 
 import pytest
 
@@ -1716,3 +1717,97 @@ class TestSemanticSearchTagsFilter:
         # Should only return the one matching all criteria
         assert len(results) == 1
         assert results[0]['id'] == target_id
+
+
+class TestSemanticEmbeddingGenerationStat:
+    """The measured query-embedding duration is surfaced in the semantic stats.
+
+    ``_semantic_search_raw`` times the ``embed_query`` call and injects
+    ``embedding_generation_ms`` (rounded, milliseconds) into the returned stats
+    dict; the standalone ``semantic_search_context`` tool passes that dict through
+    as its ``stats`` payload, and hybrid search inherits it via ``semantic_stats``.
+    """
+
+    @staticmethod
+    def _patch_provider_and_repo(
+        monkeypatch: pytest.MonkeyPatch,
+        rows: list[dict[str, Any]],
+        stats: dict[str, Any],
+    ) -> None:
+        """Stub the embedding provider and repository so no real embedding runs."""
+        import app.tools.search as search_mod
+
+        class _FakeEmbeddingProvider:
+            async def embed_query(self, _query: str) -> list[float]:
+                return [0.1, 0.2, 0.3]
+
+        class _FakeEmbeddingsRepo:
+            async def search(self, **_kwargs: object) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                # Return a fresh copy so the injected key is observed on the returned dict.
+                return rows, dict(stats)
+
+        class _FakeTagsRepo:
+            async def get_tags_for_context(self, _context_id: str) -> list[str]:
+                return []
+
+        class _FakeRepos:
+            embeddings = _FakeEmbeddingsRepo()
+            tags = _FakeTagsRepo()
+
+        async def _fake_ensure_repositories() -> _FakeRepos:
+            return _FakeRepos()
+
+        monkeypatch.setattr(search_mod, 'get_embedding_provider', lambda: _FakeEmbeddingProvider())
+        monkeypatch.setattr(search_mod, 'ensure_repositories', _fake_ensure_repositories)
+        # No reranking provider so the tool takes the plain (non-overfetch-rerank) path.
+        monkeypatch.setattr(search_mod, 'get_reranking_provider', lambda: None)
+
+    @pytest.mark.asyncio
+    async def test_raw_search_injects_embedding_generation_ms(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_semantic_search_raw adds a non-negative embedding_generation_ms to stats."""
+        from app.tools.search import _semantic_search_raw
+
+        self._patch_provider_and_repo(monkeypatch, rows=[], stats={'rows_returned': 0})
+
+        _results, stats = await _semantic_search_raw(query='hi', limit=5, explain_query=True)
+
+        assert 'embedding_generation_ms' in stats
+        elapsed = stats['embedding_generation_ms']
+        assert isinstance(elapsed, (int, float))
+        assert elapsed >= 0
+        # Pre-existing repository stats are preserved alongside the injected key.
+        assert stats['rows_returned'] == 0
+
+    @pytest.mark.asyncio
+    async def test_tool_stats_carry_embedding_generation_ms(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """semantic_search_context surfaces embedding_generation_ms under stats when
+        explain_query=True (the documented HybridSemanticStatsDict field)."""
+        from app.tools.search import semantic_search_context
+
+        rows = [
+            {
+                'id': 'a' * 32, 'thread_id': 't', 'source': 'user', 'content_type': 'text',
+                'text_content': 'hello world', 'distance': 0.1, 'metadata': None,
+            },
+        ]
+        self._patch_provider_and_repo(monkeypatch, rows=rows, stats={'rows_returned': 1})
+
+        response = await semantic_search_context(query='hello', limit=5, explain_query=True)
+
+        assert 'stats' in response
+        stats = response['stats']
+        assert 'embedding_generation_ms' in stats
+        assert stats['embedding_generation_ms'] >= 0
+
+    @pytest.mark.asyncio
+    async def test_embedding_generation_ms_absent_without_explain_query(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without explain_query the tool emits no stats block at all."""
+        from app.tools.search import semantic_search_context
+
+        self._patch_provider_and_repo(monkeypatch, rows=[], stats={'rows_returned': 0})
+
+        response = await semantic_search_context(query='hello', limit=5, explain_query=False)
+
+        assert 'stats' not in response

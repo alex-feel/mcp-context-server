@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Coroutine
 from datetime import UTC
 from datetime import datetime
@@ -254,12 +255,15 @@ async def _semantic_search_raw(
     # Get repositories
     repos = await ensure_repositories()
 
-    # Generate embedding for query
+    # Generate embedding for query, measuring the call so callers can surface the
+    # documented embedding_generation_ms stat.
+    embedding_start = time.perf_counter()
     try:
         query_embedding = await embedding_provider.embed_query(query)
     except Exception as e:
         logger.error(f'Failed to generate query embedding: {e}')
         raise ToolError(f'Failed to generate embedding for query: {format_exception_message(e)}') from e
+    embedding_generation_ms = (time.perf_counter() - embedding_start) * 1000
 
     # Perform similarity search with optional filtering
     from app.repositories.embedding_repository import MetadataFilterValidationError
@@ -284,6 +288,11 @@ async def _semantic_search_raw(
     except Exception as e:
         logger.error(f'Semantic search failed: {e}')
         raise ToolError(f'Semantic search failed: {format_exception_message(e)}') from e
+
+    # Surface the measured query-embedding duration in the stats contract
+    # (HybridSemanticStatsDict.embedding_generation_ms); hybrid search inherits it
+    # via semantic_stats.
+    search_stats['embedding_generation_ms'] = round(embedding_generation_ms, 2)
 
     # Post-process for reranking: extract chunk text from boundaries
     if _extract_rerank_text:
@@ -990,6 +999,7 @@ async def fts_search_context(
                     'execution_time_ms': 0.0,
                     'filters_applied': 0,
                     'rows_returned': 0,
+                    'backend': settings.storage.backend_type,
                 }
             return error_response
 
@@ -1449,16 +1459,28 @@ async def hybrid_search_context(
                 semantic_error,
             )
 
-        # Build warnings list for client visibility when sub-searches degrade
+        # Build warnings list for client visibility when sub-searches degrade.
+        # Include the specific sub-search failure so a permanently-invalid
+        # sub-query (e.g. bad metadata_filters reaching only one mode) is
+        # correctable from the response instead of hidden behind a generic notice.
         search_warnings: list[str] = []
         if fts_error:
             search_warnings.append(
-                'FTS sub-search failed; results may be based on semantic search only',
+                f'FTS sub-search failed; results may be based on semantic search only. FTS: {fts_error}',
             )
         if semantic_error:
             search_warnings.append(
-                'Semantic sub-search failed; results may be based on FTS only',
+                f'Semantic sub-search failed; results may be based on FTS only. Semantic: {semantic_error}',
             )
+
+        # Deduplicate validation details captured from either sub-search once;
+        # both the all-modes-failed response below and the partial-degradation
+        # response surface them under the same validation_errors key.
+        combined_raw: list[str] = [
+            *(fts_validation_errors or []),
+            *(semantic_validation_errors or []),
+        ]
+        combined_validation_errors = list(dict.fromkeys(combined_raw))
 
         # Determine which available modes executed successfully (not errored).
         modes_used: list[str] = []
@@ -1484,12 +1506,7 @@ async def hybrid_search_context(
             # ToolError: the caller needs the per-filter details to correct the
             # query rather than retry a permanently-invalid request. Both modes
             # validate the SAME filters and build identical messages, so the
-            # order-preserving dedup keeps each defect listed once.
-            combined_raw: list[str] = [
-                *(fts_validation_errors or []),
-                *(semantic_validation_errors or []),
-            ]
-            combined_validation_errors = list(dict.fromkeys(combined_raw))
+            # order-preserving dedup above keeps each defect listed once.
             if combined_validation_errors:
                 return {
                     'query': query,
@@ -1603,6 +1620,12 @@ async def hybrid_search_context(
             }
         if search_warnings:
             response['warnings'] = search_warnings
+        # A partially-degraded response carries the captured per-filter details
+        # under the same validation_errors key the all-modes-failed branch uses,
+        # so a client can fix an invalid sub-query even when the other mode
+        # produced results.
+        if combined_validation_errors:
+            response['validation_errors'] = combined_validation_errors
         return response
 
     except ToolError:
