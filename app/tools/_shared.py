@@ -1553,25 +1553,36 @@ async def execute_update_in_transaction(
     # Heartbeat between operation groups
     await transaction_heartbeat(txn)
 
-    # Replace tags if provided
-    if tags is not None:
-        await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
-        updated_fields.append('tags')
+    # Replace tags and/or images if provided. Both write child rows keyed on the
+    # parent context_entries id. The entry_exists guard above (locking the parent
+    # with FOR KEY SHARE on PostgreSQL) already confirms and holds the parent for
+    # the tags-only / images-only path, so a concurrent delete cannot race these
+    # writes. This catch is defense in depth for any residual foreign-key
+    # violation, mapping it to the breaker-exempt EntryNotFoundError so a missing
+    # parent surfaces as a clean not-found outcome rather than a raw asyncpg error
+    # that charges the circuit breaker.
+    try:
+        # Replace tags if provided
+        if tags is not None:
+            await repos.tags.replace_tags_for_context(context_id, tags, txn=txn)
+            updated_fields.append('tags')
 
-    # Replace images if provided
-    if images is not None:
-        if len(images) == 0:
-            await repos.images.replace_images_for_context(context_id, [], txn=txn)
-            await repos.context.update_content_type(context_id, 'text', txn=txn)
-            updated_fields.extend(['images', 'content_type'])
-        else:
-            await repos.images.replace_images_for_context(
-                context_id, validated_images, txn=txn,
-            )
-            await repos.context.update_content_type(
-                context_id, 'multimodal', txn=txn,
-            )
-            updated_fields.extend(['images', 'content_type'])
+        # Replace images if provided
+        if images is not None:
+            if len(images) == 0:
+                await repos.images.replace_images_for_context(context_id, [], txn=txn)
+                await repos.context.update_content_type(context_id, 'text', txn=txn)
+                updated_fields.extend(['images', 'content_type'])
+            else:
+                await repos.images.replace_images_for_context(
+                    context_id, validated_images, txn=txn,
+                )
+                await repos.context.update_content_type(
+                    context_id, 'multimodal', txn=txn,
+                )
+                updated_fields.extend(['images', 'content_type'])
+    except asyncpg.exceptions.ForeignKeyViolationError as exc:
+        raise EntryNotFoundError(context_id) from exc
 
     # Auto-correct content_type when images not explicitly changed
     if images is None and (text is not None or metadata is not None):

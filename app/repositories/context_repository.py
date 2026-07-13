@@ -1491,6 +1491,16 @@ class ContextRepository(BaseRepository):
         violate the foreign key against a missing parent (charging the circuit
         breaker) or orphan the rows.
 
+        When invoked inside a transaction on PostgreSQL, the presence check locks
+        the parent row with FOR KEY SHARE so a concurrent DELETE blocks until this
+        update transaction commits: without the lock the row can be deleted in the
+        window between this check and the subsequent child tag/image writes, whose
+        foreign key then fails -- a non-ControlFlowError that charges the circuit
+        breaker. FOR KEY SHARE permits concurrent non-key updates while blocking
+        row deletion, which is exactly the parent-presence guarantee the child
+        writes need. Outside a transaction the lock would release at statement end
+        and serve no purpose, so it is applied only on the transaction path.
+
         Args:
             context_id: ID of the context entry.
             txn: Optional transaction context. When provided the read runs on the
@@ -1517,9 +1527,11 @@ class ContextRepository(BaseRepository):
             return await self.backend.execute_read(_entry_exists_sqlite)
 
         # PostgreSQL
+        lock_clause = ' FOR KEY SHARE' if txn is not None else ''
+
         async def _entry_exists_postgresql(conn: 'asyncpg.Connection') -> bool:
             row = await conn.fetchrow(
-                f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1',
+                f'SELECT 1 FROM context_entries WHERE id = {self._placeholder(1)} LIMIT 1{lock_clause}',
                 context_id,
             )
             return row is not None

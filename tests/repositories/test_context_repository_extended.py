@@ -7,7 +7,12 @@ of search operations, edge cases, and error handling.
 import json
 import sqlite3
 from collections.abc import AsyncGenerator
+from collections.abc import Awaitable
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
+from unittest.mock import AsyncMock
+from unittest.mock import Mock
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +20,7 @@ import pytest_asyncio
 
 from app.backends import create_backend
 from app.backends.base import StorageBackend
+from app.backends.base import TransactionContext
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
 from app.repositories.context_repository import ContextRepository
@@ -841,6 +847,43 @@ class TestContextRepositoryUpdate:
 
         assert await repos.context.entry_exists(ctx_id) is True
         assert await repos.context.entry_exists(generate_id()) is False
+
+    @pytest.mark.asyncio
+    async def test_entry_exists_locks_parent_row_on_postgresql_transaction(self) -> None:
+        """On PostgreSQL the in-transaction presence check locks the parent row.
+
+        The tags-only / images-only update guard runs entry_exists on the open
+        transaction connection; it must emit FOR KEY SHARE so a concurrent DELETE
+        blocks until commit and cannot leave the child tag/image writes violating
+        the foreign key. Outside a transaction the lock would release at statement
+        end, so it must NOT be emitted there. Both cases are asserted against a
+        recording connection without needing a live PostgreSQL.
+        """
+        txn_conn = AsyncMock()
+        txn_conn.fetchrow = AsyncMock(return_value={'?column?': 1})
+        txn_backend = Mock()
+        txn_backend.backend_type = 'postgresql'
+        txn = Mock()
+        txn.backend_type = 'postgresql'
+        txn.connection = txn_conn
+
+        repo_txn = ContextRepository(cast(StorageBackend, txn_backend))
+        assert await repo_txn.entry_exists('abc123', txn=cast(TransactionContext, txn)) is True
+        assert 'FOR KEY SHARE' in txn_conn.fetchrow.call_args.args[0]
+
+        pool_conn = AsyncMock()
+        pool_conn.fetchrow = AsyncMock(return_value={'?column?': 1})
+
+        async def _execute_read(closure: Callable[[object], Awaitable[bool]]) -> bool:
+            return await closure(pool_conn)
+
+        pool_backend = Mock()
+        pool_backend.backend_type = 'postgresql'
+        pool_backend.execute_read = _execute_read
+
+        repo_pool = ContextRepository(cast(StorageBackend, pool_backend))
+        assert await repo_pool.entry_exists('abc123') is True
+        assert 'FOR KEY SHARE' not in pool_conn.fetchrow.call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_get_content_type(
