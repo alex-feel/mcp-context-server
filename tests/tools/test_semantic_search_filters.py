@@ -1811,3 +1811,80 @@ class TestSemanticEmbeddingGenerationStat:
         response = await semantic_search_context(query='hello', limit=5, explain_query=False)
 
         assert 'stats' not in response
+
+
+class TestSemanticValidationErrorStats:
+    """The semantic validation-error response carries a full stats dict when explain_query=True.
+
+    A MetadataFilterValidationError (invalid metadata filter) returns a structured
+    error response instead of raising. When explain_query is requested, that
+    response's ``stats`` dict must include the ``backend`` key alongside the zeroed
+    counters, mirroring the FTS error path and every success path so the shape is
+    uniform for the client.
+    """
+
+    @pytest.mark.asyncio
+    async def test_validation_error_stats_include_backend(self) -> None:
+        """The error-path stats dict includes backend (the active storage backend type)."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import patch
+
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.tools.search import semantic_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', ['bad operator: nope'])),
+            ),
+        ):
+            response = await semantic_search_context(
+                query='python async',
+                explain_query=True,
+            )
+
+        assert response['count'] == 0
+        assert response['results'] == []
+        assert response['error'] == 'Invalid filters'
+        assert response['validation_errors'] == ['bad operator: nope']
+        assert 'stats' in response
+        stats = response['stats']
+        # The backend key must be present and match the backend the tool actually
+        # resolves (the module-level settings binding the production code reads),
+        # so the error-path stats shape matches every other stats path.
+        import app.tools.search as search_mod
+
+        assert 'backend' in stats
+        assert stats['backend'] == search_mod.settings.storage.backend_type
+        # The other documented error-path stat keys accompany it, including the
+        # semantic shape's embedding timing counter (zeroed: no query executed).
+        assert stats['execution_time_ms'] == 0.0
+        assert stats['embedding_generation_ms'] == 0.0
+        assert stats['filters_applied'] == 0
+        assert stats['rows_returned'] == 0
+
+    @pytest.mark.asyncio
+    async def test_validation_error_omits_stats_without_explain_query(self) -> None:
+        """Without explain_query the validation-error response carries no stats block."""
+        from unittest.mock import AsyncMock
+        from unittest.mock import patch
+
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.tools.search import semantic_search_context
+
+        with (
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', ['bad operator: nope'])),
+            ),
+        ):
+            response = await semantic_search_context(
+                query='python async',
+                explain_query=False,
+            )
+
+        assert response['count'] == 0
+        assert response['error'] == 'Invalid filters'
+        assert 'stats' not in response

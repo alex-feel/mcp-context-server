@@ -975,6 +975,40 @@ class TestHybridAllModesFailedValidationResponse:
         # messages; the client must see each defect once.
         assert result['validation_errors'] == shared_messages
 
+    @pytest.mark.asyncio
+    async def test_error_response_carries_fusion_method_and_counts(self) -> None:
+        """The all-modes-failed response carries fusion_method, fts_count, and
+        semantic_count -- the always-present response-shape keys the success path,
+        the docstring, and HybridSearchResponseDict declare, so a client reading
+        them never hits a KeyError on the error branch."""
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.fts_repository import FtsValidationError
+        from app.tools.search import hybrid_search_context
+
+        messages = ['bad operator: nope']
+
+        with (
+            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=MagicMock())),
+            patch('app.tools.search.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(side_effect=FtsValidationError('Invalid filters', list(messages))),
+            ),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(messages))),
+            ),
+        ):
+            result = await hybrid_search_context(
+                query='anything',
+                metadata_filters=[{'key': 'a', 'operator': 'nope', 'value': 1}],
+            )
+
+        assert result['fusion_method'] == 'rrf'
+        assert result['fts_count'] == 0
+        assert result['semantic_count'] == 0
+
 
 class TestHybridPartialDegradationResponse:
     """One sub-search fails validation while the other succeeds (graceful degradation).

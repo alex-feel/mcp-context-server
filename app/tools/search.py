@@ -76,6 +76,32 @@ def _clamp_overfetch(rows: int) -> int:
     return min(rows, MAX_OVERFETCH_ROWS)
 
 
+def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> dict[str, Any]:
+    """Build the zeroed stats dict for a structured validation-error response.
+
+    The uniform error-path stats shape under ``explain_query``: zeroed counters plus
+    the always-present ``backend`` key (the active storage backend type), so a
+    client sees the same stats keys whether the search executed or failed
+    validation. ``include_embedding_ms`` adds the semantic shape's
+    ``embedding_generation_ms`` counter (see ``HybridSemanticStatsDict``).
+
+    Args:
+        include_embedding_ms: Include the semantic-only embedding timing counter.
+
+    Returns:
+        The stats dict for the validation-error response.
+    """
+    stats: dict[str, Any] = {
+        'execution_time_ms': 0.0,
+        'filters_applied': 0,
+        'rows_returned': 0,
+        'backend': settings.storage.backend_type,
+    }
+    if include_embedding_ms:
+        stats['embedding_generation_ms'] = 0.0
+    return stats
+
+
 async def _apply_reranking(
     query: str,
     results: list[dict[str, Any]],
@@ -754,7 +780,7 @@ async def semantic_search_context(
             )
         except MetadataFilterValidationError as e:
             # Return error response (unified with search_context behavior)
-            return {
+            error_response: dict[str, Any] = {
                 'query': query,
                 'results': [],
                 'count': 0,
@@ -762,6 +788,11 @@ async def semantic_search_context(
                 'error': e.message,
                 'validation_errors': e.validation_errors,
             }
+            if explain_query:
+                # Uniform validation-error stats shape, mirroring the FTS error
+                # path: zeroed counters plus the always-present backend key.
+                error_response['stats'] = _empty_stats_for_validation_error(include_embedding_ms=True)
+            return error_response
 
         # Transform results to use scores object (before reranking)
         for result in search_results:
@@ -995,12 +1026,7 @@ async def fts_search_context(
                 'validation_errors': e.validation_errors,
             }
             if explain_query:
-                error_response['stats'] = {
-                    'execution_time_ms': 0.0,
-                    'filters_applied': 0,
-                    'rows_returned': 0,
-                    'backend': settings.storage.backend_type,
-                }
+                error_response['stats'] = _empty_stats_for_validation_error()
             return error_response
 
         # Transform results to use scores object (before reranking)
@@ -1507,12 +1533,19 @@ async def hybrid_search_context(
             # query rather than retry a permanently-invalid request. Both modes
             # validate the SAME filters and build identical messages, so the
             # order-preserving dedup above keeps each defect listed once.
+            # The error response carries the same always-present response-shape keys
+            # the success path, the docstring, and HybridSearchResponseDict declare
+            # (fusion_method, fts_count, semantic_count), so a client reading them
+            # never hits a KeyError on the error branch.
             if combined_validation_errors:
                 return {
                     'query': query,
                     'results': [],
                     'count': 0,
+                    'fusion_method': fusion_method,
                     'search_modes_used': [],
+                    'fts_count': 0,
+                    'semantic_count': 0,
                     'error': f'All available search modes failed. {details}',
                     'validation_errors': combined_validation_errors,
                 }

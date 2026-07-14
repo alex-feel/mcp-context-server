@@ -687,10 +687,13 @@ class HybridSemanticStatsDict(TypedDict, total=False):
 
     Contains timing and filter information from the semantic portion
     of hybrid search. This is also the shape of the ``stats`` payload the
-    standalone ``semantic_search_context`` tool returns. ``embedding_generation_ms``
-    is the measured wall-clock duration (rounded, milliseconds) of the query
-    ``embed_query`` call, injected by ``_semantic_search_raw`` so both the
-    standalone tool and the semantic leg of hybrid search surface it.
+    standalone ``semantic_search_context`` tool returns, including on its
+    validation-error path, so ``backend`` (the active storage backend type)
+    is always present alongside the timing and filter counters.
+    ``embedding_generation_ms`` is the measured wall-clock duration (rounded,
+    milliseconds) of the query ``embed_query`` call, injected by
+    ``_semantic_search_raw`` so both the standalone tool and the semantic leg
+    of hybrid search surface it (zeroed on the validation-error path).
     """
 
     execution_time_ms: float

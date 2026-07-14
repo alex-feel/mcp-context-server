@@ -829,12 +829,15 @@ class ContextRepository(BaseRepository):
                     end_date=end_date,
                 )
                 if validation_errors:
+                    # Mirror the success-path stats shape (including 'backend') so a
+                    # validation rejection and a successful search expose the same keys.
                     return [], {
                         'error': 'Metadata filter validation failed',
                         'validation_errors': validation_errors,
                         'execution_time_ms': 0.0,
                         'filters_applied': 0,
                         'rows_returned': 0,
+                        'backend': 'sqlite',
                     }
                 query += where_sql
 
@@ -899,12 +902,15 @@ class ContextRepository(BaseRepository):
                 end_date=end_date,
             )
             if validation_errors:
+                # Mirror the success-path stats shape (including 'backend') so a
+                # validation rejection and a successful search expose the same keys.
                 return [], {
                     'error': 'Metadata filter validation failed',
                     'validation_errors': validation_errors,
                     'execution_time_ms': 0.0,
                     'filters_applied': 0,
                     'rows_returned': 0,
+                    'backend': 'postgresql',
                 }
             query += where_sql
 
