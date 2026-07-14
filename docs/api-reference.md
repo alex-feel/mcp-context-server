@@ -115,7 +115,7 @@ Search context entries with powerful filtering including metadata queries and da
 Fetch specific context entries by their IDs.
 
 **Parameters:**
-- `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form. Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
+- `context_ids` (list[str], required): List of context-entry IDs in canonical 32-character hex or 36-character hyphenated UUID form (at most 100 IDs per call). Both forms are accepted at the tool boundary; storage canonicalizes to 32-character lowercase hex. An 8-31 character hex prefix is also accepted for each ID and resolved independently (zero matches or an ambiguous prefix returns an error).
 - `include_images` (bool, optional): Include image data (default: True)
 
 **Returns:** List of context entries with full untruncated `text_content`. Each entry contains `id`, `thread_id`, `source`, `text_content`, `metadata`, `tags`, `images`, `created_at`, and `updated_at`. The `summary` field follows a tri-state contract controlled by the `GET_CONTEXT_BY_IDS_INCLUDE_SUMMARY` environment variable:
@@ -526,8 +526,8 @@ Update multiple context entries in a single batch operation.
 Delete multiple context entries by various criteria. **IRREVERSIBLE.**
 
 **Parameters:**
-- `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID context IDs to delete, or 8-31 character hex prefixes resolved independently per element (zero matches or an ambiguous prefix returns an error).
-- `thread_ids` (list, optional): Delete all entries in these threads
+- `context_ids` (list[str], optional): Specific 32-character hex or 36-character hyphenated UUID context IDs to delete, or 8-31 character hex prefixes resolved independently per element (zero matches or an ambiguous prefix returns an error). At most 100 IDs per call.
+- `thread_ids` (list, optional): Delete all entries in these threads (at most 100 thread IDs per call)
 - `source` (str, optional): Filter by source ('user' or 'agent') - must combine with another criterion
 - `older_than_days` (int, optional): Delete entries older than N days
 

@@ -1690,11 +1690,11 @@ async def update_context_batch(
 async def delete_context_batch(
     context_ids: Annotated[
         list[str] | None,
-        Field(description='Specific context IDs to delete'),
+        Field(max_length=100, description='Specific context IDs to delete (max 100 per call)'),
     ] = None,
     thread_ids: Annotated[
         list[str] | None,
-        Field(description='Delete ALL entries in these threads'),
+        Field(max_length=100, description='Delete ALL entries in these threads (max 100 per call)'),
     ] = None,
     source: Annotated[
         Literal['user', 'agent'] | None,
@@ -1717,6 +1717,9 @@ async def delete_context_batch(
     At least one criterion must be provided.
     Note: source filter alone is insufficient; it must be combined with another criterion.
     All associated data (tags, images) is also removed.
+    The context_ids and thread_ids lists each accept at most 100 items per call
+    (the same cap as the other batch tools); oversized lists are rejected at the
+    tool boundary as validation errors before any database work.
 
     WARNING: This operation cannot be undone. Verify criteria before deletion.
 

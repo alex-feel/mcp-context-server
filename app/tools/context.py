@@ -370,7 +370,10 @@ async def store_context(
 
 
 async def get_context_by_ids(
-    context_ids: Annotated[list[str], Field(min_length=1, description='List of context entry IDs to retrieve')],
+    context_ids: Annotated[
+        list[str],
+        Field(min_length=1, max_length=100, description='List of context entry IDs to retrieve (max 100 per call)'),
+    ],
     include_images: Annotated[bool, Field(description='Whether to include image data')] = True,
     ctx: Context | None = None,
 ) -> list[ContextEntryDict]:
@@ -380,6 +383,9 @@ async def get_context_by_ids(
     and need the complete, untruncated content.
 
     Non-existent IDs are silently skipped; only found entries are returned.
+    Accepts at most 100 IDs per call (the same cap as the batch tools); an
+    oversized list is rejected at the tool boundary as a validation error
+    before any database work. Fetch larger sets in successive calls.
 
     Returns:
         List of ContextEntryDict with id, thread_id, source, text_content, metadata,

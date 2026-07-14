@@ -303,6 +303,57 @@ class TestContextRepositorySearch:
         assert rows[0]['thread_id'] == 'combo_thread'
         assert rows[0]['source'] == 'user'
 
+    @pytest.mark.asyncio
+    async def test_search_validation_error_stats_include_backend_sqlite(
+        self,
+        context_repo: ContextRepository,
+    ) -> None:
+        """The validation-error stats dict exposes the same 'backend' key as success stats.
+
+        An invalid metadata filter short-circuits search_contexts into a structured
+        validation-error stats dict; that dict must mirror the success-path stats
+        shape (which always includes 'backend') so clients can rely on a uniform
+        key set regardless of outcome.
+        """
+        rows, stats = await context_repo.search_contexts(
+            metadata_filters=[{'key': 'status', 'operator': 'not_a_real_operator', 'value': 'x'}],
+        )
+
+        assert rows == []
+        assert stats['error'] == 'Metadata filter validation failed'
+        assert stats['validation_errors']
+        assert stats['execution_time_ms'] == 0.0
+        assert stats['filters_applied'] == 0
+        assert stats['rows_returned'] == 0
+        assert stats['backend'] == 'sqlite'
+
+    @pytest.mark.asyncio
+    async def test_search_validation_error_stats_include_backend_postgresql(self) -> None:
+        """The PostgreSQL validation-error stats dict also carries 'backend'.
+
+        The PostgreSQL closure short-circuits on validation errors before touching
+        the connection, so a recording stand-in connection suffices -- no live
+        PostgreSQL needed.
+        """
+        pg_backend = Mock()
+        pg_backend.backend_type = 'postgresql'
+
+        async def _execute_read(
+            closure: Callable[[object], Awaitable[tuple[list[object], dict[str, object]]]],
+        ) -> tuple[list[object], dict[str, object]]:
+            return await closure(object())
+
+        pg_backend.execute_read = _execute_read
+        repo_pg = ContextRepository(cast(StorageBackend, pg_backend))
+
+        rows, stats = await repo_pg.search_contexts(
+            metadata_filters=[{'key': 'status', 'operator': 'not_a_real_operator', 'value': 'x'}],
+        )
+
+        assert rows == []
+        assert stats['error'] == 'Metadata filter validation failed'
+        assert stats['backend'] == 'postgresql'
+
 
 class TestContextRepositoryDeduplication:
     """Test deduplication logic in ContextRepository."""
@@ -804,6 +855,51 @@ class TestContextRepositoryGetById:
         assert len(rows) == 1
         assert rows[0]['id'] == ctx_id
 
+    @pytest.mark.asyncio
+    async def test_get_by_ids_spans_multiple_chunks_preserves_order(
+        self,
+        repos: RepositoryContainer,
+    ) -> None:
+        """get_by_ids chunks an oversized id list and preserves the ordering contract.
+
+        A 33,000-id list bound as one IN clause exceeds SQLite's default 32,766
+        per-statement variable ceiling ("too many SQL variables"), so the fetch is
+        issued in bounded chunks like delete_by_ids. Real ids are planted on both
+        sides of the 900-id chunk boundary with the OLDEST rows in the FIRST chunk
+        and the NEWEST row in the LAST chunk, so plain per-chunk concatenation
+        would invert the order -- the assertion therefore also proves the
+        accumulated rows are re-sorted into the single-statement
+        ORDER BY created_at DESC, id DESC contract.
+        """
+        real_ids: list[str] = []
+        for i in range(5):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='chunk_get_thread',
+                source='user',
+                content_type='text',
+                text_content=f'Chunk get entry {i}',
+            )
+            real_ids.append(ctx_id)
+
+        # Expected order = the documented contract, computed from per-row reads
+        # (each a single-chunk fetch): created_at DESC, id DESC.
+        keyed: list[tuple[str, str]] = []
+        for ctx_id in real_ids:
+            row = (await repos.context.get_by_ids([ctx_id]))[0]
+            keyed.append((row['created_at'], row['id']))
+        expected_ids = [entry_id for _created_at, entry_id in sorted(keyed, reverse=True)]
+
+        # Non-existent ids pad the list past the statement variable ceiling; the
+        # oldest real rows go into the first chunk and the newest into the last.
+        mixed = [generate_id() for _ in range(33000)]
+        oldest_first = list(reversed(expected_ids))
+        for pos, real_id in zip((0, 450, 899, 900, 32999), oldest_first, strict=True):
+            mixed[pos] = real_id
+
+        rows = await repos.context.get_by_ids(mixed)
+
+        assert [row['id'] for row in rows] == expected_ids
+
 
 class TestContextRepositoryUpdate:
     """Test update operations in ContextRepository."""
@@ -1211,6 +1307,151 @@ class TestContextRepositoryBatchDelete:
 
         # Exactly one criteria entry despite the closure running twice.
         assert criteria == ['context_ids: 1 IDs']
+
+    @pytest.mark.asyncio
+    async def test_get_ids_matching_batch_criteria_spans_chunks_and_semantics(
+        self, repos: RepositoryContainer,
+    ) -> None:
+        """The criteria snapshot chunks oversized id/thread lists and keeps AND semantics.
+
+        A 33,000-id context_ids list bound as one IN clause exceeds SQLite's default
+        32,766 per-statement variable ceiling, so the snapshot SELECT runs one
+        statement per (id-chunk, thread-chunk) pair. The criteria stay AND-combined:
+        a row whose id is listed but whose thread is not (or whose source differs)
+        must not match, exactly as with the single unchunked statement.
+        """
+        matching_ids: list[str] = []
+        for i in range(2):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='crit-chunk-a',
+                source='user',
+                content_type='text',
+                text_content=f'Criteria chunk match {i}',
+            )
+            matching_ids.append(ctx_id)
+        agent_id, _ = await repos.context.store_with_deduplication(
+            thread_id='crit-chunk-a',
+            source='agent',
+            content_type='text',
+            text_content='Criteria chunk agent entry',
+        )
+        other_thread_id, _ = await repos.context.store_with_deduplication(
+            thread_id='crit-chunk-b',
+            source='user',
+            content_type='text',
+            text_content='Criteria chunk other-thread entry',
+        )
+
+        # Real ids straddle the 900-id chunk boundary inside a 33,000-id list.
+        context_ids = [generate_id() for _ in range(33000)]
+        for pos, real_id in zip(
+            (0, 899, 900, 32999),
+            (*matching_ids, agent_id, other_thread_id),
+            strict=True,
+        ):
+            context_ids[pos] = real_id
+
+        # The matching thread sits in the SECOND thread chunk of a 1,000-thread list.
+        thread_ids = [f'crit-chunk-absent-{i}' for i in range(1000)]
+        thread_ids[950] = 'crit-chunk-a'
+
+        matched = await repos.context.get_ids_matching_batch_criteria(
+            context_ids=context_ids,
+            thread_ids=thread_ids,
+            source='user',
+        )
+
+        assert sorted(matched) == sorted(matching_ids)
+
+    @pytest.mark.asyncio
+    async def test_delete_contexts_batch_spans_chunks_and_semantics(
+        self, repos: RepositoryContainer,
+    ) -> None:
+        """The criteria delete chunks an oversized context_ids list and keeps AND semantics.
+
+        Mirrors the snapshot test on the destructive leg: one DELETE per chunk pair,
+        all within the closure's single write, deleting exactly the rows the
+        AND-combined criteria match and summing the per-statement rowcounts.
+        """
+        user_ids: list[str] = []
+        for i in range(2):
+            ctx_id, _ = await repos.context.store_with_deduplication(
+                thread_id='del-chunk-thread',
+                source='user',
+                content_type='text',
+                text_content=f'Delete chunk match {i}',
+            )
+            user_ids.append(ctx_id)
+        agent_id, _ = await repos.context.store_with_deduplication(
+            thread_id='del-chunk-thread',
+            source='agent',
+            content_type='text',
+            text_content='Delete chunk agent survivor',
+        )
+        unlisted_id, _ = await repos.context.store_with_deduplication(
+            thread_id='del-chunk-thread',
+            source='user',
+            content_type='text',
+            text_content='Delete chunk unlisted survivor',
+        )
+
+        context_ids = [generate_id() for _ in range(33000)]
+        for pos, real_id in zip((0, 900, 32999), (*user_ids, agent_id), strict=True):
+            context_ids[pos] = real_id
+
+        deleted_count, criteria = await repos.context.delete_contexts_batch(
+            context_ids=context_ids,
+            source='user',
+        )
+
+        assert deleted_count == 2
+        assert criteria == ['context_ids: 33000 IDs', 'source: user']
+        # The listed agent entry (source mismatch) and the unlisted user entry survive.
+        remaining = await repos.context.get_by_ids([*user_ids, agent_id, unlisted_id])
+        assert {row['id'] for row in remaining} == {agent_id, unlisted_id}
+
+    @pytest.mark.asyncio
+    async def test_delete_contexts_batch_chunks_postgresql_statements(self) -> None:
+        """The PostgreSQL criteria delete issues one bounded statement per chunk pair.
+
+        Asserted against a recording stand-in connection (no live PostgreSQL):
+        1,300 ids plus a source filter must produce two DELETE statements of 901
+        and 401 bind parameters (900-id and 400-id chunks, each AND-combined with
+        source), with the reported count summing the per-statement results.
+        execute_write wraps the closure in one transaction on the real backend,
+        so the per-chunk statements stay atomic.
+        """
+        executed: list[tuple[str, int]] = []
+
+        class _RecordingConn:
+            async def execute(self, query: str, *params: object) -> str:
+                executed.append((query, len(params)))
+                return 'DELETE 1'
+
+        pg_backend = Mock()
+        pg_backend.backend_type = 'postgresql'
+
+        async def _execute_write(
+            closure: Callable[[object], Awaitable[tuple[int, list[str]]]],
+            *,
+            validate_connection: bool = False,
+        ) -> tuple[int, list[str]]:
+            assert validate_connection is True
+            return await closure(_RecordingConn())
+
+        pg_backend.execute_write = _execute_write
+        repo_pg = ContextRepository(cast(StorageBackend, pg_backend))
+
+        context_ids = [generate_id() for _ in range(1300)]
+        deleted_count, criteria = await repo_pg.delete_contexts_batch(
+            context_ids=context_ids,
+            source='user',
+        )
+
+        assert [param_count for _query, param_count in executed] == [901, 401]
+        assert all('id IN (' in query and 'source = ' in query for query, _param_count in executed)
+        assert deleted_count == 2
+        assert criteria == ['context_ids: 1300 IDs', 'source: user']
 
 
 class TestContextRepositoryVersionCAS:

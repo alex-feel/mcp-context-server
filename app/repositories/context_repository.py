@@ -9,6 +9,7 @@ including CRUD operations and deduplication logic.
 import hashlib
 import json
 import logging
+import operator
 import sqlite3
 from typing import TYPE_CHECKING
 from typing import Any
@@ -55,12 +56,58 @@ class VersionConflictError(ControlFlowError):
 # leaking into API responses.
 CONTEXT_ENTRY_COLUMNS = 'id, thread_id, source, content_type, text_content, metadata, summary, created_at, updated_at'
 
-# Maximum number of ids bound into a single DELETE ... IN (...) statement. An id list can be
-# arbitrarily long (e.g. every entry in a large thread), so deletes are issued in bounded
-# chunks to stay under each backend's per-statement bound-parameter limit -- SQLite's
-# SQLITE_MAX_VARIABLE_NUMBER (historically as low as 999) and PostgreSQL's 65535 parameters.
-# 900 clears the lowest historical SQLite ceiling with margin.
-_DELETE_ID_CHUNK_SIZE = 900
+# Maximum number of ids bound into a single IN (...) statement. An id list can be
+# arbitrarily long (e.g. every entry in a large thread, or a client-supplied bulk list), so
+# id-list SELECTs and DELETEs are issued in bounded chunks to stay under each backend's
+# per-statement bound-parameter limit -- SQLite's SQLITE_MAX_VARIABLE_NUMBER (historically
+# as low as 999) and PostgreSQL's 65535 parameters. 900 clears the lowest historical SQLite
+# ceiling with margin. Shared by get_by_ids, delete_by_ids, and the batch-criteria
+# statements (via _criteria_chunk_pairs).
+_ID_CHUNK_SIZE = 900
+
+
+def _chunk_ids(ids: list[str]) -> list[list[str]]:
+    """Split an id list into bounded chunks for per-statement IN (...) binds.
+
+    Args:
+        ids: The id list to split.
+
+    Returns:
+        Consecutive slices of ``ids``, each at most ``_ID_CHUNK_SIZE`` long.
+    """
+    return [ids[start : start + _ID_CHUNK_SIZE] for start in range(0, len(ids), _ID_CHUNK_SIZE)]
+
+
+def _criteria_chunk_pairs(
+    context_ids: list[str] | None,
+    thread_ids: list[str] | None,
+) -> list[tuple[list[str] | None, list[str] | None]]:
+    """Pair up bounded chunks of the two client-length-controlled criteria lists.
+
+    The batch-delete criteria combine with AND, and a row has exactly one ``id``
+    and one ``thread_id``, so a row matches the full criteria iff it matches
+    exactly ONE (id-chunk, thread-chunk) pair -- executing one statement per pair
+    and unioning the results is equivalent to the single unchunked statement
+    (no duplicates possible) while keeping every statement under the
+    per-statement bound-parameter limit. A ``None`` element means that criterion
+    is absent from the statement, so when neither list is provided the single
+    ``(None, None)`` pair reproduces the unfiltered statement.
+
+    Args:
+        context_ids: Specific context entry ids targeted by the criteria, or None.
+        thread_ids: Threads whose entries are targeted by the criteria, or None.
+
+    Returns:
+        The cross product of the bounded chunks of both lists, with ``None``
+        standing in for an absent criterion.
+    """
+    id_chunks: list[list[str] | None] = [None]
+    if context_ids:
+        id_chunks = list(_chunk_ids(context_ids))
+    thread_chunks: list[list[str] | None] = [None]
+    if thread_ids:
+        thread_chunks = list(_chunk_ids(thread_ids))
+    return [(id_chunk, thread_chunk) for id_chunk in id_chunks for thread_chunk in thread_chunks]
 
 
 def describe_batch_delete_criteria(
@@ -1175,40 +1222,59 @@ class ContextRepository(BaseRepository):
             context_ids: List of context entry IDs
 
         Returns:
-            List of context entry rows (sqlite3.Row or asyncpg.Record depending on backend)
+            List of context entry rows (sqlite3.Row or asyncpg.Record depending on
+            backend), ordered by ``created_at DESC, id DESC`` across the whole result.
         """
         # Defensive check: return empty list if no IDs provided
         # Prevents SQL syntax errors when constructing IN clauses
         if not context_ids:
             return []
 
+        # Fetch in bounded chunks (mirroring delete_by_ids) so an arbitrarily long id
+        # list never exceeds a backend's per-statement bound-parameter limit. Each
+        # chunk restarts its placeholders at 1; when more than one statement ran, the
+        # accumulated rows are re-sorted in Python so the single-statement
+        # ORDER BY created_at DESC, id DESC contract holds across chunk boundaries
+        # (the Python tuple sort compares the same TEXT/TIMESTAMPTZ created_at and
+        # unique lowercase-hex id values the SQL ORDER BY compares).
+        chunks = _chunk_ids(context_ids)
+
         if self.backend.backend_type == 'sqlite':
 
             def _fetch_sqlite(conn: sqlite3.Connection) -> list[Any]:
                 cursor = conn.cursor()
-                placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
+                rows: list[Any] = []
+                for chunk in chunks:
+                    placeholders = ','.join([self._placeholder(i + 1) for i in range(len(chunk))])
+                    # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
+                    query = f'''
+                        SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
+                        WHERE id IN ({placeholders})
+                        ORDER BY created_at DESC, id DESC
+                    '''
+                    cursor.execute(query, tuple(chunk))
+                    rows.extend(cursor.fetchall())
+                if len(chunks) > 1:
+                    rows.sort(key=operator.itemgetter('created_at', 'id'), reverse=True)
+                return rows
+
+            return await self.backend.execute_read(_fetch_sqlite)
+
+        # PostgreSQL
+        async def _fetch_postgresql(conn: 'asyncpg.Connection') -> list[Any]:
+            rows: list[Any] = []
+            for chunk in chunks:
+                placeholders = ','.join([self._placeholder(i + 1) for i in range(len(chunk))])
                 # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
                 query = f'''
                     SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
                     WHERE id IN ({placeholders})
                     ORDER BY created_at DESC, id DESC
                 '''
-                cursor.execute(query, tuple(context_ids))
-                return list(cursor.fetchall())
-
-            return await self.backend.execute_read(_fetch_sqlite)
-
-        # PostgreSQL
-        async def _fetch_postgresql(conn: 'asyncpg.Connection') -> list[Any]:
-            placeholders = ','.join([self._placeholder(i + 1) for i in range(len(context_ids))])
-            # Use explicit column list to avoid exposing internal columns (e.g., text_search_vector)
-            query = f'''
-                SELECT {CONTEXT_ENTRY_COLUMNS} FROM context_entries
-                WHERE id IN ({placeholders})
-                ORDER BY created_at DESC, id DESC
-            '''
-            rows = await conn.fetch(query, *context_ids)
-            return list(rows)
+                rows.extend(await conn.fetch(query, *chunk))
+            if len(chunks) > 1:
+                rows.sort(key=operator.itemgetter('created_at', 'id'), reverse=True)
+            return rows
 
         return await self.backend.execute_read(_fetch_postgresql)
 
@@ -1238,10 +1304,7 @@ class ContextRepository(BaseRepository):
         # Issue the delete in bounded chunks so an arbitrarily long id list (e.g. every
         # entry in a large thread) never exceeds a backend's per-statement bound-parameter
         # limit. Each chunk restarts its placeholders at 1 and the per-chunk rowcounts sum.
-        chunks = [
-            context_ids[start : start + _DELETE_ID_CHUNK_SIZE]
-            for start in range(0, len(context_ids), _DELETE_ID_CHUNK_SIZE)
-        ]
+        chunks = _chunk_ids(context_ids)
 
         if backend_type == 'sqlite':
 
@@ -1859,9 +1922,14 @@ class ContextRepository(BaseRepository):
         destructive step then deletes exactly these ids via ``delete_by_ids``
         instead of re-running the criteria, so an entry committed after the
         snapshot survives rather than being deleted without its embedding
-        cleanup. Because the criteria are evaluated exactly once, the
-        ``older_than_days`` age boundary needs no caller-resolved absolute
-        cutoff; the single statement's ``datetime('now')`` is race-free.
+        cleanup. The client-length-controlled ``context_ids``/``thread_ids``
+        lists are bound in bounded chunks (one statement per
+        ``_criteria_chunk_pairs`` pair, all within this single read) so an
+        arbitrarily long list never exceeds the per-statement bound-parameter
+        limit; every row is still evaluated against the criteria exactly once
+        (its id and thread_id select exactly one chunk pair), so the
+        ``older_than_days`` age boundary still needs no caller-resolved
+        absolute cutoff.
 
         Args:
             context_ids: Filter by these context IDs (intersected with the others)
@@ -1876,40 +1944,45 @@ class ContextRepository(BaseRepository):
 
             def _select_ids_sqlite(conn: sqlite3.Connection) -> list[str]:
                 cursor = conn.cursor()
-                conditions: list[str] = []
-                params: list[Any] = []
+                matched: list[str] = []
 
-                if context_ids:
-                    placeholders = ','.join([
-                        self._placeholder(len(params) + i + 1) for i in range(len(context_ids))
-                    ])
-                    conditions.append(f'id IN ({placeholders})')
-                    params.extend(context_ids)
+                for id_chunk, thread_chunk in _criteria_chunk_pairs(context_ids, thread_ids):
+                    conditions: list[str] = []
+                    params: list[Any] = []
 
-                if thread_ids:
-                    placeholders = ','.join([
-                        self._placeholder(len(params) + i + 1) for i in range(len(thread_ids))
-                    ])
-                    conditions.append(f'thread_id IN ({placeholders})')
-                    params.extend(thread_ids)
+                    if id_chunk:
+                        placeholders = ','.join([
+                            self._placeholder(len(params) + i + 1) for i in range(len(id_chunk))
+                        ])
+                        conditions.append(f'id IN ({placeholders})')
+                        params.extend(id_chunk)
 
-                if source:
-                    conditions.append(f'source = {self._placeholder(len(params) + 1)}')
-                    params.append(source)
+                    if thread_chunk:
+                        placeholders = ','.join([
+                            self._placeholder(len(params) + i + 1) for i in range(len(thread_chunk))
+                        ])
+                        conditions.append(f'thread_id IN ({placeholders})')
+                        params.extend(thread_chunk)
 
-                if older_than_days is not None:
-                    conditions.append(
-                        f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
-                    )
-                    params.append(f'-{older_than_days} days')
+                    if source:
+                        conditions.append(f'source = {self._placeholder(len(params) + 1)}')
+                        params.append(source)
 
-                if not conditions:
-                    return []
+                    if older_than_days is not None:
+                        conditions.append(
+                            f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
+                        )
+                        params.append(f'-{older_than_days} days')
 
-                where_clause = ' AND '.join(conditions)
-                query = f'SELECT id FROM context_entries WHERE {where_clause}'
-                cursor.execute(query, tuple(params))
-                return [row[0] for row in cursor.fetchall()]
+                    if not conditions:
+                        return []
+
+                    where_clause = ' AND '.join(conditions)
+                    query = f'SELECT id FROM context_entries WHERE {where_clause}'
+                    cursor.execute(query, tuple(params))
+                    matched.extend(row[0] for row in cursor.fetchall())
+
+                return matched
 
             return await self.backend.execute_read(_select_ids_sqlite)
 
@@ -1943,6 +2016,15 @@ class ContextRepository(BaseRepository):
         compressed ``vec_context_embeddings_compressed`` table IS covered
         by CASCADE on SQLite (it is a standard table, not a virtual one).
 
+        The client-length-controlled ``context_ids``/``thread_ids`` lists are
+        bound in bounded chunks: one DELETE per ``_criteria_chunk_pairs`` pair,
+        all inside the closure's single write (one write-queue transaction on
+        SQLite; ``execute_write`` wraps the closure in one transaction on
+        PostgreSQL, where ``NOW()`` is also transaction-stable), so the
+        AND-combined criteria semantics and atomicity are preserved -- each row
+        matches exactly one pair -- while no statement exceeds the
+        per-statement bound-parameter limit.
+
         Args:
             context_ids: Specific context entry IDs to delete
             thread_ids: Delete all entries in these threads
@@ -1956,8 +2038,6 @@ class ContextRepository(BaseRepository):
 
             def _delete_batch_sqlite(conn: sqlite3.Connection) -> tuple[int, list[str]]:
                 cursor = conn.cursor()
-                conditions: list[str] = []
-                params: list[Any] = []
                 # Built fresh per closure invocation (via the shared helper) so
                 # transparent write-retries (e.g. on a transient "database is
                 # locked" error) do not accumulate duplicate criteria strings
@@ -1969,36 +2049,43 @@ class ContextRepository(BaseRepository):
                     older_than_days=older_than_days,
                 )
 
-                if context_ids:
-                    placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
-                    conditions.append(f'id IN ({placeholders})')
-                    params.extend(context_ids)
+                deleted_count = 0
+                for id_chunk, thread_chunk in _criteria_chunk_pairs(context_ids, thread_ids):
+                    conditions: list[str] = []
+                    params: list[Any] = []
 
-                if thread_ids:
-                    placeholders = ','.join([
-                        self._placeholder(len(params) + i + 1) for i in range(len(thread_ids))
-                    ])
-                    conditions.append(f'thread_id IN ({placeholders})')
-                    params.extend(thread_ids)
+                    if id_chunk:
+                        placeholders = ','.join([
+                            self._placeholder(len(params) + i + 1) for i in range(len(id_chunk))
+                        ])
+                        conditions.append(f'id IN ({placeholders})')
+                        params.extend(id_chunk)
 
-                if source:
-                    conditions.append(f'source = {self._placeholder(len(params) + 1)}')
-                    params.append(source)
+                    if thread_chunk:
+                        placeholders = ','.join([
+                            self._placeholder(len(params) + i + 1) for i in range(len(thread_chunk))
+                        ])
+                        conditions.append(f'thread_id IN ({placeholders})')
+                        params.extend(thread_chunk)
 
-                if older_than_days is not None:
-                    conditions.append(
-                        f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
-                    )
-                    params.append(f'-{older_than_days} days')
+                    if source:
+                        conditions.append(f'source = {self._placeholder(len(params) + 1)}')
+                        params.append(source)
 
-                if not conditions:
-                    return 0, criteria_used
+                    if older_than_days is not None:
+                        conditions.append(
+                            f"created_at < datetime('now', {self._placeholder(len(params) + 1)})",
+                        )
+                        params.append(f'-{older_than_days} days')
 
-                where_clause = ' AND '.join(conditions)
-                query = f'DELETE FROM context_entries WHERE {where_clause}'
-                cursor.execute(query, tuple(params))
+                    if not conditions:
+                        return 0, criteria_used
 
-                deleted_count = cursor.rowcount
+                    where_clause = ' AND '.join(conditions)
+                    query = f'DELETE FROM context_entries WHERE {where_clause}'
+                    cursor.execute(query, tuple(params))
+                    deleted_count += cursor.rowcount
+
                 logger.info(f'Batch delete: removed {deleted_count} entries using criteria: {criteria_used}')
                 return deleted_count, criteria_used
 
@@ -2006,8 +2093,6 @@ class ContextRepository(BaseRepository):
 
         # PostgreSQL
         async def _delete_batch_postgresql(conn: 'asyncpg.Connection') -> tuple[int, list[str]]:
-            conditions: list[str] = []
-            params: list[Any] = []
             # Built fresh per closure invocation (see the SQLite closure) so
             # retried writes do not accumulate duplicate criteria strings across
             # attempts.
@@ -2018,34 +2103,44 @@ class ContextRepository(BaseRepository):
                 older_than_days=older_than_days,
             )
 
-            if context_ids:
-                placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(context_ids))])
-                conditions.append(f'id IN ({placeholders})')
-                params.extend(context_ids)
+            deleted_count = 0
+            for id_chunk, thread_chunk in _criteria_chunk_pairs(context_ids, thread_ids):
+                conditions: list[str] = []
+                params: list[Any] = []
 
-            if thread_ids:
-                placeholders = ','.join([self._placeholder(len(params) + i + 1) for i in range(len(thread_ids))])
-                conditions.append(f'thread_id IN ({placeholders})')
-                params.extend(thread_ids)
+                if id_chunk:
+                    placeholders = ','.join([
+                        self._placeholder(len(params) + i + 1) for i in range(len(id_chunk))
+                    ])
+                    conditions.append(f'id IN ({placeholders})')
+                    params.extend(id_chunk)
 
-            if source:
-                conditions.append(f'source = {self._placeholder(len(params) + 1)}')
-                params.append(source)
+                if thread_chunk:
+                    placeholders = ','.join([
+                        self._placeholder(len(params) + i + 1) for i in range(len(thread_chunk))
+                    ])
+                    conditions.append(f'thread_id IN ({placeholders})')
+                    params.extend(thread_chunk)
 
-            if older_than_days is not None:
-                conditions.append(
-                    f"created_at < (NOW() - INTERVAL '{older_than_days} days')",
-                )
+                if source:
+                    conditions.append(f'source = {self._placeholder(len(params) + 1)}')
+                    params.append(source)
 
-            if not conditions:
-                return 0, criteria_used
+                if older_than_days is not None:
+                    conditions.append(
+                        f"created_at < (NOW() - INTERVAL '{older_than_days} days')",
+                    )
 
-            where_clause = ' AND '.join(conditions)
-            query = f'DELETE FROM context_entries WHERE {where_clause}'
-            result = await conn.execute(query, *params)
+                if not conditions:
+                    return 0, criteria_used
 
-            # asyncpg returns "DELETE N" where N is the count
-            deleted_count = int(result.split()[-1]) if result else 0
+                where_clause = ' AND '.join(conditions)
+                query = f'DELETE FROM context_entries WHERE {where_clause}'
+                result = await conn.execute(query, *params)
+
+                # asyncpg returns "DELETE N" where N is the count
+                deleted_count += int(result.split()[-1]) if result else 0
+
             logger.info(f'Batch delete: removed {deleted_count} entries using criteria: {criteria_used}')
             return deleted_count, criteria_used
 
