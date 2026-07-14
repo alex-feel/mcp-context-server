@@ -578,3 +578,67 @@ class TestBlankDbPath:
 
         with env_var('DB_PATH', None):
             assert StorageSettings().db_path is not None
+
+
+class TestMetadataIndexedFieldNames:
+    """METADATA_INDEXED_FIELDS field-name validation at the configuration boundary.
+
+    Each configured field name is interpolated verbatim into a generated
+    idx_metadata_<field> index name and JSON path/key literal on both backends, so
+    the validator refuses names that would either crash schema startup or leave
+    metadata-index reconciliation permanently unable to converge. Three constraints
+    are enforced: the plain-SQL-identifier grammar, a 50-character length cap (so the
+    13-character idx_metadata_ prefix leaves the generated name within PostgreSQL's
+    63-byte identifier limit, which otherwise truncates the catalog name and diverges
+    the reconciliation diff from SQLite), and case uniqueness under case folding (two
+    case-differing names collide on SQLite's case-insensitive CREATE INDEX IF NOT
+    EXISTS while PostgreSQL keeps them distinct, a cross-backend divergence).
+    """
+
+    def test_default_fields_accepted(self) -> None:
+        from app.settings import StorageSettings
+
+        settings = StorageSettings()
+        assert 'status' in settings.metadata_indexed_fields
+        assert settings.metadata_indexed_fields['technologies'] == 'array'
+
+    def test_invalid_grammar_field_rejected(self) -> None:
+        from app.settings import StorageSettings
+
+        with env_var('METADATA_INDEXED_FIELDS', 'bad-field'), pytest.raises(ValidationError, match='invalid field name'):
+            StorageSettings()
+
+    def test_field_over_fifty_characters_rejected(self) -> None:
+        """A 51-character field truncates in PostgreSQL's catalog once prefixed, so it is refused."""
+        from app.settings import StorageSettings
+
+        field = 'a' * 51
+        with env_var('METADATA_INDEXED_FIELDS', field), pytest.raises(ValidationError, match='at most 50'):
+            StorageSettings()
+
+    def test_field_at_fifty_characters_accepted(self) -> None:
+        """The 50-character boundary keeps the generated idx_metadata_ name within 63 bytes."""
+        from app.settings import StorageSettings
+
+        field = 'a' * 50
+        with env_var('METADATA_INDEXED_FIELDS', field):
+            assert field in StorageSettings().metadata_indexed_fields
+
+    def test_casefold_colliding_fields_rejected(self) -> None:
+        """Two names differing only in case collide on SQLite, so the config is refused."""
+        from app.settings import StorageSettings
+
+        with (
+            env_var('METADATA_INDEXED_FIELDS', 'Status,status'),
+            pytest.raises(ValidationError, match='differ only in case'),
+        ):
+            StorageSettings()
+
+    def test_distinct_fields_accepted(self) -> None:
+        """Case-distinct-but-not-colliding names remain valid."""
+        from app.settings import StorageSettings
+
+        with env_var('METADATA_INDEXED_FIELDS', 'status,agent_name'):
+            fields = StorageSettings().metadata_indexed_fields
+        assert 'status' in fields
+        assert 'agent_name' in fields

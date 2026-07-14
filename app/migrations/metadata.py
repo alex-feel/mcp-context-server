@@ -13,6 +13,7 @@ from typing import cast
 import asyncpg
 
 from app.backends import StorageBackend
+from app.errors import ConfigurationError
 from app.migrations._pg_ddl import begin_migration
 from app.migrations._pg_ddl import execute_migration_ddl
 from app.settings import get_settings
@@ -300,7 +301,14 @@ async def handle_metadata_indexes(backend: StorageBackend) -> None:
         backend: The storage backend to use for database operations.
 
     Raises:
-        RuntimeError: In strict mode, if index configuration doesn't match database.
+        ConfigurationError: In strict mode, if index configuration doesn't match the
+            database. A mismatch is a permanent, human-intervention-required
+            misconfiguration (the message names the config to change), so it is
+            classified as a configuration error (exit 78) that supervisors must not
+            auto-retry rather than a generic failure they crash-loop on. Strict mode
+            verifies indexes without provisioning them, so it requires the indexes to
+            be pre-provisioned -- bootstrap a fresh database once in additive or auto
+            mode before flipping to strict.
     """
     configured_fields = settings.storage.metadata_indexed_fields
     sync_mode = settings.storage.metadata_index_sync_mode
@@ -337,11 +345,13 @@ async def handle_metadata_indexes(backend: StorageBackend) -> None:
     # Handle based on sync mode
     if sync_mode == 'strict':
         if missing or extra or orphan_compound_indexes:
-            raise RuntimeError(
+            raise ConfigurationError(
                 f'Metadata index mismatch (METADATA_INDEX_SYNC_MODE=strict). '
                 f'Missing: {missing or "none"}, Extra: {extra or "none"}, '
                 f'Orphan compound: {orphan_compound_indexes or "none"}. '
-                f'Update METADATA_INDEXED_FIELDS or run with different sync mode.',
+                f'Update METADATA_INDEXED_FIELDS or run with different sync mode. '
+                f'Strict mode does not provision indexes; bootstrap a fresh database '
+                f'once with additive or auto before flipping to strict.',
             )
 
     elif sync_mode == 'auto':

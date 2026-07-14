@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 # boundary by ``StorageSettings._validate_metadata_indexed_field_names``.
 _SAFE_METADATA_FIELD_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
+# PostgreSQL truncates every identifier (quoted included) to NAMEDATALEN-1 = 63 bytes.
+# The generated index name is ``idx_metadata_`` (13 characters) followed by the field
+# name, so a field longer than 63 - 13 = 50 characters is stored truncated in the
+# catalog while reconciliation diffs the full configured name against the truncated
+# ``pg_indexes`` name -- the diff never converges (perpetual drop/recreate in auto,
+# a permanent false positive in strict), and two names sharing the same first 50
+# characters silently collapse to one index. The identifier grammar above is pure
+# ASCII, so one character is one byte and the character count is the byte budget.
+_MAX_METADATA_FIELD_NAME_LENGTH = 50
+
 
 class CommonSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -1183,29 +1193,49 @@ class StorageSettings(BaseSettings):
     @field_validator('metadata_indexed_fields_raw', mode='after')
     @classmethod
     def _validate_metadata_indexed_field_names(cls, value: str) -> str:
-        """Reject metadata index field names that are not plain SQL identifiers.
+        """Reject metadata index field names that are not safe SQL identifiers.
 
         Each configured field name is interpolated verbatim into a generated
         CREATE INDEX statement -- into the ``idx_metadata_<field>`` index name and
-        into the JSON path/key literal on both backends. A name outside the
-        ``[A-Za-z_][A-Za-z0-9_]*`` identifier grammar (a hyphen, dot, whitespace, or
-        quote) would produce an invalid identifier that crashes schema startup, and
-        an embedded quote would break out of the single-quoted literal, so an unsafe
-        name is rejected at the configuration boundary rather than reaching the DDL
-        generator. Only the field name is validated here; the type hint after ``:``
-        is checked when the property parses the value.
+        into the JSON path/key literal on both backends. Three constraints are
+        enforced here so an unsafe or ambiguous name is refused at the configuration
+        boundary rather than reaching the DDL generator, where it would either crash
+        schema startup or leave metadata-index reconciliation permanently unable to
+        converge:
+
+        - Grammar: a name outside ``[A-Za-z_][A-Za-z0-9_]*`` (a hyphen, dot,
+          whitespace, or quote) would produce an invalid identifier, and an embedded
+          quote would break out of the single-quoted literal.
+        - Length: PostgreSQL truncates every identifier to 63 bytes, so with the
+          13-character ``idx_metadata_`` prefix a field longer than 50 characters is
+          stored truncated in the catalog while reconciliation diffs the full
+          configured name against the truncated ``pg_indexes`` name -- the diff never
+          converges (SQLite has no length cap, so the same config would diverge across
+          backends).
+        - Case uniqueness: two field names that differ only in case collide on
+          SQLite, where ``CREATE INDEX IF NOT EXISTS`` compares index names
+          case-insensitively and silently no-ops the second create, so only one index
+          exists and reconciliation reports the other permanently missing; PostgreSQL
+          quotes the generated identifier and case-preserves it, so the same config
+          would again diverge across backends. Rejecting a casefold collision refuses
+          the config identically on both backends.
+
+        Only the field name is validated here; the type hint after ``:`` is checked
+        when the property parses the value.
 
         Args:
             value: The raw METADATA_INDEXED_FIELDS string.
 
         Returns:
-            The value unchanged when every field name is a valid identifier.
+            The value unchanged when every field name is a safe, unique identifier.
 
         Raises:
-            ValueError: If any field name is not a plain SQL identifier.
+            ValueError: If any field name is not a plain SQL identifier, exceeds the
+                length limit, or collides with another name under case folding.
         """
         if not value or not value.strip():
             return value
+        seen_casefolded: dict[str, str] = {}
         for item in value.split(','):
             item = item.strip()
             if not item:
@@ -1217,6 +1247,22 @@ class StorageSettings(BaseSettings):
                     f'names must match [A-Za-z_][A-Za-z0-9_]* (a letter or underscore '
                     f'followed by letters, digits, or underscores)',
                 )
+            if len(field) > _MAX_METADATA_FIELD_NAME_LENGTH:
+                raise ValueError(
+                    f'METADATA_INDEXED_FIELDS contains a field name {field!r} of length '
+                    f'{len(field)}: names must be at most {_MAX_METADATA_FIELD_NAME_LENGTH} '
+                    f'characters (the generated idx_metadata_ index name must fit '
+                    f"PostgreSQL's 63-byte identifier limit)",
+                )
+            folded = field.casefold()
+            if folded in seen_casefolded:
+                raise ValueError(
+                    f'METADATA_INDEXED_FIELDS contains field names {seen_casefolded[folded]!r} '
+                    f'and {field!r} that differ only in case: field names must be unique under '
+                    f'case folding (case-differing names collide on SQLite and diverge across '
+                    f'backends)',
+                )
+            seen_casefolded[folded] = field
         return value
 
     @property
