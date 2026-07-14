@@ -572,7 +572,7 @@ Numeric comparison, inclusive.
 
 #### `in` - Value in List
 
-Check if value matches any item in the provided list. Supports both string and integer arrays.
+Check if value matches any item in the provided list. Supports both string and integer arrays. `in` and `not_in` value lists accept at most 100 members; a longer list is rejected with a validation error before any query runs.
 
 ```python
 # Active or pending tasks

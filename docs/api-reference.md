@@ -93,7 +93,7 @@ Search context entries with powerful filtering including metadata queries and da
 **Parameters:**
 - `thread_id` (str, optional): Filter by thread
 - `source` (str, optional): Filter by source ('user' or 'agent')
-- `tags` (list, optional): Filter by tags (OR logic)
+- `tags` (list, optional): Filter by tags (OR logic; at most 100 tags per request)
 - `content_type` (str, optional): Filter by type ('text' or 'multimodal')
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
 - `metadata_filters` (list, optional): Advanced metadata filters with operators
@@ -232,7 +232,7 @@ Note: This tool is available by default (`ENABLE_SEMANTIC_SEARCH=auto`) whenever
 - `offset` (int, optional): Pagination offset (default: 0)
 - `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
-- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `tags` (list, optional): Filter by any of these tags (OR logic; at most 100 tags per request)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
@@ -283,7 +283,7 @@ Note: This tool is available by default (`ENABLE_FTS=auto`); set `ENABLE_FTS=fal
 - `offset` (int, optional): Pagination offset (default: 0)
 - `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
-- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `tags` (list, optional): Filter by any of these tags (OR logic; at most 100 tags per request)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
@@ -340,7 +340,7 @@ Note: This tool is available by default (`ENABLE_HYBRID_SEARCH=auto`) when at le
 - `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from HYBRID_RRF_K env var)
 - `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
-- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `tags` (list, optional): Filter by any of these tags (OR logic; at most 100 tags per request)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
@@ -461,7 +461,7 @@ Server-side grep: literal or regular-expression, line-oriented, UNRANKED pattern
 - `context_lines` (int, optional): Surrounding lines before/after each match in content mode (0-100; effectively clamped to `GREP_MAX_CONTEXT_LINES`, default 20; like `grep -C`)
 - `max_matches` (int, optional): Maximum total matches to return (default 100; clamped to the server cap)
 - `max_entries_scanned` (int, optional): Maximum entries the scan visits (clamped to the server cap)
-- `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended
+- `thread_id` / `source` / `tags` / `metadata_filters` / `content_type` (optional): Reuse the store's filters to scope the scan (the ripgrep glob/type analog); scoping with `thread_id` is recommended; `tags` accepts at most 100 tags per request
 
 **Returns:** `{mode, total_matches, truncated, results}`. In `content` mode each result carries `context_id`, `line_number`, `line`, `match_start`/`match_end` (code-point offsets into `text_content`), and `before`/`after` context lines; in `files_with_matches` mode `context_id` + `match_count`; in `count` mode `context_id` + `count`. `truncated` is True when matches or the scan were capped.
 
@@ -560,7 +560,7 @@ metadata_filters=[
 - `eq`: Equals (case-insensitive for strings by default)
 - `ne`: Not equals
 - `gt`, `gte`, `lt`, `lte`: Numeric comparisons
-- `in`, `not_in`: List membership
+- `in`, `not_in`: List membership (value lists accept at most 100 members)
 - `exists`, `not_exists`: Field presence
 - `contains`, `starts_with`, `ends_with`: String operations
 - `is_null`, `is_not_null`: Null checks

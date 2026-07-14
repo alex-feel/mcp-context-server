@@ -106,7 +106,8 @@ class GrepContextResultDict(TypedDict, total=False):
     """Type definition for the grep_context response.
 
     ``results`` holds one of the three row shapes depending on ``mode``; ``error``
-    and ``validation_errors`` appear only when a metadata filter is invalid.
+    and ``validation_errors`` appear only when a client-supplied filter is invalid
+    (a metadata filter fails validation or the tags filter exceeds its member cap).
     ``timed_out_context_ids`` appears only when one or more entries were skipped
     because their regex match exceeded the per-entry timeout (the result is then
     incomplete for those entries).

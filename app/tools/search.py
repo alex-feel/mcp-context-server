@@ -76,6 +76,45 @@ def _clamp_overfetch(rows: int) -> int:
     return min(rows, MAX_OVERFETCH_ROWS)
 
 
+# Maximum member count for the client-supplied tags filter, shared by the four
+# search tools and grep_context. Each tag expands into one SQL bind placeholder
+# (tag IN (?, ?, ...)) in a single statement on both backends, so an unbounded
+# schema-legal tags array could overflow the backend's bind limit (999 variables on
+# conservative SQLite builds; asyncpg's wire-protocol argument cap) INSIDE
+# connection scope -- a non-ControlFlowError that charges the circuit breaker for
+# purely invalid client input. The cap is advertised in the wire schema via
+# Field(max_length=MAX_FILTER_TAGS) on every tags parameter and re-checked in each
+# tool body (tags_filter_cap_error), so a caller bypassing schema validation gets
+# the same structured validation error before any SQL executes. Aligned with
+# MAX_SEARCH_LIMIT and the metadata IN/NOT_IN member cap (MAX_IN_LIST_MEMBERS in
+# app.metadata_types).
+MAX_FILTER_TAGS = 100
+
+
+def tags_filter_cap_error(tags: list[str] | None) -> str | None:
+    """Return a validation message when the tags filter exceeds MAX_FILTER_TAGS.
+
+    Defense in depth behind the Field(max_length=MAX_FILTER_TAGS) wire-schema cap:
+    the tool bodies call this before any repository work so an oversized list from
+    a caller that bypassed schema validation is rejected as a structured validation
+    error instead of reaching a SQL bind (where the placeholder overflow would
+    charge the circuit breaker).
+
+    Args:
+        tags: The client-supplied tags filter (None when absent).
+
+    Returns:
+        A client-facing message when the list has more than MAX_FILTER_TAGS
+        members, else None.
+    """
+    if tags is not None and len(tags) > MAX_FILTER_TAGS:
+        return (
+            f'Too many tags in filter: {len(tags)} exceeds the maximum of '
+            f'{MAX_FILTER_TAGS}. Narrow the filter to at most {MAX_FILTER_TAGS} tags.'
+        )
+    return None
+
+
 def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> dict[str, Any]:
     """Build the zeroed stats dict for a structured validation-error response.
 
@@ -501,7 +540,10 @@ async def search_context(
     limit: Annotated[int, Field(ge=1, description='Maximum results to return (1-100, default: 30)')] = 30,
     thread_id: Annotated[str | None, Field(min_length=1, description='Filter by thread (indexed)')] = None,
     source: Annotated[Literal['user', 'agent'] | None, Field(description='Filter by source type (indexed)')] = None,
-    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(max_length=MAX_FILTER_TAGS, description=f'Filter by any of these tags (OR logic; at most {MAX_FILTER_TAGS})'),
+    ] = None,
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     metadata: Annotated[
         dict[str, str | int | float | bool] | None,
@@ -536,9 +578,10 @@ async def search_context(
 
     Filtering options:
     - thread_id, source: Indexed for fast filtering (always prefer specifying thread_id)
-    - tags: OR logic (matches ANY of provided tags)
+    - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
     - metadata: Simple key=value equality matching
-    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
+      in/not_in value lists accept at most 100 members
     - start_date/end_date: Filter by creation timestamp (ISO 8601)
 
     Returns:
@@ -568,6 +611,17 @@ async def search_context(
         # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
         # that charges the circuit breaker (SQLite binds them silently -- a divergence).
         reject_unstorable_input(thread_id=thread_id, tags=tags)
+
+        # Boundary cap re-check behind the wire-schema max_length: an oversized tags
+        # list is a structured validation error before any repository work runs.
+        tags_error = tags_filter_cap_error(tags)
+        if tags_error is not None:
+            return {
+                'results': [],
+                'count': 0,
+                'error': tags_error,
+                'validation_errors': [tags_error],
+            }
 
         if ctx:
             await ctx.info(f'Searching context with filters: thread_id={thread_id}, source={source}')
@@ -667,7 +721,10 @@ async def semantic_search_context(
     content_type: Annotated[
         Literal['text', 'multimodal'] | None, Field(description='Filter by content type (text or multimodal)'),
     ] = None,
-    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(max_length=MAX_FILTER_TAGS, description=f'Filter by any of these tags (OR logic; at most {MAX_FILTER_TAGS})'),
+    ] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -704,10 +761,11 @@ async def semantic_search_context(
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
     - content_type: Filter by text or multimodal entries
-    - tags: OR logic (matches ANY of provided tags)
+    - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
-    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
+      in/not_in value lists accept at most 100 members
 
     The `scores` object contains:
     - semantic_distance: LOWER = more similar. The metric depends on embedding storage:
@@ -735,6 +793,22 @@ async def semantic_search_context(
     # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
     # that charges the circuit breaker (SQLite binds them silently -- a divergence).
     reject_unstorable_input(thread_id=thread_id, tags=tags)
+
+    # Boundary cap re-check behind the wire-schema max_length: an oversized tags
+    # list is a structured validation error before any repository work runs.
+    tags_error = tags_filter_cap_error(tags)
+    if tags_error is not None:
+        tags_error_response: dict[str, Any] = {
+            'query': query,
+            'results': [],
+            'count': 0,
+            'model': settings.embedding.model,
+            'error': tags_error,
+            'validation_errors': [tags_error],
+        }
+        if explain_query:
+            tags_error_response['stats'] = _empty_stats_for_validation_error(include_embedding_ms=True)
+        return tags_error_response
 
     try:
         # Clamp limit to prevent excessive memory use (Postel's Law for LLM clients)
@@ -875,7 +949,10 @@ async def fts_search_context(
     content_type: Annotated[
         Literal['text', 'multimodal'] | None, Field(description='Filter by content type (text or multimodal)'),
     ] = None,
-    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(max_length=MAX_FILTER_TAGS, description=f'Filter by any of these tags (OR logic; at most {MAX_FILTER_TAGS})'),
+    ] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -917,10 +994,11 @@ async def fts_search_context(
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
     - content_type: Filter by text or multimodal entries
-    - tags: OR logic (matches ANY of provided tags)
+    - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
-    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
+      in/not_in value lists accept at most 100 members
 
     The `scores` object contains:
     - fts_score: BM25/ts_rank relevance (HIGHER = better match)
@@ -945,6 +1023,23 @@ async def fts_search_context(
     # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
     # that charges the circuit breaker (SQLite binds them silently -- a divergence).
     reject_unstorable_input(thread_id=thread_id, tags=tags)
+
+    # Boundary cap re-check behind the wire-schema max_length: an oversized tags
+    # list is a structured validation error before any repository work runs.
+    tags_error = tags_filter_cap_error(tags)
+    if tags_error is not None:
+        tags_error_response: dict[str, Any] = {
+            'query': query,
+            'mode': mode,
+            'results': [],
+            'count': 0,
+            'language': settings.fts.language,
+            'error': tags_error,
+            'validation_errors': [tags_error],
+        }
+        if explain_query:
+            tags_error_response['stats'] = _empty_stats_for_validation_error()
+        return tags_error_response
 
     # Check if migration is in progress - return informative response for graceful degradation
     fts_status = get_fts_migration_status()
@@ -1222,7 +1317,10 @@ async def hybrid_search_context(
     content_type: Annotated[
         Literal['text', 'multimodal'] | None, Field(description='Filter by content type (text or multimodal)'),
     ] = None,
-    tags: Annotated[list[str] | None, Field(description='Filter by any of these tags (OR logic)')] = None,
+    tags: Annotated[
+        list[str] | None,
+        Field(max_length=MAX_FILTER_TAGS, description=f'Filter by any of these tags (OR logic; at most {MAX_FILTER_TAGS})'),
+    ] = None,
     start_date: Annotated[
         str | None,
         Field(
@@ -1264,10 +1362,11 @@ async def hybrid_search_context(
     Filtering options (all combinable):
     - thread_id/source: Basic entry filtering
     - content_type: Filter by text or multimodal entries
-    - tags: OR logic (matches ANY of provided tags)
+    - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
     - start_date/end_date: Date range filtering (ISO 8601)
     - metadata: Simple key=value equality matching
-    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.)
+    - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
+      in/not_in value lists accept at most 100 members
 
     The `scores` object contains:
     - rrf: Combined fusion score (HIGHER = better)
@@ -1301,6 +1400,23 @@ async def hybrid_search_context(
     # they reach the PostgreSQL bind, where asyncpg would raise a non-ControlFlowError
     # that charges the circuit breaker (SQLite binds them silently -- a divergence).
     reject_unstorable_input(thread_id=thread_id, tags=tags)
+
+    # Boundary cap re-check behind the wire-schema max_length: an oversized tags
+    # list is a structured validation error before any sub-search runs, mirroring
+    # the all-modes-failed response shape below.
+    tags_error = tags_filter_cap_error(tags)
+    if tags_error is not None:
+        return {
+            'query': query,
+            'results': [],
+            'count': 0,
+            'fusion_method': fusion_method,
+            'search_modes_used': [],
+            'fts_count': 0,
+            'semantic_count': 0,
+            'error': tags_error,
+            'validation_errors': [tags_error],
+        }
 
     # Check if hybrid search is enabled
     if not settings.hybrid_search.enabled:

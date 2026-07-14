@@ -1216,6 +1216,26 @@ class TestMetadataFilteringIntegration:
         assert complex_time < 500  # Should be under 500ms (relaxed for CI variability)
         assert 'results' in result
 
+    @pytest.mark.asyncio
+    async def test_in_operator_over_member_cap_returns_structured_validation_error(self) -> None:
+        """An IN filter above MAX_IN_LIST_MEMBERS short-circuits through the
+        metadata-filter validation channel (a structured, breaker-exempt error
+        response) instead of expanding into an oversized single-statement SQL bind."""
+        from app.metadata_types import MAX_IN_LIST_MEMBERS
+
+        oversized: list[str | int | float | bool] = [f'v{i}' for i in range(MAX_IN_LIST_MEMBERS + 1)]
+        result = await search_context(
+            limit=50,
+            thread_id='in_member_cap_thread',
+            metadata_filters=[{'key': 'status', 'operator': 'in', 'value': oversized}],
+            ctx=None,
+        )
+
+        assert result['results'] == []
+        assert result['count'] == 0
+        assert 'error' in result
+        assert any('at most' in message for message in result['validation_errors'])
+
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('initialized_server')

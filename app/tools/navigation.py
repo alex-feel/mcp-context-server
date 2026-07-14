@@ -50,6 +50,8 @@ from app.services.text_lines import split_lines_with_offsets
 from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.tools._shared import reject_unstorable_input
+from app.tools.search import MAX_FILTER_TAGS
+from app.tools.search import tags_filter_cap_error
 from app.types import GrepContentMatchDict
 from app.types import GrepContextResultDict
 from app.types import GrepCountDict
@@ -173,7 +175,7 @@ async def grep_context(
     ] = None,
     tags: Annotated[
         list[str] | None,
-        Field(description='Filter by tags (OR logic)'),
+        Field(max_length=MAX_FILTER_TAGS, description=f'Filter by tags (OR logic; at most {MAX_FILTER_TAGS})'),
     ] = None,
     metadata_filters: Annotated[
         list[dict[str, Any]] | None,
@@ -231,7 +233,9 @@ async def grep_context(
     the scan stops with ``truncated`` True -- rather than freezing the server. Output
     is always bounded by ``max_matches``; ``truncated`` is True only when matches or
     the scan were genuinely capped. Scope with ``thread_id`` whenever possible -- an
-    unscoped pattern scans entries sequentially.
+    unscoped pattern scans entries sequentially. The ``tags`` filter accepts at most
+    100 tags per request; an oversized list (like an invalid metadata filter) returns
+    a structured validation-error response with ``error`` and ``validation_errors``.
 
     Returns:
         GrepContextResultDict with ``mode``, ``total_matches``, ``truncated`` and
@@ -258,6 +262,25 @@ async def grep_context(
         # A NUL in the grep pattern is handled separately by extract_ascii_literal, which
         # returns None for it so the pattern never reaches the LIKE/ILIKE pre-filter bind.
         reject_unstorable_input(thread_id=thread_id, tags=tags)
+
+        # Boundary cap re-check behind the wire-schema max_length: each tag binds one
+        # SQL placeholder in the scan query, so an oversized list is rejected as a
+        # structured validation error before any SQL executes (never charging the
+        # circuit breaker), matching the sibling search tools.
+        tags_error = tags_filter_cap_error(tags)
+        if tags_error is not None:
+            return cast(
+                GrepContextResultDict,
+                {
+                    'mode': output_mode,
+                    'total_matches': 0,
+                    'truncated': False,
+                    'results': [],
+                    'error': tags_error,
+                    'validation_errors': [tags_error],
+                },
+            )
+
         grep_settings = settings.grep_context
         max_matches = min(max_matches, grep_settings.max_matches_cap)
         context_lines = min(context_lines, grep_settings.max_context_lines)

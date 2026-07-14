@@ -238,12 +238,12 @@ When hybrid search is enabled and at least one underlying search method is avail
 - `rrf_k` (int, optional): RRF smoothing constant (1-1000, default from settings)
 - `thread_id` (str, optional): Optional filter by thread
 - `source` (str, optional): Filter by source type ('user' or 'agent')
-- `tags` (list, optional): Filter by any of these tags (OR logic)
+- `tags` (list, optional): Filter by any of these tags (OR logic; at most 100 tags per request)
 - `content_type` (str, optional): Filter by content type ('text' or 'multimodal')
 - `start_date` (str, optional): Filter entries created on or after this date (ISO 8601 format)
 - `end_date` (str, optional): Filter entries created on or before this date (ISO 8601 format)
 - `metadata` (dict, optional): Simple metadata filters (key=value equality)
-- `metadata_filters` (list, optional): Advanced metadata filters with operators
+- `metadata_filters` (list, optional): Advanced metadata filters with operators (`in`/`not_in` value lists accept at most 100 members)
 - `include_images` (bool, optional): Include image data in results (default: false)
 - `explain_query` (bool, optional): Include query execution statistics (default: false)
 

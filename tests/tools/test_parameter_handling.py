@@ -20,10 +20,14 @@ from typing import Literal
 from typing import cast
 from typing import get_args
 from typing import get_type_hints
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 from annotated_types import Ge
 from annotated_types import Le
+from annotated_types import MaxLen
 from fastmcp.exceptions import ToolError
 from pydantic.fields import FieldInfo
 
@@ -1076,3 +1080,113 @@ class TestClampOverfetch:
         assert _clamp_overfetch(42) == 42
         assert _clamp_overfetch(MAX_OVERFETCH_ROWS - 1) == MAX_OVERFETCH_ROWS - 1
         assert _clamp_overfetch(MAX_OVERFETCH_ROWS) == MAX_OVERFETCH_ROWS
+
+
+_TAGS_FILTER_TOOLS: list[Callable[..., object]] = [
+    *_SEARCH_TOOLS,
+    app.server.grep_context,
+]
+
+
+class TestTagsFilterUpperBound:
+    """The tags filter carries an explicit member cap on every search and grep tool.
+
+    Each tag expands into one SQL bind placeholder in a single statement on both
+    backends, so an unbounded schema-legal tags array could overflow the backend's
+    bind limit inside connection scope and charge the circuit breaker for purely
+    invalid client input. The cap is advertised in the wire schema
+    (Field(max_length=MAX_FILTER_TAGS)) and re-checked in the tool body as a
+    structured validation error before any SQL executes.
+    """
+
+    @staticmethod
+    def _tags_field_info(fn: Callable[..., object]) -> FieldInfo:
+        """Extract the pydantic FieldInfo attached to a tool's ``tags`` parameter."""
+        hints = get_type_hints(fn, include_extras=True)
+        annotation = hints['tags']
+        for meta in get_args(annotation)[1:]:
+            if isinstance(meta, FieldInfo):
+                return meta
+        msg = f'tags annotation for {getattr(fn, "__name__", fn)!r} carries no FieldInfo'
+        raise AssertionError(msg)
+
+    @pytest.mark.parametrize('tool', _TAGS_FILTER_TOOLS)
+    def test_tags_declares_max_length_cap(self, tool: Callable[..., object]) -> None:
+        """Every tags-accepting tool's Field declares max_length=MAX_FILTER_TAGS."""
+        from app.tools.search import MAX_FILTER_TAGS
+
+        tool_name = getattr(tool, '__name__', tool)
+        field_info = self._tags_field_info(tool)
+        max_values = [constraint.max_length for constraint in field_info.metadata if isinstance(constraint, MaxLen)]
+        assert max_values == [MAX_FILTER_TAGS], (
+            f'{tool_name!r} tags must declare max_length=MAX_FILTER_TAGS, got {max_values}'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_tags_over_cap_rejected_at_boundary(self) -> None:
+        """A tags list above the cap is rejected by the wire-schema validation."""
+        from fastmcp.tools import Tool
+        from pydantic import ValidationError
+
+        from app.tools.search import MAX_FILTER_TAGS
+
+        validated = Tool.from_function(app.server.search_context)
+        oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
+        with pytest.raises(ValidationError) as exc_info:
+            await validated.run({'tags': oversized})
+        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
+
+    @pytest.mark.asyncio
+    async def test_search_context_oversized_tags_structured_error_before_sql(self) -> None:
+        """A direct call with oversized tags returns a structured validation error
+        without touching the repository layer (nothing reaches SQL)."""
+        from app.tools.search import MAX_FILTER_TAGS
+
+        oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
+        ensure_repos = AsyncMock()
+        with patch('app.tools.search.ensure_repositories', ensure_repos):
+            result = await app.server.search_context(tags=oversized)
+
+        assert result['results'] == []
+        assert result['count'] == 0
+        assert 'exceeds the maximum' in result['error']
+        assert result['validation_errors'] == [result['error']]
+        ensure_repos.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_search_context_tags_at_cap_accepted(self) -> None:
+        """A tags list of exactly MAX_FILTER_TAGS members passes the cap (inclusive)."""
+        from app.tools.search import MAX_FILTER_TAGS
+
+        at_cap = [f'tag-{i}' for i in range(MAX_FILTER_TAGS)]
+        repos = MagicMock()
+        repos.context.search_contexts = AsyncMock(return_value=([], {}))
+        with patch('app.tools.search.ensure_repositories', AsyncMock(return_value=repos)):
+            result = await app.server.search_context(tags=at_cap)
+
+        assert result['results'] == []
+        assert result['count'] == 0
+        assert 'error' not in result
+
+    @pytest.mark.asyncio
+    async def test_grep_context_oversized_tags_structured_error_before_sql(self) -> None:
+        """grep_context rejects oversized tags as a structured validation error
+        before the scan query runs (the repository scan is never invoked)."""
+        from app.tools.search import MAX_FILTER_TAGS
+
+        oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
+        repos = MagicMock()
+        repos.context.grep_scan_text_contents = AsyncMock()
+        with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
+            result = await app.server.grep_context(pattern='needle', tags=oversized)
+
+        # GrepContextResultDict is total=False; widen for direct key assertions.
+        payload = cast('dict[str, Any]', result)
+        assert payload['mode'] == 'files_with_matches'
+        assert payload['results'] == []
+        assert payload['total_matches'] == 0
+        assert payload['truncated'] is False
+        assert 'exceeds the maximum' in payload['error']
+        assert payload['validation_errors'] == [payload['error']]
+        repos.context.grep_scan_text_contents.assert_not_awaited()

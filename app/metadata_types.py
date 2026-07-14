@@ -27,6 +27,18 @@ from pydantic import field_validator
 _INT64_MAX = (1 << 63) - 1
 _INT64_MIN = -(1 << 63)
 
+# Maximum member count for an IN / NOT_IN metadata-filter value list. Each member
+# expands into one SQL bind placeholder in a single statement on both backends, so an
+# unbounded client-supplied list could overflow the backend's bind limit (999
+# variables on conservative SQLite builds; asyncpg's wire-protocol argument cap)
+# with a driver error that is not a ControlFlowError and therefore charges the
+# circuit breaker for purely invalid client input. Rejecting past the cap keeps the
+# failure inside the structured validation channels (MetadataFilterValidationError
+# and the search_contexts validation_errors stats), which are breaker-exempt on both
+# backends. Aligned with the 100-item bounds on the sibling client-facing lists (the
+# search tools' MAX_FILTER_TAGS tags cap and the batch tools' 100-entry cap).
+MAX_IN_LIST_MEMBERS = 100
+
 
 def reject_out_of_int64(
     value: str | float | bool | list[str | int | float | bool] | None,
@@ -405,6 +417,18 @@ class MetadataFilter(BaseModel):
             raise ValueError(f'Operator {operator} requires a list value')
         if operator in (MetadataOperator.IN, MetadataOperator.NOT_IN) and isinstance(v, list) and not v:
             raise ValueError(f'Operator {operator} requires a non-empty list')
+
+        # Cap the IN / NOT_IN membership list so it can never expand into an
+        # oversized single-statement placeholder run -- see MAX_IN_LIST_MEMBERS.
+        if (
+            operator in (MetadataOperator.IN, MetadataOperator.NOT_IN)
+            and isinstance(v, list)
+            and len(v) > MAX_IN_LIST_MEMBERS
+        ):
+            raise ValueError(
+                f'Operator {operator} accepts at most {MAX_IN_LIST_MEMBERS} list members, '
+                f'got {len(v)}; narrow the membership list',
+            )
 
         # String operators require string values. None is rejected too: a
         # missing value would otherwise produce no SQL condition and silently
