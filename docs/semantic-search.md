@@ -782,7 +782,9 @@ When registered (by default, whenever an embedding provider is available), the `
   "stats": {
     "execution_time_ms": 85.3,
     "embedding_generation_ms": 45.1,
-    "filters_applied": 2
+    "filters_applied": 2,
+    "rows_returned": 5,
+    "backend": "sqlite"
   }
 }
 ```

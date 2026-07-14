@@ -308,9 +308,9 @@ These settings apply only when `STORAGE_BACKEND=sqlite`.
 | `SQLITE_BUSY_TIMEOUT_MS`    | integer | _(derived)_ | SQLite busy timeout in milliseconds (minimum `0`). Default: derived from `POOL_CONNECTION_TIMEOUT_S * 1000` |
 | `SQLITE_WAL_CHECKPOINT`     | string  | `PASSIVE`   | WAL checkpoint mode                                                                                         |
 
-## SQLite Circuit Breaker Settings
+## Circuit Breaker Settings
 
-These settings apply only when `STORAGE_BACKEND=sqlite`.
+These settings apply to both backends: the SQLite connection layer and the PostgreSQL `execute_read`/`execute_write`/`begin_transaction` paths build their circuit breaker from the same three variables.
 
 | Variable                              | Type    | Default | Description                                                                |
 |---------------------------------------|---------|---------|----------------------------------------------------------------------------|

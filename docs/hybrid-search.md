@@ -288,6 +288,7 @@ When hybrid search is enabled and at least one underlying search method is avail
       "execution_time_ms": 15.2,
       "filters_applied": 2,
       "rows_returned": 12,
+      "backend": "sqlite",
       "query_plan": "..."
     },
     "semantic_stats": {
@@ -295,6 +296,7 @@ When hybrid search is enabled and at least one underlying search method is avail
       "embedding_generation_ms": 45.1,
       "filters_applied": 2,
       "rows_returned": 10,
+      "backend": "sqlite",
       "query_plan": "..."
     },
     "fusion_stats": {
@@ -303,7 +305,8 @@ When hybrid search is enabled and at least one underlying search method is avail
       "documents_in_both": 7,
       "documents_fts_only": 5,
       "documents_semantic_only": 3
-    }
+    },
+    "adaptive_fts_mode": "match"
   }
 }
 ```
@@ -314,24 +317,27 @@ When hybrid search is enabled and at least one underlying search method is avail
 
 When `explain_query=True`, the response includes a `stats` object with detailed execution statistics:
 
-| Field               | Type           | Description                                            |
-|---------------------|----------------|--------------------------------------------------------|
-| `execution_time_ms` | float          | Total hybrid search execution time                     |
-| `fts_stats`         | object or null | FTS search statistics (null if FTS not used)           |
-| `semantic_stats`    | object or null | Semantic search statistics (null if semantic not used) |
-| `fusion_stats`      | object         | RRF fusion statistics                                  |
+| Field               | Type           | Description                                                        |
+|---------------------|----------------|--------------------------------------------------------------------|
+| `execution_time_ms` | float          | Total hybrid search execution time                                 |
+| `fts_stats`         | object or null | FTS search statistics (null if FTS not used)                       |
+| `semantic_stats`    | object or null | Semantic search statistics (null if semantic not used)             |
+| `fusion_stats`      | object         | RRF fusion statistics                                              |
+| `adaptive_fts_mode` | string         | FTS mode selected by the adaptive AND/OR switch (match or boolean) |
 
 **FTS Stats:**
 - `execution_time_ms`: FTS search execution time
 - `filters_applied`: Number of metadata/date filters applied
 - `rows_returned`: Number of FTS results before fusion
+- `backend`: Active storage backend ('sqlite' or 'postgresql'), always present
 - `query_plan`: Query execution plan details (when explain_query=True)
 
 **Semantic Stats:**
 - `execution_time_ms`: Semantic search execution time
-- `embedding_generation_ms`: Time spent generating query embedding via Ollama
+- `embedding_generation_ms`: Time spent generating the query embedding via the configured embedding provider
 - `filters_applied`: Number of metadata/date filters applied
 - `rows_returned`: Number of semantic results before fusion
+- `backend`: Active storage backend ('sqlite' or 'postgresql'), always present
 - `query_plan`: Query execution plan details (when explain_query=True)
 
 **Fusion Stats:**

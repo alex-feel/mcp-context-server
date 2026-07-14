@@ -1378,9 +1378,10 @@ async def hybrid_search_context(
 
     When explain_query=True, the `stats` field contains:
     - execution_time_ms: Total hybrid search time
-    - fts_stats: {execution_time_ms, filters_applied, rows_returned} or None
-    - semantic_stats: {execution_time_ms, embedding_generation_ms, filters_applied, rows_returned} or None
+    - fts_stats: {execution_time_ms, filters_applied, rows_returned, backend, query_plan} or None
+    - semantic_stats: {execution_time_ms, embedding_generation_ms, filters_applied, rows_returned, backend, query_plan} or None
     - fusion_stats: {rrf_k, total_unique_documents, documents_in_both, documents_fts_only, documents_semantic_only}
+    - adaptive_fts_mode: 'match' or 'boolean' (the FTS mode the adaptive AND/OR switch selected)
 
     Returns:
         Dict with query (str), results (list with id, thread_id, source,
