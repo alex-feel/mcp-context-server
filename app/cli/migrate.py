@@ -2542,6 +2542,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         ('thread_id', row_thread_id, False),
                         ('text_content', row['text_content'], False),
                         ('summary', row['summary'], False),
+                        ('content_hash', row['content_hash'], False),
                         ('metadata', rewritten_metadata, True),
                     ),
                 )
