@@ -86,6 +86,46 @@ def is_test_environment() -> bool:
     ])
 
 
+# Primary SQLite result codes of the self-clearing write-contention family.
+# Extended result codes (e.g. SQLITE_BUSY_SNAPSHOT = 517) carry the primary
+# code in their low byte.
+_SQLITE_CONTENTION_PRIMARY_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
+
+
+def is_sqlite_locked_error(exc: BaseException) -> bool:
+    """Classify the SQLite locked/busy write-contention family.
+
+    SQLITE_BUSY ('database is locked', including extended forms such as
+    SQLITE_BUSY_SNAPSHOT) and SQLITE_LOCKED ('database table is locked')
+    signal that another connection -- typically another process sharing the
+    same database file -- holds a conflicting lock. The condition self-clears
+    once the competing writer finishes, so it is routine contention to retry,
+    NOT a database fault. This is the single shared predicate for that
+    classification: ``_execute_write_with_retry`` retries the family inside
+    the backend, ``begin_transaction`` re-raises it without charging the
+    circuit breaker, and the tool layer's ``is_connection_error`` treats it as
+    transient so the store/update retry loops re-run the transaction with
+    backoff.
+
+    Args:
+        exc: The exception to classify.
+
+    Returns:
+        True when the exception is an ``sqlite3.OperationalError`` in the
+        SQLITE_BUSY / SQLITE_LOCKED family.
+    """
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    errorcode = getattr(exc, 'sqlite_errorcode', None)
+    if isinstance(errorcode, int):
+        return (errorcode & 0xFF) in _SQLITE_CONTENTION_PRIMARY_CODES
+    # Instances constructed in Python (tests, wrappers) carry no
+    # sqlite_errorcode attribute; fall back to the canonical messages the
+    # sqlite3 module emits for this family.
+    message = str(exc)
+    return 'database is locked' in message or 'database table is locked' in message
+
+
 class ConnectionState(Enum):
     """Connection health states for circuit breaker pattern."""
 
@@ -968,25 +1008,30 @@ class SQLiteBackend:
 
             except sqlite3.OperationalError as e:
                 last_error = e
-                if 'database is locked' in str(e):
-                    # Calculate backoff delay
-                    delay = min(
-                        self.retry_config.base_delay * (self.retry_config.backoff_factor**attempt),
-                        self.retry_config.max_delay,
-                    )
-
-                    # Add jitter if configured
-                    if self.retry_config.jitter:
-                        delay += random.uniform(0, delay * 0.3)
-
-                    logger.warning(
-                        f'Database locked on write, retrying in {delay:.2f}s '
-                        f'(attempt {attempt + 1}/{self.retry_config.max_retries})',
-                    )
-                    await asyncio.sleep(delay)
-                    request.retry_count += 1
-                else:
+                if not is_sqlite_locked_error(e):
                     raise
+                if attempt + 1 >= self.retry_config.max_retries:
+                    # Final attempt failed: no retry follows, so a backoff sleep
+                    # here would be pure dead latency that also delays the single
+                    # exhaustion breaker charge in the caller. Fall straight
+                    # through to the exhaustion raise below.
+                    break
+                # Calculate backoff delay
+                delay = min(
+                    self.retry_config.base_delay * (self.retry_config.backoff_factor**attempt),
+                    self.retry_config.max_delay,
+                )
+
+                # Add jitter if configured
+                if self.retry_config.jitter:
+                    delay += random.uniform(0, delay * 0.3)
+
+                logger.warning(
+                    f'Database locked on write, retrying in {delay:.2f}s '
+                    f'(attempt {attempt + 1}/{self.retry_config.max_retries})',
+                )
+                await asyncio.sleep(delay)
+                request.retry_count += 1
             except Exception:
                 raise
 
@@ -1389,6 +1434,17 @@ class SQLiteBackend:
                 if not isinstance(e, Exception):
                     # Cancellation / interpreter shutdown: rolled back above, but
                     # not a database fault -- do not trip the breaker.
+                    raise
+
+                if is_sqlite_locked_error(e):
+                    # SQLITE_BUSY / SQLITE_LOCKED write contention (typically a
+                    # concurrent process sharing the database file): rolled back,
+                    # but self-clearing contention is NOT a database fault -- do
+                    # not charge the breaker, mirroring the PostgreSQL class-40
+                    # rollback exemption. The tool-layer retry loops classify it
+                    # via is_connection_error and re-run the transaction with
+                    # backoff.
+                    logger.warning(f'Transaction hit SQLite write contention, rolled back (retry expected): {e}')
                     raise
 
                 logger.warning(f'Transaction failed, rolling back: {e}')
