@@ -25,9 +25,11 @@ import json
 import logging
 import operator
 from collections.abc import Awaitable
+from typing import TYPE_CHECKING
 from typing import Annotated
 from typing import Any
 from typing import Literal
+from typing import NoReturn
 from typing import cast
 
 from fastmcp import Context
@@ -67,6 +69,10 @@ from app.types import BulkStoreResponseDict
 from app.types import BulkStoreResultItemDict
 from app.types import BulkUpdateResponseDict
 from app.types import BulkUpdateResultItemDict
+
+if TYPE_CHECKING:
+    from app.backends.base import TransactionContext
+    from app.repositories import RepositoryContainer
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -901,6 +907,37 @@ async def store_context_batch(
         raise ToolError(f'Batch store failed: {format_exception_message(e)}') from e
 
 
+async def _reraise_disambiguated_cas_conflict(
+    repos: 'RepositoryContainer',
+    txn: 'TransactionContext',
+    context_id: str,
+) -> NoReturn:
+    """Disambiguate a version compare-and-set that matched zero rows.
+
+    Zero matched rows is ambiguous: a concurrent writer bumped the row's
+    version (retryable), or the row was deleted after its version was captured
+    (permanent). The atomic update batch calls this on the OPEN transaction
+    connection to re-probe existence, so a deleted row aborts with the standard
+    not-found error every other update path emits instead of
+    concurrent-modification retry advice no retry can satisfy.
+
+    Args:
+        repos: Repository container.
+        txn: The open transaction the compare-and-set ran on.
+        context_id: ID of the entry whose compare-and-set matched zero rows.
+
+    Raises:
+        EntryNotFoundError: The row is gone -- deleted between its version
+            capture and the compare-and-set.
+        VersionConflictError: The row still exists with a changed version;
+            the conflict propagates to the caller's concurrent-modification
+            handling.
+    """
+    if not await repos.context.entry_exists(context_id, txn=txn):
+        raise EntryNotFoundError(context_id) from None
+    raise VersionConflictError(context_id) from None
+
+
 async def update_context_batch(
     updates: Annotated[
         list[dict[str, Any]],
@@ -1419,24 +1456,37 @@ async def update_context_batch(
                                 await transaction_heartbeat(txn)
 
                             update_images = update.get('images')
-                            updated_fields, summary_cleared = (
-                                await execute_update_in_transaction(
-                                    repos, txn,
-                                    context_id=context_id,
-                                    text=update.get('text'),
-                                    metadata=update.get('metadata'),
-                                    metadata_patch=update.get('metadata_patch'),
-                                    summary=update_summaries.get(vu_idx),
-                                    clear_summary=vu_idx in update_clear_summaries,
-                                    tags=update.get('tags'),
-                                    images=update_images,
-                                    validated_images=update_images or [],
-                                    chunk_embeddings=update_embeddings.get(vu_idx),
-                                    embedding_model=settings.embedding.model,
-                                    index_nodes=update_index_nodes.get(vu_idx),
-                                    expected_version=live_versions.get(context_id),
+                            try:
+                                updated_fields, summary_cleared = (
+                                    await execute_update_in_transaction(
+                                        repos, txn,
+                                        context_id=context_id,
+                                        text=update.get('text'),
+                                        metadata=update.get('metadata'),
+                                        metadata_patch=update.get('metadata_patch'),
+                                        summary=update_summaries.get(vu_idx),
+                                        clear_summary=vu_idx in update_clear_summaries,
+                                        tags=update.get('tags'),
+                                        images=update_images,
+                                        validated_images=update_images or [],
+                                        chunk_embeddings=update_embeddings.get(vu_idx),
+                                        embedding_model=settings.embedding.model,
+                                        index_nodes=update_index_nodes.get(vu_idx),
+                                        expected_version=live_versions.get(context_id),
+                                    )
                                 )
-                            )
+                            except VersionConflictError:
+                                # A compare-and-set matching zero rows is ambiguous:
+                                # the version changed under a concurrent writer
+                                # (retryable, surfaced below as concurrent-
+                                # modification advice) or the row was deleted after
+                                # its version was captured (permanent). The helper
+                                # re-probes existence on the transaction connection
+                                # and re-raises the disambiguated exception, so a
+                                # deleted row aborts with the standard not-found
+                                # error every other update path emits instead of
+                                # retry advice no retry can satisfy.
+                                await _reraise_disambiguated_cas_conflict(repos, txn, context_id)
                             if summary_cleared:
                                 cleared_attempt += 1
                             bumps_version = update.get('text') is not None or update.get('metadata') is not None
@@ -1464,8 +1514,10 @@ async def update_context_batch(
 
                 except VersionConflictError as e:
                     # A concurrent writer modified one of these entries during
-                    # generation. Atomic mode is all-or-nothing, so abort the whole
-                    # batch with a clear error; the client can retry the request.
+                    # generation (the row still exists -- a row deleted mid-CAS is
+                    # disambiguated on the transaction connection and aborts as
+                    # not-found below). Atomic mode is all-or-nothing, so abort the
+                    # whole batch with a clear error; the client can retry the request.
                     raise ToolError(
                         f'Concurrent modification during atomic batch update: {e}. Retry the request.',
                     ) from None

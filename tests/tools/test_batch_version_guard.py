@@ -42,6 +42,7 @@ import pytest
 import pytest_asyncio
 from fastmcp.exceptions import ToolError
 
+from app.backends.base import TransactionContext
 from app.backends.sqlite_backend import SQLiteBackend
 from app.ids import generate_id
 from app.repositories import RepositoryContainer
@@ -432,3 +433,59 @@ class TestBatchVersionGuard:
         # PHASE 2 up-front check (1) + the single post-conflict re-read (2): the
         # not-found branch terminates the loop immediately, no further retries.
         assert check_calls['count'] == 2
+
+    # ---- Test 5: atomic delete-mid-CAS disambiguates to not-found ----
+
+    @pytest.mark.asyncio
+    async def test_atomic_row_deleted_mid_cas_aborts_not_found(
+        self, setup_with_entry: tuple[SQLiteBackend, RepositoryContainer, str],
+    ) -> None:
+        """atomic=True: a row deleted between its version capture and the CAS UPDATE
+        aborts the batch with the standard not-found error, not retry advice.
+
+        A CAS matching zero rows is ambiguous -- version bumped by a concurrent
+        writer (retryable) or row deleted (permanent) -- so the atomic handler
+        re-probes existence on the OPEN transaction connection to disambiguate.
+        ``execute_update_in_transaction`` is stubbed to delete the row on the
+        transaction connection and then raise ``VersionConflictError``,
+        deterministically reproducing the post-capture/pre-CAS delete
+        interleaving. Without the disambiguation the batch aborted with
+        'Concurrent modification ... Retry the request.' for a permanently
+        deleted row -- advice no retry could ever satisfy.
+        """
+        backend, repos, entry_id = setup_with_entry
+
+        async def delete_then_conflict(
+            repos_arg: RepositoryContainer,
+            txn: TransactionContext,
+            **_kwargs: object,
+        ) -> tuple[list[str], bool]:
+            await repos_arg.context.delete_by_ids([entry_id], txn=txn)
+            raise VersionConflictError(entry_id)
+
+        with (
+            patch('app.tools.batch.ensure_repositories', return_value=repos),
+            patch('app.tools.batch.get_embedding_provider', return_value=None),
+            patch('app.tools.batch.get_summary_provider', return_value=None),
+            patch('app.tools._shared.get_embedding_provider', return_value=None),
+            patch('app.tools._shared.get_summary_provider', return_value=None),
+            patch(
+                'app.tools.batch.execute_update_in_transaction',
+                new=AsyncMock(side_effect=delete_then_conflict),
+            ),
+            pytest.raises(ToolError, match='not found') as exc_info,
+        ):
+            await update_context_batch(
+                updates=[{'context_id': entry_id, 'metadata': {'status': 'x'}}],
+                atomic=True,
+            )
+
+        # The standard not-found abort every other update path emits, without
+        # concurrent-modification retry advice.
+        assert 'Retry the request' not in str(exc_info.value)
+        assert 'No entries were updated (atomic batch)' in str(exc_info.value)
+        # The atomic batch rolled back, so the stub's in-transaction delete was
+        # discarded and the row is still present with its original text.
+        final_text, final_version = await self._read_row(backend, entry_id)
+        assert final_text == 'Original text'
+        assert final_version == 0
