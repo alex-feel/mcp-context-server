@@ -1766,6 +1766,89 @@ class TestInitializeTargetPostgresqlVectorGating:
         assert any('CREATE EXTENSION' in sql for sql in executed)
         mocks['semantic'].assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_semantic_init_refuses_over_limit_settings_fallback_when_dim_none(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """embedding_dim=None (empty source embedding_metadata) validates the settings fallback.
+
+        When the source embedding_metadata table exists but is empty, the source
+        dimension detects as None and the semantic migration falls back to
+        settings.embedding.dim for the vector(dim) DDL. Validating only the
+        source-detected dim would leave that fallback -- the value the DDL
+        actually templates -- unchecked and crash mid-index. The pre-flight
+        resolves the same fallback and refuses it before any target DDL.
+        """
+        from app.cli.migrate import initialize_target_postgresql
+        from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+        from app.settings import get_settings
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        # ENABLE_EMBEDDING_GENERATION=false is the typical migrate-CLI case and
+        # keeps the settings-level pgvector guard from rejecting the over-limit
+        # EMBEDDING_DIM at construction, so the CLI pre-flight is what must catch it.
+        monkeypatch.setenv('EMBEDDING_DIM', str(PGVECTOR_INDEX_DIM_LIMIT + 1))
+        monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+        get_settings.cache_clear()
+        try:
+            with pytest.raises(RuntimeError, match='pgvector index limit') as exc_info:
+                await initialize_target_postgresql(
+                    'postgresql://u:p@localhost:5432/tgt',
+                    embedding_dim=None,
+                    with_semantic=True,
+                    source_has_fts=False,
+                    stats=stats,
+                )
+        finally:
+            monkeypatch.delenv('EMBEDDING_DIM', raising=False)
+            monkeypatch.delenv('ENABLE_EMBEDDING_GENERATION', raising=False)
+            get_settings.cache_clear()
+
+        # The message names EMBEDDING_DIM as the fallback source, not a source dim.
+        assert 'EMBEDDING_DIM' in str(exc_info.value)
+
+        # No DDL of any kind ran: the refusal precedes every connection and migration.
+        assert executed == []
+        mocks['create_backend'].assert_not_called()
+        mocks['init_database'].assert_not_awaited()
+        mocks['semantic'].assert_not_awaited()
+        mocks['chunking'].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_semantic_init_allows_in_limit_settings_fallback_when_dim_none(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """embedding_dim=None with an in-limit settings fallback initializes normally."""
+        from app.cli.migrate import initialize_target_postgresql
+        from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+        from app.settings import get_settings
+
+        executed: list[str] = []
+        mocks = self._install_pipeline_mocks(monkeypatch, executed)
+        stats = MigrationStats()
+
+        monkeypatch.setenv('EMBEDDING_DIM', str(PGVECTOR_INDEX_DIM_LIMIT))
+        monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+        get_settings.cache_clear()
+        try:
+            await initialize_target_postgresql(
+                'postgresql://u:p@localhost:5432/tgt',
+                embedding_dim=None,
+                with_semantic=True,
+                source_has_fts=False,
+                stats=stats,
+            )
+        finally:
+            monkeypatch.delenv('EMBEDDING_DIM', raising=False)
+            monkeypatch.delenv('ENABLE_EMBEDDING_GENERATION', raising=False)
+            get_settings.cache_clear()
+
+        assert any('CREATE EXTENSION' in sql for sql in executed)
+        mocks['semantic'].assert_awaited_once()
+
 # ---------------------------------------------------------------------------
 # PG->PG runner pre-flight for the pgvector fp32 index dimension cap
 # ---------------------------------------------------------------------------
@@ -1802,17 +1885,19 @@ class _FakeMigrationTargetConn:
 def _install_pg_runner_fakes(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    source_dim: int,
+    source_dim: int | None,
 ) -> mock.AsyncMock:
     """Fake the PG->PG runner's connections and probes up to the auto-init decision.
 
     Shapes the probes as: empty target (no context_entries), embedding-carrying
     source (embedding_metadata + vec_context_embeddings present, no FTS), with
-    the given source-detected embedding dimension.
+    the given source-detected embedding dimension. ``source_dim=None`` models an
+    embedding_metadata table that exists but is empty (the settings-fallback path).
 
     Args:
         monkeypatch: The pytest monkeypatch fixture.
-        source_dim: Dimension returned by the faked source-dim detection.
+        source_dim: Dimension returned by the faked source-dim detection, or None
+            for an empty embedding_metadata table.
 
     Returns:
         The AsyncMock installed in place of ``initialize_target_postgresql``.
@@ -1910,4 +1995,82 @@ async def test_pg_pg_dry_run_reports_pgvector_index_cap_refusal(
     assert not stats.errors
     assert any('a real run would abort' in w for w in stats.warnings)
     assert any('pgvector index limit' in w for w in stats.warnings)
+    init_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_migration_refuses_over_limit_settings_fallback_when_source_dim_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty source embedding_metadata table with an over-limit settings fallback aborts cleanly.
+
+    The source carries embeddings (so with_semantic is true) but the
+    embedding_metadata table is empty, so source_dim detects as None and the
+    auto-init's semantic migration would fall back to settings.embedding.dim for
+    the vector(dim) DDL. The source_dim-only pre-flight skipped this, so the run
+    reached CREATE INDEX with an over-limit fallback and crashed mid-pipeline,
+    leaving the target partially initialized. The pre-flight now resolves and
+    validates the fallback, recording a clean error before any target DDL.
+    """
+    from app.cli.migrate import run_migration_postgresql
+    from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+    from app.settings import get_settings
+
+    init_mock = _install_pg_runner_fakes(monkeypatch, source_dim=None)
+    options = MigrationOptions(
+        source_url='postgresql://u:p@localhost/src',
+        target_url='postgresql://u:p@localhost/tgt',
+    )
+
+    # ENABLE_EMBEDDING_GENERATION=false is the typical migrate-CLI case and keeps
+    # the settings-level pgvector guard from rejecting the over-limit EMBEDDING_DIM
+    # at construction, so the CLI pre-flight is what must catch it.
+    monkeypatch.setenv('EMBEDDING_DIM', str(PGVECTOR_INDEX_DIM_LIMIT + 1))
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    try:
+        stats = await run_migration_postgresql(options)
+    finally:
+        monkeypatch.delenv('EMBEDDING_DIM', raising=False)
+        monkeypatch.delenv('ENABLE_EMBEDDING_GENERATION', raising=False)
+        get_settings.cache_clear()
+
+    assert any('pgvector index limit' in e for e in stats.errors)
+    assert any('Aborting before any target DDL' in e for e in stats.errors)
+    # The message identifies EMBEDDING_DIM as the fallback the DDL would template.
+    assert any('EMBEDDING_DIM' in e for e in stats.errors)
+    init_mock.assert_not_awaited()
+    assert stats.rows_migrated == 0
+
+
+@pytest.mark.asyncio
+async def test_pg_pg_dry_run_reports_over_limit_settings_fallback_when_source_dim_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run surfaces the settings-fallback dimension-cap refusal for an empty source table."""
+    from app.cli.migrate import run_migration_postgresql
+    from app.pgvector_limits import PGVECTOR_INDEX_DIM_LIMIT
+    from app.settings import get_settings
+
+    init_mock = _install_pg_runner_fakes(monkeypatch, source_dim=None)
+    options = MigrationOptions(
+        source_url='postgresql://u:p@localhost/src',
+        target_url='postgresql://u:p@localhost/tgt',
+        dry_run=True,
+    )
+
+    monkeypatch.setenv('EMBEDDING_DIM', str(PGVECTOR_INDEX_DIM_LIMIT + 1))
+    monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+    get_settings.cache_clear()
+    try:
+        stats = await run_migration_postgresql(options)
+    finally:
+        monkeypatch.delenv('EMBEDDING_DIM', raising=False)
+        monkeypatch.delenv('ENABLE_EMBEDDING_GENERATION', raising=False)
+        get_settings.cache_clear()
+
+    assert not stats.errors
+    assert any('a real run would abort' in w for w in stats.warnings)
+    assert any('pgvector index limit' in w for w in stats.warnings)
+    assert any('EMBEDDING_DIM' in w for w in stats.warnings)
     init_mock.assert_not_awaited()
