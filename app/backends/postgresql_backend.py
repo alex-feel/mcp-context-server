@@ -1431,6 +1431,11 @@ class PostgreSQLBackend:
         Returns:
             Result of the operation (type preserved via TypeVar)
 
+        Raises:
+            ControlFlowError: Re-raised from the read callable without counting a
+                failed query (client-input validation is normal control flow, not a
+                database fault)
+
         Note:
             PostgreSQLBackend expects ASYNC callables (not sync). The operation is executed
             with await.
@@ -1442,6 +1447,14 @@ class PostgreSQLBackend:
                 result = await async_operation(conn, *args, **kwargs)
                 self.metrics.total_queries += 1
                 return result
+            except ControlFlowError:
+                # A client-input validation rejection raised inside a read callable
+                # (e.g. an invalid metadata filter) is normal control flow, not a
+                # database fault: keep it out of failed_queries so the operator-facing
+                # health metric reflects database health only, mirroring
+                # execute_write's exemption. get_connection already exempts it from
+                # circuit-breaker accounting.
+                raise
             except Exception:
                 self.metrics.failed_queries += 1
                 raise

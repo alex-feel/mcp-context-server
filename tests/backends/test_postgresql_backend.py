@@ -1300,6 +1300,60 @@ class TestAcquireTimeoutBreakerDiscrimination:
         assert backend.circuit_breaker.failures == 0
 
 
+class TestExecuteReadControlFlowMetricsExemption:
+    """execute_read keeps ControlFlowError out of the failed_queries metric.
+
+    A client-input validation rejection raised inside a read callable (e.g. an
+    invalid metadata filter) is normal control flow, not a database fault:
+    counting it would let routine healthy rejections inflate the operator-facing
+    health metric and misdiagnose database instability, inconsistent with
+    execute_write's exemption.
+    """
+
+    @staticmethod
+    def _backend_with_fake_pool() -> PostgreSQLBackend:
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@localhost:5432/testdb',
+        )
+        backend._shutdown = False
+        mock_conn = MagicMock()
+
+        @contextlib.asynccontextmanager
+        async def _fake_acquire(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            yield mock_conn
+
+        pool = MagicMock()
+        pool.acquire = MagicMock(side_effect=_fake_acquire)
+        backend._pool = pool
+        return backend
+
+    @pytest.mark.asyncio
+    async def test_control_flow_error_not_counted_as_failed_query(self) -> None:
+        """A ControlFlowError from the read callable leaves failed_queries at zero."""
+        backend = self._backend_with_fake_pool()
+
+        async def operation(_conn: object) -> None:
+            raise ControlFlowError('client input invalid')
+
+        with pytest.raises(ControlFlowError):
+            await backend.execute_read(operation)
+
+        assert backend.metrics.failed_queries == 0
+
+    @pytest.mark.asyncio
+    async def test_genuine_read_fault_still_counted(self) -> None:
+        """A genuine fault from the read callable still increments failed_queries."""
+        backend = self._backend_with_fake_pool()
+
+        async def operation(_conn: object) -> None:
+            raise RuntimeError('db fault')
+
+        with pytest.raises(RuntimeError, match='db fault'):
+            await backend.execute_read(operation)
+
+        assert backend.metrics.failed_queries == 1
+
+
 class TestBeginTransactionDeadlockExemption:
     """begin_transaction does not charge the breaker for server-initiated rollbacks.
 

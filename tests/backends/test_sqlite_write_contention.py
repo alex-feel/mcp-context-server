@@ -11,6 +11,8 @@ the SQLite backend, mirroring the PostgreSQL class-40 rollback treatment:
   circuit breaker, while a genuine fault still charges it.
 - The ``execute_write`` retry loop performs no dead backoff sleep after the
   final failed attempt and still surfaces a single exhaustion breaker charge.
+- ``execute_read`` re-raises ``ControlFlowError`` without counting it in the
+  ``failed_queries`` metric, matching the write path's exemption.
 """
 
 import asyncio
@@ -22,6 +24,7 @@ import pytest
 from app.backends.sqlite_backend import RetryConfig
 from app.backends.sqlite_backend import SQLiteBackend
 from app.backends.sqlite_backend import is_sqlite_locked_error
+from app.errors import ControlFlowError
 
 
 async def _initialized_backend(db_path: Path, retry_config: RetryConfig | None = None) -> SQLiteBackend:
@@ -156,5 +159,45 @@ class TestExecuteWriteRetryNoFinalSleep:
             # processor charges the breaker exactly once.
             assert len(sleep_calls) == retry_config.max_retries - 1
             assert backend.circuit_breaker.failures == 1
+        finally:
+            await backend.shutdown()
+
+
+class TestExecuteReadControlFlowAccounting:
+    """execute_read must exempt ControlFlowError from the failed_queries metric.
+
+    A client-input validation rejection raised inside a read callable (e.g. an
+    invalid metadata filter) is normal control flow. Counting it as a failed
+    query misreports healthy client-input rejection as database instability in
+    the operator-facing connection metrics, inconsistent with the write path,
+    which re-raises ControlFlowError before its failure accounting.
+    """
+
+    @pytest.mark.asyncio
+    async def test_control_flow_error_not_counted_as_failed_query(self, tmp_path: Path) -> None:
+        backend = await _initialized_backend(tmp_path / 'read_cf.db')
+        try:
+
+            def _reject(_conn: sqlite3.Connection) -> None:
+                raise ControlFlowError('client-input validation rejection')
+
+            with pytest.raises(ControlFlowError):
+                await backend.execute_read(_reject)
+            assert backend.metrics.failed_queries == 0
+            assert backend.circuit_breaker.failures == 0
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_genuine_read_fault_still_counted(self, tmp_path: Path) -> None:
+        backend = await _initialized_backend(tmp_path / 'read_fault.db')
+        try:
+
+            def _fail(_conn: sqlite3.Connection) -> None:
+                raise ValueError('genuine read fault')
+
+            with pytest.raises(ValueError, match='genuine read fault'):
+                await backend.execute_read(_fail)
+            assert backend.metrics.failed_queries == 1
         finally:
             await backend.shutdown()

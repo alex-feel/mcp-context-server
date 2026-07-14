@@ -1301,6 +1301,11 @@ class SQLiteBackend:
         Returns:
             Result of the operation
 
+        Raises:
+            ControlFlowError: Re-raised from the read callable WITHOUT counting it
+                in the failed_queries metric (normal control flow, e.g. a
+                client-input validation rejection, not a database fault)
+
         Note:
             SQLiteBackend expects SYNC callables (not async). The operation is executed
             synchronously in a thread executor to avoid blocking the event loop.
@@ -1324,6 +1329,12 @@ class SQLiteBackend:
                 # of the in-flight statement or crashes the interpreter. The drain lets
                 # the query finish before the connection is closed.
                 return await run_in_executor_uninterruptible(loop, _execute)
+            except ControlFlowError:
+                # Normal control flow (e.g. a client-input validation error raised
+                # inside a read callable), not a failed query: keep the
+                # operator-facing failed_queries metric consistent with the write
+                # path's exemption, which re-raises before its counter arm.
+                raise
             except Exception:
                 self.metrics.failed_queries += 1
                 raise
