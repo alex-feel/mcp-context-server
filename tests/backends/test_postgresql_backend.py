@@ -691,6 +691,35 @@ class TestInitializeErrorClassification:
             await backend._ensure_pgvector_extension()
 
     @pytest.mark.asyncio
+    async def test_value_error_in_pgvector_precheck_raises_configuration_error(self) -> None:
+        """A malformed-DSN ValueError in the pgvector pre-check classifies as exit 78.
+
+        asyncpg raises a plain builtins.ValueError (NOT ClientConfigurationError)
+        for a malformed DSN authority -- e.g. a double-bracketed host literal --
+        before any network I/O. _ensure_pgvector_extension runs BEFORE pool
+        creation on the compression-off generation-on path, so without a
+        dedicated ValueError clause its catch-all wrapped this permanent
+        client-side misconfiguration as a retryable DependencyError (exit 69)
+        and supervisors restart-looped on it; initialize()'s own ValueError
+        clause never ran because its 'except DependencyError' re-raise wins
+        first.
+        """
+        from app.errors import ConfigurationError
+
+        backend = PostgreSQLBackend(
+            connection_string='postgresql://postgres:postgres@[[::1]]:5432/testdb',
+        )
+
+        with (
+            unittest.mock.patch(
+                'asyncpg.connect',
+                side_effect=ValueError("invalid IPv6 address: '[::1'"),
+            ),
+            pytest.raises(ConfigurationError, match='PostgreSQL configuration invalid'),
+        ):
+            await backend._ensure_pgvector_extension()
+
+    @pytest.mark.asyncio
     async def test_acquire_timeout_and_connect_timeout_wiring(self) -> None:
         """The acquire-wait and establishment timeouts reach their real asyncpg knobs.
 

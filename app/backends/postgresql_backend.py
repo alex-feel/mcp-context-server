@@ -550,6 +550,22 @@ class PostgreSQLBackend:
                 'Create the database or check POSTGRESQL_DATABASE.',
             ) from e
 
+        except ValueError as e:
+            # asyncpg raises a plain builtins.ValueError for a malformed DSN
+            # authority (e.g. an invalid host literal) before any network I/O --
+            # a permanent client-side misconfiguration, NOT ClientConfigurationError
+            # (classified above). Without this arm the catch-all below would wrap it
+            # as a retryable DependencyError (exit 69) and the supervisor would
+            # restart-loop on a config error; initialize() classifies the same
+            # ValueError as ConfigurationError (exit 78), but its
+            # 'except DependencyError: raise' re-raise would win first when this
+            # pre-check runs, so the classification must happen here too.
+            logger.error(f'PostgreSQL configuration invalid: {e}')
+            raise ConfigurationError(
+                f'PostgreSQL configuration invalid: {e}. '
+                'Check POSTGRESQL_HOST and POSTGRESQL_CONNECTION_STRING.',
+            ) from e
+
         except Exception as e:
             logger.error(f'Failed to ensure pgvector extension: {e}')
             # Default to DependencyError for unknown errors (safer - allows retry)
