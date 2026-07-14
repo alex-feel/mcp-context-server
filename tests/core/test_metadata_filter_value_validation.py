@@ -8,6 +8,7 @@ SQL condition, which silently drops the filter and returns over-broad results.
 import pytest
 from pydantic import ValidationError
 
+from app.metadata_types import MAX_IN_LIST_MEMBERS
 from app.metadata_types import MetadataFilter
 from app.metadata_types import MetadataOperator
 
@@ -53,6 +54,28 @@ def test_in_operator_still_accepts_list() -> None:
     """IN continues to accept a list value (unchanged)."""
     metadata_filter = MetadataFilter(key='status', operator=MetadataOperator.IN, value=['a', 'b'])
     assert metadata_filter.value == ['a', 'b']
+
+
+@pytest.mark.parametrize('operator', [MetadataOperator.IN, MetadataOperator.NOT_IN])
+def test_membership_operator_rejects_list_over_member_cap(operator: MetadataOperator) -> None:
+    """IN/NOT_IN reject a membership list larger than MAX_IN_LIST_MEMBERS.
+
+    Each member binds one SQL placeholder in a single statement, so an unbounded
+    client-supplied list could overflow the backend bind limit inside connection
+    scope (a non-ControlFlowError that charges the circuit breaker); the cap keeps
+    the failure a structured validation error on both backends.
+    """
+    oversized: list[str | int | float | bool] = [f'v{i}' for i in range(MAX_IN_LIST_MEMBERS + 1)]
+    with pytest.raises(ValidationError, match='at most'):
+        MetadataFilter(key='status', operator=operator, value=oversized)
+
+
+@pytest.mark.parametrize('operator', [MetadataOperator.IN, MetadataOperator.NOT_IN])
+def test_membership_operator_accepts_list_at_member_cap(operator: MetadataOperator) -> None:
+    """A membership list of exactly MAX_IN_LIST_MEMBERS members remains valid (inclusive cap)."""
+    at_cap: list[str | int | float | bool] = [f'v{i}' for i in range(MAX_IN_LIST_MEMBERS)]
+    metadata_filter = MetadataFilter(key='status', operator=operator, value=at_cap)
+    assert metadata_filter.value == at_cap
 
 
 def test_contains_still_accepts_string_value() -> None:

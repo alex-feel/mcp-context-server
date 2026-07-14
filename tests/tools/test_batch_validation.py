@@ -1,4 +1,4 @@
-"""Per-entry type validation for store_context_batch / update_context_batch.
+"""Per-entry type validation and boundary caps for the batch and bulk-id tools.
 
 The single-entry tools are Pydantic-typed; the batch tools take untyped dicts, so
 they must reject a non-object metadata and a non-list tags per entry (a non-dict
@@ -6,12 +6,24 @@ metadata breaks search/metadata_filters; a bare-string tags would otherwise be
 stored one character per tag). The same parity guard applies to images: a non-list
 images (or a list with a non-dict element) is rejected per entry instead of reaching
 the image normalizer and raising a raw AttributeError that aborts the whole batch.
+
+The boundary-cap tests pin the 100-item ceiling on every client-supplied id list
+(get_context_by_ids context_ids; delete_context_batch context_ids and thread_ids),
+so an oversized list is rejected as a schema validation error at the tool boundary
+instead of reaching SQL, where it could overflow a backend's per-statement
+bound-parameter limit with a non-ControlFlowError that charges the circuit breaker.
 """
 
 import base64
+import inspect
+from collections.abc import Callable
 
 import pytest
 from fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter
+from pydantic import ValidationError
+
+from app.ids import generate_id
 
 
 @pytest.mark.usefixtures('initialized_server')
@@ -221,3 +233,57 @@ class TestUpdateBatchImagesShapeValidation:
             )
         # The clear shape error, not a raw "'str' object has no attribute 'get'" AttributeError.
         assert 'has no attribute' not in str(exc_info.value)
+
+
+class TestIdListBoundaryCaps:
+    """Every client-supplied id-list tool parameter declares the 100-item cap.
+
+    The assertions validate against the exact ``Annotated[..., Field(max_length=100)]``
+    parameter annotation FastMCP builds each tool's input validation from, so they
+    exercise the same rejection the MCP boundary applies: an oversized list fails
+    schema validation before the tool body (and any SQL) runs, while a list at the
+    cap and the ``None``/optional spellings still validate.
+    """
+
+    @staticmethod
+    def _param_adapter(func: Callable[..., object], param: str) -> TypeAdapter[object]:
+        """Build a validator for one tool parameter's declared annotation.
+
+        Args:
+            func: The tool function whose signature carries the annotation.
+            param: The parameter name to extract.
+
+        Returns:
+            A ``TypeAdapter`` over the parameter's ``Annotated`` type.
+        """
+        annotation = inspect.signature(func).parameters[param].annotation
+        return TypeAdapter(annotation)
+
+    def test_get_context_by_ids_rejects_oversized_id_list(self) -> None:
+        from app.tools.context import get_context_by_ids
+
+        adapter = self._param_adapter(get_context_by_ids, 'context_ids')
+        ids = [generate_id() for _ in range(101)]
+        with pytest.raises(ValidationError, match='at most 100'):
+            adapter.validate_python(ids)
+        assert adapter.validate_python(ids[:100]) == ids[:100]
+
+    def test_delete_context_batch_rejects_oversized_context_ids(self) -> None:
+        from app.tools.batch import delete_context_batch
+
+        adapter = self._param_adapter(delete_context_batch, 'context_ids')
+        ids = [generate_id() for _ in range(101)]
+        with pytest.raises(ValidationError, match='at most 100'):
+            adapter.validate_python(ids)
+        assert adapter.validate_python(ids[:100]) == ids[:100]
+        assert adapter.validate_python(None) is None
+
+    def test_delete_context_batch_rejects_oversized_thread_ids(self) -> None:
+        from app.tools.batch import delete_context_batch
+
+        adapter = self._param_adapter(delete_context_batch, 'thread_ids')
+        threads = [f'thread-{i}' for i in range(101)]
+        with pytest.raises(ValidationError, match='at most 100'):
+            adapter.validate_python(threads)
+        assert adapter.validate_python(threads[:100]) == threads[:100]
+        assert adapter.validate_python(None) is None

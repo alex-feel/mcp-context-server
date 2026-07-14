@@ -9,6 +9,7 @@ Contains:
 """
 
 import base64
+import sqlite3
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import cast
@@ -127,6 +128,22 @@ class TestConnectionErrorClassification:
         assert asyncpg.exceptions.TransactionRollbackError.sqlstate == '40000'
         assert asyncpg.exceptions.DeadlockDetectedError.sqlstate == '40P01'
         assert asyncpg.exceptions.SerializationError.sqlstate == '40001'
+
+    def test_sqlite_locked_family_is_retryable(self) -> None:
+        """SQLite write contention (SQLITE_BUSY / SQLITE_LOCKED family) is retryable.
+
+        begin_transaction -- the path every store/update transaction site uses --
+        bypasses the SQLite write queue and performs no backend-level retry, so
+        the tool-layer retry loops must classify a cross-process lock collision
+        as transient, mirroring the PostgreSQL class-40 rollback treatment.
+        """
+        assert is_connection_error(sqlite3.OperationalError('database is locked'))
+        assert is_connection_error(sqlite3.OperationalError('database table is locked'))
+
+    def test_generic_sqlite_operational_error_not_retryable(self) -> None:
+        """A non-contention sqlite3.OperationalError is NOT classified retryable."""
+        assert not is_connection_error(sqlite3.OperationalError('no such table: context_entries'))
+        assert not is_connection_error(sqlite3.OperationalError('malformed database schema'))
 
 
 # ---------------------------------------------------------------------------

@@ -687,24 +687,32 @@ class TestSyncModes:
     async def test_strict_mode_raises_on_missing_index(
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
-        """Test strict mode raises RuntimeError on missing indexes."""
+        """Test strict mode raises ConfigurationError on missing indexes.
+
+        A strict-mode mismatch is a permanent, human-intervention-required
+        misconfiguration, so it is classified as a configuration error (exit 78) that
+        supervisors must not auto-retry, not a generic failure they crash-loop on.
+        """
+        from app.errors import ConfigurationError
         from app.migrations import handle_metadata_indexes
 
         with patch('app.migrations.metadata.settings') as mock_settings:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'strict'
 
-            with pytest.raises(RuntimeError) as exc_info:
+            with pytest.raises(ConfigurationError) as exc_info:
                 await handle_metadata_indexes(sqlite_backend_with_table)
 
             assert 'Metadata index mismatch' in str(exc_info.value)
             assert 'METADATA_INDEX_SYNC_MODE=strict' in str(exc_info.value)
+            assert exc_info.value.EXIT_CODE == 78
 
     @pytest.mark.asyncio
     async def test_strict_mode_raises_on_extra_index(
         self, sqlite_backend_with_table: StorageBackend,
     ) -> None:
-        """Test strict mode raises RuntimeError on extra indexes."""
+        """Test strict mode raises ConfigurationError (exit 78) on extra indexes."""
+        from app.errors import ConfigurationError
         from app.migrations import handle_metadata_indexes
         from app.migrations.metadata import _create_metadata_index
 
@@ -716,11 +724,12 @@ class TestSyncModes:
             mock_settings.storage.metadata_indexed_fields = {'status': 'string'}
             mock_settings.storage.metadata_index_sync_mode = 'strict'
 
-            with pytest.raises(RuntimeError) as exc_info:
+            with pytest.raises(ConfigurationError) as exc_info:
                 await handle_metadata_indexes(sqlite_backend_with_table)
 
             assert 'Metadata index mismatch' in str(exc_info.value)
             assert 'Extra' in str(exc_info.value)
+            assert exc_info.value.EXIT_CODE == 78
 
     @pytest.mark.asyncio
     async def test_strict_mode_succeeds_when_indexes_match(

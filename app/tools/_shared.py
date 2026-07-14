@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 import asyncpg
 from fastmcp.exceptions import ToolError
 
+from app.backends.sqlite_backend import is_sqlite_locked_error
 from app.embeddings.retry import compute_embedding_total_timeout
 from app.errors import ControlFlowError
 from app.errors import format_exception_message
@@ -856,8 +857,8 @@ async def transaction_heartbeat(txn: object) -> None:
 def is_connection_error(exc: Exception) -> bool:
     """Check if an exception is a transient DB error that is safe to retry.
 
-    Despite the historical name, this classifier covers two transient
-    families, both safe to retry because the database write that follows is
+    Despite the historical name, this classifier covers four transient
+    families, all safe to retry because the database write that follows is
     idempotent (store_context deduplicates; update_context is a keyed
     partial update) and ALL embedding/summary/compression generation has
     already completed OUTSIDE the transaction (generation-first invariant) --
@@ -870,7 +871,7 @@ def is_connection_error(exc: Exception) -> bool:
     2. Statement / lock-wait timeouts: asyncpg.exceptions.QueryCanceledError
        (SQLSTATE 57014). PostgreSQL cancels the statement when it exceeds the
        connection's statement_timeout (set to ~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S
-       in PostgreSQLBackend._setup_connection). Retrying with the SAME ceiling
+       in app.backends.postgresql_backend._setup_pool_connection). Retrying with the SAME ceiling
        only helps a TRANSIENT lock-WAIT (the write was blocked behind a
        concurrent writer and the contention has since cleared); it does NOT
        help a write that is fundamentally slower than the ceiling -- for that
@@ -888,10 +889,19 @@ def is_connection_error(exc: Exception) -> bool:
        would charge the circuit breaker instead of retrying -- turning a routine,
        self-clearing lock cycle into an outage.
 
+    4. SQLite write contention: sqlite3.OperationalError in the SQLITE_BUSY /
+       SQLITE_LOCKED family ('database is locked'), classified by the shared
+       is_sqlite_locked_error predicate. The backend's write-queue path
+       (execute_write) retries this family internally, but begin_transaction --
+       the path every store/update transaction site uses -- bypasses the write
+       queue and performs NO backend-level retry, so a cross-process lock
+       collision (e.g. two MCP server processes sharing one SQLite database
+       file) must be retried by these tool-layer loops, mirroring the
+       PostgreSQL class-40 treatment above. The backend re-raises the family
+       without charging the circuit breaker for the same reason.
+
     QueryCanceledError is PostgreSQL-only; the isinstance check is harmless on
-    SQLite, which never raises it (SQLite write contention surfaces as
-    sqlite3.OperationalError 'database is locked', handled by the SQLite
-    backend's own write-queue retry).
+    SQLite, which never raises it.
 
     Args:
         exc: The exception to classify
@@ -899,7 +909,7 @@ def is_connection_error(exc: Exception) -> bool:
     Returns:
         True if the exception is a transient DB error safe for retry
     """
-    return isinstance(exc, (
+    return is_sqlite_locked_error(exc) or isinstance(exc, (
         asyncpg.InterfaceError,
         asyncpg.ConnectionDoesNotExistError,
         asyncpg.exceptions.QueryCanceledError,

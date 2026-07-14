@@ -747,12 +747,12 @@ When registered (by default, whenever an embedding provider is available), the `
 - `offset` (int, optional): Pagination offset (default: 0)
 - `thread_id` (str, optional): Filter by thread
 - `source` (str, optional): Filter by source ('user' or 'agent')
-- `tags` (list, optional): Filter by tags (OR logic)
+- `tags` (list, optional): Filter by tags (OR logic; at most 100 tags per request)
 - `content_type` (str, optional): Filter by content type
 - `start_date` (str, optional): Filter by creation date (ISO 8601)
 - `end_date` (str, optional): Filter by creation date (ISO 8601)
 - `metadata` (dict, optional): Simple metadata filters
-- `metadata_filters` (list, optional): Advanced metadata filters
+- `metadata_filters` (list, optional): Advanced metadata filters (`in`/`not_in` value lists accept at most 100 members)
 - `include_images` (bool, optional): Include image data (default: false)
 - `explain_query` (bool, optional): Include statistics (default: false)
 
@@ -782,7 +782,9 @@ When registered (by default, whenever an embedding provider is available), the `
   "stats": {
     "execution_time_ms": 85.3,
     "embedding_generation_ms": 45.1,
-    "filters_applied": 2
+    "filters_applied": 2,
+    "rows_returned": 5,
+    "backend": "sqlite"
   }
 }
 ```

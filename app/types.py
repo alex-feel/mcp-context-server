@@ -106,7 +106,8 @@ class GrepContextResultDict(TypedDict, total=False):
     """Type definition for the grep_context response.
 
     ``results`` holds one of the three row shapes depending on ``mode``; ``error``
-    and ``validation_errors`` appear only when a metadata filter is invalid.
+    and ``validation_errors`` appear only when a client-supplied filter is invalid
+    (a metadata filter fails validation or the tags filter exceeds its member cap).
     ``timed_out_context_ids`` appears only when one or more entries were skipped
     because their regex match exceeded the per-entry timeout (the result is then
     incomplete for those entries).
@@ -687,10 +688,13 @@ class HybridSemanticStatsDict(TypedDict, total=False):
 
     Contains timing and filter information from the semantic portion
     of hybrid search. This is also the shape of the ``stats`` payload the
-    standalone ``semantic_search_context`` tool returns. ``embedding_generation_ms``
-    is the measured wall-clock duration (rounded, milliseconds) of the query
-    ``embed_query`` call, injected by ``_semantic_search_raw`` so both the
-    standalone tool and the semantic leg of hybrid search surface it.
+    standalone ``semantic_search_context`` tool returns, including on its
+    validation-error path, so ``backend`` (the active storage backend type)
+    is always present alongside the timing and filter counters.
+    ``embedding_generation_ms`` is the measured wall-clock duration (rounded,
+    milliseconds) of the query ``embed_query`` call, injected by
+    ``_semantic_search_raw`` so both the standalone tool and the semantic leg
+    of hybrid search surface it (zeroed on the validation-error path).
     """
 
     execution_time_ms: float

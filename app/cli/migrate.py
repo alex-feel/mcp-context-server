@@ -1781,7 +1781,12 @@ async def initialize_target_postgresql(
     Args:
         target_url: asyncpg DSN for the target database.
         embedding_dim: SOURCE embedding dimension, templated into the semantic
-            vector column. Ignored when ``with_semantic`` is False.
+            vector column. Ignored when ``with_semantic`` is False. When None on
+            a ``with_semantic`` run (the source ``embedding_metadata`` table
+            exists but is empty), the semantic migration falls back to
+            ``settings.embedding.dim``; the pre-flight resolves and validates
+            that same fallback so the value the DDL actually templates is
+            capacity-checked.
         with_semantic: When True, also create the semantic-search and chunking
             layout (PG->PG migrations that copy embeddings). When False (a
             cross-backend migration that drops embeddings), only the base schema
@@ -1796,39 +1801,58 @@ async def initialize_target_postgresql(
             auto-init.
 
     Raises:
-        RuntimeError: If a ``with_semantic`` run requests an ``embedding_dim``
-            above the pgvector index cap (raised BEFORE any target DDL, so the
-            target schema is never left partially initialized); if the target
-            schema cannot be created; or -- on a ``with_semantic`` run -- if the
-            pgvector extension cannot be created (insufficient privileges on a
-            managed service such as Supabase, or pgvector not installed on the
-            host at all). A ``with_semantic=False`` run never touches pgvector,
-            so it initializes cleanly on a pgvector-less host.
+        RuntimeError: If a ``with_semantic`` run's effective embedding dimension
+            (``embedding_dim`` when known, else the ``settings.embedding.dim``
+            fallback) exceeds the pgvector index cap (raised BEFORE any target
+            DDL, so the target schema is never left partially initialized); if
+            the target schema cannot be created; or -- on a ``with_semantic``
+            run -- if the pgvector extension cannot be created (insufficient
+            privileges on a managed service such as Supabase, or pgvector not
+            installed on the host at all). A ``with_semantic=False`` run never
+            touches pgvector, so it initializes cleanly on a pgvector-less host.
     """
     # fp32 capability pre-flight, BEFORE any connection or target DDL: pgvector
     # cannot build an HNSW index over vector columns wider than
     # PGVECTOR_INDEX_DIM_LIMIT dimensions, and the semantic-search migration
-    # this function force-applies templates the SOURCE-detected dimension into
-    # vector(dim) and then builds that index. Without this check the run dies
-    # mid-pipeline at CREATE INDEX and leaves the target schema partially
-    # initialized (base tables created, vector layout half-built).
-    if (
-        with_semantic
-        and embedding_dim is not None
-        and exceeds_pgvector_index_dim_limit(embedding_dim)
-    ):
-        raise RuntimeError(
-            f'Cannot initialize the target database: the source embedding dimension '
-            f'({embedding_dim}) exceeds the pgvector index limit of '
-            f'{PGVECTOR_INDEX_DIM_LIMIT} dimensions for fp32 vectors, so building the '
-            f'fp32 vector layout would fail at the HNSW CREATE INDEX and leave the '
-            f'target schema partially initialized. Embeddings of this dimension cannot '
-            f'be copied into an fp32 target. Recovery: migrate from a source copy whose '
-            f'embedding tables (embedding_metadata, vec_context_embeddings) are dropped '
-            f'so the target initializes without the fp32 vector layout, then start the '
-            f'target server with ENABLE_EMBEDDING_COMPRESSION=true (compressed payloads '
-            f'have no pgvector dimension cap) and re-embed with --embed-missing.',
-        )
+    # this function force-applies templates a dimension into vector(dim) and then
+    # builds that index. Without this check the run dies mid-pipeline at CREATE
+    # INDEX and leaves the target schema partially initialized (base tables
+    # created, vector layout half-built).
+    #
+    # The dimension the DDL will ACTUALLY use is the source-detected value when
+    # known, else apply_semantic_search_migration's own settings.embedding.dim
+    # fallback (it resolves embedding_dim=None to settings.embedding.dim). A
+    # source whose embedding_metadata table exists but is empty detects as None,
+    # so validating only the source-detected value would leave the settings
+    # fallback -- the value the DDL templates -- unchecked and crash mid-index.
+    # Resolve the same fallback here and validate whichever value the DDL uses.
+    if with_semantic:
+        effective_dim = embedding_dim
+        if effective_dim is None:
+            from app.settings import get_settings
+
+            effective_dim = get_settings().embedding.dim
+        if exceeds_pgvector_index_dim_limit(effective_dim):
+            source_clause = (
+                f'source embedding dimension ({effective_dim})'
+                if embedding_dim is not None
+                else (
+                    f'configured EMBEDDING_DIM ({effective_dim}, the fallback used because '
+                    'the source embedding_metadata table is empty)'
+                )
+            )
+            raise RuntimeError(
+                f'Cannot initialize the target database: the {source_clause} exceeds the '
+                f'pgvector index limit of {PGVECTOR_INDEX_DIM_LIMIT} dimensions for fp32 '
+                f'vectors, so building the fp32 vector layout would fail at the HNSW '
+                f'CREATE INDEX and leave the target schema partially initialized. '
+                f'Embeddings of this dimension cannot be copied into an fp32 target. '
+                f'Recovery: migrate from a source copy whose embedding tables '
+                f'(embedding_metadata, vec_context_embeddings) are dropped so the target '
+                f'initializes without the fp32 vector layout, then start the target server '
+                f'with ENABLE_EMBEDDING_COMPRESSION=true (compressed payloads have no '
+                f'pgvector dimension cap) and re-embed with --embed-missing.',
+            )
 
     import asyncpg
 
@@ -2122,15 +2146,37 @@ async def run_migration_postgresql(options: MigrationOptions) -> MigrationStats:
             # initialize_target_postgresql's own guard surface as an unhandled
             # exception (exit 2); a dry run reports the same refusal as a plan
             # warning, mirroring the pre-existing-target embeddings backstop.
+            #
+            # source_dim is None when the source embedding_metadata table exists
+            # but is empty; the auto-init's semantic migration then falls back to
+            # settings.embedding.dim, so the value the target DDL actually
+            # templates is that fallback. Resolve it here (mirroring
+            # initialize_target_postgresql's own pre-flight) so an over-limit
+            # fallback is refused before any DDL and surfaced under --dry-run,
+            # instead of slipping past the source_dim-only check to crash the
+            # real run mid-index.
+            effective_source_dim = source_dim
+            fallback_dim_used = False
+            if source_has_embeddings and effective_source_dim is None:
+                from app.settings import get_settings
+
+                effective_source_dim = get_settings().embedding.dim
+                fallback_dim_used = True
             if (
                 source_has_embeddings
-                and source_dim is not None
-                and exceeds_pgvector_index_dim_limit(source_dim)
+                and effective_source_dim is not None
+                and exceeds_pgvector_index_dim_limit(effective_source_dim)
             ):
+                dim_clause = (
+                    f'configured EMBEDDING_DIM ({effective_source_dim}, the fallback used '
+                    'because the source embedding_metadata table is empty)'
+                    if fallback_dim_used
+                    else f'source embedding dimension ({effective_source_dim})'
+                )
                 message = (
-                    f'source embedding dimension ({source_dim}) exceeds the pgvector '
-                    f'index limit of {PGVECTOR_INDEX_DIM_LIMIT} dimensions for fp32 '
-                    'vectors: auto-initializing the target would fail at the HNSW '
+                    f'{dim_clause} exceeds the pgvector index limit of '
+                    f'{PGVECTOR_INDEX_DIM_LIMIT} dimensions for fp32 vectors: '
+                    'auto-initializing the target would fail at the HNSW '
                     'CREATE INDEX and leave the target schema partially initialized. '
                     'Recovery: migrate from a source copy whose embedding tables '
                     '(embedding_metadata, vec_context_embeddings) are dropped so the '
@@ -2496,6 +2542,7 @@ async def run_migration_mixed_sqlite_to_postgresql(options: MigrationOptions) ->
                         ('thread_id', row_thread_id, False),
                         ('text_content', row['text_content'], False),
                         ('summary', row['summary'], False),
+                        ('content_hash', row['content_hash'], False),
                         ('metadata', rewritten_metadata, True),
                     ),
                 )
