@@ -87,6 +87,21 @@ class TestConnectionStringBuilding:
         conn_str = self._built_connection_string(monkeypatch, '2001:db8::1')
         assert '@[2001:db8::1]:' in conn_str
 
+    def test_already_bracketed_ipv6_host_is_not_double_bracketed(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A host already in RFC 3986 bracket form is left as-is (idempotent bracketing).
+
+        The colon-presence check alone also matches '[::1]', so wrapping again
+        produced '[[::1]]', which asyncpg rejects at DSN parse with a plain
+        ValueError that never names the bracket cause. The bracketed spelling is
+        a natural copy-paste from URI-style examples and connected fine before
+        automatic bracketing existed, so it must keep working.
+        """
+        conn_str = self._built_connection_string(monkeypatch, '[::1]')
+        assert '@[::1]:' in conn_str
+        assert '[[' not in conn_str
+
     def test_hostname_without_colon_is_not_bracketed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A plain hostname interpolates without brackets."""
         conn_str = self._built_connection_string(monkeypatch, 'db.example.com')

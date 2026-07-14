@@ -460,9 +460,18 @@ class PostgreSQLBackend:
 
         # An IPv6 host literal contains colons, which the DSN authority parses as the
         # host:port separator; bracket it (RFC 3986 IP-literal) so ::1 or a full IPv6
-        # address interpolates as [::1]:port rather than corrupting the parse. A hostname
-        # or IPv4 literal has no colon and is left as-is.
-        host_part = f'[{host}]' if ':' in host else host
+        # address interpolates as [::1]:port rather than corrupting the parse. Bracketing
+        # is idempotent: a host already in bracket form (e.g. '[::1]', a natural
+        # copy-paste from URI-style examples) is left as-is, because wrapping it again
+        # would produce '[[::1]]', which asyncpg rejects at DSN parse with a plain
+        # ValueError that never names the bracket cause. A hostname or IPv4 literal has
+        # no colon and is left as-is.
+        if host.startswith('[') and host.endswith(']'):
+            host_part = host
+        elif ':' in host:
+            host_part = f'[{host}]'
+        else:
+            host_part = host
 
         # Build connection string with encoded components
         conn_str = f'postgresql://{encoded_user}:{encoded_password}@{host_part}:{port}/{encoded_database}'
