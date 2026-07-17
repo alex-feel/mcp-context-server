@@ -115,6 +115,102 @@ def tags_filter_cap_error(tags: list[str] | None) -> str | None:
     return None
 
 
+# Maximum member count for the client-supplied metadata_filters list, shared by the
+# four search tools and grep_context. The sibling caps bound the PER-ITEM dimensions
+# (MAX_FILTER_TAGS per tags list, MAX_IN_LIST_MEMBERS per IN/NOT_IN value list), but
+# without a cap on the filter LIST itself the capped dimensions still multiply: a few
+# hundred schema-legal IN filters of 100 members each expand past the backend's
+# per-statement bind limit (asyncpg's 32,767-argument wire cap; 32,766 variables on a
+# python.org SQLite build) INSIDE connection scope -- a non-ControlFlowError that
+# charges the circuit breaker for purely invalid client input, and a cross-backend
+# divergence (a Debian-built SQLite with a higher compile-time limit silently
+# succeeds where PostgreSQL hard-errors). The cap is advertised in the wire schema
+# via Field(max_length=MAX_METADATA_FILTERS) on every metadata_filters parameter and
+# re-checked in each tool body (metadata_filters_cap_error), matching the tags-cap
+# pattern. Aligned with MAX_FILTER_TAGS and MAX_IN_LIST_MEMBERS (both 100).
+MAX_METADATA_FILTERS = 100
+
+# Maximum key count for the simple metadata (key=value equality) filter dict, shared
+# by the four search tools. Each key expands into one SQL condition with one bind
+# placeholder, so it is the same bind-multiplication dimension as the filter list
+# above and carries the identical cap for uniformity.
+MAX_METADATA_KEYS = 100
+
+
+def metadata_filters_cap_error(metadata_filters: list[dict[str, Any]] | None) -> str | None:
+    """Return a validation message when the metadata_filters list exceeds MAX_METADATA_FILTERS.
+
+    Defense in depth behind the Field(max_length=MAX_METADATA_FILTERS) wire-schema
+    cap, mirroring :func:`tags_filter_cap_error`: the tool bodies call this before
+    any repository work so an oversized list from a caller that bypassed schema
+    validation is rejected as a structured validation error instead of expanding
+    into an oversized single-statement placeholder run (which would charge the
+    circuit breaker).
+
+    Args:
+        metadata_filters: The client-supplied advanced filter list (None when absent).
+
+    Returns:
+        A client-facing message when the list has more than MAX_METADATA_FILTERS
+        members, else None.
+    """
+    if metadata_filters is not None and len(metadata_filters) > MAX_METADATA_FILTERS:
+        return (
+            f'Too many metadata filters: {len(metadata_filters)} exceeds the maximum of '
+            f'{MAX_METADATA_FILTERS}. Narrow the query to at most {MAX_METADATA_FILTERS} filters.'
+        )
+    return None
+
+
+def metadata_keys_cap_error(metadata: dict[str, str | int | float | bool] | None) -> str | None:
+    """Return a validation message when the simple metadata dict exceeds MAX_METADATA_KEYS.
+
+    Defense in depth behind the Field(max_length=MAX_METADATA_KEYS) wire-schema cap
+    (rendered as maxProperties in the JSON Schema), mirroring
+    :func:`tags_filter_cap_error` for the simple key=value equality dict.
+
+    Args:
+        metadata: The client-supplied simple metadata filter dict (None when absent).
+
+    Returns:
+        A client-facing message when the dict has more than MAX_METADATA_KEYS keys,
+        else None.
+    """
+    if metadata is not None and len(metadata) > MAX_METADATA_KEYS:
+        return (
+            f'Too many metadata keys in filter: {len(metadata)} exceeds the maximum of '
+            f'{MAX_METADATA_KEYS}. Narrow the filter to at most {MAX_METADATA_KEYS} keys.'
+        )
+    return None
+
+
+def filter_caps_error(
+    tags: list[str] | None,
+    metadata: dict[str, str | int | float | bool] | None = None,
+    metadata_filters: list[dict[str, Any]] | None = None,
+) -> str | None:
+    """Return the first boundary-cap violation among the client-supplied filter inputs.
+
+    One shared body re-check for the three capped filter dimensions (tags list,
+    simple metadata dict, advanced metadata_filters list), so every filter-bearing
+    tool rejects an oversized input as the same structured validation error before
+    any repository work runs.
+
+    Args:
+        tags: The client-supplied tags filter (None when absent).
+        metadata: The client-supplied simple metadata filter dict (None when absent).
+        metadata_filters: The client-supplied advanced filter list (None when absent).
+
+    Returns:
+        The first cap-violation message found, else None.
+    """
+    return (
+        tags_filter_cap_error(tags)
+        or metadata_keys_cap_error(metadata)
+        or metadata_filters_cap_error(metadata_filters)
+    )
+
+
 def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> dict[str, Any]:
     """Build the zeroed stats dict for a structured validation-error response.
 
@@ -139,6 +235,28 @@ def _empty_stats_for_validation_error(*, include_embedding_ms: bool = False) -> 
     if include_embedding_ms:
         stats['embedding_generation_ms'] = 0.0
     return stats
+
+
+def _zeroed_fusion_stats(rrf_k: int) -> dict[str, Any]:
+    """Build the zeroed fusion_stats dict for a hybrid validation-error response.
+
+    Carries the same keys as the success path's fusion_stats (including the
+    resolved ``rrf_k``) with all document counters at zero, so a client sees the
+    same stats keys whether the hybrid search executed or failed validation.
+
+    Args:
+        rrf_k: The resolved RRF smoothing constant for this request.
+
+    Returns:
+        The zeroed fusion_stats dict.
+    """
+    return {
+        'rrf_k': rrf_k,
+        'total_unique_documents': 0,
+        'documents_in_both': 0,
+        'documents_fts_only': 0,
+        'documents_semantic_only': 0,
+    }
 
 
 async def _apply_reranking(
@@ -547,14 +665,18 @@ async def search_context(
     content_type: Annotated[Literal['text', 'multimodal'] | None, Field(description='Filter by content type')] = None,
     metadata: Annotated[
         dict[str, str | int | float | bool] | None,
-        Field(description='Simple metadata filters (key=value equality)'),
+        Field(
+            max_length=MAX_METADATA_KEYS,
+            description=f'Simple metadata filters (key=value equality; at most {MAX_METADATA_KEYS} keys)',
+        ),
     ] = None,
     metadata_filters: Annotated[
         list[dict[str, Any]] | None,
         Field(
+            max_length=MAX_METADATA_FILTERS,
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null, array_contains',
+            f'starts_with, ends_with, is_null, is_not_null, array_contains. At most {MAX_METADATA_FILTERS} filters',
         ),
     ] = None,
     start_date: Annotated[
@@ -579,9 +701,9 @@ async def search_context(
     Filtering options:
     - thread_id, source: Indexed for fast filtering (always prefer specifying thread_id)
     - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
-    - metadata: Simple key=value equality matching
+    - metadata: Simple key=value equality matching (at most 100 keys per request)
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
-      in/not_in value lists accept at most 100 members
+      at most 100 filters per request, in/not_in value lists accept at most 100 members
     - start_date/end_date: Filter by creation timestamp (ISO 8601)
 
     Returns:
@@ -613,15 +735,21 @@ async def search_context(
         reject_unstorable_input(thread_id=thread_id, tags=tags)
 
         # Boundary cap re-check behind the wire-schema max_length: an oversized tags
-        # list is a structured validation error before any repository work runs.
-        tags_error = tags_filter_cap_error(tags)
-        if tags_error is not None:
-            return {
+        # list, metadata dict, or metadata_filters list is a structured validation
+        # error before any repository work runs. The stats block is attached under
+        # explain_query so a validation rejection and a successful search expose the
+        # same keys (uniform with the fts/semantic siblings).
+        caps_error = filter_caps_error(tags, metadata, metadata_filters)
+        if caps_error is not None:
+            caps_response: dict[str, Any] = {
                 'results': [],
                 'count': 0,
-                'error': tags_error,
-                'validation_errors': [tags_error],
+                'error': caps_error,
+                'validation_errors': [caps_error],
             }
+            if explain_query:
+                caps_response['stats'] = _empty_stats_for_validation_error()
+            return caps_response
 
         if ctx:
             await ctx.info(f'Searching context with filters: thread_id={thread_id}, source={source}')
@@ -649,7 +777,9 @@ async def search_context(
 
         # Check for validation errors in stats
         if 'error' in stats:
-            # Return the error response with validation details
+            # Return the error response with validation details. The stats block is
+            # attached under explain_query so a validation rejection and a successful
+            # search expose the same keys (uniform with the fts/semantic siblings).
             error_response: dict[str, Any] = {
                 'results': [],
                 'count': 0,
@@ -657,6 +787,8 @@ async def search_context(
             }
             if 'validation_errors' in stats:
                 error_response['validation_errors'] = stats['validation_errors']
+            if explain_query:
+                error_response['stats'] = _empty_stats_for_validation_error()
             return error_response
 
         entries: list[ContextEntryDict] = []
@@ -739,14 +871,18 @@ async def semantic_search_context(
     ] = None,
     metadata: Annotated[
         dict[str, str | int | float | bool] | None,
-        Field(description='Simple metadata filters (key=value equality)'),
+        Field(
+            max_length=MAX_METADATA_KEYS,
+            description=f'Simple metadata filters (key=value equality; at most {MAX_METADATA_KEYS} keys)',
+        ),
     ] = None,
     metadata_filters: Annotated[
         list[dict[str, Any]] | None,
         Field(
+            max_length=MAX_METADATA_FILTERS,
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null, array_contains',
+            f'starts_with, ends_with, is_null, is_not_null, array_contains. At most {MAX_METADATA_FILTERS} filters',
         ),
     ] = None,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
@@ -763,9 +899,9 @@ async def semantic_search_context(
     - content_type: Filter by text or multimodal entries
     - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
     - start_date/end_date: Date range filtering (ISO 8601)
-    - metadata: Simple key=value equality matching
+    - metadata: Simple key=value equality matching (at most 100 keys per request)
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
-      in/not_in value lists accept at most 100 members
+      at most 100 filters per request, in/not_in value lists accept at most 100 members
 
     The `scores` object contains:
     - semantic_distance: LOWER = more similar. The metric depends on embedding storage:
@@ -795,20 +931,21 @@ async def semantic_search_context(
     reject_unstorable_input(thread_id=thread_id, tags=tags)
 
     # Boundary cap re-check behind the wire-schema max_length: an oversized tags
-    # list is a structured validation error before any repository work runs.
-    tags_error = tags_filter_cap_error(tags)
-    if tags_error is not None:
-        tags_error_response: dict[str, Any] = {
+    # list, metadata dict, or metadata_filters list is a structured validation
+    # error before any repository work runs.
+    caps_error = filter_caps_error(tags, metadata, metadata_filters)
+    if caps_error is not None:
+        caps_error_response: dict[str, Any] = {
             'query': query,
             'results': [],
             'count': 0,
             'model': settings.embedding.model,
-            'error': tags_error,
-            'validation_errors': [tags_error],
+            'error': caps_error,
+            'validation_errors': [caps_error],
         }
         if explain_query:
-            tags_error_response['stats'] = _empty_stats_for_validation_error(include_embedding_ms=True)
-        return tags_error_response
+            caps_error_response['stats'] = _empty_stats_for_validation_error(include_embedding_ms=True)
+        return caps_error_response
 
     try:
         # Clamp limit to prevent excessive memory use (Postel's Law for LLM clients)
@@ -967,14 +1104,18 @@ async def fts_search_context(
     ] = None,
     metadata: Annotated[
         dict[str, str | int | float | bool] | None,
-        Field(description='Simple metadata filters (key=value equality)'),
+        Field(
+            max_length=MAX_METADATA_KEYS,
+            description=f'Simple metadata filters (key=value equality; at most {MAX_METADATA_KEYS} keys)',
+        ),
     ] = None,
     metadata_filters: Annotated[
         list[dict[str, Any]] | None,
         Field(
+            max_length=MAX_METADATA_FILTERS,
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null, array_contains',
+            f'starts_with, ends_with, is_null, is_not_null, array_contains. At most {MAX_METADATA_FILTERS} filters',
         ),
     ] = None,
     offset: Annotated[int, Field(ge=0, le=MAX_SEARCH_OFFSET, description='Pagination offset (default: 0)')] = 0,
@@ -996,9 +1137,9 @@ async def fts_search_context(
     - content_type: Filter by text or multimodal entries
     - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
     - start_date/end_date: Date range filtering (ISO 8601)
-    - metadata: Simple key=value equality matching
+    - metadata: Simple key=value equality matching (at most 100 keys per request)
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
-      in/not_in value lists accept at most 100 members
+      at most 100 filters per request, in/not_in value lists accept at most 100 members
 
     The `scores` object contains:
     - fts_score: BM25/ts_rank relevance (HIGHER = better match)
@@ -1025,21 +1166,22 @@ async def fts_search_context(
     reject_unstorable_input(thread_id=thread_id, tags=tags)
 
     # Boundary cap re-check behind the wire-schema max_length: an oversized tags
-    # list is a structured validation error before any repository work runs.
-    tags_error = tags_filter_cap_error(tags)
-    if tags_error is not None:
-        tags_error_response: dict[str, Any] = {
+    # list, metadata dict, or metadata_filters list is a structured validation
+    # error before any repository work runs.
+    caps_error = filter_caps_error(tags, metadata, metadata_filters)
+    if caps_error is not None:
+        caps_error_response: dict[str, Any] = {
             'query': query,
             'mode': mode,
             'results': [],
             'count': 0,
             'language': settings.fts.language,
-            'error': tags_error,
-            'validation_errors': [tags_error],
+            'error': caps_error,
+            'validation_errors': [caps_error],
         }
         if explain_query:
-            tags_error_response['stats'] = _empty_stats_for_validation_error()
-        return tags_error_response
+            caps_error_response['stats'] = _empty_stats_for_validation_error()
+        return caps_error_response
 
     # Check if migration is in progress - return informative response for graceful degradation
     fts_status = get_fts_migration_status()
@@ -1335,14 +1477,18 @@ async def hybrid_search_context(
     ] = None,
     metadata: Annotated[
         dict[str, str | int | float | bool] | None,
-        Field(description='Simple metadata filters (key=value equality)'),
+        Field(
+            max_length=MAX_METADATA_KEYS,
+            description=f'Simple metadata filters (key=value equality; at most {MAX_METADATA_KEYS} keys)',
+        ),
     ] = None,
     metadata_filters: Annotated[
         list[dict[str, Any]] | None,
         Field(
+            max_length=MAX_METADATA_FILTERS,
             description='Advanced metadata filters: [{"key": "priority", "operator": "gt", "value": 5}]. '
             'Operators: eq, ne, gt, gte, lt, lte, in, not_in, exists, not_exists, contains, '
-            'starts_with, ends_with, is_null, is_not_null, array_contains',
+            f'starts_with, ends_with, is_null, is_not_null, array_contains. At most {MAX_METADATA_FILTERS} filters',
         ),
     ] = None,
     include_images: Annotated[bool, Field(description='Include image data (only for multimodal entries)')] = False,
@@ -1364,9 +1510,9 @@ async def hybrid_search_context(
     - content_type: Filter by text or multimodal entries
     - tags: OR logic (matches ANY of provided tags; at most 100 tags per request)
     - start_date/end_date: Date range filtering (ISO 8601)
-    - metadata: Simple key=value equality matching
+    - metadata: Simple key=value equality matching (at most 100 keys per request)
     - metadata_filters: Advanced operators (gt, lt, contains, exists, etc.);
-      in/not_in value lists accept at most 100 members
+      at most 100 filters per request, in/not_in value lists accept at most 100 members
 
     The `scores` object contains:
     - rrf: Combined fusion score (HIGHER = better)
@@ -1402,12 +1548,20 @@ async def hybrid_search_context(
     # that charges the circuit breaker (SQLite binds them silently -- a divergence).
     reject_unstorable_input(thread_id=thread_id, tags=tags)
 
+    # Resolve rrf_k before any early return: the validation-error stats blocks
+    # below carry the resolved constant in their zeroed fusion_stats.
+    effective_rrf_k = rrf_k if rrf_k is not None else settings.hybrid_search.rrf_k
+
     # Boundary cap re-check behind the wire-schema max_length: an oversized tags
-    # list is a structured validation error before any sub-search runs, mirroring
-    # the all-modes-failed response shape below.
-    tags_error = tags_filter_cap_error(tags)
-    if tags_error is not None:
-        return {
+    # list, metadata dict, or metadata_filters list is a structured validation
+    # error before any sub-search runs, mirroring the all-modes-failed response
+    # shape below. The stats block is attached under explain_query so a validation
+    # rejection and a successful search expose the same keys (uniform with the
+    # standalone fts/semantic siblings); no sub-search ran, so the sub-stats are
+    # None and the fusion counters zero.
+    caps_error = filter_caps_error(tags, metadata, metadata_filters)
+    if caps_error is not None:
+        caps_response: dict[str, Any] = {
             'query': query,
             'results': [],
             'count': 0,
@@ -1415,9 +1569,18 @@ async def hybrid_search_context(
             'search_modes_used': [],
             'fts_count': 0,
             'semantic_count': 0,
-            'error': tags_error,
-            'validation_errors': [tags_error],
+            'error': caps_error,
+            'validation_errors': [caps_error],
         }
+        if explain_query:
+            caps_response['stats'] = {
+                'execution_time_ms': 0.0,
+                'fts_stats': None,
+                'semantic_stats': None,
+                'fusion_stats': _zeroed_fusion_stats(effective_rrf_k),
+                'adaptive_fts_mode': 'match',
+            }
+        return caps_response
 
     # Check if hybrid search is enabled
     if not settings.hybrid_search.enabled:
@@ -1426,9 +1589,6 @@ async def hybrid_search_context(
             'Set ENABLE_HYBRID_SEARCH to auto (default) or true to enable this feature. '
             'Also ensure ENABLE_FTS and/or ENABLE_SEMANTIC_SEARCH are not force-disabled.',
         )
-
-    # Use settings default if rrf_k not specified
-    effective_rrf_k = rrf_k if rrf_k is not None else settings.hybrid_search.rrf_k
 
     # Determine available search modes
     fts_available = settings.fts.enabled
@@ -1653,9 +1813,13 @@ async def hybrid_search_context(
             # The error response carries the same always-present response-shape keys
             # the success path, the docstring, and HybridSearchResponseDict declare
             # (fusion_method, fts_count, semantic_count), so a client reading them
-            # never hits a KeyError on the error branch.
+            # never hits a KeyError on the error branch. Under explain_query it also
+            # carries the same stats keys the success path builds: the real elapsed
+            # time, whatever sub-search stats were captured before the failure (None
+            # when a mode failed validation), a zeroed fusion_stats with the resolved
+            # rrf_k, and the adaptive FTS mode the request selected.
             if combined_validation_errors:
-                return {
+                failed_response: dict[str, Any] = {
                     'query': query,
                     'results': [],
                     'count': 0,
@@ -1666,6 +1830,15 @@ async def hybrid_search_context(
                     'error': f'All available search modes failed. {details}',
                     'validation_errors': combined_validation_errors,
                 }
+                if explain_query:
+                    failed_response['stats'] = {
+                        'execution_time_ms': round((time_module.time() - total_start_time) * 1000, 2),
+                        'fts_stats': fts_stats,
+                        'semantic_stats': semantic_stats,
+                        'fusion_stats': _zeroed_fusion_stats(effective_rrf_k),
+                        'adaptive_fts_mode': adaptive_mode,
+                    }
+                return failed_response
             raise ToolError(f'All available search modes failed. {details}')
 
         # Parse FTS metadata (returned as JSON strings from DB)

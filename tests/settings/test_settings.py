@@ -634,6 +634,32 @@ class TestMetadataIndexedFieldNames:
         ):
             StorageSettings()
 
+    def test_exact_duplicate_field_rejected_with_duplicate_diagnostic(self) -> None:
+        """An identical repeated name is refused with an accurate duplicate diagnostic.
+
+        The rejection must NOT claim the two equal names 'differ only in case' --
+        that message describes a nonexistent casing problem and misdirects the
+        operator away from the actual duplicate entry.
+        """
+        from app.settings import StorageSettings
+
+        with (
+            env_var('METADATA_INDEXED_FIELDS', 'status,status'),
+            pytest.raises(ValidationError, match='more than once') as exc_info,
+        ):
+            StorageSettings()
+        assert 'differ only in case' not in str(exc_info.value)
+
+    def test_duplicate_field_with_conflicting_type_hints_rejected(self) -> None:
+        """A repeated name carrying conflicting type hints gets the duplicate diagnostic."""
+        from app.settings import StorageSettings
+
+        with (
+            env_var('METADATA_INDEXED_FIELDS', 'status:string,status:integer'),
+            pytest.raises(ValidationError, match='more than once'),
+        ):
+            StorageSettings()
+
     def test_distinct_fields_accepted(self) -> None:
         """Case-distinct-but-not-colliding names remain valid."""
         from app.settings import StorageSettings

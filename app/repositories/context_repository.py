@@ -807,17 +807,23 @@ class ContextRepository(BaseRepository):
             params.extend(metadata_params)
 
         # Tag filter via the indexed tag table (OR logic across normalized tags).
+        # A non-empty tags list that normalizes to empty (all-blank) is a
+        # structured validation error, not a dropped filter that would widen
+        # results -- uniform with the metadata validators above.
         if tags:
-            normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-            if normalized_tags:
-                tag_placeholders = ','.join([
-                    self._placeholder(params_start + len(params) + i + 1)
-                    for i in range(len(normalized_tags))
-                ])
-                clauses.append(
-                    f' AND id IN (SELECT DISTINCT context_entry_id FROM tags WHERE tag IN ({tag_placeholders}))',
-                )
-                params.extend(normalized_tags)
+            try:
+                normalized_tags = self.normalize_tag_filter(tags)
+            except ValueError as e:
+                validation_errors.append(str(e))
+                return '', [], 0, validation_errors
+            tag_placeholders = ','.join([
+                self._placeholder(params_start + len(params) + i + 1)
+                for i in range(len(normalized_tags))
+            ])
+            clauses.append(
+                f' AND id IN (SELECT DISTINCT context_entry_id FROM tags WHERE tag IN ({tag_placeholders}))',
+            )
+            params.extend(normalized_tags)
 
         return ''.join(clauses), params, metadata_builder.get_filter_count(), validation_errors
 

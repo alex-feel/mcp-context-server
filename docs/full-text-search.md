@@ -152,7 +152,7 @@ When FTS is enabled, a new MCP tool becomes available.
   "mode": "match",
   "results": [
     {
-      "id": 123,
+      "id": "0190abcdef1234567890abcdef123456",
       "thread_id": "thread-abc",
       "source": "agent",
       "content_type": "text",
@@ -177,12 +177,13 @@ When FTS is enabled, a new MCP tool becomes available.
     "execution_time_ms": 12.34,
     "filters_applied": 2,
     "rows_returned": 1,
+    "backend": "sqlite",
     "query_plan": "..."
   }
 }
 ```
 
-**Note:** The `stats` field is only included when `explain_query=True`.
+**Note:** The `stats` field is only included when `explain_query=True`. Within the stats block, `backend` (the active storage backend type, e.g. `"sqlite"` or `"postgresql"`) is always present; `query_plan` is also present whenever the stats block appears, since both are populated by the same `explain_query=True` pass.
 
 **Scores Object**:
 - `fts_score`: BM25/ts_rank relevance score (HIGHER = better match)

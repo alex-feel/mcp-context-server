@@ -360,19 +360,26 @@ class FtsRepository(BaseRepository):
                 filter_conditions.append('ce.content_type = ?')
                 filter_params.append(content_type)
 
-            # Tag filter (uses subquery with indexed tag table)
+            # Tag filter (uses subquery with indexed tag table). A non-empty
+            # tags list that normalizes to empty (all-blank) raises through the
+            # structured validation-error channel rather than silently widening
+            # the result set.
             if tags:
-                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                if normalized_tags:
-                    tag_placeholders = ','.join(['?' for _ in normalized_tags])
-                    filter_conditions.append(f'''
-                        ce.id IN (
-                            SELECT DISTINCT context_entry_id
-                            FROM tags
-                            WHERE tag IN ({tag_placeholders})
-                        )
-                    ''')
-                    filter_params.extend(normalized_tags)
+                try:
+                    normalized_tags = self.normalize_tag_filter(tags)
+                except ValueError as e:
+                    raise FtsValidationError(
+                        'Metadata filter validation failed', [str(e)],
+                    ) from e
+                tag_placeholders = ','.join(['?' for _ in normalized_tags])
+                filter_conditions.append(f'''
+                    ce.id IN (
+                        SELECT DISTINCT context_entry_id
+                        FROM tags
+                        WHERE tag IN ({tag_placeholders})
+                    )
+                ''')
+                filter_params.extend(normalized_tags)
 
             # Date range filtering - Use datetime() to normalize ISO 8601 input
             if start_date:
@@ -517,7 +524,12 @@ class FtsRepository(BaseRepository):
                 rows = cursor.fetchall()
             except sqlite3.OperationalError as exc:
                 # Any non-grammar OperationalError (locked DB, disk I/O) is an operational
-                # fault and propagates unchanged (it participates in breaker accounting).
+                # fault and propagates unchanged for normal error handling. The read-path
+                # backend wrapper charges the breaker for the disk-I/O subset but EXEMPTS the
+                # SQLITE_BUSY/SQLITE_LOCKED contention family (routine self-clearing
+                # cross-process contention that execute_read retries with bounded backoff on
+                # fresh reader connections, re-raising uncharged only after the retry budget
+                # is exhausted), matching the write path.
                 # Grammar errors are CLIENT-INPUT failures and are handled per mode below.
                 #
                 # Boolean mode forwards the raw query to FTS5 MATCH so native FTS5 boolean
@@ -648,22 +660,29 @@ class FtsRepository(BaseRepository):
                 filter_params.append(content_type)
                 param_position += 1
 
-            # Tag filter (uses subquery with indexed tag table)
+            # Tag filter (uses subquery with indexed tag table). A non-empty
+            # tags list that normalizes to empty (all-blank) raises through the
+            # structured validation-error channel rather than silently widening
+            # the result set.
             if tags:
-                normalized_tags = [tag.strip().lower() for tag in tags if tag.strip()]
-                if normalized_tags:
-                    tag_placeholders = ','.join([
-                        self._placeholder(param_position + i) for i in range(len(normalized_tags))
-                    ])
-                    filter_conditions.append(f'''
-                        ce.id IN (
-                            SELECT DISTINCT context_entry_id
-                            FROM tags
-                            WHERE tag IN ({tag_placeholders})
-                        )
-                    ''')
-                    filter_params.extend(normalized_tags)
-                    param_position += len(normalized_tags)
+                try:
+                    normalized_tags = self.normalize_tag_filter(tags)
+                except ValueError as e:
+                    raise FtsValidationError(
+                        'Metadata filter validation failed', [str(e)],
+                    ) from e
+                tag_placeholders = ','.join([
+                    self._placeholder(param_position + i) for i in range(len(normalized_tags))
+                ])
+                filter_conditions.append(f'''
+                    ce.id IN (
+                        SELECT DISTINCT context_entry_id
+                        FROM tags
+                        WHERE tag IN ({tag_placeholders})
+                    )
+                ''')
+                filter_params.extend(normalized_tags)
+                param_position += len(normalized_tags)
 
             # Date range filtering
             if start_date:

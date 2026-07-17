@@ -687,6 +687,13 @@
           "name": "GREP_REGEX_TOTAL_TIMEOUT_S"
         },
         {
+          "description": "Maximum grep_context pattern length in characters, advertised in the wire schema and re-checked in the tool body (compilation runs before any matching timeout, so an unbounded pattern could stall a request just to compile; default 32768).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_PATTERN_CHARS"
+        },
+        {
           "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",
           "isRequired": false,
           "format": "string",
@@ -1797,6 +1804,13 @@
           "format": "number",
           "isSecret": false,
           "name": "GREP_REGEX_TOTAL_TIMEOUT_S"
+        },
+        {
+          "description": "Maximum grep_context pattern length in characters, advertised in the wire schema and re-checked in the tool body (compilation runs before any matching timeout, so an unbounded pattern could stall a request just to compile; default 32768).",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "GREP_MAX_PATTERN_CHARS"
         },
         {
           "description": "read_context_range tool registration (partial read by character or line range). Tri-state: auto (default; no extra dependencies), true, or false.",

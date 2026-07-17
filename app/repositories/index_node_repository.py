@@ -189,7 +189,16 @@ class IndexNodeRepository(BaseRepository):
                         f'WHERE context_id = {self._placeholder(1)}',
                         (context_id,),
                     )
-                except sqlite3.OperationalError:
+                except sqlite3.OperationalError as exc:
+                    # Table-absence probe ONLY: when per-node summaries were
+                    # never enabled the table does not exist -- treat as "no
+                    # rows". Every other operational fault (SQLITE_BUSY/
+                    # SQLITE_LOCKED contention, disk I/O) MUST propagate so it
+                    # participates in normal error handling and breaker
+                    # accounting, matching the asyncpg.UndefinedTableError-only
+                    # PostgreSQL branch below.
+                    if 'no such table: context_index_nodes' not in str(exc).lower():
+                        raise
                     return StoredNodeSummaries({}, {})
                 rows = [row for row in cursor.fetchall() if row['node_summary']]
                 return StoredNodeSummaries(
@@ -240,7 +249,14 @@ class IndexNodeRepository(BaseRepository):
             def _count_sqlite(conn: sqlite3.Connection) -> int:
                 try:
                     cursor = conn.execute('SELECT COUNT(*) AS n FROM context_index_nodes')
-                except sqlite3.OperationalError:
+                except sqlite3.OperationalError as exc:
+                    # Table-absence probe ONLY (see get_nodes_for_context): a
+                    # missing table means node summaries were never enabled, so
+                    # the count is 0. Every other operational fault (locked/
+                    # disk I/O) MUST propagate for normal error and breaker
+                    # handling, matching the UndefinedTableError-only PG branch.
+                    if 'no such table: context_index_nodes' not in str(exc).lower():
+                        raise
                     return 0
                 row = cursor.fetchone()
                 return int(row['n']) if row is not None else 0

@@ -1218,7 +1218,10 @@ class StorageSettings(BaseSettings):
           exists and reconciliation reports the other permanently missing; PostgreSQL
           quotes the generated identifier and case-preserves it, so the same config
           would again diverge across backends. Rejecting a casefold collision refuses
-          the config identically on both backends.
+          the config identically on both backends. An IDENTICAL repeated name is
+          rejected too, with its own accurate diagnostic (repeated entries can carry
+          conflicting type hints that the dict-collapsing parse would resolve
+          silently).
 
         Only the field name is validated here; the type hint after ``:`` is checked
         when the property parses the value.
@@ -1231,7 +1234,8 @@ class StorageSettings(BaseSettings):
 
         Raises:
             ValueError: If any field name is not a plain SQL identifier, exceeds the
-                length limit, or collides with another name under case folding.
+                length limit, is listed more than once, or collides with another name
+                under case folding.
         """
         if not value or not value.strip():
             return value
@@ -1256,8 +1260,21 @@ class StorageSettings(BaseSettings):
                 )
             folded = field.casefold()
             if folded in seen_casefolded:
+                previous = seen_casefolded[folded]
+                if previous == field:
+                    # An identical repeat needs its own diagnostic: telling the
+                    # operator that two equal names "differ only in case" points at
+                    # a nonexistent casing problem. Rejecting the repeat itself is
+                    # deliberate -- two entries for the same field can carry
+                    # conflicting type hints (e.g. status:string,status:integer)
+                    # that the dict-collapsing parse would resolve silently.
+                    raise ValueError(
+                        f'METADATA_INDEXED_FIELDS lists field name {field!r} more than '
+                        f'once: remove the duplicate entry (repeated entries can carry '
+                        f'conflicting type hints that would be resolved silently)',
+                    )
                 raise ValueError(
-                    f'METADATA_INDEXED_FIELDS contains field names {seen_casefolded[folded]!r} '
+                    f'METADATA_INDEXED_FIELDS contains field names {previous!r} '
                     f'and {field!r} that differ only in case: field names must be unique under '
                     f'case folding (case-differing names collide on SQLite and diverge across '
                     f'backends)',
@@ -1462,6 +1479,21 @@ class GrepContextSettings(FeatureToggleSettings):
                     'request open for max_entries_scanned * the per-entry timeout. When '
                     'exceeded the scan stops and returns the matches collected so far '
                     'with truncated=True, never aborting the read.',
+    )
+
+    max_pattern_chars: int = Field(
+        default=32768,
+        alias='GREP_MAX_PATTERN_CHARS',
+        ge=1,
+        description='Maximum grep_context pattern length in characters, advertised in '
+                    'the wire schema and re-checked in the tool body as a structured '
+                    'validation error. Pattern COMPILATION runs before any matching '
+                    'timeout applies and its cost grows with pattern size, so an '
+                    'unbounded multi-megabyte pattern could stall the request for '
+                    'seconds just to compile. The 32768 (32 KiB) default accommodates '
+                    'any realistic literal or generated alternation (hundreds of '
+                    'OR-joined terms) while keeping a worst-case compile in the low '
+                    'milliseconds.',
     )
 
 

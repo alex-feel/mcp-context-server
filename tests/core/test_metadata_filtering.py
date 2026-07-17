@@ -2423,3 +2423,46 @@ class TestNulAndSurrogateRejection:
         db.execute('INSERT INTO t (v) VALUES (?)', ('a\x00b',))
         stored = db.execute('SELECT v FROM t').fetchone()[0]
         assert stored == 'a\x00b'
+
+
+class TestBindParameterBudget:
+    """The builder rejects a clause whose accumulated binds exceed the shared budget.
+
+    The per-dimension caps bound each input list individually, but capped dimensions
+    multiply (filters times IN-list members), so MAX_METADATA_BIND_PARAMS is the
+    aggregate backstop guaranteeing no combination of filter dimensions can grow a
+    single statement past the backend's per-statement bind limit. The raised
+    ValueError rides the same structured validation channel as every other filter
+    validation failure, so it never charges the circuit breaker.
+    """
+
+    def test_simple_filter_over_budget_rejected(self) -> None:
+        """add_simple_filter raises once the accumulated binds exceed the budget.
+
+        param_offset counts the enclosing statement's earlier placeholders, so
+        seeding it just below the budget exercises the overflow without building
+        tens of thousands of filters.
+        """
+        from app.metadata_types import MAX_METADATA_BIND_PARAMS
+
+        builder = MetadataQueryBuilder(backend_type='postgresql', param_offset=MAX_METADATA_BIND_PARAMS)
+        with pytest.raises(ValueError, match='bind parameters'):
+            builder.add_simple_filter('status', 'active')
+
+    def test_advanced_filter_over_budget_rejected(self) -> None:
+        """add_advanced_filter raises once the accumulated binds exceed the budget."""
+        from app.metadata_types import MAX_METADATA_BIND_PARAMS
+
+        builder = MetadataQueryBuilder(backend_type='sqlite', param_offset=MAX_METADATA_BIND_PARAMS)
+        spec = MetadataFilter(key='priority', operator=MetadataOperator.GT, value=5)
+        with pytest.raises(ValueError, match='bind parameters'):
+            builder.add_advanced_filter(spec)
+
+    def test_within_budget_accepted(self) -> None:
+        """A clause within the budget builds normally (control)."""
+        builder = MetadataQueryBuilder(backend_type='sqlite')
+        builder.add_simple_filter('status', 'active')
+        builder.add_advanced_filter(MetadataFilter(key='priority', operator=MetadataOperator.GT, value=5))
+        where_clause, params = builder.build_where_clause()
+        assert where_clause
+        assert len(params) == 2

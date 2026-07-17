@@ -1157,8 +1157,10 @@ def initialize_target_sqlite(
         optional_tables: Mapping returned by
             :func:`detect_optional_tables` on the source connection.
         embedding_dim: Embedding dimension used to template the
-            semantic-search migration. Ignored when sqlite-vec is not
-            available.
+            semantic-search migration. When ``None`` (the source
+            ``embedding_metadata`` table exists but is empty), falls back
+            to ``get_settings().embedding.dim``, mirroring the PostgreSQL
+            counterpart. Ignored when sqlite-vec is not available.
         fts_tokenizer: Tokenizer specification for the FTS migration
             (for example, ``"porter unicode61"``).
         stats: Mutated to record any FTS or vec0 warnings.
@@ -1180,7 +1182,12 @@ def initialize_target_sqlite(
 
     if optional_tables.get('embedding_metadata') and vec_loaded:
         semantic_sql = _read_schema_file('add_semantic_search_sqlite.sql')
-        dim = embedding_dim or 1024
+        if embedding_dim is not None:
+            dim = embedding_dim
+        else:
+            from app.settings import get_settings
+
+            dim = get_settings().embedding.dim
         semantic_sql = semantic_sql.replace('{EMBEDDING_DIM}', str(dim))
         try:
             target.executescript(semantic_sql)

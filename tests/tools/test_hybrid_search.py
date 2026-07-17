@@ -1008,6 +1008,122 @@ class TestHybridAllModesFailedValidationResponse:
         assert result['fusion_method'] == 'rrf'
         assert result['fts_count'] == 0
         assert result['semantic_count'] == 0
+        # No explain_query -> no stats block, mirroring the success path's gating.
+        assert 'stats' not in result
+
+    @pytest.mark.asyncio
+    async def test_error_response_attaches_stats_under_explain_query(self) -> None:
+        """With explain_query=True the all-modes-failed response carries the same
+        stats keys the success path builds: real elapsed time, the (None) sub-search
+        stats, a zeroed fusion_stats with the resolved rrf_k, and the adaptive FTS
+        mode -- so a client reading response['stats'] under explain_query never hits
+        a KeyError on the error branch."""
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.fts_repository import FtsValidationError
+        from app.tools.search import hybrid_search_context
+
+        messages = ['bad operator: nope']
+
+        with (
+            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=MagicMock())),
+            patch('app.tools.search.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(side_effect=FtsValidationError('Invalid filters', list(messages))),
+            ),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(messages))),
+            ),
+        ):
+            result = await hybrid_search_context(
+                query='anything',
+                rrf_k=77,
+                metadata_filters=[{'key': 'a', 'operator': 'nope', 'value': 1}],
+                explain_query=True,
+            )
+
+        assert result['validation_errors'] == messages
+        assert 'stats' in result
+        stats = result['stats']
+        assert isinstance(stats['execution_time_ms'], float)
+        assert stats['execution_time_ms'] >= 0.0
+        # Both sub-searches failed validation, so no sub-search stats were captured.
+        assert stats['fts_stats'] is None
+        assert stats['semantic_stats'] is None
+        # The zeroed fusion block carries the client-resolved rrf_k.
+        assert stats['fusion_stats'] == {
+            'rrf_k': 77,
+            'total_unique_documents': 0,
+            'documents_in_both': 0,
+            'documents_fts_only': 0,
+            'documents_semantic_only': 0,
+        }
+        assert stats['adaptive_fts_mode'] in ('match', 'boolean')
+
+
+class TestHybridFilterCapsValidationStats:
+    """The hybrid boundary-caps validation error carries stats under explain_query.
+
+    The caps early return runs before any sub-search, so its stats block is fully
+    zeroed: 0.0 elapsed, no sub-search stats, a zeroed fusion_stats with the
+    resolved rrf_k (resolved BEFORE the caps check), and the default 'match'
+    adaptive mode. Both standalone siblings attach stats on this exact failure
+    class; hybrid must match.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tags_cap_error_attaches_stats_under_explain_query(self) -> None:
+        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search import hybrid_search_context
+
+        oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
+        result = await hybrid_search_context(query='anything', tags=oversized, rrf_k=42, explain_query=True)
+
+        assert result['count'] == 0
+        assert 'exceeds the maximum' in result['error']
+        assert result['validation_errors'] == [result['error']]
+        assert result['fusion_method'] == 'rrf'
+        assert result['fts_count'] == 0
+        assert result['semantic_count'] == 0
+        assert result['stats'] == {
+            'execution_time_ms': 0.0,
+            'fts_stats': None,
+            'semantic_stats': None,
+            'fusion_stats': {
+                'rrf_k': 42,
+                'total_unique_documents': 0,
+                'documents_in_both': 0,
+                'documents_fts_only': 0,
+                'documents_semantic_only': 0,
+            },
+            'adaptive_fts_mode': 'match',
+        }
+
+    @pytest.mark.asyncio
+    async def test_tags_cap_error_omits_stats_without_explain_query(self) -> None:
+        from app.tools.search import MAX_FILTER_TAGS
+        from app.tools.search import hybrid_search_context
+
+        oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
+        result = await hybrid_search_context(query='anything', tags=oversized)
+
+        assert 'exceeds the maximum' in result['error']
+        assert 'stats' not in result
+
+    @pytest.mark.asyncio
+    async def test_metadata_filters_cap_error_attaches_stats_under_explain_query(self) -> None:
+        from app.tools.search import MAX_METADATA_FILTERS
+        from app.tools.search import hybrid_search_context
+
+        oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
+        result = await hybrid_search_context(query='anything', metadata_filters=oversized, explain_query=True)
+
+        assert result['count'] == 0
+        assert 'exceeds the maximum' in result['error']
+        assert 'stats' in result
+        assert result['stats']['fusion_stats']['total_unique_documents'] == 0
 
 
 class TestHybridPartialDegradationResponse:

@@ -1212,15 +1212,14 @@ result = search_context(
 
 # Returns:
 # {
-#     "entries": [],
+#     "results": [],
+#     "count": 0,
 #     "error": "Metadata filter validation failed",
 #     "validation_errors": [
 #         "Invalid metadata filter {...}: ... 'invalid_op' is not a valid MetadataOperator"
-#     ],
-#     "execution_time_ms": 0.0,
-#     "filters_applied": 0,
-#     "rows_returned": 0
+#     ]
 # }
+# When explain_query=True, a zeroed "stats" key is also present.
 ```
 
 ### Common Validation Errors

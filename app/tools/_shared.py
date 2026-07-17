@@ -867,7 +867,13 @@ def is_connection_error(exc: Exception) -> bool:
 
     1. Connection-level failures (the connection was lost, not a logical/data
        error): asyncpg.InterfaceError, asyncpg.ConnectionDoesNotExistError,
-       ConnectionResetError, OSError.
+       ConnectionResetError, OSError -- EXCLUDING TimeoutError. TimeoutError is
+       an OSError subclass on Python 3.12, but the pool-acquire TimeoutError that
+       begin_transaction re-raises uncharged signals a SATURATED connection pool,
+       not a lost connection: retrying it re-runs the full POSTGRESQL_POOL_TIMEOUT_S
+       acquire wait each time, multiplying one saturation stall into several. So a
+       saturated pool must fail fast at the tool layer after one bounded wait,
+       matching execute_write's fail-fast handling of the identical signal.
     2. Statement / lock-wait timeouts: asyncpg.exceptions.QueryCanceledError
        (SQLSTATE 57014). PostgreSQL cancels the statement when it exceeds the
        connection's statement_timeout (set to ~0.9 * POSTGRESQL_COMMAND_TIMEOUT_S
@@ -909,6 +915,12 @@ def is_connection_error(exc: Exception) -> bool:
     Returns:
         True if the exception is a transient DB error safe for retry
     """
+    # TimeoutError is an OSError subclass; exclude it so a saturated-pool acquire
+    # timeout is NOT retried (see the family list above). asyncpg.InterfaceError,
+    # ConnectionDoesNotExistError, and ConnectionResetError are not TimeoutError
+    # subclasses, so they still match.
+    if isinstance(exc, TimeoutError):
+        return False
     return is_sqlite_locked_error(exc) or isinstance(exc, (
         asyncpg.InterfaceError,
         asyncpg.ConnectionDoesNotExistError,

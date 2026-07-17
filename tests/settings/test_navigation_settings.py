@@ -53,6 +53,7 @@ class TestGrepBounds:
             'GREP_MAX_ENTRIES_SCANNED',
             'GREP_AGGREGATE_BYTES_BUDGET',
             'GREP_REGEX_TIMEOUT_S',
+            'GREP_MAX_PATTERN_CHARS',
         ):
             monkeypatch.delenv(name, raising=False)
         get_settings.cache_clear()
@@ -62,18 +63,21 @@ class TestGrepBounds:
         assert grep.max_entries_scanned == 1000
         assert grep.aggregate_bytes_budget == 67108864
         assert grep.regex_timeout_s == 5.0
+        assert grep.max_pattern_chars == 32768
 
     def test_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('GREP_MAX_MATCHES_CAP', '250')
         monkeypatch.setenv('GREP_MAX_CONTEXT_LINES', '5')
         monkeypatch.setenv('GREP_MAX_ENTRIES_SCANNED', '2000')
         monkeypatch.setenv('GREP_REGEX_TIMEOUT_S', '1.5')
+        monkeypatch.setenv('GREP_MAX_PATTERN_CHARS', '1024')
         get_settings.cache_clear()
         grep = get_settings().grep_context
         assert grep.max_matches_cap == 250
         assert grep.max_context_lines == 5
         assert grep.max_entries_scanned == 2000
         assert grep.regex_timeout_s == 1.5
+        assert grep.max_pattern_chars == 1024
 
 
 class TestContextRangeToggle:

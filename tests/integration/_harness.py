@@ -3996,6 +3996,145 @@ class MCPServerIntegrationTest:
             self.test_results.append((test_name, False, f'Exception: {e}'))
             return False
 
+    async def test_search_context_blank_tags_returns_error(self) -> bool:
+        """A whitespace-only tags filter is a validation error, not a widened result set.
+
+        A non-empty tags list that normalizes to empty (every tag blank after
+        trimming, e.g. ['   ']) previously dropped the criterion silently and
+        returned every entry in scope. It must instead surface the structured,
+        breaker-exempt validation error on BOTH backends, while a genuinely
+        empty tags list (tags=[]) still means "no tag filter" and returns the
+        matching entries.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_context_blank_tags'
+        assert self.client is not None  # Type guard for Pyright
+        thread = f'{self.test_thread_id}_blank_tags'
+        try:
+            for i in range(2):
+                await self.client.call_tool(
+                    'store_context',
+                    {
+                        'thread_id': thread,
+                        'source': 'agent',
+                        'text': f'blank-tags entry {i}',
+                        'tags': ['real'],
+                    },
+                )
+
+            # A whitespace-only tags filter must be rejected, NOT silently dropped
+            # (which would return both entries in scope).
+            blank_result = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'tags': ['   ']},
+            )
+            blank_data = self._extract_content(blank_result)
+            if 'error' not in blank_data or not blank_data.get('validation_errors'):
+                self.test_results.append(
+                    (test_name, False, f'Blank tags not rejected as a validation error: {blank_data}'),
+                )
+                return False
+            if blank_data.get('results'):
+                self.test_results.append(
+                    (test_name, False, f'Blank tags returned a widened result set: {blank_data}'),
+                )
+                return False
+
+            # tags=[] means "no tag filter": the two entries are returned.
+            empty_result = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'tags': []},
+            )
+            empty_data = self._extract_content(empty_result)
+            if not empty_data.get('success') or len(empty_data.get('results', [])) != 2:
+                self.test_results.append(
+                    (test_name, False, f'Empty tags list should return all entries, got: {empty_data}'),
+                )
+                return False
+
+            self.test_results.append((test_name, True, 'Blank tags rejected; empty tags list unfiltered'))
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
+    async def test_search_context_oversized_metadata_filters_rejected(self) -> bool:
+        """An over-cap metadata_filters list fails wire-schema validation, never reaching the tool body or SQL.
+
+        The metadata_filters wire schema carries a max_length cap of 100, enforced during argument validation.
+
+        A 101-filter list therefore raises a tool-level validation error naming metadata_filters; the tool body never runs.
+
+        The in-body structured cap response is defense in depth and is unreachable through the real server.
+
+        An at-cap list of exactly 100 filters still executes normally, pinning the boundary on BOTH backends.
+
+        Returns:
+            bool: True if test passed.
+        """
+        test_name = 'search_context_oversized_metadata_filters'
+        assert self.client is not None  # Type guard for Pyright
+        thread = f'{self.test_thread_id}_filters_cap'
+        try:
+            await self.client.call_tool(
+                'store_context',
+                {
+                    'thread_id': thread,
+                    'source': 'agent',
+                    'text': 'filters-cap entry',
+                    'metadata': {'marker': True},
+                },
+            )
+
+            # One filter over the cap of 100: the served schema's maxItems bound
+            # must reject the list during argument validation, so the call raises
+            # instead of returning a structured result.
+            oversized = [{'key': 'marker', 'operator': 'exists'}] * 101
+            try:
+                leaked = await self.client.call_tool(
+                    'search_context',
+                    {'limit': 50, 'thread_id': thread, 'metadata_filters': oversized},
+                )
+                leaked_data = self._extract_content(leaked)
+                self.test_results.append(
+                    (test_name, False, f'Oversized metadata_filters not rejected at the wire schema: {leaked_data}'),
+                )
+                return False
+            except Exception as exc:
+                message = str(exc)
+                if 'metadata_filters' not in message or ('too_long' not in message and 'at most 100' not in message):
+                    self.test_results.append(
+                        (test_name, False, f'Unexpected rejection message for oversized metadata_filters: {message}'),
+                    )
+                    return False
+
+            # Exactly 100 filters is at the cap: the call passes the wire schema,
+            # reaches the repository, and returns the stored entry, proving the
+            # rejection above targets only the over-cap list.
+            at_cap = [{'key': 'marker', 'operator': 'exists'}] * 100
+            capped_result = await self.client.call_tool(
+                'search_context',
+                {'limit': 50, 'thread_id': thread, 'metadata_filters': at_cap},
+            )
+            capped_data = self._extract_content(capped_result)
+            if not capped_data.get('success') or len(capped_data.get('results', [])) != 1:
+                self.test_results.append(
+                    (test_name, False, f'At-cap metadata_filters list should return the entry, got: {capped_data}'),
+                )
+                return False
+
+            self.test_results.append(
+                (test_name, True, 'Oversized metadata_filters rejected at the wire schema; at-cap list executes'),
+            )
+            return True
+
+        except Exception as e:
+            self.test_results.append((test_name, False, f'Exception: {e}'))
+            return False
+
     async def test_nul_input_does_not_trip_breaker(self) -> bool:
         """A burst of NUL-bearing client input is rejected without opening the circuit breaker.
 
@@ -12076,6 +12215,11 @@ class MCPServerIntegrationTest:
             ('Semantic Search Date Filtering', self.test_semantic_search_context_with_date_filtering),
             ('Semantic Search Metadata Filtering', self.test_semantic_search_context_with_metadata_filters),
             ('Search Context Invalid Filter Error', self.test_search_context_invalid_filter_returns_error),
+            ('Search Context Blank Tags Error', self.test_search_context_blank_tags_returns_error),
+            (
+                'Search Context Oversized Metadata Filters',
+                self.test_search_context_oversized_metadata_filters_rejected,
+            ),
             ('NUL Input Does Not Trip Breaker', self.test_nul_input_does_not_trip_breaker),
             ('Semantic Search Invalid Filter Error', self.test_semantic_search_invalid_filter_returns_error),
             ('FTS Search', self.test_fts_search_context),

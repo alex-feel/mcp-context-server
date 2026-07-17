@@ -112,6 +112,35 @@ class BaseRepository:
         loop = asyncio.get_running_loop()
         return await run_in_executor_uninterruptible(loop, closure, conn)
 
+    @staticmethod
+    def normalize_tag_filter(tags: list[str]) -> list[str]:
+        """Normalize a non-empty tag filter, rejecting one that empties out.
+
+        Every tag-filter site lower-cases and trims each tag and drops the ones
+        that are blank after trimming. A filter that survives the caller's
+        ``if tags:`` guard yet normalizes to an empty list (for example
+        ``['   ']``) is a client-supplied criterion that would emit no SQL
+        condition -- silently widening the result set to the whole scope. That
+        is the same "filter provided but produces no condition" failure the
+        empty-IN-list metadata validator rejects, so this helper raises
+        ``ValueError`` for it. Each call site translates that ``ValueError`` into
+        its own structured, breaker-exempt validation-error channel.
+
+        Args:
+            tags: A non-empty tag filter list (call only inside ``if tags:``).
+
+        Returns:
+            The normalized, de-blanked, lower-cased tags (always non-empty).
+
+        Raises:
+            ValueError: When every tag is blank after trimming, so the filter
+                would match nothing usable and must not be silently dropped.
+        """
+        normalized = [tag.strip().lower() for tag in tags if tag.strip()]
+        if not normalized:
+            raise ValueError('Tag filter requires at least one non-blank tag')
+        return normalized
+
     def _placeholder(self, position: int) -> str:
         """Generate SQL parameter placeholder for the given position.
 

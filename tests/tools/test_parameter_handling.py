@@ -1190,3 +1190,301 @@ class TestTagsFilterUpperBound:
         assert 'exceeds the maximum' in payload['error']
         assert payload['validation_errors'] == [payload['error']]
         repos.context.grep_scan_text_contents.assert_not_awaited()
+
+
+class TestMetadataFilterCapsUpperBound:
+    """metadata_filters and the simple metadata dict carry explicit caps on every filter tool.
+
+    The sibling caps bound the per-item dimensions (tags list members, IN/NOT_IN
+    value-list members), but capped dimensions multiply: without a cap on the
+    filter LIST length (and the simple metadata dict key count) a few hundred
+    schema-legal IN filters expand past the backend's per-statement bind limit
+    inside connection scope and charge the circuit breaker. The caps are
+    advertised in the wire schema (max_length on the Field) and re-checked in
+    each tool body as a structured validation error before any SQL executes.
+    """
+
+    @staticmethod
+    def _field_info(fn: Callable[..., object], param: str) -> FieldInfo:
+        """Extract the pydantic FieldInfo attached to a tool's named parameter."""
+        hints = get_type_hints(fn, include_extras=True)
+        annotation = hints[param]
+        for meta in get_args(annotation)[1:]:
+            if isinstance(meta, FieldInfo):
+                return meta
+        msg = f'{param} annotation for {getattr(fn, "__name__", fn)!r} carries no FieldInfo'
+        raise AssertionError(msg)
+
+    @pytest.mark.parametrize('tool', _TAGS_FILTER_TOOLS)
+    def test_metadata_filters_declares_max_length_cap(self, tool: Callable[..., object]) -> None:
+        """Every filter tool's metadata_filters Field declares max_length=MAX_METADATA_FILTERS."""
+        from app.tools.search import MAX_METADATA_FILTERS
+
+        tool_name = getattr(tool, '__name__', tool)
+        field_info = self._field_info(tool, 'metadata_filters')
+        max_values = [constraint.max_length for constraint in field_info.metadata if isinstance(constraint, MaxLen)]
+        assert max_values == [MAX_METADATA_FILTERS], (
+            f'{tool_name!r} metadata_filters must declare max_length=MAX_METADATA_FILTERS, got {max_values}'
+        )
+
+    @pytest.mark.parametrize('tool', _SEARCH_TOOLS)
+    def test_metadata_dict_declares_max_length_cap(self, tool: Callable[..., object]) -> None:
+        """Every search tool's simple metadata Field declares max_length=MAX_METADATA_KEYS."""
+        from app.tools.search import MAX_METADATA_KEYS
+
+        tool_name = getattr(tool, '__name__', tool)
+        field_info = self._field_info(tool, 'metadata')
+        max_values = [constraint.max_length for constraint in field_info.metadata if isinstance(constraint, MaxLen)]
+        assert max_values == [MAX_METADATA_KEYS], (
+            f'{tool_name!r} metadata must declare max_length=MAX_METADATA_KEYS, got {max_values}'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_metadata_filters_over_cap_rejected_at_boundary(self) -> None:
+        """A metadata_filters list above the cap is rejected by the wire-schema validation."""
+        from fastmcp.tools import Tool
+        from pydantic import ValidationError
+
+        from app.tools.search import MAX_METADATA_FILTERS
+
+        validated = Tool.from_function(app.server.search_context)
+        oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
+        with pytest.raises(ValidationError) as exc_info:
+            await validated.run({'metadata_filters': oversized})
+        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_metadata_dict_over_cap_rejected_at_boundary(self) -> None:
+        """A simple metadata dict above the key cap is rejected by the wire-schema validation."""
+        from fastmcp.tools import Tool
+        from pydantic import ValidationError
+
+        from app.tools.search import MAX_METADATA_KEYS
+
+        validated = Tool.from_function(app.server.search_context)
+        oversized = {f'key{i}': i for i in range(MAX_METADATA_KEYS + 1)}
+        with pytest.raises(ValidationError) as exc_info:
+            await validated.run({'metadata': oversized})
+        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()
+
+    @pytest.mark.asyncio
+    async def test_search_context_oversized_metadata_filters_structured_error_before_sql(self) -> None:
+        """A direct call with an oversized metadata_filters list returns a structured
+        validation error without touching the repository layer (nothing reaches SQL)."""
+        from app.tools.search import MAX_METADATA_FILTERS
+
+        oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
+        ensure_repos = AsyncMock()
+        with patch('app.tools.search.ensure_repositories', ensure_repos):
+            result = await app.server.search_context(metadata_filters=oversized)
+
+        assert result['results'] == []
+        assert result['count'] == 0
+        assert 'exceeds the maximum' in result['error']
+        assert result['validation_errors'] == [result['error']]
+        ensure_repos.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_search_context_oversized_metadata_dict_structured_error_before_sql(self) -> None:
+        """A direct call with an oversized simple metadata dict returns a structured
+        validation error without touching the repository layer."""
+        from app.tools.search import MAX_METADATA_KEYS
+
+        oversized: dict[str, str | int | float | bool] = {f'key{i}': i for i in range(MAX_METADATA_KEYS + 1)}
+        ensure_repos = AsyncMock()
+        with patch('app.tools.search.ensure_repositories', ensure_repos):
+            result = await app.server.search_context(metadata=oversized)
+
+        assert result['results'] == []
+        assert result['count'] == 0
+        assert 'exceeds the maximum' in result['error']
+        assert result['validation_errors'] == [result['error']]
+        ensure_repos.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_search_context_metadata_filters_at_cap_accepted(self) -> None:
+        """A metadata_filters list of exactly MAX_METADATA_FILTERS members passes the cap."""
+        from app.tools.search import MAX_METADATA_FILTERS
+
+        at_cap = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * MAX_METADATA_FILTERS
+        repos = MagicMock()
+        repos.context.search_contexts = AsyncMock(return_value=([], {}))
+        with patch('app.tools.search.ensure_repositories', AsyncMock(return_value=repos)):
+            result = await app.server.search_context(metadata_filters=at_cap)
+
+        assert result['results'] == []
+        assert result['count'] == 0
+        assert 'error' not in result
+
+    @pytest.mark.asyncio
+    async def test_grep_context_oversized_metadata_filters_structured_error_before_sql(self) -> None:
+        """grep_context rejects an oversized metadata_filters list as a structured
+        validation error before the scan query runs."""
+        from app.tools.search import MAX_METADATA_FILTERS
+
+        oversized = [{'key': 'status', 'operator': 'eq', 'value': 'x'}] * (MAX_METADATA_FILTERS + 1)
+        repos = MagicMock()
+        repos.context.grep_scan_text_contents = AsyncMock()
+        with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
+            result = await app.server.grep_context(pattern='needle', metadata_filters=oversized)
+
+        # GrepContextResultDict is total=False; widen for direct key assertions.
+        payload = cast('dict[str, Any]', result)
+        assert payload['results'] == []
+        assert payload['total_matches'] == 0
+        assert 'exceeds the maximum' in payload['error']
+        assert payload['validation_errors'] == [payload['error']]
+        repos.context.grep_scan_text_contents.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_search_context_caps_error_attaches_stats_under_explain_query(self) -> None:
+        """The caps validation-error response carries the zeroed stats dict when
+        explain_query=True, matching the fts/semantic siblings' error-path shape."""
+        import app.tools.search as search_mod
+        from app.tools.search import MAX_FILTER_TAGS
+
+        oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
+        with patch('app.tools.search.ensure_repositories', AsyncMock()):
+            result = await app.server.search_context(tags=oversized, explain_query=True)
+
+        assert 'exceeds the maximum' in result['error']
+        assert result['stats'] == {
+            'execution_time_ms': 0.0,
+            'filters_applied': 0,
+            'rows_returned': 0,
+            'backend': search_mod.settings.storage.backend_type,
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_context_caps_error_omits_stats_without_explain_query(self) -> None:
+        """Without explain_query the caps validation-error response carries no stats."""
+        from app.tools.search import MAX_FILTER_TAGS
+
+        oversized = [f'tag-{i}' for i in range(MAX_FILTER_TAGS + 1)]
+        with patch('app.tools.search.ensure_repositories', AsyncMock()):
+            result = await app.server.search_context(tags=oversized, explain_query=False)
+
+        assert 'exceeds the maximum' in result['error']
+        assert 'stats' not in result
+
+
+class TestGrepPatternCap:
+    """grep_context bounds the pattern size and compiles user regex off the event loop.
+
+    Pattern compilation is pure-Python parsing that runs BEFORE any matching
+    timeout applies and whose cost grows with pattern size, so an unbounded
+    multi-megabyte pattern could pin the whole event loop for seconds just to
+    compile. The cap is advertised in the wire schema (max_length on the pattern
+    Field) and re-checked in the tool body; a legal-size user regex is compiled
+    under asyncio.to_thread so even a slow compile cannot stall other requests.
+    """
+
+    def test_pattern_declares_max_length_cap(self) -> None:
+        """The pattern Field declares max_length=GREP_MAX_PATTERN_CHARS."""
+        import app.tools.navigation as navigation_mod
+
+        hints = get_type_hints(app.server.grep_context, include_extras=True)
+        field_info = next(
+            meta for meta in get_args(hints['pattern'])[1:] if isinstance(meta, FieldInfo)
+        )
+        max_values = [constraint.max_length for constraint in field_info.metadata if isinstance(constraint, MaxLen)]
+        assert max_values == [navigation_mod.settings.grep_context.max_pattern_chars]
+
+    @pytest.mark.asyncio
+    async def test_oversized_pattern_structured_error_before_compile(self) -> None:
+        """A direct call with an oversized pattern returns a structured validation
+        error before the pattern is compiled and before the scan query runs."""
+        import app.tools.navigation as navigation_mod
+
+        cap = navigation_mod.settings.grep_context.max_pattern_chars
+        repos = MagicMock()
+        repos.context.grep_scan_text_contents = AsyncMock()
+        compile_spy = MagicMock()
+        with (
+            patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)),
+            patch('app.tools.navigation.compile_pattern', compile_spy),
+        ):
+            result = await app.server.grep_context(pattern='x' * (cap + 1))
+
+        payload = cast('dict[str, Any]', result)
+        assert payload['results'] == []
+        assert payload['total_matches'] == 0
+        assert 'Pattern too long' in payload['error']
+        assert payload['validation_errors'] == [payload['error']]
+        compile_spy.assert_not_called()
+        repos.context.grep_scan_text_contents.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pattern_at_cap_accepted(self) -> None:
+        """A pattern of exactly the cap length passes the boundary check (inclusive)."""
+        import app.tools.navigation as navigation_mod
+
+        cap = navigation_mod.settings.grep_context.max_pattern_chars
+        repos = MagicMock()
+        repos.context.grep_scan_text_contents = AsyncMock(return_value=([], {}))
+        with patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)):
+            result = await app.server.grep_context(pattern='x' * cap)
+
+        payload = cast('dict[str, Any]', result)
+        assert 'error' not in payload
+        assert payload['total_matches'] == 0
+
+    @pytest.mark.asyncio
+    async def test_regex_compile_runs_in_worker_thread(self) -> None:
+        """is_regex compilation is offloaded via asyncio.to_thread (never inline on the loop)."""
+        import asyncio as asyncio_module
+
+        from app.services.grep_service import compile_pattern as real_compile
+
+        real_to_thread = asyncio_module.to_thread
+        offloaded: list[Callable[..., object]] = []
+
+        async def spy_to_thread(fn: Callable[..., object], /, *args: object, **kwargs: object) -> object:
+            offloaded.append(fn)
+            return await real_to_thread(fn, *args, **kwargs)
+
+        repos = MagicMock()
+        repos.context.grep_scan_text_contents = AsyncMock(return_value=([], {}))
+        with (
+            patch('app.tools.navigation.ensure_repositories', AsyncMock(return_value=repos)),
+            patch('app.tools.navigation.asyncio.to_thread', side_effect=spy_to_thread),
+        ):
+            result = await app.server.grep_context(pattern='nee.dle', is_regex=True)
+
+        payload = cast('dict[str, Any]', result)
+        assert 'error' not in payload
+        assert real_compile in offloaded
+
+
+class TestDeleteContextIdsCap:
+    """delete_context.context_ids carries the same 100-ID cap as every sibling ID list.
+
+    Without the cap an unbounded schema-legal list flows into per-ID prefix
+    resolution plus the serial per-ID embedding-delete loop, monopolizing the
+    SQLite write queue or pinning a PostgreSQL pool connection, while the identical
+    operation via delete_context_batch is rejected cleanly at the boundary.
+    """
+
+    def test_context_ids_declares_max_length_cap(self) -> None:
+        """The context_ids Field declares max_length=100 (parity with get_context_by_ids)."""
+        hints = get_type_hints(app.server.delete_context, include_extras=True)
+        field_info = next(
+            meta for meta in get_args(hints['context_ids'])[1:] if isinstance(meta, FieldInfo)
+        )
+        max_values = [constraint.max_length for constraint in field_info.metadata if isinstance(constraint, MaxLen)]
+        assert max_values == [100]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_context_ids_over_cap_rejected_at_boundary(self) -> None:
+        """A context_ids list above the cap is rejected by the wire-schema validation."""
+        from fastmcp.tools import Tool
+        from pydantic import ValidationError
+
+        validated = Tool.from_function(app.server.delete_context)
+        oversized = [f'{i:032x}' for i in range(101)]
+        with pytest.raises(ValidationError) as exc_info:
+            await validated.run({'context_ids': oversized})
+        assert any(err['type'] == 'too_long' for err in exc_info.value.errors()), exc_info.value.errors()

@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import cast
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import ValidationInfo
 from pydantic import field_validator
@@ -38,6 +39,22 @@ _INT64_MIN = -(1 << 63)
 # backends. Aligned with the 100-item bounds on the sibling client-facing lists (the
 # search tools' MAX_FILTER_TAGS tags cap and the batch tools' 100-entry cap).
 MAX_IN_LIST_MEMBERS = 100
+
+# Aggregate bind-parameter budget for ONE built metadata WHERE clause, enforced
+# incrementally by MetadataQueryBuilder as filters are added. The per-dimension caps
+# (MAX_IN_LIST_MEMBERS here; the tool-boundary MAX_FILTER_TAGS / MAX_METADATA_FILTERS
+# / MAX_METADATA_KEYS caps) bound each input list individually, but capped dimensions
+# MULTIPLY (filters times members), so this budget is the defense-in-depth backstop
+# guaranteeing that no future cap change or new filter dimension can multiply the
+# clause past the backend's per-statement bind limit (32,766 variables on a
+# python.org SQLite build; asyncpg's 32,767-argument wire cap). The value sits well
+# above the largest legal combination under the current caps (100 filters times 100
+# members plus 100 simple keys ~= 10,100 binds) and safely below the driver limits,
+# leaving headroom for the enclosing statement's non-metadata binds (tags, dates,
+# LIMIT/OFFSET). Exceeding it raises ValueError from the builder, which every
+# construction site routes into the structured, breaker-exempt validation-error
+# channel on both backends.
+MAX_METADATA_BIND_PARAMS = 30_000
 
 
 def reject_out_of_int64(
@@ -330,7 +347,18 @@ class MetadataFilter(BaseModel):
     """Advanced metadata filter specification.
 
     Supports complex filtering with specific operators and nested JSON paths.
+
+    Unknown keys are REJECTED (``extra='forbid'``): with Pydantic's default
+    ``extra='ignore'`` a misspelled key -- ``'op'`` for ``'operator'``, or
+    ``'case-sensitive'`` for ``'case_sensitive'`` -- would be silently dropped and
+    the field would keep its default, silently converting the filter (e.g. a
+    ``gt`` filter runs as ``eq``) and returning a wrong result set with no error.
+    That is the same silent-filter-alteration class the value validators below
+    exist to prevent; a typo instead raises ``ValidationError``, which every
+    construction site routes into the structured validation-error channel.
     """
+
+    model_config = ConfigDict(extra='forbid')
 
     key: str = Field(
         ...,

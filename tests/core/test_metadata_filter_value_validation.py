@@ -78,6 +78,33 @@ def test_membership_operator_accepts_list_at_member_cap(operator: MetadataOperat
     assert metadata_filter.value == at_cap
 
 
+@pytest.mark.parametrize('typo_key', ['op', 'operators', 'case-sensitive', 'values'])
+def test_unknown_key_rejected(typo_key: str) -> None:
+    """An unknown construction key raises ValidationError instead of being ignored.
+
+    Under Pydantic's default ``extra='ignore'`` a misspelled key (e.g. ``'op'`` for
+    ``'operator'``) is silently dropped, the field keeps its default, and the filter
+    silently runs as EQ -- returning a wrong result set with no error. With
+    ``extra='forbid'`` the typo is a loud validation error routed through the
+    structured channel.
+    """
+    filter_dict: dict[str, object] = {'key': 'priority', typo_key: 'gt', 'value': 5}
+    with pytest.raises(ValidationError, match='[Ee]xtra'):
+        MetadataFilter.model_validate(filter_dict)
+
+
+def test_known_keys_still_accepted() -> None:
+    """All four declared fields construct normally (control for extra='forbid')."""
+    metadata_filter = MetadataFilter(
+        key='priority',
+        operator=MetadataOperator.GT,
+        value=5,
+        case_sensitive=True,
+    )
+    assert metadata_filter.operator is MetadataOperator.GT
+    assert metadata_filter.case_sensitive is True
+
+
 def test_contains_still_accepts_string_value() -> None:
     """CONTAINS continues to accept a string value (control)."""
     metadata_filter = MetadataFilter(key='note', operator=MetadataOperator.CONTAINS, value='hello')

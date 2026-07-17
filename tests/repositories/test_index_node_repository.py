@@ -6,9 +6,12 @@ graceful empty/zero behavior when the table is absent (feature disabled).
 
 import sqlite3
 from collections.abc import AsyncGenerator
+from collections.abc import Callable
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
+from typing import cast
 
 import pytest
 import pytest_asyncio
@@ -18,14 +21,58 @@ from app.backends import create_backend
 from app.ids import generate_id_with_timestamp
 from app.migrations.index_tree import apply_index_tree_migration
 from app.repositories import RepositoryContainer
+from app.repositories.index_node_repository import IndexNodeRepository
 from app.repositories.index_node_repository import IndexNodeRow
 from app.repositories.index_node_repository import StoredNodeSummary
+
+_T = TypeVar('_T')
 
 
 def _row(node_id: str, summary: str, span: tuple[int, int] = (0, 10)) -> IndexNodeRow:
     return IndexNodeRow(
         node_id=node_id, level=1, ordinal=1, title=node_id.title(),
         node_summary=summary, char_start=span[0], char_end=span[1],
+    )
+
+
+class _RaisingConnection:
+    """Fake sqlite3 connection whose execute always raises a fixed error."""
+
+    def __init__(self, error: sqlite3.OperationalError) -> None:
+        self._error = error
+
+    def execute(self, _sql: str, _params: object = ()) -> object:
+        raise self._error
+
+
+class _RaisingReadBackend:
+    """Minimal StorageBackend double routing execute_read at a raising connection.
+
+    Exercises the SQLite read closures' OperationalError narrowing directly:
+    execute_read runs the sync closure against a connection whose execute()
+    raises the configured error, so the closure's except arm is the code under
+    test. Only backend_type and execute_read are needed by these closures.
+    """
+
+    backend_type = 'sqlite'
+
+    def __init__(self, error: sqlite3.OperationalError) -> None:
+        self._conn = _RaisingConnection(error)
+
+    async def execute_read(
+        self, operation: Callable[[object], _T], *args: object, **kwargs: object,
+    ) -> _T:
+        return operation(self._conn, *args, **kwargs)
+
+
+def _locked_backend() -> StorageBackend:
+    return cast(StorageBackend, _RaisingReadBackend(sqlite3.OperationalError('database is locked')))
+
+
+def _missing_table_backend() -> StorageBackend:
+    return cast(
+        StorageBackend,
+        _RaisingReadBackend(sqlite3.OperationalError('no such table: context_index_nodes')),
     )
 
 
@@ -147,6 +194,35 @@ class TestTableAbsent:
             assert await repos.index_nodes.count_all_nodes() == 0
         finally:
             await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_and_count_propagate_non_table_absence_operational_errors(self) -> None:
+        """A locked/disk-I/O OperationalError propagates instead of reading as empty.
+
+        The SQLite reads catch OperationalError ONLY as a table-absence probe
+        ('no such table: context_index_nodes'). A SQLITE_BUSY/SQLITE_LOCKED
+        contention error (or a disk-I/O fault) on the SAME query is a genuine
+        operational fault: swallowing it would return a SUCCESS (empty summaries
+        / zero count) and let the read wrapper record a breaker success during an
+        outage, diverging from the PostgreSQL branch that only catches
+        asyncpg.UndefinedTableError. It must propagate.
+        """
+        repo = IndexNodeRepository(_locked_backend())
+        with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+            await repo.get_nodes_for_context('0' * 32)
+        with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+            await repo.count_all_nodes()
+
+    @pytest.mark.asyncio
+    async def test_table_absence_message_still_reads_as_empty(self) -> None:
+        """A 'no such table: context_index_nodes' error still degrades to empty.
+
+        Narrowing the catch to the missing-table message must not regress the
+        feature-disabled path: the table-absence probe still returns empty.
+        """
+        repo = IndexNodeRepository(_missing_table_backend())
+        assert (await repo.get_nodes_for_context('0' * 32)).by_node_id == {}
+        assert await repo.count_all_nodes() == 0
 
     @pytest.mark.asyncio
     async def test_replace_nodes_is_noop_when_table_absent(self, tmp_path: Path) -> None:

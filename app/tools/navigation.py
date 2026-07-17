@@ -51,7 +51,8 @@ from app.settings import get_settings
 from app.startup import ensure_repositories
 from app.tools._shared import reject_unstorable_input
 from app.tools.search import MAX_FILTER_TAGS
-from app.tools.search import tags_filter_cap_error
+from app.tools.search import MAX_METADATA_FILTERS
+from app.tools.search import filter_caps_error
 from app.types import GrepContentMatchDict
 from app.types import GrepContextResultDict
 from app.types import GrepCountDict
@@ -163,7 +164,12 @@ def _trim_entry_results(
 async def grep_context(
     pattern: Annotated[
         str,
-        Field(min_length=1, description='Literal substring (default) or regular expression to match, raw and unstemmed'),
+        Field(
+            min_length=1,
+            max_length=settings.grep_context.max_pattern_chars,
+            description='Literal substring (default) or regular expression to match, raw and unstemmed '
+                        f'(at most {settings.grep_context.max_pattern_chars} characters)',
+        ),
     ],
     thread_id: Annotated[
         str | None,
@@ -179,7 +185,11 @@ async def grep_context(
     ] = None,
     metadata_filters: Annotated[
         list[dict[str, Any]] | None,
-        Field(description='Advanced metadata filters with operators (gt, lt, contains, exists, etc.)'),
+        Field(
+            max_length=MAX_METADATA_FILTERS,
+            description='Advanced metadata filters with operators (gt, lt, contains, exists, etc.); '
+                        f'at most {MAX_METADATA_FILTERS} filters',
+        ),
     ] = None,
     content_type: Annotated[
         Literal['text', 'multimodal'] | None,
@@ -233,9 +243,11 @@ async def grep_context(
     the scan stops with ``truncated`` True -- rather than freezing the server. Output
     is always bounded by ``max_matches``; ``truncated`` is True only when matches or
     the scan were genuinely capped. Scope with ``thread_id`` whenever possible -- an
-    unscoped pattern scans entries sequentially. The ``tags`` filter accepts at most
-    100 tags per request; an oversized list (like an invalid metadata filter) returns
-    a structured validation-error response with ``error`` and ``validation_errors``.
+    unscoped pattern scans entries sequentially. The ``pattern`` accepts at most
+    GREP_MAX_PATTERN_CHARS characters (default 32768), the ``tags`` filter at most
+    100 tags, and ``metadata_filters`` at most 100 filters per request; an oversized
+    input (like an invalid metadata filter) returns a structured validation-error
+    response with ``error`` and ``validation_errors``.
 
     Returns:
         GrepContextResultDict with ``mode``, ``total_matches``, ``truncated`` and
@@ -263,12 +275,22 @@ async def grep_context(
         # returns None for it so the pattern never reaches the LIKE/ILIKE pre-filter bind.
         reject_unstorable_input(thread_id=thread_id, tags=tags)
 
-        # Boundary cap re-check behind the wire-schema max_length: each tag binds one
-        # SQL placeholder in the scan query, so an oversized list is rejected as a
-        # structured validation error before any SQL executes (never charging the
-        # circuit breaker), matching the sibling search tools.
-        tags_error = tags_filter_cap_error(tags)
-        if tags_error is not None:
+        grep_settings = settings.grep_context
+
+        # Boundary cap re-checks behind the wire-schema max_length constraints,
+        # returned as structured validation errors before any SQL executes or any
+        # pattern compiles (never charging the circuit breaker), matching the
+        # sibling search tools: each tag and each metadata filter binds SQL
+        # placeholders in the scan query, and pattern COMPILATION cost grows with
+        # pattern size (it runs before any matching timeout applies, so an
+        # unbounded pattern could stall the whole request just to compile).
+        caps_error = filter_caps_error(tags, metadata_filters=metadata_filters)
+        if caps_error is None and len(pattern) > grep_settings.max_pattern_chars:
+            caps_error = (
+                f'Pattern too long: {len(pattern)} characters exceeds the maximum of '
+                f'{grep_settings.max_pattern_chars}. Shorten the pattern.'
+            )
+        if caps_error is not None:
             return cast(
                 GrepContextResultDict,
                 {
@@ -276,18 +298,28 @@ async def grep_context(
                     'total_matches': 0,
                     'truncated': False,
                     'results': [],
-                    'error': tags_error,
-                    'validation_errors': [tags_error],
+                    'error': caps_error,
+                    'validation_errors': [caps_error],
                 },
             )
 
-        grep_settings = settings.grep_context
         max_matches = min(max_matches, grep_settings.max_matches_cap)
         context_lines = min(context_lines, grep_settings.max_context_lines)
         max_entries_scanned = min(max_entries_scanned, grep_settings.max_entries_scanned)
 
         try:
-            compiled = compile_pattern(pattern, is_regex=is_regex, case_sensitive=case_sensitive)
+            if is_regex:
+                # User-regex compilation is pure-Python parsing whose cost grows
+                # with pattern size and structure; run it in a worker thread so
+                # even a slow compile of a legal-size pattern cannot pin the
+                # event loop. Literal compilation (re.escape + re.compile) is
+                # linear and sub-millisecond at the enforced size cap, so it
+                # stays inline to avoid a per-call thread hop.
+                compiled = await asyncio.to_thread(
+                    compile_pattern, pattern, is_regex=True, case_sensitive=case_sensitive,
+                )
+            else:
+                compiled = compile_pattern(pattern, is_regex=False, case_sensitive=case_sensitive)
         except (re.error, regex.error) as exc:
             raise ToolError(f'Invalid regular expression: {exc}') from exc
 

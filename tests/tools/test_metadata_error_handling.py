@@ -287,3 +287,90 @@ class TestMetadataFilterValidation:
 
         f4 = MetadataFilter(key='status', operator=MetadataOperator.IS_NOT_NULL, value=['ignored'])
         assert f4.value is None
+
+
+@pytest.mark.asyncio
+class TestMetadataFilterUnknownKeyRejection:
+    """A misspelled filter construction key is a loud validation error, never a silent EQ.
+
+    MetadataFilter forbids unknown keys, so a typo like 'op' (for 'operator') no
+    longer drops silently and leaves the operator at its EQ default -- which would
+    return a wrong result set with no error. The real repository routes the
+    resulting ValidationError through the structured validation-error channel.
+    """
+
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_typo_operator_key_returns_structured_error(self, mock_context: MockFastMCPContext) -> None:
+        result = await search_context(
+            limit=50,
+            thread_id='test',
+            metadata_filters=[
+                {'key': 'priority', 'op': 'gt', 'value': 5},
+            ],
+            ctx=mock_context,
+        )
+
+        assert isinstance(result, dict)
+        assert result['results'] == []
+        assert 'error' in result
+        assert 'Metadata filter validation failed' in result['error']
+        assert 'validation_errors' in result
+        assert len(result['validation_errors']) > 0
+        assert 'op' in result['validation_errors'][0]
+
+
+@pytest.mark.asyncio
+class TestSearchContextValidationErrorStats:
+    """The search_context validation-error response carries a full stats dict under explain_query.
+
+    A metadata-filter rejection returns a structured error response instead of
+    raising; when explain_query is requested that response's stats dict must carry
+    the same keys as every other stats path (execution_time_ms, filters_applied,
+    rows_returned, backend), matching the fts/semantic siblings.
+    """
+
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_validation_error_stats_include_backend(self, mock_context: MockFastMCPContext) -> None:
+        """The error-path stats dict includes backend (the active storage backend type)."""
+        result = await search_context(
+            limit=50,
+            thread_id='test',
+            metadata_filters=[
+                {'key': 'status', 'operator': 'invalid_operator', 'value': 'active'},
+            ],
+            explain_query=True,
+            ctx=mock_context,
+        )
+
+        assert result['results'] == []
+        assert result['count'] == 0
+        assert 'Metadata filter validation failed' in result['error']
+        assert len(result['validation_errors']) > 0
+        assert 'stats' in result
+        stats = result['stats']
+        # The backend key must be present and match the backend the tool actually
+        # resolves (the module-level settings binding the production code reads),
+        # so the error-path stats shape matches every other stats path.
+        import app.tools.search as search_mod
+
+        assert stats['backend'] == search_mod.settings.storage.backend_type
+        assert stats['execution_time_ms'] == 0.0
+        assert stats['filters_applied'] == 0
+        assert stats['rows_returned'] == 0
+
+    @pytest.mark.usefixtures('initialized_server')
+    async def test_validation_error_omits_stats_without_explain_query(self, mock_context: MockFastMCPContext) -> None:
+        """Without explain_query the validation-error response carries no stats block."""
+        result = await search_context(
+            limit=50,
+            thread_id='test',
+            metadata_filters=[
+                {'key': 'status', 'operator': 'invalid_operator', 'value': 'active'},
+            ],
+            explain_query=False,
+            ctx=mock_context,
+        )
+
+        assert result['count'] == 0
+        assert 'Metadata filter validation failed' in result['error']
+        assert 'stats' not in result
