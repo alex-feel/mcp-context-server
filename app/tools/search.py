@@ -777,7 +777,9 @@ async def search_context(
 
         # Check for validation errors in stats
         if 'error' in stats:
-            # Return the error response with validation details
+            # Return the error response with validation details. The stats block is
+            # attached under explain_query so a validation rejection and a successful
+            # search expose the same keys (uniform with the fts/semantic siblings).
             error_response: dict[str, Any] = {
                 'results': [],
                 'count': 0,
@@ -785,6 +787,8 @@ async def search_context(
             }
             if 'validation_errors' in stats:
                 error_response['validation_errors'] = stats['validation_errors']
+            if explain_query:
+                error_response['stats'] = _empty_stats_for_validation_error()
             return error_response
 
         entries: list[ContextEntryDict] = []
@@ -1809,9 +1813,13 @@ async def hybrid_search_context(
             # The error response carries the same always-present response-shape keys
             # the success path, the docstring, and HybridSearchResponseDict declare
             # (fusion_method, fts_count, semantic_count), so a client reading them
-            # never hits a KeyError on the error branch.
+            # never hits a KeyError on the error branch. Under explain_query it also
+            # carries the same stats keys the success path builds: the real elapsed
+            # time, whatever sub-search stats were captured before the failure (None
+            # when a mode failed validation), a zeroed fusion_stats with the resolved
+            # rrf_k, and the adaptive FTS mode the request selected.
             if combined_validation_errors:
-                return {
+                failed_response: dict[str, Any] = {
                     'query': query,
                     'results': [],
                     'count': 0,
@@ -1822,6 +1830,15 @@ async def hybrid_search_context(
                     'error': f'All available search modes failed. {details}',
                     'validation_errors': combined_validation_errors,
                 }
+                if explain_query:
+                    failed_response['stats'] = {
+                        'execution_time_ms': round((time_module.time() - total_start_time) * 1000, 2),
+                        'fts_stats': fts_stats,
+                        'semantic_stats': semantic_stats,
+                        'fusion_stats': _zeroed_fusion_stats(effective_rrf_k),
+                        'adaptive_fts_mode': adaptive_mode,
+                    }
+                return failed_response
             raise ToolError(f'All available search modes failed. {details}')
 
         # Parse FTS metadata (returned as JSON strings from DB)

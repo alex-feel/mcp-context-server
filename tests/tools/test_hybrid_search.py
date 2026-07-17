@@ -1008,6 +1008,59 @@ class TestHybridAllModesFailedValidationResponse:
         assert result['fusion_method'] == 'rrf'
         assert result['fts_count'] == 0
         assert result['semantic_count'] == 0
+        # No explain_query -> no stats block, mirroring the success path's gating.
+        assert 'stats' not in result
+
+    @pytest.mark.asyncio
+    async def test_error_response_attaches_stats_under_explain_query(self) -> None:
+        """With explain_query=True the all-modes-failed response carries the same
+        stats keys the success path builds: real elapsed time, the (None) sub-search
+        stats, a zeroed fusion_stats with the resolved rrf_k, and the adaptive FTS
+        mode -- so a client reading response['stats'] under explain_query never hits
+        a KeyError on the error branch."""
+        from app.repositories.embedding_repository import MetadataFilterValidationError
+        from app.repositories.fts_repository import FtsValidationError
+        from app.tools.search import hybrid_search_context
+
+        messages = ['bad operator: nope']
+
+        with (
+            patch('app.tools.search.ensure_repositories', AsyncMock(return_value=MagicMock())),
+            patch('app.tools.search.get_embedding_provider', return_value=object()),
+            patch('app.tools.search.get_reranking_provider', return_value=None),
+            patch(
+                'app.tools.search._fts_search_raw',
+                AsyncMock(side_effect=FtsValidationError('Invalid filters', list(messages))),
+            ),
+            patch(
+                'app.tools.search._semantic_search_raw',
+                AsyncMock(side_effect=MetadataFilterValidationError('Invalid filters', list(messages))),
+            ),
+        ):
+            result = await hybrid_search_context(
+                query='anything',
+                rrf_k=77,
+                metadata_filters=[{'key': 'a', 'operator': 'nope', 'value': 1}],
+                explain_query=True,
+            )
+
+        assert result['validation_errors'] == messages
+        assert 'stats' in result
+        stats = result['stats']
+        assert isinstance(stats['execution_time_ms'], float)
+        assert stats['execution_time_ms'] >= 0.0
+        # Both sub-searches failed validation, so no sub-search stats were captured.
+        assert stats['fts_stats'] is None
+        assert stats['semantic_stats'] is None
+        # The zeroed fusion block carries the client-resolved rrf_k.
+        assert stats['fusion_stats'] == {
+            'rrf_k': 77,
+            'total_unique_documents': 0,
+            'documents_in_both': 0,
+            'documents_fts_only': 0,
+            'documents_semantic_only': 0,
+        }
+        assert stats['adaptive_fts_mode'] in ('match', 'boolean')
 
 
 class TestHybridFilterCapsValidationStats:
