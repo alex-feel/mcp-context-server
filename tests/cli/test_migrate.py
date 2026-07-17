@@ -1526,6 +1526,134 @@ async def test_pg_pg_migration_closes_source_when_target_connect_fails(
     assert closed['source'] is True
 
 
+class TestInitializeTargetSqliteDimFallback:
+    """initialize_target_sqlite uses get_settings().embedding.dim when embedding_dim is None.
+
+    When the source ``embedding_metadata`` table exists but is empty,
+    ``_detect_source_embedding_dim`` returns ``None``.  The old code substituted the
+    hardcoded constant 1024, silently ignoring the operator's ``EMBEDDING_DIM`` and
+    provisioning a target vector column at the wrong width.  The fix mirrors the
+    PostgreSQL counterpart: keep a detected non-None dim unchanged, else resolve
+    ``get_settings().embedding.dim``.
+    """
+
+    @staticmethod
+    def _install_fakes(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[list[str], mock.MagicMock]:
+        """Patch the file reader and vec-load so the semantic branch is entered without I/O.
+
+        Returns:
+            A tuple of (executed_sqls, conn) where executed_sqls collects every SQL
+            string passed to executescript and conn is the mock connection.
+        """
+        import app.cli.migrate as migrate_mod
+
+        executed_sqls: list[str] = []
+        original_read = migrate_mod._read_schema_file
+
+        def _spy_read(filename: str) -> str:
+            sql = original_read(filename)
+            # Keep {EMBEDDING_DIM} as an inner sentinel so the real replacement logic
+            # runs and we can inspect which numeric value was substituted.
+            if filename == 'add_semantic_search_sqlite.sql':
+                return sql.replace('{EMBEDDING_DIM}', '__DIM:{EMBEDDING_DIM}__')
+            return sql
+
+        monkeypatch.setattr(migrate_mod, '_read_schema_file', _spy_read)
+        monkeypatch.setattr(migrate_mod, '_load_sqlite_vec_extension', lambda _conn: True)
+
+        conn: mock.MagicMock = mock.MagicMock(spec=sqlite3.Connection)
+        conn.executescript.side_effect = executed_sqls.append
+        conn.execute.return_value = mock.MagicMock()
+        return executed_sqls, conn
+
+    def test_settings_fallback_used_when_embedding_dim_is_none(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """embedding_dim=None causes the settings EMBEDDING_DIM to be templated into the schema.
+
+        When the source embedding_metadata table exists but is empty the detected dim is
+        None.  The function must resolve get_settings().embedding.dim instead of falling
+        back to the hardcoded constant 1024, so the target vector column width matches the
+        operator's configured dimension.
+        """
+        from app.cli.migrate import initialize_target_sqlite
+        from app.settings import get_settings
+
+        configured_dim = 2048
+        monkeypatch.setenv('EMBEDDING_DIM', str(configured_dim))
+        monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+        get_settings.cache_clear()
+        try:
+            executed_sqls, conn = self._install_fakes(monkeypatch)
+            stats = MigrationStats()
+
+            initialize_target_sqlite(
+                conn,
+                optional_tables={'embedding_metadata': True},
+                embedding_dim=None,
+                fts_tokenizer='porter unicode61',
+                stats=stats,
+            )
+        finally:
+            monkeypatch.delenv('EMBEDDING_DIM', raising=False)
+            monkeypatch.delenv('ENABLE_EMBEDDING_GENERATION', raising=False)
+            get_settings.cache_clear()
+
+        sentinel = f'__DIM:{configured_dim}__'
+        assert any(sentinel in sql for sql in executed_sqls), (
+            f'Expected the semantic SQL to contain the configured dim {configured_dim} '
+            f'(via settings fallback), but got: {executed_sqls}'
+        )
+
+    def test_detected_source_dim_used_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-None embedding_dim is passed through unchanged without consulting settings.
+
+        When the source embedding_metadata table is non-empty and _detect_source_embedding_dim
+        returns a concrete dimension, initialize_target_sqlite must template THAT value into
+        the vector column width -- not the settings EMBEDDING_DIM -- so the target column
+        matches the actual source data.
+        """
+        from app.cli.migrate import initialize_target_sqlite
+        from app.settings import get_settings
+
+        source_dim = 512
+        settings_dim = 1024  # deliberately different to prove settings is not consulted
+        monkeypatch.setenv('EMBEDDING_DIM', str(settings_dim))
+        monkeypatch.setenv('ENABLE_EMBEDDING_GENERATION', 'false')
+        get_settings.cache_clear()
+        try:
+            executed_sqls, conn = self._install_fakes(monkeypatch)
+            stats = MigrationStats()
+
+            initialize_target_sqlite(
+                conn,
+                optional_tables={'embedding_metadata': True},
+                embedding_dim=source_dim,
+                fts_tokenizer='porter unicode61',
+                stats=stats,
+            )
+        finally:
+            monkeypatch.delenv('EMBEDDING_DIM', raising=False)
+            monkeypatch.delenv('ENABLE_EMBEDDING_GENERATION', raising=False)
+            get_settings.cache_clear()
+
+        sentinel_source = f'__DIM:{source_dim}__'
+        sentinel_settings = f'__DIM:{settings_dim}__'
+        semantic_sqls = [s for s in executed_sqls if '__DIM:' in s]
+        assert semantic_sqls, f'Semantic SQL was not intercepted; got: {executed_sqls}'
+        assert any(sentinel_source in s for s in semantic_sqls), (
+            f'Expected source dim {source_dim} to be templated; got: {semantic_sqls}'
+        )
+        assert not any(sentinel_settings in s for s in semantic_sqls), (
+            f'Settings dim {settings_dim} must not be consulted when source dim is non-None; '
+            f'got: {semantic_sqls}'
+        )
+
+
 class TestInitializeTargetPostgresqlVectorGating:
     """initialize_target_postgresql touches pgvector only for a vector-carrying target.
 
