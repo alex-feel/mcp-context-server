@@ -781,6 +781,48 @@ class SQLiteBackend:
                 self._safe_close_connection(orphan)
             raise
 
+    async def _acquire_connection_charging_faults(
+        self,
+        create: Callable[[], Awaitable[sqlite3.Connection]],
+    ) -> sqlite3.Connection:
+        """Establish a connection, charging the breaker on genuine creation faults.
+
+        Connection ESTABLISHMENT (creating a reader, recreating the writer) sits
+        above the breaker-recording try blocks that wrap connection USE, so a
+        creation failure -- e.g. SQLITE_CANTOPEN 'unable to open database file'
+        when the volume holding the database detaches -- would otherwise propagate
+        with the breaker still reporting healthy for the whole outage. This wrapper
+        records exactly one breaker failure for a genuine creation fault and then
+        re-raises, so the read and store paths can open the breaker during a
+        blackholed-storage outage the same way the queued write path already does.
+
+        A genuine (non-contention) creation Exception is re-raised after charging
+        exactly one breaker failure. The SQLITE_BUSY / SQLITE_LOCKED handshake-
+        contention family stays UNCHARGED (self-clearing cross-process contention,
+        not a database fault), and a cancellation (a non-Exception BaseException)
+        unwinding the establishment await propagates without being charged -- both
+        mirror the lock-retry and cancellation exemptions elsewhere on this backend.
+
+        Args:
+            create: Zero-argument coroutine factory that establishes and returns
+                the connection (reader creation or writer recreation).
+
+        Returns:
+            The established SQLite connection.
+
+        Raises:
+            ControlFlowError: Re-raised unchanged without charging the breaker
+                (normal control flow, not a database fault).
+        """
+        try:
+            return await create()
+        except ControlFlowError:
+            raise
+        except Exception as e:
+            if not is_sqlite_locked_error(e):
+                self.circuit_breaker.record_failure()
+            raise
+
     async def _close_all_connections(self) -> None:
         """Close all database connections with comprehensive tracking."""
         # Close connections synchronously to avoid race conditions with garbage collection
@@ -1149,9 +1191,12 @@ class SQLiteBackend:
             )
 
         if readonly:
-            # Get reader connection
+            # Get reader connection. Wrap the creation await so a genuine
+            # establishment fault (e.g. SQLITE_CANTOPEN when the database volume
+            # detaches) charges the breaker instead of escaping above the use-time
+            # recording try below with the breaker still reporting healthy.
             async with self._reader_semaphore:
-                conn = await self._get_reader_connection()
+                conn = await self._acquire_connection_charging_faults(self._get_reader_connection)
                 # Check if it's a temporary connection that needs cleanup
                 is_temporary = False
                 with self._connection_lock:
@@ -1166,7 +1211,18 @@ class SQLiteBackend:
                     # breaker failure, or a client repeatedly sending invalid input
                     # opens the breaker and rejects every caller's healthy requests.
                     raise
-                except Exception:
+                except Exception as e:
+                    if is_sqlite_locked_error(e):
+                        # SQLITE_BUSY / SQLITE_LOCKED write contention surfacing on a
+                        # read (typically a concurrent process holding an exclusive
+                        # lock during VACUUM / backup / checkpoint truncate on a shared
+                        # database file): self-clearing contention, NOT a database
+                        # fault -- do not charge the breaker, mirroring the identical
+                        # exemption on begin_transaction. Otherwise the process-global
+                        # breaker would open on routine contention and reject every
+                        # caller's requests, including the writes that are taught to
+                        # ride out the same condition.
+                        raise
                     self.circuit_breaker.record_failure()
                     raise
                 finally:
@@ -1302,13 +1358,76 @@ class SQLiteBackend:
             Result of the operation
 
         Raises:
-            ControlFlowError: Re-raised from the read callable WITHOUT counting it
-                in the failed_queries metric (normal control flow, e.g. a
-                client-input validation rejection, not a database fault)
+            sqlite3.OperationalError: Re-raised for the SQLITE_BUSY / SQLITE_LOCKED
+                family only after the bounded retry budget is exhausted, WITHOUT
+                counting it in failed_queries or charging the breaker (self-clearing
+                contention, not a database fault). A ControlFlowError or any other
+                fault raised inside the read callable propagates unchanged from the
+                single-attempt helper (ControlFlowError stays out of failed_queries;
+                genuine faults are counted there).
 
         Note:
             SQLiteBackend expects SYNC callables (not async). The operation is executed
             synchronously in a thread executor to avoid blocking the event loop.
+
+            SQLITE_BUSY / SQLITE_LOCKED contention from a read is retried with the
+            same bounded exponential backoff as the write path, since reads are
+            idempotent (each attempt runs on a fresh reader connection). Contention
+            never charges the failed_queries metric or the breaker; only a genuine
+            fault does.
+        """
+        last_locked_error: sqlite3.OperationalError | None = None
+        for attempt in range(self.retry_config.max_retries):
+            try:
+                return await self._execute_read_once(operation, *args, **kwargs)
+            except sqlite3.OperationalError as e:
+                if not is_sqlite_locked_error(e):
+                    raise
+                last_locked_error = e
+                if attempt + 1 >= self.retry_config.max_retries:
+                    # Final attempt failed: no retry follows, so a backoff sleep here
+                    # would be pure dead latency. Fall through to the exhaustion raise.
+                    break
+                delay = min(
+                    self.retry_config.base_delay * (self.retry_config.backoff_factor**attempt),
+                    self.retry_config.max_delay,
+                )
+                if self.retry_config.jitter:
+                    delay += random.uniform(0, delay * 0.3)
+                logger.warning(
+                    f'Database locked on read, retrying in {delay:.2f}s '
+                    f'(attempt {attempt + 1}/{self.retry_config.max_retries})',
+                )
+                await asyncio.sleep(delay)
+
+        # Retries exhausted on self-clearing contention: re-raise the locked error
+        # WITHOUT charging failed_queries or the breaker (mirrors begin_transaction's
+        # contention exemption), so a long external lock cannot open the breaker.
+        raise last_locked_error or sqlite3.OperationalError('database is locked')
+
+    async def _execute_read_once(
+        self,
+        operation: Callable[..., T] | Callable[..., Awaitable[T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> T:
+        """Run one read attempt on a fresh reader connection.
+
+        Args:
+            operation: Sync callable invoked with the connection as first argument.
+            *args: Additional positional arguments for the operation.
+            **kwargs: Additional keyword arguments for the operation.
+
+        Returns:
+            The operation result.
+
+        Raises:
+            ControlFlowError: Re-raised from the read callable WITHOUT counting it
+                in the failed_queries metric (normal control flow, not a fault).
+            sqlite3.OperationalError: Re-raised for the SQLITE_BUSY / SQLITE_LOCKED
+                family WITHOUT counting it in failed_queries, so the caller's retry
+                loop can back off; the get_connection readonly arm has already left
+                the breaker uncharged for this family.
         """
         async with self.get_connection(readonly=True) as conn:
             loop = asyncio.get_running_loop()
@@ -1334,6 +1453,13 @@ class SQLiteBackend:
                 # inside a read callable), not a failed query: keep the
                 # operator-facing failed_queries metric consistent with the write
                 # path's exemption, which re-raises before its counter arm.
+                raise
+            except sqlite3.OperationalError as e:
+                if is_sqlite_locked_error(e):
+                    # Self-clearing contention: not a failed query. The caller's retry
+                    # loop backs off and retries on a fresh connection.
+                    raise
+                self.metrics.failed_queries += 1
                 raise
             except Exception:
                 self.metrics.failed_queries += 1
@@ -1390,7 +1516,12 @@ class SQLiteBackend:
 
         # Acquire writer lock to ensure exclusive access
         async with self._writer_lock:
-            writer = await self._ensure_writer_connection()
+            # Wrap the writer-recreation await so a genuine establishment fault
+            # (e.g. SQLITE_CANTOPEN when the database volume detaches after the
+            # health check closes the dead writer) charges the breaker instead of
+            # escaping above the transaction-body recording block below with the
+            # breaker still reporting healthy.
+            writer = await self._acquire_connection_charging_faults(self._ensure_writer_connection)
             loop = asyncio.get_running_loop()
 
             # Create transaction context

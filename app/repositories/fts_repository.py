@@ -524,7 +524,12 @@ class FtsRepository(BaseRepository):
                 rows = cursor.fetchall()
             except sqlite3.OperationalError as exc:
                 # Any non-grammar OperationalError (locked DB, disk I/O) is an operational
-                # fault and propagates unchanged (it participates in breaker accounting).
+                # fault and propagates unchanged for normal error handling. The read-path
+                # backend wrapper charges the breaker for the disk-I/O subset but EXEMPTS the
+                # SQLITE_BUSY/SQLITE_LOCKED contention family (routine self-clearing
+                # cross-process contention that execute_read retries with bounded backoff on
+                # fresh reader connections, re-raising uncharged only after the retry budget
+                # is exhausted), matching the write path.
                 # Grammar errors are CLIENT-INPUT failures and are handled per mode below.
                 #
                 # Boolean mode forwards the raw query to FTS5 MATCH so native FTS5 boolean

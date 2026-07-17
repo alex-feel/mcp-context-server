@@ -13,6 +13,14 @@ the SQLite backend, mirroring the PostgreSQL class-40 rollback treatment:
   final failed attempt and still surfaces a single exhaustion breaker charge.
 - ``execute_read`` re-raises ``ControlFlowError`` without counting it in the
   ``failed_queries`` metric, matching the write path's exemption.
+- The readonly branch of ``get_connection`` re-raises the locked/busy family
+  WITHOUT charging the breaker (mirroring ``begin_transaction``), and
+  ``execute_read`` retries the family with bounded backoff on fresh reader
+  connections, since reads are idempotent.
+- Connection ESTABLISHMENT faults (e.g. SQLITE_CANTOPEN when the database volume
+  detaches) charge the breaker on both the readonly ``get_connection`` arm and
+  ``begin_transaction``, while an establishment-phase locked/busy handshake stays
+  uncharged.
 """
 
 import asyncio
@@ -199,5 +207,254 @@ class TestExecuteReadControlFlowAccounting:
             with pytest.raises(ValueError, match='genuine read fault'):
                 await backend.execute_read(_fail)
             assert backend.metrics.failed_queries == 1
+        finally:
+            await backend.shutdown()
+
+
+def _locked_error() -> sqlite3.OperationalError:
+    """Build a SQLITE_BUSY OperationalError carrying the authoritative result code."""
+    error = sqlite3.OperationalError('database is locked')
+    error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+    return error
+
+
+def _cantopen_error() -> sqlite3.OperationalError:
+    """Build a SQLITE_CANTOPEN OperationalError, the volume-detach creation fault."""
+    error = sqlite3.OperationalError('unable to open database file')
+    error.sqlite_errorcode = sqlite3.SQLITE_CANTOPEN
+    return error
+
+
+class TestReadonlyContentionExemption:
+    """The readonly branch of get_connection must not charge the breaker for contention.
+
+    SQLITE_BUSY / SQLITE_LOCKED surfacing on a read (e.g. an external process
+    holding an exclusive lock during VACUUM / backup / checkpoint truncate on a
+    shared database file) is self-clearing contention, exactly like the write
+    path's contention that begin_transaction already exempts. Charging the
+    process-global breaker for it would open the breaker on routine contention and
+    reject every caller's requests, including the writes taught to ride it out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_locked_read_does_not_charge_breaker(self, tmp_path: Path) -> None:
+        backend = await _initialized_backend(tmp_path / 'read_locked.db')
+        try:
+            for _ in range(backend.circuit_breaker.failure_threshold + 5):
+                with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+                    async with backend.get_connection(readonly=True):
+                        raise _locked_error()
+            assert backend.circuit_breaker.failures == 0
+            assert backend.circuit_breaker.is_open() is False
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_genuine_read_fault_still_charges_breaker(self, tmp_path: Path) -> None:
+        backend = await _initialized_backend(tmp_path / 'read_fault_cb.db')
+        error = sqlite3.OperationalError('no such table: missing')
+        error.sqlite_errorcode = sqlite3.SQLITE_ERROR
+        try:
+            with pytest.raises(sqlite3.OperationalError, match='no such table'):
+                async with backend.get_connection(readonly=True):
+                    raise error
+            assert backend.circuit_breaker.failures == 1
+        finally:
+            await backend.shutdown()
+
+
+class TestExecuteReadLockedRetry:
+    """execute_read retries the locked family with bounded backoff, then exempts it.
+
+    Reads are idempotent and each attempt runs on a fresh reader connection, so a
+    transient cross-process lock can be waited out. After the retry budget is
+    exhausted the locked error is re-raised WITHOUT charging failed_queries or the
+    breaker, so a long external lock cannot open the process-global breaker.
+    """
+
+    @pytest.mark.asyncio
+    async def test_locked_read_retries_then_succeeds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        retry_config = RetryConfig(max_retries=4, base_delay=0.001, max_delay=0.002, jitter=False)
+        backend = await _initialized_backend(tmp_path / 'read_retry_ok.db', retry_config=retry_config)
+        sleep_calls: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def _recording_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+            await real_sleep(0)
+
+        attempts = {'count': 0}
+
+        def _locked_twice_then_ok(_conn: sqlite3.Connection) -> str:
+            attempts['count'] += 1
+            if attempts['count'] < 3:
+                raise _locked_error()
+            return 'ok'
+
+        try:
+            monkeypatch.setattr(asyncio, 'sleep', _recording_sleep)
+            result = await backend.execute_read(_locked_twice_then_ok)
+            monkeypatch.setattr(asyncio, 'sleep', real_sleep)
+
+            assert result == 'ok'
+            assert attempts['count'] == 3
+            # Two contention failures produced two inter-attempt backoff sleeps.
+            assert len(sleep_calls) == 2
+            assert backend.metrics.failed_queries == 0
+            assert backend.circuit_breaker.failures == 0
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_locked_read_exhausts_retries_without_breaker_charge(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        retry_config = RetryConfig(max_retries=3, base_delay=0.001, max_delay=0.002, jitter=False)
+        backend = await _initialized_backend(tmp_path / 'read_retry_exhaust.db', retry_config=retry_config)
+        sleep_calls: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def _recording_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+            await real_sleep(0)
+
+        def _always_locked(_conn: sqlite3.Connection) -> None:
+            raise _locked_error()
+
+        try:
+            monkeypatch.setattr(asyncio, 'sleep', _recording_sleep)
+            with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+                await backend.execute_read(_always_locked)
+            monkeypatch.setattr(asyncio, 'sleep', real_sleep)
+
+            # N attempts have N - 1 inter-attempt gaps; the exhausted final attempt
+            # falls straight through to the raise with no dead trailing sleep.
+            assert len(sleep_calls) == retry_config.max_retries - 1
+            # Self-clearing contention never charges the read metric or the breaker.
+            assert backend.metrics.failed_queries == 0
+            assert backend.circuit_breaker.failures == 0
+        finally:
+            await backend.shutdown()
+
+
+class TestConnectionCreationFaultCharging:
+    """Connection ESTABLISHMENT faults charge the breaker on read and store paths.
+
+    Creating a reader and recreating the writer sit above the breaker-recording
+    blocks that wrap connection USE, so a SQLITE_CANTOPEN 'unable to open database
+    file' (the database volume detaches after the health check closes the dead
+    writer) would otherwise escape with the breaker reporting healthy for the whole
+    outage. Both establishment awaits now charge a genuine creation fault, while an
+    establishment-phase locked/busy handshake stays uncharged for parity with the
+    lock-retry exemption.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reader_creation_cantopen_charges_breaker(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        backend = await _initialized_backend(tmp_path / 'reader_cantopen.db')
+
+        async def _open_read() -> None:
+            async with backend.get_connection(readonly=True):
+                pass
+
+        try:
+
+            async def _fail_to_create() -> sqlite3.Connection:
+                raise _cantopen_error()
+
+            monkeypatch.setattr(backend, '_get_reader_connection', _fail_to_create)
+
+            with pytest.raises(sqlite3.OperationalError, match='unable to open database file'):
+                await _open_read()
+            assert backend.circuit_breaker.failures == 1
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_reader_creation_locked_stays_uncharged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        backend = await _initialized_backend(tmp_path / 'reader_locked_create.db')
+
+        async def _open_read() -> None:
+            async with backend.get_connection(readonly=True):
+                pass
+
+        try:
+
+            async def _fail_locked() -> sqlite3.Connection:
+                raise _locked_error()
+
+            monkeypatch.setattr(backend, '_get_reader_connection', _fail_locked)
+
+            for _ in range(backend.circuit_breaker.failure_threshold + 2):
+                with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+                    await _open_read()
+            assert backend.circuit_breaker.failures == 0
+            assert backend.circuit_breaker.is_open() is False
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_writer_recreation_cantopen_charges_breaker(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        backend = await _initialized_backend(tmp_path / 'writer_cantopen.db')
+
+        async def _open_txn() -> None:
+            async with backend.begin_transaction():
+                pass
+
+        try:
+
+            async def _fail_to_create() -> sqlite3.Connection:
+                raise _cantopen_error()
+
+            monkeypatch.setattr(backend, '_ensure_writer_connection', _fail_to_create)
+
+            with pytest.raises(sqlite3.OperationalError, match='unable to open database file'):
+                await _open_txn()
+            assert backend.circuit_breaker.failures == 1
+        finally:
+            await backend.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_writer_recreation_locked_stays_uncharged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        backend = await _initialized_backend(tmp_path / 'writer_locked_create.db')
+
+        async def _open_txn() -> None:
+            async with backend.begin_transaction():
+                pass
+
+        try:
+
+            async def _fail_locked() -> sqlite3.Connection:
+                raise _locked_error()
+
+            monkeypatch.setattr(backend, '_ensure_writer_connection', _fail_locked)
+
+            for _ in range(backend.circuit_breaker.failure_threshold + 2):
+                with pytest.raises(sqlite3.OperationalError, match='database is locked'):
+                    await _open_txn()
+            assert backend.circuit_breaker.failures == 0
+            assert backend.circuit_breaker.is_open() is False
         finally:
             await backend.shutdown()
